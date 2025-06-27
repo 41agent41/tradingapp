@@ -1,10 +1,9 @@
 import { Router, Request, Response } from 'express';
 import fs from 'fs';
-import path from 'path';
 import dotenv from 'dotenv';
 
 const router = Router();
-const envPath = path.join(__dirname, '../../.env');
+const envPath = '/app/.env';
 
 router.get('/', (_req: Request, res: Response) => {
   if (!fs.existsSync(envPath)) return res.json({});
