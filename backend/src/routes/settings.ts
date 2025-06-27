@@ -4,7 +4,7 @@ import path from 'path';
 import dotenv from 'dotenv';
 
 const router = Router();
-const envPath = path.resolve(process.cwd(), '..', '.env');
+const envPath = path.join(__dirname, '../../.env');
 
 router.get('/', (_req: Request, res: Response) => {
   if (!fs.existsSync(envPath)) return res.json({});
