@@ -7,6 +7,8 @@ services:
       - PORT=4000
     ports:
       - "10.7.3.20:4000:4000"
+    volumes:
+      - ./.env:/app/.env
     depends_on:
       - postgres
       - redis
