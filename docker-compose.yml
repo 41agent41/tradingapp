@@ -9,6 +9,8 @@ services:
       - postgres
       - redis
       - ib_service
+    networks:
+      - tradingapp-network
   frontend:
     build: ./frontend
     env_file: .env
@@ -16,11 +18,15 @@ services:
       - "3000:3000"
     depends_on:
       - backend
+    networks:
+      - tradingapp-network
   ib_service:
     build: ./ib_service
     env_file: .env
     ports:
       - "8000:8000"
+    networks:
+      - tradingapp-network
   postgres:
     image: postgres:15-alpine
     restart: always
@@ -32,10 +38,17 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - tradingapp-network
   redis:
     image: redis:7-alpine
     restart: always
     ports:
       - "6379:6379"
+    networks:
+      - tradingapp-network
 volumes:
-  pgdata: 
+  pgdata:
+networks:
+  tradingapp-network:
+    driver: bridge 
