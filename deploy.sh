@@ -46,10 +46,15 @@ EOF
     echo "✅ Created .env file. Please review and update NEXT_PUBLIC_API_URL with your server's domain."
 fi
 
-# Build and start services
+# Build and start services with better output handling
 echo "🔨 Building and starting services..."
-docker-compose up --build -d
+echo "📝 Note: Some npm warnings are normal during Docker builds and won't affect functionality."
+echo ""
 
+# Build with reduced output for warnings
+docker-compose up --build -d 2>&1 | grep -v "npm warn deprecated" | grep -v "npm WARN deprecated" || true
+
+echo ""
 echo "✅ Deployment completed!"
 echo ""
 echo "📋 Service URLs:"
@@ -59,6 +64,10 @@ echo "   IB Service: http://$(hostname -I | awk '{print $1}'):8000"
 echo ""
 echo "🔧 To view logs: docker-compose logs -f"
 echo "🛑 To stop services: docker-compose down"
+echo "🔄 To restart services: docker-compose restart"
 echo ""
 echo "⚠️  IMPORTANT: Update your .env file with the correct NEXT_PUBLIC_API_URL"
-echo "   Current value: $(grep NEXT_PUBLIC_API_URL .env | cut -d'=' -f2)" 
+echo "   Current value: $(grep NEXT_PUBLIC_API_URL .env | cut -d'=' -f2)"
+echo ""
+echo "📊 Check service status:"
+docker-compose ps 
