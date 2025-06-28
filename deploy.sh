@@ -20,41 +20,19 @@ if ! command -v docker-compose &> /dev/null; then
     exit 1
 fi
 
-# Check if .env file exists, create if not
-if [ ! -f .env ]; then
-    echo "⚠️  .env file not found. Creating from template..."
-    cat > .env << EOF
-# Database Configuration
-POSTGRES_USER=tradingapp
-POSTGRES_PASSWORD=tradingapp123
-POSTGRES_DB=tradingapp
-
-# Redis Configuration
-REDIS_HOST=redis
-REDIS_PORT=6379
-
-# Backend Configuration
-PORT=4000
-
-# Frontend Configuration
-# IMPORTANT: Update this to your server's actual IP address or domain
-NEXT_PUBLIC_API_URL=http://$(hostname -I | awk '{print $1}'):4000
-
-# IB Service Configuration
-IB_PORT=8000
-EOF
-    echo "✅ Created .env file. Please review and update NEXT_PUBLIC_API_URL with your server's domain."
-else
-    echo "✅ .env file already exists."
-fi
-
-# Ensure .env file has correct permissions
-chmod 644 .env
+# Setup environment file
+echo "🔧 Setting up environment..."
+chmod +x setup-env.sh
+./setup-env.sh
 
 # Build and start services with better output handling
 echo "🔨 Building and starting services..."
 echo "📝 Note: Some npm warnings are normal during Docker builds and won't affect functionality."
 echo ""
+
+# Clean up any existing containers to avoid conflicts
+echo "🧹 Cleaning up existing containers..."
+docker-compose down --remove-orphans 2>/dev/null || true
 
 # Build with reduced output for warnings
 docker-compose up --build -d 2>&1 | grep -v "npm warn deprecated" | grep -v "npm WARN deprecated" || true

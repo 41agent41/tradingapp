@@ -4,8 +4,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 COPY . .
-# Create a default .env file if none exists
-RUN test -f .env || echo "# Default environment file" > .env
+# Handle .env file - copy if exists, create default if not
+RUN if [ -f .env ]; then echo ".env file found"; else echo "# Default environment file" > .env; fi
 RUN npm run build
 EXPOSE 4000
 CMD ["npm", "start"] 
