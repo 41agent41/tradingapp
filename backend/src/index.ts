@@ -2,11 +2,13 @@ import express from 'express';
 import type { Request, Response } from 'express';
 import settingsRouter from './routes/settings';
 import bodyParser from 'body-parser';
+import cors from 'cors';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '4000', 10);
 const HOST = '0.0.0.0';
 
+app.use(cors());
 app.use(bodyParser.json());
 app.use('/api/settings', settingsRouter);
 
