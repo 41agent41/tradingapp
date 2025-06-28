@@ -20,7 +20,7 @@ if ! command -v docker-compose &> /dev/null; then
     exit 1
 fi
 
-# Check if .env file exists
+# Check if .env file exists, create if not
 if [ ! -f .env ]; then
     echo "⚠️  .env file not found. Creating from template..."
     cat > .env << EOF
@@ -44,7 +44,12 @@ NEXT_PUBLIC_API_URL=http://$(hostname -I | awk '{print $1}'):4000
 IB_PORT=8000
 EOF
     echo "✅ Created .env file. Please review and update NEXT_PUBLIC_API_URL with your server's domain."
+else
+    echo "✅ .env file already exists."
 fi
+
+# Ensure .env file has correct permissions
+chmod 644 .env
 
 # Build and start services with better output handling
 echo "🔨 Building and starting services..."
