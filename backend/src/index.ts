@@ -8,7 +8,12 @@ const app = express();
 const PORT = parseInt(process.env.PORT || '4000', 10);
 const HOST = '0.0.0.0';
 
-app.use(cors());
+// Configure CORS to allow requests from frontend
+app.use(cors({
+  origin: ['http://10.7.3.20:3000', 'http://localhost:3000'],
+  credentials: true
+}));
+
 app.use(bodyParser.json());
 app.use('/api/settings', settingsRouter);
 
@@ -16,4 +21,5 @@ app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok' }))
 
 app.listen(PORT, HOST, () => {
   console.log(`Backend listening on ${HOST}:${PORT}`);
+  console.log(`CORS enabled for: http://10.7.3.20:3000, http://localhost:3000`);
 });

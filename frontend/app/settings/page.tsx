@@ -7,9 +7,10 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Use environment variable for API URL, fallback to current hostname
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 
-                   (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:4000` : 'http://localhost:4000');
+    // For remote server deployment, use the server's IP address
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://10.7.3.20:4000';
+    
+    console.log('Attempting to fetch settings from:', apiUrl);
     
     fetch(`${apiUrl}/api/settings`)
       .then(res => {
@@ -19,6 +20,7 @@ export default function SettingsPage() {
         return res.json();
       })
       .then(data => {
+        console.log('Settings loaded successfully:', data);
         setSettings(data);
         setLoading(false);
       })
@@ -29,12 +31,20 @@ export default function SettingsPage() {
       });
   }, []);
 
-  if (loading) return <div className="p-8">Loading...</div>;
+  if (loading) return (
+    <div className="p-8">
+      <h1 className="text-2xl font-bold mb-4">Application Settings</h1>
+      <div className="text-blue-600">Loading settings...</div>
+    </div>
+  );
   
   if (error) return (
     <div className="p-8">
       <h1 className="text-2xl font-bold mb-4">Application Settings</h1>
       <div className="text-red-600">Error loading settings: {error}</div>
+      <div className="mt-4 text-sm text-gray-600">
+        Please check that the backend service is running on port 4000.
+      </div>
     </div>
   );
 
