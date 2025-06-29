@@ -106,7 +106,19 @@ async def check_ib_gateway_health():
 async def startup_event():
     """Startup event - attempt to connect to IB Gateway"""
     logger.info("Starting IB Service...")
-    await connect_to_ib()
+    
+    # Try to connect to IB Gateway, but don't fail if it's not available
+    try:
+        await connect_to_ib()
+        if connection_status["connected"]:
+            logger.info("Successfully connected to IB Gateway during startup")
+        else:
+            logger.warning("Could not connect to IB Gateway during startup, but service will continue running")
+            logger.info("You can manually connect later using the /connect endpoint")
+    except Exception as e:
+        logger.error(f"Error during startup connection attempt: {str(e)}")
+        logger.info("Service will continue running without IB Gateway connection")
+        logger.info("You can manually connect later using the /connect endpoint")
 
 @app.on_event("shutdown")
 async def shutdown_event():
