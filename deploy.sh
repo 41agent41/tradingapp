@@ -80,11 +80,56 @@ install_docker() {
 install_docker_compose() {
     echo "🐙 Installing Docker Compose..."
     
-    # Install Docker Compose
-    sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    # Try package manager installation first (more reliable)
+    if [[ "$OS" == "Ubuntu"* ]] || [[ "$OS" == "Debian"* ]]; then
+        echo "📦 Trying package manager installation..."
+        if sudo apt-get install -y docker-compose-plugin &> /dev/null; then
+            # Create symlink for docker-compose command
+            sudo ln -sf /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
+            echo "✅ Docker Compose installed via package manager!"
+            docker-compose --version
+            return 0
+        fi
+    elif [[ "$OS" == "CentOS"* ]] || [[ "$OS" == "Red Hat"* ]] || [[ "$OS" == "Fedora"* ]]; then
+        echo "📦 Trying package manager installation..."
+        if sudo yum install -y docker-compose-plugin &> /dev/null; then
+            # Create symlink for docker-compose command
+            sudo ln -sf /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
+            echo "✅ Docker Compose installed via package manager!"
+            docker-compose --version
+            return 0
+        fi
+    fi
+    
+    echo "📦 Package manager installation failed, trying direct download..."
+    
+    # Detect architecture more reliably
+    ARCH=$(uname -m)
+    case $ARCH in
+        x86_64) ARCH="x86_64" ;;
+        aarch64) ARCH="aarch64" ;;
+        armv7l) ARCH="armv7" ;;
+        *) echo "❌ Unsupported architecture: $ARCH"; exit 1 ;;
+    esac
+    
+    # Detect OS for Docker Compose binary
+    OS_LOWER=$(uname -s | tr '[:upper:]' '[:lower:]')
+    
+    # Download and install Docker Compose
+    COMPOSE_URL="https://github.com/docker/compose/releases/latest/download/docker-compose-${OS_LOWER}-${ARCH}"
+    echo "📥 Downloading Docker Compose from: $COMPOSE_URL"
+    
+    sudo curl -L "$COMPOSE_URL" -o /usr/local/bin/docker-compose
     sudo chmod +x /usr/local/bin/docker-compose
     
-    echo "✅ Docker Compose installed successfully!"
+    # Verify installation
+    if docker-compose --version &> /dev/null; then
+        echo "✅ Docker Compose installed successfully!"
+        docker-compose --version
+    else
+        echo "❌ Docker Compose installation failed"
+        exit 1
+    fi
 }
 
 # Detect OS
@@ -94,8 +139,11 @@ detect_os
 if ! command -v docker &> /dev/null; then
     echo "❌ Docker is not installed. Installing now..."
     install_docker
+    echo "✅ Docker installed successfully!"
     echo "🔄 Please log out and log back in, or restart your terminal, then run this script again."
     echo "This is needed for the docker group changes to take effect."
+    echo ""
+    echo "After restarting, run: ./deploy.sh"
     exit 0
 else
     echo "✅ Docker is already installed"
@@ -107,6 +155,7 @@ if ! command -v docker-compose &> /dev/null; then
     install_docker_compose
 else
     echo "✅ Docker Compose is already installed"
+    docker-compose --version
 fi
 
 # Verify Docker is running
