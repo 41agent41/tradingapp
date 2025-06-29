@@ -25,6 +25,11 @@ NEXT_PUBLIC_API_URL=http://$(hostname -I | awk '{print $1}'):4000
 
 # IB Service Configuration
 IB_PORT=8000
+
+# Interactive Brokers Configuration
+IB_HOST=10.7.3.21
+IB_PORT_TWS=7497
+IB_CLIENT_ID=1
 EOF
     echo "✅ .env file created successfully!"
 else

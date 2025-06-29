@@ -32,11 +32,18 @@ services:
   ib_service:
     build: ./ib_service
     env_file: .env
+    environment:
+      - IB_HOST=10.7.3.21
+      - IB_PORT=7497
+      - IB_CLIENT_ID=1
     ports:
       - "8000:8000"
     networks:
       - tradingapp-network
     restart: unless-stopped
+    # Allow connection to external IB TWS/Gateway
+    extra_hosts:
+      - "10.7.3.21:10.7.3.21"
   postgres:
     image: postgres:15-alpine
     restart: always

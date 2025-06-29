@@ -37,6 +37,40 @@ fi
 
 echo ""
 
+# Test IB service
+echo "📡 Testing IB Service (10.7.3.20:8000/)..."
+if curl -s http://10.7.3.20:8000/ > /dev/null; then
+    echo "✅ IB Service is responding"
+    echo "📋 IB Service Information:"
+    curl -s http://10.7.3.20:8000/ | jq . 2>/dev/null || curl -s http://10.7.3.20:8000/
+else
+    echo "❌ IB Service is not responding"
+fi
+
+echo ""
+
+# Test IB service health
+echo "📡 Testing IB Service Health (10.7.3.20:8000/health)..."
+if curl -s http://10.7.3.20:8000/health > /dev/null; then
+    echo "✅ IB Service health check is responding"
+    curl -s http://10.7.3.20:8000/health | jq . 2>/dev/null || curl -s http://10.7.3.20:8000/health
+else
+    echo "❌ IB Service health check is not responding"
+fi
+
+echo ""
+
+# Test IB connection status
+echo "📡 Testing IB Connection Status (10.7.3.20:8000/connection)..."
+if curl -s http://10.7.3.20:8000/connection > /dev/null; then
+    echo "✅ IB Connection status is responding"
+    curl -s http://10.7.3.20:8000/connection | jq . 2>/dev/null || curl -s http://10.7.3.20:8000/connection
+else
+    echo "❌ IB Connection status is not responding"
+fi
+
+echo ""
+
 # Test frontend
 echo "📡 Testing Frontend (10.7.3.20:3000)..."
 if curl -s http://10.7.3.20:3000 > /dev/null; then
@@ -62,7 +96,16 @@ echo "📋 Recent frontend logs:"
 docker-compose logs --tail=10 frontend
 
 echo ""
+echo "📋 Recent IB service logs:"
+docker-compose logs --tail=10 ib_service
+
+echo ""
 echo "🌐 Access URLs:"
 echo "   Frontend: http://10.7.3.20:3000"
 echo "   Backend API: http://10.7.3.20:4000"
-echo "   Settings Page: http://10.7.3.20:3000/settings" 
+echo "   IB Service: http://10.7.3.20:8000"
+echo "   Settings Page: http://10.7.3.20:3000/settings"
+echo ""
+echo "🔗 IB Connection Info:"
+echo "   TWS/Gateway: 10.7.3.21:7497"
+echo "   Client ID: 1" 

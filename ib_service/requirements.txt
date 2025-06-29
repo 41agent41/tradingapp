@@ -1,3 +1,4 @@
-ib_async
-fastapi
-uvicorn 
+ib_async>=0.20.0
+fastapi>=0.104.0
+uvicorn>=0.24.0
+python-multipart>=0.0.6 
