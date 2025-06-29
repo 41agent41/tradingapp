@@ -1,77 +1,35 @@
 #!/bin/bash
 
 # TradingApp Remote Server Deployment Script
-# This script helps deploy the trading app to a remote server
+# This script helps deploy the trading app to a Debian-based server
 
 set -e
 
-echo "🚀 TradingApp Deployment Script"
-echo "================================"
-
-# Function to detect OS
-detect_os() {
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        if [ -f /etc/os-release ]; then
-            . /etc/os-release
-            OS=$NAME
-            VER=$VERSION_ID
-        else
-            OS=$(uname -s)
-            VER=$(uname -r)
-        fi
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        OS="macOS"
-    elif [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "cygwin" ]]; then
-        OS="Windows"
-    else
-        OS="Unknown"
-    fi
-    echo "Detected OS: $OS"
-}
+echo "🚀 TradingApp Deployment Script (Debian)"
+echo "========================================="
 
 # Function to install Docker
 install_docker() {
     echo "🐳 Installing Docker..."
     
-    if [[ "$OS" == "Ubuntu"* ]] || [[ "$OS" == "Debian"* ]]; then
-        # Update package index
-        sudo apt-get update
-        
-        # Install prerequisites
-        sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
-        
-        # Add Docker's official GPG key
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-        
-        # Add Docker repository
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        
-        # Install Docker
-        sudo apt-get update
-        sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-        
-        # Add user to docker group
-        sudo usermod -aG docker $USER
-        
-    elif [[ "$OS" == "CentOS"* ]] || [[ "$OS" == "Red Hat"* ]] || [[ "$OS" == "Fedora"* ]]; then
-        # Install Docker on CentOS/RHEL/Fedora
-        sudo yum install -y yum-utils
-        sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-        sudo yum install -y docker-ce docker-ce-cli containerd.io
-        sudo systemctl start docker
-        sudo systemctl enable docker
-        sudo usermod -aG docker $USER
-        
-    elif [[ "$OS" == "macOS" ]]; then
-        echo "📱 Please install Docker Desktop for macOS from https://docs.docker.com/desktop/install/mac-install/"
-        echo "After installation, restart your terminal and run this script again."
-        exit 1
-        
-    else
-        echo "❌ Automatic Docker installation not supported for $OS"
-        echo "Please install Docker manually from https://docs.docker.com/get-docker/"
-        exit 1
-    fi
+    # Update package index
+    sudo apt-get update
+    
+    # Install prerequisites
+    sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
+    
+    # Add Docker's official GPG key
+    curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+    
+    # Add Docker repository
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    
+    # Install Docker
+    sudo apt-get update
+    sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+    
+    # Add user to docker group
+    sudo usermod -aG docker $USER
     
     echo "✅ Docker installed successfully!"
 }
@@ -81,29 +39,18 @@ install_docker_compose() {
     echo "🐙 Installing Docker Compose..."
     
     # Try package manager installation first (more reliable)
-    if [[ "$OS" == "Ubuntu"* ]] || [[ "$OS" == "Debian"* ]]; then
-        echo "📦 Trying package manager installation..."
-        if sudo apt-get install -y docker-compose-plugin &> /dev/null; then
-            # Create symlink for docker-compose command
-            sudo ln -sf /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
-            echo "✅ Docker Compose installed via package manager!"
-            docker-compose --version
-            return 0
-        fi
-    elif [[ "$OS" == "CentOS"* ]] || [[ "$OS" == "Red Hat"* ]] || [[ "$OS" == "Fedora"* ]]; then
-        echo "📦 Trying package manager installation..."
-        if sudo yum install -y docker-compose-plugin &> /dev/null; then
-            # Create symlink for docker-compose command
-            sudo ln -sf /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
-            echo "✅ Docker Compose installed via package manager!"
-            docker-compose --version
-            return 0
-        fi
+    echo "📦 Installing via package manager..."
+    if sudo apt-get install -y docker-compose-plugin &> /dev/null; then
+        # Create symlink for docker-compose command
+        sudo ln -sf /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
+        echo "✅ Docker Compose installed via package manager!"
+        docker-compose --version
+        return 0
     fi
     
     echo "📦 Package manager installation failed, trying direct download..."
     
-    # Detect architecture more reliably
+    # Detect architecture
     ARCH=$(uname -m)
     case $ARCH in
         x86_64) ARCH="x86_64" ;;
@@ -112,11 +59,8 @@ install_docker_compose() {
         *) echo "❌ Unsupported architecture: $ARCH"; exit 1 ;;
     esac
     
-    # Detect OS for Docker Compose binary
-    OS_LOWER=$(uname -s | tr '[:upper:]' '[:lower:]')
-    
     # Download and install Docker Compose
-    COMPOSE_URL="https://github.com/docker/compose/releases/latest/download/docker-compose-${OS_LOWER}-${ARCH}"
+    COMPOSE_URL="https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${ARCH}"
     echo "📥 Downloading Docker Compose from: $COMPOSE_URL"
     
     sudo curl -L "$COMPOSE_URL" -o /usr/local/bin/docker-compose
@@ -131,9 +75,6 @@ install_docker_compose() {
         exit 1
     fi
 }
-
-# Detect OS
-detect_os
 
 # Check if Docker is installed
 if ! command -v docker &> /dev/null; then
@@ -161,13 +102,8 @@ fi
 # Verify Docker is running
 if ! docker info &> /dev/null; then
     echo "❌ Docker is not running. Starting Docker..."
-    if [[ "$OS" == "macOS" ]]; then
-        echo "Please start Docker Desktop manually"
-        exit 1
-    else
-        sudo systemctl start docker
-        sudo systemctl enable docker
-    fi
+    sudo systemctl start docker
+    sudo systemctl enable docker
 fi
 
 # Setup environment file
