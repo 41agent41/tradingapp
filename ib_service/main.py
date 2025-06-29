@@ -81,12 +81,16 @@ async def disconnect_from_ib():
 async def check_ib_gateway_health():
     """Check if IB Gateway is reachable and responding"""
     try:
-        # Try to connect with a short timeout
+        # Use the existing connection if available
+        if ib_client and ib_client.isConnected():
+            return True
+        
+        # Try to connect with the same client ID as main connection
         test_client = IB()
         await test_client.connect(
             host=connection_status['host'],
             port=connection_status['port'],
-            clientId=999,  # Use a different client ID for health check
+            clientId=connection_status['client_id'],  # Use same client ID
             timeout=5
         )
         await test_client.disconnect()
