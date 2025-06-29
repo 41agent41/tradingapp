@@ -60,6 +60,17 @@ fi
 
 echo ""
 
+# Test IB Gateway health check
+echo "📡 Testing IB Gateway Health (10.7.3.20:8000/gateway-health)..."
+if curl -s http://10.7.3.20:8000/gateway-health > /dev/null; then
+    echo "✅ IB Gateway health check is responding"
+    curl -s http://10.7.3.20:8000/gateway-health | jq . 2>/dev/null || curl -s http://10.7.3.20:8000/gateway-health
+else
+    echo "❌ IB Gateway health check is not responding"
+fi
+
+echo ""
+
 # Test IB connection status
 echo "📡 Testing IB Connection Status (10.7.3.20:8000/connection)..."
 if curl -s http://10.7.3.20:8000/connection > /dev/null; then
@@ -106,6 +117,7 @@ echo "   Backend API: http://10.7.3.20:4000"
 echo "   IB Service: http://10.7.3.20:8000"
 echo "   Settings Page: http://10.7.3.20:3000/settings"
 echo ""
-echo "🔗 IB Connection Info:"
-echo "   TWS/Gateway: 10.7.3.21:7497"
-echo "   Client ID: 1" 
+echo "🔗 IB Gateway Connection Info:"
+echo "   Gateway: 10.7.3.21:4002"
+echo "   Client ID: 1"
+echo "   Type: IB Gateway (Socket)" 

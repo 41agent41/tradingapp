@@ -28,7 +28,7 @@ IB_PORT=8000
 
 # Interactive Brokers Configuration
 IB_HOST=10.7.3.21
-IB_PORT_TWS=7497
+IB_PORT_GATEWAY=4002
 IB_CLIENT_ID=1
 EOF
     echo "✅ .env file created successfully!"

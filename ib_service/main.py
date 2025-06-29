@@ -27,17 +27,17 @@ ib_client: Optional[IB] = None
 connection_status = {
     "connected": False,
     "host": "10.7.3.21",
-    "port": 7497,  # TWS default port, use 4001 for Gateway
+    "port": 4002,  # IB Gateway default socket port
     "client_id": 1,
     "last_error": None
 }
 
 async def connect_to_ib():
-    """Connect to Interactive Brokers TWS/Gateway"""
+    """Connect to Interactive Brokers Gateway"""
     global ib_client, connection_status
     
     try:
-        logger.info(f"Connecting to IB at {connection_status['host']}:{connection_status['port']}")
+        logger.info(f"Connecting to IB Gateway at {connection_status['host']}:{connection_status['port']}")
         
         ib_client = IB()
         await ib_client.connect(
@@ -49,51 +49,68 @@ async def connect_to_ib():
         
         connection_status["connected"] = True
         connection_status["last_error"] = None
-        logger.info("Successfully connected to Interactive Brokers")
+        logger.info("Successfully connected to Interactive Brokers Gateway")
         
         return True
         
     except ConnectionError as e:
-        error_msg = f"Failed to connect to IB: {str(e)}"
+        error_msg = f"Failed to connect to IB Gateway: {str(e)}"
         logger.error(error_msg)
         connection_status["connected"] = False
         connection_status["last_error"] = error_msg
         return False
     except Exception as e:
-        error_msg = f"Unexpected error connecting to IB: {str(e)}"
+        error_msg = f"Unexpected error connecting to IB Gateway: {str(e)}"
         logger.error(error_msg)
         connection_status["connected"] = False
         connection_status["last_error"] = error_msg
         return False
 
 async def disconnect_from_ib():
-    """Disconnect from Interactive Brokers"""
+    """Disconnect from Interactive Brokers Gateway"""
     global ib_client, connection_status
     
     try:
         if ib_client and ib_client.isConnected():
             await ib_client.disconnect()
-            logger.info("Disconnected from Interactive Brokers")
+            logger.info("Disconnected from Interactive Brokers Gateway")
         
         connection_status["connected"] = False
         connection_status["last_error"] = None
         return True
         
     except Exception as e:
-        error_msg = f"Error disconnecting from IB: {str(e)}"
+        error_msg = f"Error disconnecting from IB Gateway: {str(e)}"
         logger.error(error_msg)
         connection_status["last_error"] = error_msg
         return False
 
+async def check_ib_gateway_health():
+    """Check if IB Gateway is reachable and responding"""
+    try:
+        # Try to connect with a short timeout
+        test_client = IB()
+        await test_client.connect(
+            host=connection_status['host'],
+            port=connection_status['port'],
+            clientId=999,  # Use a different client ID for health check
+            timeout=5
+        )
+        await test_client.disconnect()
+        return True
+    except Exception as e:
+        logger.warning(f"IB Gateway health check failed: {str(e)}")
+        return False
+
 @app.on_event("startup")
 async def startup_event():
-    """Startup event - attempt to connect to IB"""
+    """Startup event - attempt to connect to IB Gateway"""
     logger.info("Starting IB Service...")
     await connect_to_ib()
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Shutdown event - disconnect from IB"""
+    """Shutdown event - disconnect from IB Gateway"""
     logger.info("Shutting down IB Service...")
     await disconnect_from_ib()
 
@@ -105,11 +122,18 @@ async def root():
         "version": "1.0.0",
         "status": "running",
         "connection": connection_status,
+        "gateway_info": {
+            "host": connection_status["host"],
+            "port": connection_status["port"],
+            "type": "IB Gateway (Socket)",
+            "client_id": connection_status["client_id"]
+        },
         "endpoints": {
             "health": "/health",
             "connection": "/connection",
             "connect": "/connect",
             "disconnect": "/disconnect",
+            "gateway_health": "/gateway-health",
             "account": "/account",
             "positions": "/positions",
             "orders": "/orders"
@@ -122,7 +146,21 @@ async def health():
     return {
         "status": "ok",
         "ib_connected": connection_status["connected"],
-        "service": "ib_service"
+        "service": "ib_service",
+        "gateway_host": connection_status["host"],
+        "gateway_port": connection_status["port"]
+    }
+
+@app.get("/gateway-health")
+async def gateway_health():
+    """Check IB Gateway connectivity"""
+    gateway_reachable = await check_ib_gateway_health()
+    return {
+        "gateway_reachable": gateway_reachable,
+        "gateway_host": connection_status["host"],
+        "gateway_port": connection_status["port"],
+        "service_connected": connection_status["connected"],
+        "last_error": connection_status["last_error"]
     }
 
 @app.get("/connection")
@@ -132,19 +170,19 @@ async def get_connection_status():
 
 @app.post("/connect")
 async def connect():
-    """Manually connect to IB"""
+    """Manually connect to IB Gateway"""
     success = await connect_to_ib()
     if success:
-        return {"message": "Successfully connected to Interactive Brokers", "status": connection_status}
+        return {"message": "Successfully connected to Interactive Brokers Gateway", "status": connection_status}
     else:
         raise HTTPException(status_code=500, detail=connection_status["last_error"])
 
 @app.post("/disconnect")
 async def disconnect():
-    """Manually disconnect from IB"""
+    """Manually disconnect from IB Gateway"""
     success = await disconnect_from_ib()
     if success:
-        return {"message": "Successfully disconnected from Interactive Brokers", "status": connection_status}
+        return {"message": "Successfully disconnected from Interactive Brokers Gateway", "status": connection_status}
     else:
         raise HTTPException(status_code=500, detail=connection_status["last_error"])
 
@@ -152,7 +190,7 @@ async def disconnect():
 async def get_account_info():
     """Get account information"""
     if not ib_client or not ib_client.isConnected():
-        raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers")
+        raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")
     
     try:
         # Request account information
@@ -177,7 +215,7 @@ async def get_account_info():
 async def get_positions():
     """Get current positions"""
     if not ib_client or not ib_client.isConnected():
-        raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers")
+        raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")
     
     try:
         positions = ib_client.positions()
@@ -201,7 +239,7 @@ async def get_positions():
 async def get_orders():
     """Get current orders"""
     if not ib_client or not ib_client.isConnected():
-        raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers")
+        raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")
     
     try:
         trades = ib_client.trades()
