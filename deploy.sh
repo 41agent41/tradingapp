@@ -12,20 +12,31 @@ echo "========================================="
 install_docker() {
     echo "🐳 Installing Docker..."
     
+    # Remove any existing Docker repository entries to avoid conflicts
+    echo "🧹 Cleaning up old Docker repository entries..."
+    sudo rm -f /etc/apt/sources.list.d/docker.list
+    sudo rm -f /etc/apt/sources.list.d/docker.list.save
+    
     # Update package index
     sudo apt-get update
     
     # Install prerequisites
     sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
     
-    # Add Docker's official GPG key
+    # Add Docker's official GPG key for Debian
+    echo "🔑 Adding Docker GPG key..."
     curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
     
-    # Add Docker repository
+    # Add Docker repository for Debian
+    echo "📦 Adding Docker repository..."
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
     
-    # Install Docker
+    # Update package list again with new repository
+    echo "🔄 Updating package list..."
     sudo apt-get update
+    
+    # Install Docker
+    echo "📥 Installing Docker..."
     sudo apt-get install -y docker-ce docker-ce-cli containerd.io
     
     # Add user to docker group
