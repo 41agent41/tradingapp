@@ -4,7 +4,6 @@ import asyncio
 import logging
 from typing import Dict, Any, Optional
 from ib_async import IB, Contract, Stock, Order, MarketOrder
-from ib_async.client import ConnectionError
 import os
 
 # Configure logging
@@ -53,14 +52,8 @@ async def connect_to_ib():
         
         return True
         
-    except ConnectionError as e:
-        error_msg = f"Failed to connect to IB Gateway: {str(e)}"
-        logger.error(error_msg)
-        connection_status["connected"] = False
-        connection_status["last_error"] = error_msg
-        return False
     except Exception as e:
-        error_msg = f"Unexpected error connecting to IB Gateway: {str(e)}"
+        error_msg = f"Failed to connect to IB Gateway: {str(e)}"
         logger.error(error_msg)
         connection_status["connected"] = False
         connection_status["last_error"] = error_msg
