@@ -236,6 +236,59 @@ async def root():
 
 # Market Data Endpoints
 
+def qualify_contract_sync(contract):
+    """Synchronous function to qualify contract in separate thread"""
+    global ib_client
+    if not ib_client or not ib_client.isConnected():
+        return None
+    
+    try:
+        qualified_contracts = ib_client.qualifyContracts(contract)
+        return qualified_contracts[0] if qualified_contracts else None
+    except Exception as e:
+        logger.error(f"Error qualifying contract: {str(e)}")
+        return None
+
+async def qualify_contract_async(contract):
+    """Async wrapper for contract qualification"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, qualify_contract_sync, contract)
+
+def get_account_summary_sync():
+    """Synchronous function to get account summary in separate thread"""
+    global ib_client
+    if not ib_client or not ib_client.isConnected():
+        return None, None
+    
+    try:
+        # Get managed accounts
+        accounts = ib_client.managedAccounts()
+        if not accounts:
+            return None, "No accounts found"
+        
+        # Use the first account
+        account = accounts[0]
+        
+        # Request account summary with correct parameters
+        account_summary = ib_client.reqAccountSummary(
+            "All",  # groupName
+            "AccountType,NetLiquidation,TotalCashValue,SettledCash,AccruedCash,BuyingPower,ExcessLiquidity,Cushion,LookAheadNextChange,DayTradesRemaining"  # tags
+        )
+        
+        # Get account values for additional details
+        account_values = ib_client.accountValues()
+        
+        return (account, account_summary, account_values), None
+        
+    except Exception as e:
+        logger.error(f"Error in get_account_summary_sync: {str(e)}")
+        return None, str(e)
+
+async def get_account_summary_async():
+    """Async wrapper for account summary"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, get_account_summary_sync)
+
 @app.get("/market-data/history")
 async def get_historical_data(symbol: str, timeframe: str, period: str = "12M"):
     """Get historical market data for a symbol"""
@@ -250,13 +303,10 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "12M"):
         # Create contract for MSFT stock
         contract = Stock('MSFT', 'SMART', 'USD')
         
-        # Qualify the contract to populate conId
-        qualified_contracts = ib_client.qualifyContracts(contract)
-        if not qualified_contracts:
+        # Qualify the contract to populate conId (using thread executor)
+        qualified_contract = await qualify_contract_async(contract)
+        if not qualified_contract:
             raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}")
-        
-        # Use the first qualified contract
-        qualified_contract = qualified_contracts[0]
         
         # Map timeframe to IB bar sizes
         timeframe_map = {
@@ -363,13 +413,10 @@ async def get_realtime_data(symbol: str):
         # Create contract for MSFT stock
         contract = Stock('MSFT', 'SMART', 'USD')
         
-        # Qualify the contract to populate conId
-        qualified_contracts = ib_client.qualifyContracts(contract)
-        if not qualified_contracts:
+        # Qualify the contract to populate conId (using thread executor)
+        qualified_contract = await qualify_contract_async(contract)
+        if not qualified_contract:
             raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}")
-        
-        # Use the first qualified contract
-        qualified_contract = qualified_contracts[0]
         
         # Request market data
         ticker = ib_client.reqMktData(qualified_contract)
@@ -411,13 +458,11 @@ async def subscribe_market_data(request: Dict[str, Any]):
         if symbol != 'MSFT':
             raise HTTPException(status_code=400, detail=f"Only MSFT symbol is currently supported, got: {symbol}")
         
-        # Create and qualify contract
+        # Create and qualify contract (using thread executor)
         contract = Stock(symbol, 'SMART', 'USD')
-        qualified_contracts = ib_client.qualifyContracts(contract)
-        if not qualified_contracts:
+        qualified_contract = await qualify_contract_async(contract)
+        if not qualified_contract:
             raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}")
-        
-        qualified_contract = qualified_contracts[0]
         
         # Subscribe to market data
         ticker = ib_client.reqMktData(qualified_contract)
@@ -446,13 +491,11 @@ async def unsubscribe_market_data(request: Dict[str, Any]):
         if not symbol:
             raise HTTPException(status_code=400, detail="Symbol is required")
         
-        # Create and qualify contract
+        # Create and qualify contract (using thread executor)
         contract = Stock(symbol, 'SMART', 'USD')
-        qualified_contracts = ib_client.qualifyContracts(contract)
-        if not qualified_contracts:
+        qualified_contract = await qualify_contract_async(contract)
+        if not qualified_contract:
             raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}")
-        
-        qualified_contract = qualified_contracts[0]
         
         # Cancel market data subscription
         ib_client.cancelMktData(qualified_contract)
@@ -639,22 +682,16 @@ async def get_account_info():
         raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")
     
     try:
-        # Get managed accounts
-        accounts = ib_client.managedAccounts()
-        if not accounts:
-            raise HTTPException(status_code=404, detail="No accounts found")
+        # Get account information using thread executor
+        result, error = await get_account_summary_async()
         
-        # Use the first account (or primary account)
-        account = accounts[0]
+        if error:
+            raise HTTPException(status_code=500, detail=error)
         
-        # Request account summary with specific tags (removed reqId parameter)
-        account_summary = await ib_client.reqAccountSummaryAsync(
-            groupName="All",
-            tags="AccountType,NetLiquidation,TotalCashValue,SettledCash,AccruedCash,BuyingPower,ExcessLiquidity,Cushion,LookAheadNextChange,DayTradesRemaining"
-        )
+        if not result:
+            raise HTTPException(status_code=404, detail="No account data available")
         
-        # Get account values for additional details
-        account_values = ib_client.accountValues()
+        account, account_summary, account_values = result
         
         # Parse account summary into a more usable format
         summary_dict = {}
