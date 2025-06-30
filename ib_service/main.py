@@ -51,23 +51,23 @@ def connect_to_ib_sync():
             logger.info(f"Attempt {attempt}: Connecting to IB Gateway at {connection_status['host']}:{connection_status['port']} with client ID {client_id}")
             
             # Create IB client - let it handle its own event loop
-            ib_client = IB()
+        ib_client = IB()
             
             # Add more detailed logging
             logger.info("IB client created, attempting connection...")
             
             ib_client.connect(
-                host=connection_status['host'],
-                port=connection_status['port'],
+            host=connection_status['host'],
+            port=connection_status['port'],
                 clientId=client_id,
                 timeout=10  # Reduced timeout for faster retries
-            )
-            
+        )
+        
             # Verify connection was successful
             if ib_client.isConnected():
-                connection_status["connected"] = True
+        connection_status["connected"] = True
                 connection_status["client_id"] = client_id  # Update successful client ID
-                connection_status["last_error"] = None
+        connection_status["last_error"] = None
                 logger.info(f"Successfully connected to Interactive Brokers Gateway with client ID {client_id}")
                 return True
             else:
@@ -97,8 +97,8 @@ def connect_to_ib_sync():
                 # Not last attempt - just warn and try next client ID
                 logger.warning(f"Attempt {attempt} with client ID {client_id} timed out, trying next client ID...")
                 continue
-                
-        except Exception as e:
+        
+    except Exception as e:
             error_msg = f"Attempt {attempt} failed: {type(e).__name__}: {str(e)}"
             if not str(e):
                 error_msg = f"Attempt {attempt} failed: {type(e).__name__} (no error message provided)"
@@ -117,10 +117,10 @@ def connect_to_ib_sync():
     
     # Should not reach here, but just in case
     error_msg = f"All {len(client_ids_to_try)} connection attempts failed"
-    logger.error(error_msg)
-    connection_status["connected"] = False
-    connection_status["last_error"] = error_msg
-    return False
+        logger.error(error_msg)
+        connection_status["connected"] = False
+        connection_status["last_error"] = error_msg
+        return False
 
 async def connect_to_ib():
     """Async wrapper for IB Gateway connection"""
@@ -171,7 +171,7 @@ async def check_ib_gateway_health():
         
         if result == 0:
             logger.info("IB Gateway health check: Port is reachable")
-            return True
+        return True
         else:
             logger.warning(f"IB Gateway health check: Port not reachable (result: {result})")
             return False
@@ -300,17 +300,19 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "12M"):
         raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")
     
     try:
-        # Validate symbol (for now, only support MSFT)
-        if symbol.upper() != 'MSFT':
-            raise HTTPException(status_code=400, detail=f"Only MSFT symbol is currently supported, got: {symbol}")
+        # Validate symbol
+        if not symbol or len(symbol.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Symbol is required")
         
-        # Create contract for MSFT stock
-        contract = Stock('MSFT', 'SMART', 'USD')
+        symbol = symbol.upper().strip()
+        
+        # Create contract for the specified stock
+        contract = Stock(symbol, 'SMART', 'USD')
         
         # Qualify the contract to populate conId (using thread executor)
         qualified_contract = await qualify_contract_async(contract)
         if not qualified_contract:
-            raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}")
+            raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}. Symbol may not exist or may not be available.")
         
         # Map timeframe to IB bar sizes
         timeframe_map = {
@@ -410,17 +412,19 @@ async def get_realtime_data(symbol: str):
         raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")
     
     try:
-        # Validate symbol (for now, only support MSFT)
-        if symbol.upper() != 'MSFT':
-            raise HTTPException(status_code=400, detail=f"Only MSFT symbol is currently supported, got: {symbol}")
+        # Validate symbol
+        if not symbol or len(symbol.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Symbol is required")
         
-        # Create contract for MSFT stock
-        contract = Stock('MSFT', 'SMART', 'USD')
+        symbol = symbol.upper().strip()
+        
+        # Create contract for the specified stock
+        contract = Stock(symbol, 'SMART', 'USD')
         
         # Qualify the contract to populate conId (using thread executor)
         qualified_contract = await qualify_contract_async(contract)
         if not qualified_contract:
-            raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}")
+            raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}. Symbol may not exist or may not be available.")
         
         # Request market data
         ticker = ib_client.reqMktData(qualified_contract)
@@ -511,21 +515,17 @@ async def subscribe_market_data(request: Dict[str, Any]):
         raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")
     
     try:
-        symbol = request.get('symbol', '').upper()
+        symbol = request.get('symbol', '').upper().strip()
         timeframe = request.get('timeframe', 'tick')
         
         if not symbol:
             raise HTTPException(status_code=400, detail="Symbol is required")
         
-        # Validate symbol (for now, only support MSFT)
-        if symbol != 'MSFT':
-            raise HTTPException(status_code=400, detail=f"Only MSFT symbol is currently supported, got: {symbol}")
-        
         # Create and qualify contract (using thread executor)
         contract = Stock(symbol, 'SMART', 'USD')
         qualified_contract = await qualify_contract_async(contract)
         if not qualified_contract:
-            raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}")
+            raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}. Symbol may not exist or may not be available.")
         
         # Subscribe to market data
         ticker = ib_client.reqMktData(qualified_contract)
@@ -549,7 +549,7 @@ async def unsubscribe_market_data(request: Dict[str, Any]):
         raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")
     
     try:
-        symbol = request.get('symbol', '').upper()
+        symbol = request.get('symbol', '').upper().strip()
         
         if not symbol:
             raise HTTPException(status_code=400, detail="Symbol is required")
@@ -558,7 +558,7 @@ async def unsubscribe_market_data(request: Dict[str, Any]):
         contract = Stock(symbol, 'SMART', 'USD')
         qualified_contract = await qualify_contract_async(contract)
         if not qualified_contract:
-            raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}")
+            raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}. Symbol may not exist or may not be available.")
         
         # Cancel market data subscription
         ib_client.cancelMktData(qualified_contract)
@@ -656,10 +656,10 @@ async def diagnostics():
         return diagnostics_info
         
     except Exception as e:
-        return {
+    return {
             "error": f"Diagnostics failed: {str(e)}",
             "timestamp": datetime.now().isoformat()
-        }
+    }
 
 @app.get("/connection")
 async def get_connection_status():

@@ -178,8 +178,8 @@ export default function HomePage() {
         {/* Trading Chart */}
         <div className="mb-6">
           <TradingChart 
-            symbol="MSFT" 
             onTimeframeChange={(timeframe) => console.log('Timeframe changed:', timeframe)}
+            onSymbolChange={(symbol) => console.log('Symbol changed:', symbol)}
           />
         </div>
 

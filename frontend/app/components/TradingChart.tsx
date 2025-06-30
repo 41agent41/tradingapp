@@ -14,8 +14,8 @@ interface CandlestickData {
 }
 
 interface TradingChartProps {
-  symbol: string;
   onTimeframeChange?: (timeframe: string) => void;
+  onSymbolChange?: (symbol: string) => void;
 }
 
 const timeframes = [
@@ -28,19 +28,22 @@ const timeframes = [
   { label: '1d', value: '1day', minutes: 1440 }
 ];
 
-export default function TradingChart({ symbol, onTimeframeChange }: TradingChartProps) {
+export default function TradingChart({ onTimeframeChange, onSymbolChange }: TradingChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const candlestickSeries = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
   const socket = useRef<Socket | null>(null);
   
+  const [currentSymbol, setCurrentSymbol] = useState('MSFT');
+  const [symbolInput, setSymbolInput] = useState('MSFT');
   const [currentTimeframe, setCurrentTimeframe] = useState('1hour');
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [realTimePrice, setRealTimePrice] = useState<number | null>(null);
   const [connectionStatus, setConnectionStatus] = useState('Disconnected');
+  const [isSubscribed, setIsSubscribed] = useState(false);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -117,21 +120,16 @@ export default function TradingChart({ symbol, onTimeframeChange }: TradingChart
     socket.current.on('connect', () => {
       setConnectionStatus('Connected');
       console.log('Chart connected to backend for real-time data');
-      
-      // Subscribe to market data for this symbol
-      socket.current?.emit('subscribe-market-data', {
-        symbol: symbol,
-        timeframe: currentTimeframe
-      });
     });
 
     socket.current.on('disconnect', () => {
       setConnectionStatus('Disconnected');
+      setIsSubscribed(false);
       console.log('Chart disconnected from backend');
     });
 
     socket.current.on('market-data-update', (data: any) => {
-      if (data.symbol === symbol && data.data?.last) {
+      if (data.symbol === currentSymbol && data.data?.last) {
         setRealTimePrice(data.data.last);
         
         // Update chart with real-time price if we have chart data
@@ -156,16 +154,32 @@ export default function TradingChart({ symbol, onTimeframeChange }: TradingChart
 
     return () => {
       if (socket.current) {
-        socket.current.emit('unsubscribe-market-data', { symbol });
         socket.current.close();
       }
     };
-  }, [symbol, currentTimeframe]);
+  }, [currentSymbol, currentTimeframe]);
 
-  // Fetch historical data when timeframe changes
+  // Subscribe/unsubscribe to market data when symbol or timeframe changes
+  useEffect(() => {
+    if (socket.current && connectionStatus === 'Connected') {
+      // Unsubscribe from previous symbol if subscribed
+      if (isSubscribed) {
+        socket.current.emit('unsubscribe-market-data', { symbol: currentSymbol });
+      }
+      
+      // Subscribe to new symbol
+      socket.current.emit('subscribe-market-data', {
+        symbol: currentSymbol,
+        timeframe: currentTimeframe
+      });
+      setIsSubscribed(true);
+    }
+  }, [currentSymbol, currentTimeframe, connectionStatus]);
+
+  // Fetch historical data when timeframe or symbol changes
   useEffect(() => {
     fetchHistoricalData();
-  }, [currentTimeframe, symbol]);
+  }, [currentTimeframe, currentSymbol]);
 
   const fetchHistoricalData = async () => {
     setIsLoading(true);
@@ -174,7 +188,7 @@ export default function TradingChart({ symbol, onTimeframeChange }: TradingChart
     try {
       const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
       const response = await fetch(
-        `${backendUrl}/api/market-data/history?symbol=${symbol}&timeframe=${currentTimeframe}&period=12M`
+        `${backendUrl}/api/market-data/history?symbol=${currentSymbol}&timeframe=${currentTimeframe}&period=12M`
       );
       
       if (!response.ok) {
@@ -202,16 +216,15 @@ export default function TradingChart({ symbol, onTimeframeChange }: TradingChart
       // Update chart series
       if (candlestickSeries.current && volumeSeries.current) {
         candlestickSeries.current.setData(formattedData);
-        volumeSeries.current.setData(
-          formattedData.map(bar => ({
-            time: bar.time,
-            value: bar.volume || 0,
-            color: bar.close >= bar.open ? '#4CAF50' : '#F44336',
-          }))
-        );
         
-        // Fit content to chart
-        chart.current?.timeScale().fitContent();
+        // Volume data
+        const volumeData = formattedData.map(bar => ({
+          time: bar.time,
+          value: bar.volume || 0,
+          color: bar.close >= bar.open ? '#4CAF50' : '#F44336'
+        }));
+        
+        volumeSeries.current.setData(volumeData);
       }
       
     } catch (err) {
@@ -222,92 +235,122 @@ export default function TradingChart({ symbol, onTimeframeChange }: TradingChart
     }
   };
 
+  const handleSymbolSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const newSymbol = symbolInput.trim().toUpperCase();
+    if (newSymbol && newSymbol !== currentSymbol) {
+      setCurrentSymbol(newSymbol);
+      setRealTimePrice(null);
+      setError(null);
+      onSymbolChange?.(newSymbol);
+    }
+  };
+
   const handleTimeframeChange = (timeframe: string) => {
     setCurrentTimeframe(timeframe);
     onTimeframeChange?.(timeframe);
   };
 
-  // Update chart with real-time data
   const updateRealTimeData = (newBar: CandlestickData) => {
-    if (candlestickSeries.current && volumeSeries.current) {
-      candlestickSeries.current.update(newBar);
-      volumeSeries.current.update({
-        time: newBar.time,
-        value: newBar.volume || 0,
-        color: newBar.close >= newBar.open ? '#4CAF50' : '#F44336',
-      });
-    }
+    setChartData(prev => {
+      const updated = [...prev, newBar];
+      if (candlestickSeries.current) {
+        candlestickSeries.current.update(newBar);
+      }
+      return updated;
+    });
   };
 
   return (
-    <div className="bg-white rounded-lg shadow-md p-6">
-      <div className="flex justify-between items-center mb-4">
-        <div>
-          <div className="flex items-center space-x-4">
-            <h2 className="text-2xl font-bold text-gray-900">{symbol}</h2>
-            {realTimePrice && (
-              <div className="text-2xl font-bold text-blue-600">
-                ${realTimePrice.toFixed(2)}
+    <div className="w-full h-full flex flex-col">
+      {/* Header with Symbol Input and Controls */}
+      <div className="bg-white border-b border-gray-200 p-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          {/* Symbol Input */}
+          <div className="flex items-center gap-4">
+            <form onSubmit={handleSymbolSubmit} className="flex items-center gap-2">
+              <label htmlFor="symbol-input" className="text-sm font-medium text-gray-700">
+                Symbol:
+              </label>
+              <input
+                id="symbol-input"
+                type="text"
+                value={symbolInput}
+                onChange={(e) => setSymbolInput(e.target.value.toUpperCase())}
+                placeholder="Enter symbol (e.g., AAPL)"
+                className="px-3 py-1 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                maxLength={10}
+              />
+              <button
+                type="submit"
+                className="px-3 py-1 bg-blue-500 text-white rounded-md text-sm hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                Load
+              </button>
+            </form>
+            
+            {/* Current Symbol and Price Display */}
+            <div className="flex items-center gap-2">
+              <span className="text-lg font-bold text-gray-900">{currentSymbol}</span>
+              {realTimePrice && (
+                <span className="text-lg font-semibold text-green-600">
+                  ${realTimePrice.toFixed(2)}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Status Indicators */}
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${connectionStatus === 'Connected' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              <span className="text-sm text-gray-600">{connectionStatus}</span>
+            </div>
+            {isSubscribed && (
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                <span className="text-sm text-gray-600">Subscribed</span>
               </div>
             )}
           </div>
-          <div className="flex items-center space-x-2">
-            <p className="text-gray-600">Real-time Chart</p>
-            <div className={`px-2 py-1 rounded text-xs font-medium ${
-              connectionStatus === 'Connected' ? 'bg-green-100 text-green-800' : 
-              'bg-red-100 text-red-800'
-            }`}>
-              {connectionStatus}
-            </div>
-          </div>
         </div>
-        
-        <div className="flex items-center space-x-2">
-          <span className="text-sm text-gray-600">Timeframe:</span>
-          <div className="flex bg-gray-100 rounded-lg p-1">
-            {timeframes.map((tf) => (
-              <button
-                key={tf.value}
-                onClick={() => handleTimeframeChange(tf.value)}
-                className={`px-3 py-1 text-sm font-medium rounded transition-colors ${
-                  currentTimeframe === tf.value
-                    ? 'bg-blue-500 text-white'
-                    : 'text-gray-600 hover:text-gray-900'
-                }`}
-              >
-                {tf.label}
-              </button>
-            ))}
-          </div>
+
+        {/* Timeframe Buttons */}
+        <div className="flex flex-wrap gap-2 mt-4">
+          {timeframes.map((tf) => (
+            <button
+              key={tf.value}
+              onClick={() => handleTimeframeChange(tf.value)}
+              className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                currentTimeframe === tf.value
+                  ? 'bg-blue-500 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              {tf.label}
+            </button>
+          ))}
         </div>
+
+        {/* Error Display */}
+        {error && (
+          <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded-md">
+            <p className="text-sm text-red-700">{error}</p>
+          </div>
+        )}
       </div>
 
-      {error && (
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
-          Error loading chart data: {error}
-        </div>
-      )}
-
-      {isLoading && (
-        <div className="flex justify-center items-center h-96">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
-          <span className="ml-2 text-gray-600">Loading {symbol} data...</span>
-        </div>
-      )}
-
-      <div
-        ref={chartContainerRef}
-        className={`w-full ${isLoading ? 'hidden' : 'block'}`}
-        style={{ height: '600px' }}
-      />
-      
-      <div className="mt-4 flex justify-between text-sm text-gray-600">
-        <div>
-          Data: 12 months • Timeframe: {timeframes.find(tf => tf.value === currentTimeframe)?.label}
-        </div>
-        <div>
-          Bars: {chartData.length} • Source: Interactive Brokers
-        </div>
+      {/* Chart Container */}
+      <div className="flex-1 relative">
+        {isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-75 z-10">
+            <div className="flex items-center gap-2">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
+              <span className="text-gray-600">Loading {currentSymbol} data...</span>
+            </div>
+          </div>
+        )}
+        <div ref={chartContainerRef} className="w-full h-full" />
       </div>
     </div>
   );
