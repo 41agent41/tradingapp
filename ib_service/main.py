@@ -197,23 +197,55 @@ async def disconnect():
 
 @app.get("/account")
 async def get_account_info():
-    """Get account information"""
+    """Get detailed account information"""
     if not ib_client or not ib_client.isConnected():
         raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")
     
     try:
-        # Request account information
-        account_values = await ib_client.reqAccountUpdates(True)
-        
-        # Wait a bit for data to arrive
-        await asyncio.sleep(1)
-        
-        # Get account summary
+        # Get managed accounts
         accounts = ib_client.managedAccounts()
+        if not accounts:
+            raise HTTPException(status_code=404, detail="No accounts found")
+        
+        # Use the first account (or primary account)
+        account = accounts[0]
+        
+        # Request account summary with specific tags
+        account_summary = await ib_client.reqAccountSummaryAsync(
+            reqId=9001,
+            groupName="All",
+            tags="AccountType,NetLiquidation,TotalCashValue,SettledCash,AccruedCash,BuyingPower,ExcessLiquidity,Cushion,LookAheadNextChange,DayTradesRemaining"
+        )
+        
+        # Get account values for additional details
+        account_values = ib_client.accountValues()
+        
+        # Parse account summary into a more usable format
+        summary_dict = {}
+        for item in account_summary:
+            summary_dict[item.tag] = {
+                "value": item.value,
+                "currency": item.currency
+            }
+        
+        # Extract key account information
+        account_info = {
+            "account_number": account,
+            "account_type": summary_dict.get("AccountType", {}).get("value", "Unknown"),
+            "net_liquidation": float(summary_dict.get("NetLiquidation", {}).get("value", "0")),
+            "total_cash": float(summary_dict.get("TotalCashValue", {}).get("value", "0")),
+            "settled_cash": float(summary_dict.get("SettledCash", {}).get("value", "0")),
+            "buying_power": float(summary_dict.get("BuyingPower", {}).get("value", "0")),
+            "excess_liquidity": float(summary_dict.get("ExcessLiquidity", {}).get("value", "0")),
+            "day_trades_remaining": int(summary_dict.get("DayTradesRemaining", {}).get("value", "0")),
+            "currency": summary_dict.get("NetLiquidation", {}).get("currency", "USD"),
+            "last_updated": asyncio.get_event_loop().time()
+        }
         
         return {
-            "accounts": accounts,
-            "account_values": [str(av) for av in account_values] if account_values else []
+            "status": "success",
+            "account_info": account_info,
+            "raw_summary": summary_dict
         }
         
     except Exception as e:
@@ -231,14 +263,26 @@ async def get_positions():
         
         position_list = []
         for position in positions:
+            contract = position.contract
             position_list.append({
-                "contract": str(position.contract),
+                "symbol": contract.symbol if hasattr(contract, 'symbol') else 'Unknown',
+                "secType": contract.secType if hasattr(contract, 'secType') else 'Unknown',
+                "exchange": contract.exchange if hasattr(contract, 'exchange') else 'Unknown',
+                "currency": contract.currency if hasattr(contract, 'currency') else 'USD',
                 "account": position.account,
-                "position": position.position,
-                "avgCost": position.avgCost
+                "position": float(position.position),
+                "avgCost": float(position.avgCost),
+                "marketPrice": float(getattr(position, 'marketPrice', 0)),
+                "marketValue": float(getattr(position, 'marketValue', 0)),
+                "unrealizedPNL": float(getattr(position, 'unrealizedPNL', 0)),
+                "realizedPNL": float(getattr(position, 'realizedPNL', 0))
             })
         
-        return {"positions": position_list}
+        return {
+            "status": "success",
+            "positions": position_list,
+            "total_positions": len(position_list)
+        }
         
     except Exception as e:
         logger.error(f"Error getting positions: {str(e)}")
@@ -255,14 +299,34 @@ async def get_orders():
         
         order_list = []
         for trade in trades:
+            contract = trade.contract
+            order = trade.order
+            order_state = trade.orderState
+            
             order_list.append({
-                "order": str(trade.order),
-                "contract": str(trade.contract),
-                "orderState": str(trade.orderState),
-                "status": trade.orderState.status
+                "orderId": order.orderId if hasattr(order, 'orderId') else 0,
+                "symbol": contract.symbol if hasattr(contract, 'symbol') else 'Unknown',
+                "secType": contract.secType if hasattr(contract, 'secType') else 'Unknown',
+                "action": order.action if hasattr(order, 'action') else 'Unknown',
+                "orderType": order.orderType if hasattr(order, 'orderType') else 'Unknown',
+                "totalQuantity": float(order.totalQuantity) if hasattr(order, 'totalQuantity') else 0,
+                "lmtPrice": float(order.lmtPrice) if hasattr(order, 'lmtPrice') and order.lmtPrice else 0,
+                "auxPrice": float(order.auxPrice) if hasattr(order, 'auxPrice') and order.auxPrice else 0,
+                "status": order_state.status if hasattr(order_state, 'status') else 'Unknown',
+                "filled": float(getattr(order_state, 'filled', 0)),
+                "remaining": float(getattr(order_state, 'remaining', 0)),
+                "avgFillPrice": float(getattr(order_state, 'avgFillPrice', 0)),
+                "permId": getattr(order_state, 'permId', 0),
+                "parentId": getattr(order_state, 'parentId', 0),
+                "lastFillPrice": float(getattr(order_state, 'lastFillPrice', 0)),
+                "commission": float(getattr(order_state, 'commission', 0))
             })
         
-        return {"orders": order_list}
+        return {
+            "status": "success", 
+            "orders": order_list,
+            "total_orders": len(order_list)
+        }
         
     except Exception as e:
         logger.error(f"Error getting orders: {str(e)}")
