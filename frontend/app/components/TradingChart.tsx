@@ -87,10 +87,7 @@ export default function TradingChart({ symbol, onTimeframeChange }: TradingChart
         type: 'volume',
       },
       priceScaleId: '',
-      scaleMargins: {
-        top: 0.8,
-        bottom: 0,
-      },
+      visible: true,
     });
 
     // Handle resize
