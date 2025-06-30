@@ -38,9 +38,16 @@ async def connect_to_ib():
     global ib_client, connection_status
     
     try:
+        # Disconnect existing client if any
+        if ib_client and ib_client.isConnected():
+            logger.info("Disconnecting existing IB client before reconnecting")
+            await ib_client.disconnect()
+        
         logger.info(f"Connecting to IB Gateway at {connection_status['host']}:{connection_status['port']}")
         
         ib_client = IB()
+        
+        # Use util.startLoop() to handle event loop properly in async context
         await ib_client.connect(
             host=connection_status['host'],
             port=connection_status['port'],
@@ -59,6 +66,8 @@ async def connect_to_ib():
         logger.error(error_msg)
         connection_status["connected"] = False
         connection_status["last_error"] = error_msg
+        if ib_client:
+            ib_client = None
         return False
 
 async def disconnect_from_ib():
@@ -83,20 +92,27 @@ async def disconnect_from_ib():
 async def check_ib_gateway_health():
     """Check if IB Gateway is reachable and responding"""
     try:
-        # Use the existing connection if available
+        # First check if we have an existing connection
         if ib_client and ib_client.isConnected():
+            logger.info("IB Gateway health check: Using existing connection")
             return True
         
-        # Try to connect with the same client ID as main connection
-        test_client = IB()
-        await test_client.connect(
-            host=connection_status['host'],
-            port=connection_status['port'],
-            clientId=connection_status['client_id'],  # Use same client ID
-            timeout=5
-        )
-        await test_client.disconnect()
-        return True
+        # For health check, try a simple socket connection test
+        import socket
+        
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)  # 5 second timeout
+        
+        result = sock.connect_ex((connection_status['host'], connection_status['port']))
+        sock.close()
+        
+        if result == 0:
+            logger.info("IB Gateway health check: Port is reachable")
+            return True
+        else:
+            logger.warning(f"IB Gateway health check: Port not reachable (result: {result})")
+            return False
+            
     except Exception as e:
         logger.warning(f"IB Gateway health check failed: {str(e)}")
         return False
