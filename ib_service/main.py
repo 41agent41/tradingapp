@@ -2,8 +2,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 import logging
-from typing import Dict, Any, Optional
-from ib_async import IB, Contract, Stock, Order, MarketOrder
+from typing import Dict, Any, Optional, List
+from ib_async import IB, Contract, Stock, Order, MarketOrder, util
+from datetime import datetime, timedelta
+import pandas as pd
 import os
 
 # Configure logging
@@ -145,9 +147,216 @@ async def root():
             "gateway_health": "/gateway-health",
             "account": "/account",
             "positions": "/positions",
-            "orders": "/orders"
+            "orders": "/orders",
+            "market_data_history": "/market-data/history",
+            "market_data_realtime": "/market-data/realtime",
+            "market_data_subscribe": "/market-data/subscribe",
+            "market_data_unsubscribe": "/market-data/unsubscribe"
         }
     }
+
+# Market Data Endpoints
+
+@app.get("/market-data/history")
+async def get_historical_data(symbol: str, timeframe: str, period: str = "12M"):
+    """Get historical market data for a symbol"""
+    if not ib_client or not ib_client.isConnected():
+        raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")
+    
+    try:
+        # Validate symbol (for now, only support MSFT)
+        if symbol.upper() != 'MSFT':
+            raise HTTPException(status_code=400, detail=f"Only MSFT symbol is currently supported, got: {symbol}")
+        
+        # Create contract for MSFT stock
+        contract = Stock('MSFT', 'SMART', 'USD')
+        
+        # Map timeframe to IB bar sizes
+        timeframe_map = {
+            '5min': '5 mins',
+            '15min': '15 mins', 
+            '30min': '30 mins',
+            '1hour': '1 hour',
+            '4hour': '4 hours',
+            '8hour': '8 hours',
+            '1day': '1 day'
+        }
+        
+        if timeframe not in timeframe_map:
+            raise HTTPException(status_code=400, detail=f"Invalid timeframe: {timeframe}. Valid options: {list(timeframe_map.keys())}")
+        
+        bar_size = timeframe_map[timeframe]
+        
+        # Map period to duration string
+        duration_map = {
+            '12M': '1 Y',  # 12 months = 1 year
+            '6M': '6 M',
+            '3M': '3 M',
+            '1M': '1 M',
+            '1W': '1 W',
+            '1D': '1 D'
+        }
+        
+        duration = duration_map.get(period, '1 Y')
+        
+        logger.info(f"Requesting historical data for {symbol}: duration={duration}, barSize={bar_size}")
+        
+        # Request historical data from IB
+        bars = await ib_client.reqHistoricalDataAsync(
+            contract,
+            endDateTime='',  # Use current time
+            durationStr=duration,
+            barSizeSetting=bar_size,
+            whatToShow='TRADES',
+            useRTH=True,  # Regular trading hours only
+            formatDate=1  # Use epoch time
+        )
+        
+        if not bars:
+            return {
+                "symbol": symbol.upper(),
+                "timeframe": timeframe,
+                "period": period,
+                "bars": [],
+                "count": 0,
+                "message": "No historical data available"
+            }
+        
+        # Convert bars to TradingView format
+        formatted_bars = []
+        for bar in bars:
+            # Convert IB bar to timestamp (seconds since epoch)
+            if hasattr(bar, 'date'):
+                if isinstance(bar.date, datetime):
+                    timestamp = int(bar.date.timestamp())
+                else:
+                    # If it's already a timestamp
+                    timestamp = int(bar.date)
+            else:
+                continue
+                
+            formatted_bars.append({
+                "time": timestamp,
+                "open": float(bar.open),
+                "high": float(bar.high),
+                "low": float(bar.low),
+                "close": float(bar.close),
+                "volume": int(bar.volume) if hasattr(bar, 'volume') else 0
+            })
+        
+        logger.info(f"Retrieved {len(formatted_bars)} bars for {symbol}")
+        
+        return {
+            "symbol": symbol.upper(),
+            "timeframe": timeframe,
+            "period": period,
+            "bars": formatted_bars,
+            "count": len(formatted_bars),
+            "duration": duration,
+            "bar_size": bar_size
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting historical data for {symbol}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error getting historical data: {str(e)}")
+
+@app.get("/market-data/realtime")
+async def get_realtime_data(symbol: str):
+    """Get real-time market data for a symbol"""
+    if not ib_client or not ib_client.isConnected():
+        raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")
+    
+    try:
+        # Validate symbol (for now, only support MSFT)
+        if symbol.upper() != 'MSFT':
+            raise HTTPException(status_code=400, detail=f"Only MSFT symbol is currently supported, got: {symbol}")
+        
+        # Create contract for MSFT stock
+        contract = Stock('MSFT', 'SMART', 'USD')
+        
+        # Request market data
+        ticker = ib_client.reqMktData(contract)
+        
+        # Wait briefly for data to arrive
+        await asyncio.sleep(0.5)
+        
+        # Get the latest tick data
+        return {
+            "symbol": symbol.upper(),
+            "bid": float(ticker.bid) if ticker.bid and ticker.bid > 0 else None,
+            "ask": float(ticker.ask) if ticker.ask and ticker.ask > 0 else None,
+            "last": float(ticker.last) if ticker.last and ticker.last > 0 else None,
+            "close": float(ticker.close) if ticker.close and ticker.close > 0 else None,
+            "volume": int(ticker.volume) if ticker.volume else None,
+            "timestamp": datetime.now().isoformat(),
+            "market_data_type": getattr(ticker, 'marketDataType', 'Unknown')
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting real-time data for {symbol}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error getting real-time data: {str(e)}")
+
+@app.post("/market-data/subscribe")
+async def subscribe_market_data(request: Dict[str, Any]):
+    """Subscribe to real-time market data"""
+    if not ib_client or not ib_client.isConnected():
+        raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")
+    
+    try:
+        symbol = request.get('symbol', '').upper()
+        timeframe = request.get('timeframe', 'tick')
+        
+        if not symbol:
+            raise HTTPException(status_code=400, detail="Symbol is required")
+        
+        # Validate symbol (for now, only support MSFT)
+        if symbol != 'MSFT':
+            raise HTTPException(status_code=400, detail=f"Only MSFT symbol is currently supported, got: {symbol}")
+        
+        # Create contract
+        contract = Stock(symbol, 'SMART', 'USD')
+        
+        # Subscribe to market data
+        ticker = ib_client.reqMktData(contract)
+        
+        return {
+            "status": "subscribed",
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "message": f"Subscribed to real-time data for {symbol}"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error subscribing to market data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error subscribing to market data: {str(e)}")
+
+@app.post("/market-data/unsubscribe")
+async def unsubscribe_market_data(request: Dict[str, Any]):
+    """Unsubscribe from real-time market data"""
+    if not ib_client or not ib_client.isConnected():
+        raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")
+    
+    try:
+        symbol = request.get('symbol', '').upper()
+        
+        if not symbol:
+            raise HTTPException(status_code=400, detail="Symbol is required")
+        
+        # Create contract
+        contract = Stock(symbol, 'SMART', 'USD')
+        
+        # Cancel market data subscription
+        ib_client.cancelMktData(contract)
+        
+        return {
+            "status": "unsubscribed",
+            "symbol": symbol,
+            "message": f"Unsubscribed from real-time data for {symbol}"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error unsubscribing from market data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error unsubscribing from market data: {str(e)}")
 
 @app.get("/health")
 async def health():

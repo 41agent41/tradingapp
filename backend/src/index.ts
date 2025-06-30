@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import settingsRouter from './routes/settings';
+import marketDataRouter from './routes/marketData';
 import bodyParser from 'body-parser';
 import cors from 'cors';
 import axios from 'axios';
@@ -36,6 +37,42 @@ io.on('connection', (socket) => {
     console.log('Client disconnected:', socket.id);
   });
   
+  // Handle market data subscription
+  socket.on('subscribe-market-data', async (data) => {
+    const { symbol, timeframe } = data;
+    console.log(`Client ${socket.id} subscribing to ${symbol} - ${timeframe}`);
+    
+    try {
+      // Subscribe to market data via IB service
+      await axios.post(`${IB_SERVICE_URL}/market-data/subscribe`, {
+        symbol: symbol.toUpperCase(),
+        timeframe: timeframe || 'tick'
+      });
+      
+      socket.emit('subscription-confirmed', { symbol, timeframe });
+    } catch (error) {
+      console.error('Error subscribing to market data:', error);
+      socket.emit('subscription-error', { symbol, timeframe, error: 'Failed to subscribe' });
+    }
+  });
+  
+  // Handle market data unsubscription
+  socket.on('unsubscribe-market-data', async (data) => {
+    const { symbol } = data;
+    console.log(`Client ${socket.id} unsubscribing from ${symbol}`);
+    
+    try {
+      await axios.post(`${IB_SERVICE_URL}/market-data/unsubscribe`, {
+        symbol: symbol.toUpperCase()
+      });
+      
+      socket.emit('unsubscription-confirmed', { symbol });
+    } catch (error) {
+      console.error('Error unsubscribing from market data:', error);
+      socket.emit('unsubscription-error', { symbol, error: 'Failed to unsubscribe' });
+    }
+  });
+  
   // Send initial data when client connects
   fetchAndEmitAccountData();
 });
@@ -66,8 +103,28 @@ async function fetchAndEmitAccountData() {
   }
 }
 
-// Set up periodic data updates (every 5 seconds)
+// Function to fetch and emit real-time market data
+async function fetchAndEmitMarketData() {
+  try {
+    // For now, focus on MSFT real-time data
+    const response = await axios.get(`${IB_SERVICE_URL}/market-data/realtime?symbol=MSFT`).catch(err => ({ data: { error: err.message } }));
+    
+    if (response.data && !response.data.error) {
+      // Emit real-time market data to all connected clients
+      io.emit('market-data-update', {
+        symbol: 'MSFT',
+        data: response.data,
+        timestamp: new Date().toISOString()
+      });
+    }
+  } catch (error) {
+    console.error('Error fetching real-time market data:', error);
+  }
+}
+
+// Set up periodic data updates
 setInterval(fetchAndEmitAccountData, 5000);
+setInterval(fetchAndEmitMarketData, 1000); // Real-time data every second
 
 // Root route with API information
 app.get('/', (_req: Request, res: Response) => {
@@ -187,6 +244,7 @@ app.post('/api/ib-connect', async (_req: Request, res: Response) => {
 });
 
 app.use('/api/settings', settingsRouter);
+app.use('/api/market-data', marketDataRouter);
 
 app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok' }));
 

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
+import TradingChart from './components/TradingChart';
 
 interface AccountInfo {
   account_number: string;
@@ -173,6 +174,14 @@ export default function HomePage() {
             Error: {accountData.error}
           </div>
         )}
+
+        {/* Trading Chart */}
+        <div className="mb-6">
+          <TradingChart 
+            symbol="MSFT" 
+            onTimeframeChange={(timeframe) => console.log('Timeframe changed:', timeframe)}
+          />
+        </div>
 
         {/* Debug Panel */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">

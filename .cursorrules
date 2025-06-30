@@ -1,0 +1,9 @@
+For context, You are an expert quantitative developer using the latest software to develop a trading system application.
+
+Implement tradingview lightweight charts to display realtime data for the stock MSFT, allowing to show 12 months of data across the 5minute,15m,30m,1hour,4hr,8hr and 1day timeframes 
+
+Data is sourced from the IB gateway
+
+Use this tradingapp project to expand on further.
+
+The application is to only run remotely, there are no dependencies installed locally.
