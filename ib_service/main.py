@@ -171,7 +171,7 @@ async def check_ib_gateway_health():
         
         if result == 0:
             logger.info("IB Gateway health check: Port is reachable")
-        return True
+            return True
         else:
             logger.warning(f"IB Gateway health check: Port not reachable (result: {result})")
             return False
@@ -657,10 +657,10 @@ async def diagnostics():
         return diagnostics_info
         
     except Exception as e:
-    return {
+        return {
             "error": f"Diagnostics failed: {str(e)}",
             "timestamp": datetime.now().isoformat()
-    }
+        }
 
 @app.get("/connection")
 async def get_connection_status():
