@@ -46,10 +46,7 @@ def connect_to_ib_sync():
         
         logger.info(f"Connecting to IB Gateway at {connection_status['host']}:{connection_status['port']}")
         
-        # Start IB event loop in current thread if not already running
-        if not util.isRunning():
-            util.startLoop()
-        
+        # Create IB client - let it handle its own event loop
         ib_client = IB()
         ib_client.connect(
             host=connection_status['host'],
