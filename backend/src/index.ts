@@ -95,9 +95,16 @@ app.get('/api/account', async (_req: Request, res: Response) => {
   try {
     const response = await axios.get(`${IB_SERVICE_URL}/account`);
     res.json(response.data);
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching account data:', error);
-    res.status(500).json({ error: 'Failed to fetch account data' });
+    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
+    const statusCode = error.response?.status || 500;
+    res.status(statusCode).json({ 
+      error: 'Failed to fetch account data',
+      detail: errorMessage,
+      ib_service_status: statusCode,
+      ib_service_url: `${IB_SERVICE_URL}/account`
+    });
   }
 });
 
@@ -105,9 +112,15 @@ app.get('/api/positions', async (_req: Request, res: Response) => {
   try {
     const response = await axios.get(`${IB_SERVICE_URL}/positions`);
     res.json(response.data);
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching positions data:', error);
-    res.status(500).json({ error: 'Failed to fetch positions data' });
+    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
+    const statusCode = error.response?.status || 500;
+    res.status(statusCode).json({ 
+      error: 'Failed to fetch positions data',
+      detail: errorMessage,
+      ib_service_status: statusCode
+    });
   }
 });
 
@@ -115,9 +128,61 @@ app.get('/api/orders', async (_req: Request, res: Response) => {
   try {
     const response = await axios.get(`${IB_SERVICE_URL}/orders`);
     res.json(response.data);
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching orders data:', error);
-    res.status(500).json({ error: 'Failed to fetch orders data' });
+    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
+    const statusCode = error.response?.status || 500;
+    res.status(statusCode).json({ 
+      error: 'Failed to fetch orders data',
+      detail: errorMessage,
+      ib_service_status: statusCode
+    });
+  }
+});
+
+// Add debug endpoints to check IB service status
+app.get('/api/ib-status', async (_req: Request, res: Response) => {
+  try {
+    const response = await axios.get(`${IB_SERVICE_URL}/health`);
+    res.json({
+      ib_service_reachable: true,
+      ib_service_health: response.data
+    });
+  } catch (error: any) {
+    console.error('Error checking IB service health:', error);
+    res.status(500).json({
+      ib_service_reachable: false,
+      error: error.message,
+      ib_service_url: `${IB_SERVICE_URL}/health`
+    });
+  }
+});
+
+app.get('/api/ib-connection', async (_req: Request, res: Response) => {
+  try {
+    const response = await axios.get(`${IB_SERVICE_URL}/connection`);
+    res.json(response.data);
+  } catch (error: any) {
+    console.error('Error checking IB connection status:', error);
+    res.status(500).json({
+      error: 'Failed to check IB connection',
+      detail: error.message
+    });
+  }
+});
+
+app.post('/api/ib-connect', async (_req: Request, res: Response) => {
+  try {
+    const response = await axios.post(`${IB_SERVICE_URL}/connect`);
+    res.json(response.data);
+  } catch (error: any) {
+    console.error('Error connecting to IB Gateway:', error);
+    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
+    const statusCode = error.response?.status || 500;
+    res.status(statusCode).json({
+      error: 'Failed to connect to IB Gateway',
+      detail: errorMessage
+    });
   }
 });
 

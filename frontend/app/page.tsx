@@ -72,9 +72,13 @@ export default function HomePage() {
   const [accountData, setAccountData] = useState<AccountData>({});
   const [connectionStatus, setConnectionStatus] = useState('Connecting...');
   const [socket, setSocket] = useState<Socket | null>(null);
+  const [ibStatus, setIbStatus] = useState<any>(null);
+  const [showDebug, setShowDebug] = useState(false);
 
   useEffect(() => {
-    const newSocket = io('http://localhost:4000');
+    // Use the backend URL from environment or default to localhost
+    const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+    const newSocket = io(backendUrl);
     setSocket(newSocket);
 
     newSocket.on('connect', () => {
@@ -111,6 +115,30 @@ export default function HomePage() {
     }).format(num);
   };
 
+  const checkIBStatus = async () => {
+    try {
+      const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+      const response = await fetch(`${backendUrl}/api/ib-status`);
+      const data = await response.json();
+      setIbStatus(data);
+    } catch (error) {
+      setIbStatus({ error: 'Failed to check IB status' });
+    }
+  };
+
+  const connectToIB = async () => {
+    try {
+      const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+      const response = await fetch(`${backendUrl}/api/ib-connect`, { method: 'POST' });
+      const data = await response.json();
+      setIbStatus(data);
+      // Refresh status after attempting connection
+      setTimeout(checkIBStatus, 1000);
+    } catch (error) {
+      setIbStatus({ error: 'Failed to connect to IB' });
+    }
+  };
+
   return (
     <main className="min-h-screen bg-gray-100 p-6">
       <div className="max-w-7xl mx-auto">
@@ -138,6 +166,63 @@ export default function HomePage() {
             Error: {accountData.error}
           </div>
         )}
+
+        {/* Debug Panel */}
+        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-bold text-gray-900">Connection Debug</h2>
+            <button
+              onClick={() => setShowDebug(!showDebug)}
+              className="bg-gray-500 hover:bg-gray-700 text-white font-bold py-1 px-3 rounded text-sm"
+            >
+              {showDebug ? 'Hide' : 'Show'} Debug
+            </button>
+          </div>
+          
+          {showDebug && (
+            <div className="space-y-4">
+              <div className="flex space-x-2">
+                <button
+                  onClick={checkIBStatus}
+                  className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+                >
+                  Check IB Status
+                </button>
+                <button
+                  onClick={connectToIB}
+                  className="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded"
+                >
+                  Connect to IB Gateway
+                </button>
+              </div>
+              
+              {ibStatus && (
+                <div className="bg-gray-50 p-4 rounded-lg">
+                  <h3 className="font-semibold mb-2">IB Service Status:</h3>
+                  <pre className="text-sm overflow-auto">{JSON.stringify(ibStatus, null, 2)}</pre>
+                </div>
+              )}
+              
+              {accountData.account?.error && (
+                <div className="bg-red-50 p-4 rounded-lg">
+                  <h3 className="font-semibold mb-2 text-red-800">Account Data Error Details:</h3>
+                  <div className="text-sm text-red-700">
+                    {typeof accountData.account === 'object' && 'detail' in accountData.account ? (
+                      <div>
+                        <p><strong>Error:</strong> {accountData.account.error}</p>
+                        <p><strong>Detail:</strong> {(accountData.account as any).detail}</p>
+                        <p><strong>Status:</strong> {(accountData.account as any).ib_service_status}</p>
+                        <p><strong>URL:</strong> {(accountData.account as any).ib_service_url}</p>
+                      </div>
+                    ) : (
+                      <p>{accountData.account.error}</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Account Information */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
