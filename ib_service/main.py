@@ -250,6 +250,14 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "12M"):
         # Create contract for MSFT stock
         contract = Stock('MSFT', 'SMART', 'USD')
         
+        # Qualify the contract to populate conId
+        qualified_contracts = ib_client.qualifyContracts(contract)
+        if not qualified_contracts:
+            raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}")
+        
+        # Use the first qualified contract
+        qualified_contract = qualified_contracts[0]
+        
         # Map timeframe to IB bar sizes
         timeframe_map = {
             '5min': '5 mins',
@@ -278,11 +286,11 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "12M"):
         
         duration = duration_map.get(period, '1 Y')
         
-        logger.info(f"Requesting historical data for {symbol}: duration={duration}, barSize={bar_size}")
+        logger.info(f"Requesting historical data for {symbol}: duration={duration}, barSize={bar_size}, contractId={qualified_contract.conId}")
         
         # Request historical data from IB
         bars = await ib_client.reqHistoricalDataAsync(
-            contract,
+            qualified_contract,
             endDateTime='',  # Use current time
             durationStr=duration,
             barSizeSetting=bar_size,
@@ -298,6 +306,7 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "12M"):
                 "period": period,
                 "bars": [],
                 "count": 0,
+                "contract_id": qualified_contract.conId,
                 "message": "No historical data available"
             }
         
@@ -332,7 +341,8 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "12M"):
             "bars": formatted_bars,
             "count": len(formatted_bars),
             "duration": duration,
-            "bar_size": bar_size
+            "bar_size": bar_size,
+            "contract_id": qualified_contract.conId
         }
         
     except Exception as e:
@@ -353,8 +363,16 @@ async def get_realtime_data(symbol: str):
         # Create contract for MSFT stock
         contract = Stock('MSFT', 'SMART', 'USD')
         
+        # Qualify the contract to populate conId
+        qualified_contracts = ib_client.qualifyContracts(contract)
+        if not qualified_contracts:
+            raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}")
+        
+        # Use the first qualified contract
+        qualified_contract = qualified_contracts[0]
+        
         # Request market data
-        ticker = ib_client.reqMktData(contract)
+        ticker = ib_client.reqMktData(qualified_contract)
         
         # Wait briefly for data to arrive
         await asyncio.sleep(0.5)
@@ -368,7 +386,8 @@ async def get_realtime_data(symbol: str):
             "close": float(ticker.close) if ticker.close and ticker.close > 0 else None,
             "volume": int(ticker.volume) if ticker.volume else None,
             "timestamp": datetime.now().isoformat(),
-            "market_data_type": getattr(ticker, 'marketDataType', 'Unknown')
+            "market_data_type": getattr(ticker, 'marketDataType', 'Unknown'),
+            "contract_id": qualified_contract.conId
         }
         
     except Exception as e:
@@ -392,16 +411,22 @@ async def subscribe_market_data(request: Dict[str, Any]):
         if symbol != 'MSFT':
             raise HTTPException(status_code=400, detail=f"Only MSFT symbol is currently supported, got: {symbol}")
         
-        # Create contract
+        # Create and qualify contract
         contract = Stock(symbol, 'SMART', 'USD')
+        qualified_contracts = ib_client.qualifyContracts(contract)
+        if not qualified_contracts:
+            raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}")
+        
+        qualified_contract = qualified_contracts[0]
         
         # Subscribe to market data
-        ticker = ib_client.reqMktData(contract)
+        ticker = ib_client.reqMktData(qualified_contract)
         
         return {
             "status": "subscribed",
             "symbol": symbol,
             "timeframe": timeframe,
+            "contract_id": qualified_contract.conId,
             "message": f"Subscribed to real-time data for {symbol}"
         }
         
@@ -421,15 +446,21 @@ async def unsubscribe_market_data(request: Dict[str, Any]):
         if not symbol:
             raise HTTPException(status_code=400, detail="Symbol is required")
         
-        # Create contract
+        # Create and qualify contract
         contract = Stock(symbol, 'SMART', 'USD')
+        qualified_contracts = ib_client.qualifyContracts(contract)
+        if not qualified_contracts:
+            raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}")
+        
+        qualified_contract = qualified_contracts[0]
         
         # Cancel market data subscription
-        ib_client.cancelMktData(contract)
+        ib_client.cancelMktData(qualified_contract)
         
         return {
             "status": "unsubscribed",
             "symbol": symbol,
+            "contract_id": qualified_contract.conId,
             "message": f"Unsubscribed from real-time data for {symbol}"
         }
         
@@ -616,9 +647,8 @@ async def get_account_info():
         # Use the first account (or primary account)
         account = accounts[0]
         
-        # Request account summary with specific tags
+        # Request account summary with specific tags (removed reqId parameter)
         account_summary = await ib_client.reqAccountSummaryAsync(
-            reqId=9001,
             groupName="All",
             tags="AccountType,NetLiquidation,TotalCashValue,SettledCash,AccruedCash,BuyingPower,ExcessLiquidity,Cushion,LookAheadNextChange,DayTradesRemaining"
         )
@@ -645,7 +675,7 @@ async def get_account_info():
             "excess_liquidity": float(summary_dict.get("ExcessLiquidity", {}).get("value", "0")),
             "day_trades_remaining": int(summary_dict.get("DayTradesRemaining", {}).get("value", "0")),
             "currency": summary_dict.get("NetLiquidation", {}).get("currency", "USD"),
-            "last_updated": asyncio.get_event_loop().time()
+            "last_updated": datetime.now().isoformat()
         }
         
         return {
