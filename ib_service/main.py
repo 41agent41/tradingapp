@@ -450,15 +450,79 @@ async def health():
 
 @app.get("/gateway-health")
 async def gateway_health():
-    """Check IB Gateway connectivity"""
-    gateway_reachable = await check_ib_gateway_health()
-    return {
-        "gateway_reachable": gateway_reachable,
-        "gateway_host": connection_status["host"],
-        "gateway_port": connection_status["port"],
-        "service_connected": connection_status["connected"],
-        "last_error": connection_status["last_error"]
-    }
+    """Enhanced health check for IB Gateway with detailed diagnostics"""
+    health_status = await check_ib_gateway_health()
+    return {"healthy": health_status, "timestamp": datetime.now().isoformat()}
+
+@app.get("/diagnostics")
+async def diagnostics():
+    """Comprehensive diagnostic information for IB Gateway connection issues"""
+    try:
+        # Basic connectivity test
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        tcp_result = sock.connect_ex((connection_status['host'], connection_status['port']))
+        sock.close()
+        
+        # Gather diagnostic info
+        diagnostics_info = {
+            "timestamp": datetime.now().isoformat(),
+            "connection_status": connection_status.copy(),
+            "tcp_connectivity": {
+                "host": connection_status['host'],
+                "port": connection_status['port'],
+                "reachable": tcp_result == 0,
+                "result_code": tcp_result
+            },
+            "ib_client_status": {
+                "exists": ib_client is not None,
+                "connected": ib_client.isConnected() if ib_client else False,
+                "client_id": connection_status.get('client_id', 'Unknown')
+            },
+            "troubleshooting_guide": {
+                "tcp_success_api_failure": tcp_result == 0 and not connection_status["connected"],
+                "likely_causes": [
+                    "IB Gateway API connections are disabled",
+                    "IB Gateway requires login/authentication", 
+                    "Market data permissions not configured",
+                    "Gateway in wrong mode (paper vs live)",
+                    "Client ID conflicts with other applications"
+                ],
+                "ib_gateway_checklist": [
+                    "1. Open IB Gateway and log in with credentials",
+                    "2. Go to Configure > Settings > API > Settings",
+                    "3. Enable 'Enable ActiveX and Socket Clients'",
+                    "4. Set Socket Port to 4002",
+                    "5. Add trusted IP addresses (including Docker network IPs)",
+                    "6. Ensure 'Read-Only API' is unchecked if you need trading",
+                    "7. Check market data subscriptions for MSFT",
+                    "8. Verify paper trading vs live account settings"
+                ]
+            }
+        }
+        
+        # Add specific diagnosis based on current state
+        if tcp_result == 0 and not connection_status["connected"]:
+            diagnostics_info["diagnosis"] = "TCP_SUCCESS_API_FAILURE"
+            diagnostics_info["recommendation"] = "IB Gateway is reachable but API handshake fails. Check IB Gateway API settings and authentication."
+        elif tcp_result != 0:
+            diagnostics_info["diagnosis"] = "TCP_FAILURE"
+            diagnostics_info["recommendation"] = "Cannot reach IB Gateway. Check host/port and network connectivity."
+        elif connection_status["connected"]:
+            diagnostics_info["diagnosis"] = "CONNECTED"
+            diagnostics_info["recommendation"] = "Connection is working properly."
+        else:
+            diagnostics_info["diagnosis"] = "UNKNOWN"
+            diagnostics_info["recommendation"] = "Unclear state. Try manual connection via /connect endpoint."
+            
+        return diagnostics_info
+        
+    except Exception as e:
+        return {
+            "error": f"Diagnostics failed: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }
 
 @app.get("/connection")
 async def get_connection_status():
@@ -482,6 +546,60 @@ async def disconnect():
         return {"message": "Successfully disconnected from Interactive Brokers Gateway", "status": connection_status}
     else:
         raise HTTPException(status_code=500, detail=connection_status["last_error"])
+
+@app.post("/connect-with-retry")
+async def connect_with_retry(max_attempts: int = 3, delay_seconds: int = 5):
+    """Enhanced connection attempt with retry logic and detailed feedback"""
+    results = []
+    
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.info(f"Connection attempt {attempt}/{max_attempts}")
+            
+            # Attempt connection
+            success = await connect_to_ib()
+            
+            attempt_result = {
+                "attempt": attempt,
+                "timestamp": datetime.now().isoformat(),
+                "success": success,
+                "connection_status": connection_status.copy()
+            }
+            
+            if success:
+                attempt_result["message"] = "Connection successful!"
+                results.append(attempt_result)
+                return {
+                    "overall_success": True,
+                    "successful_attempt": attempt,
+                    "attempts": results,
+                    "current_status": connection_status.copy()
+                }
+            else:
+                attempt_result["message"] = f"Attempt {attempt} failed"
+                results.append(attempt_result)
+                
+                # Wait before next attempt (except on last attempt)
+                if attempt < max_attempts:
+                    logger.info(f"Waiting {delay_seconds} seconds before next attempt...")
+                    await asyncio.sleep(delay_seconds)
+                    
+        except Exception as e:
+            attempt_result = {
+                "attempt": attempt,
+                "timestamp": datetime.now().isoformat(),
+                "success": False,
+                "error": str(e),
+                "connection_status": connection_status.copy()
+            }
+            results.append(attempt_result)
+    
+    return {
+        "overall_success": False,
+        "attempts": results,
+        "current_status": connection_status.copy(),
+        "recommendation": "All connection attempts failed. Please check IB Gateway settings and diagnostics endpoint."
+    }
 
 @app.get("/account")
 async def get_account_info():
