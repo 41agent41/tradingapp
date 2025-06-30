@@ -44,10 +44,14 @@ def connect_to_ib_sync():
             logger.info("Disconnecting existing IB client before reconnecting")
             ib_client.disconnect()
         
-        logger.info(f"Connecting to IB Gateway at {connection_status['host']}:{connection_status['port']}")
+        logger.info(f"Connecting to IB Gateway at {connection_status['host']}:{connection_status['port']} with client ID {connection_status['client_id']}")
         
         # Create IB client - let it handle its own event loop
         ib_client = IB()
+        
+        # Add more detailed logging
+        logger.info("IB client created, attempting connection...")
+        
         ib_client.connect(
             host=connection_status['host'],
             port=connection_status['port'],
@@ -55,15 +59,37 @@ def connect_to_ib_sync():
             timeout=20
         )
         
-        connection_status["connected"] = True
-        connection_status["last_error"] = None
-        logger.info("Successfully connected to Interactive Brokers Gateway")
+        # Verify connection was successful
+        if ib_client.isConnected():
+            connection_status["connected"] = True
+            connection_status["last_error"] = None
+            logger.info("Successfully connected to Interactive Brokers Gateway")
+            return True
+        else:
+            error_msg = "Connection attempt completed but client reports not connected"
+            logger.error(error_msg)
+            connection_status["connected"] = False
+            connection_status["last_error"] = error_msg
+            return False
         
-        return True
-        
-    except Exception as e:
-        error_msg = f"Failed to connect to IB Gateway: {str(e)}"
+    except ConnectionRefusedError as e:
+        error_msg = f"Connection refused by IB Gateway at {connection_status['host']}:{connection_status['port']} - {str(e)}"
         logger.error(error_msg)
+        connection_status["connected"] = False
+        connection_status["last_error"] = error_msg
+        return False
+    except TimeoutError as e:
+        error_msg = f"Connection timeout to IB Gateway at {connection_status['host']}:{connection_status['port']} - {str(e)}"
+        logger.error(error_msg)
+        connection_status["connected"] = False
+        connection_status["last_error"] = error_msg
+        return False
+    except Exception as e:
+        error_msg = f"Failed to connect to IB Gateway: {type(e).__name__}: {str(e)}"
+        if not str(e):
+            error_msg = f"Failed to connect to IB Gateway: {type(e).__name__} (no error message provided)"
+        logger.error(error_msg)
+        logger.error(f"Exception details: {repr(e)}")
         connection_status["connected"] = False
         connection_status["last_error"] = error_msg
         if ib_client:
