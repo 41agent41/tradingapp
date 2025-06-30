@@ -7,6 +7,7 @@ from ib_async import IB, Contract, Stock, Order, MarketOrder, util
 from datetime import datetime, timedelta
 import pandas as pd
 import os
+import threading
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -33,22 +34,24 @@ connection_status = {
     "last_error": None
 }
 
-async def connect_to_ib():
-    """Connect to Interactive Brokers Gateway"""
+def connect_to_ib_sync():
+    """Synchronous function to connect to IB Gateway in separate thread"""
     global ib_client, connection_status
     
     try:
         # Disconnect existing client if any
         if ib_client and ib_client.isConnected():
             logger.info("Disconnecting existing IB client before reconnecting")
-            await ib_client.disconnect()
+            ib_client.disconnect()
         
         logger.info(f"Connecting to IB Gateway at {connection_status['host']}:{connection_status['port']}")
         
-        ib_client = IB()
+        # Start IB event loop in current thread if not already running
+        if not util.isRunning():
+            util.startLoop()
         
-        # Use util.startLoop() to handle event loop properly in async context
-        await ib_client.connect(
+        ib_client = IB()
+        ib_client.connect(
             host=connection_status['host'],
             port=connection_status['port'],
             clientId=connection_status['client_id'],
@@ -70,13 +73,19 @@ async def connect_to_ib():
             ib_client = None
         return False
 
-async def disconnect_from_ib():
-    """Disconnect from Interactive Brokers Gateway"""
+async def connect_to_ib():
+    """Async wrapper for IB Gateway connection"""
+    # Run the synchronous connection in a thread pool to avoid event loop conflicts
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, connect_to_ib_sync)
+
+def disconnect_from_ib_sync():
+    """Synchronous function to disconnect from IB Gateway"""
     global ib_client, connection_status
     
     try:
         if ib_client and ib_client.isConnected():
-            await ib_client.disconnect()
+            ib_client.disconnect()
             logger.info("Disconnected from Interactive Brokers Gateway")
         
         connection_status["connected"] = False
@@ -88,6 +97,11 @@ async def disconnect_from_ib():
         logger.error(error_msg)
         connection_status["last_error"] = error_msg
         return False
+
+async def disconnect_from_ib():
+    """Async wrapper for IB Gateway disconnection"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, disconnect_from_ib_sync)
 
 async def check_ib_gateway_health():
     """Check if IB Gateway is reachable and responding"""
