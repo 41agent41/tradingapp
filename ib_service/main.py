@@ -38,63 +38,89 @@ def connect_to_ib_sync():
     """Synchronous function to connect to IB Gateway in separate thread"""
     global ib_client, connection_status
     
-    try:
-        # Disconnect existing client if any
-        if ib_client and ib_client.isConnected():
-            logger.info("Disconnecting existing IB client before reconnecting")
-            ib_client.disconnect()
-        
-        logger.info(f"Connecting to IB Gateway at {connection_status['host']}:{connection_status['port']} with client ID {connection_status['client_id']}")
-        
-        # Create IB client - let it handle its own event loop
-        ib_client = IB()
-        
-        # Add more detailed logging
-        logger.info("IB client created, attempting connection...")
-        
-        ib_client.connect(
-            host=connection_status['host'],
-            port=connection_status['port'],
-            clientId=connection_status['client_id'],
-            timeout=20
-        )
-        
-        # Verify connection was successful
-        if ib_client.isConnected():
-            connection_status["connected"] = True
-            connection_status["last_error"] = None
-            logger.info("Successfully connected to Interactive Brokers Gateway")
-            return True
-        else:
-            error_msg = "Connection attempt completed but client reports not connected"
+    # List of client IDs to try (in case of conflicts)
+    client_ids_to_try = [1, 2, 3, 4, 5]
+    
+    for attempt, client_id in enumerate(client_ids_to_try, 1):
+        try:
+            # Disconnect existing client if any
+            if ib_client and ib_client.isConnected():
+                logger.info("Disconnecting existing IB client before reconnecting")
+                ib_client.disconnect()
+            
+            logger.info(f"Attempt {attempt}: Connecting to IB Gateway at {connection_status['host']}:{connection_status['port']} with client ID {client_id}")
+            
+            # Create IB client - let it handle its own event loop
+            ib_client = IB()
+            
+            # Add more detailed logging
+            logger.info("IB client created, attempting connection...")
+            
+            ib_client.connect(
+                host=connection_status['host'],
+                port=connection_status['port'],
+                clientId=client_id,
+                timeout=10  # Reduced timeout for faster retries
+            )
+            
+            # Verify connection was successful
+            if ib_client.isConnected():
+                connection_status["connected"] = True
+                connection_status["client_id"] = client_id  # Update successful client ID
+                connection_status["last_error"] = None
+                logger.info(f"Successfully connected to Interactive Brokers Gateway with client ID {client_id}")
+                return True
+            else:
+                logger.warning(f"Connection attempt {attempt} with client ID {client_id} failed - client reports not connected")
+                continue
+            
+        except ConnectionRefusedError as e:
+            error_msg = f"Connection refused by IB Gateway at {connection_status['host']}:{connection_status['port']} - {str(e)}"
             logger.error(error_msg)
             connection_status["connected"] = False
             connection_status["last_error"] = error_msg
-            return False
-        
-    except ConnectionRefusedError as e:
-        error_msg = f"Connection refused by IB Gateway at {connection_status['host']}:{connection_status['port']} - {str(e)}"
-        logger.error(error_msg)
-        connection_status["connected"] = False
-        connection_status["last_error"] = error_msg
-        return False
-    except TimeoutError as e:
-        error_msg = f"Connection timeout to IB Gateway at {connection_status['host']}:{connection_status['port']} - {str(e)}"
-        logger.error(error_msg)
-        connection_status["connected"] = False
-        connection_status["last_error"] = error_msg
-        return False
-    except Exception as e:
-        error_msg = f"Failed to connect to IB Gateway: {type(e).__name__}: {str(e)}"
-        if not str(e):
-            error_msg = f"Failed to connect to IB Gateway: {type(e).__name__} (no error message provided)"
-        logger.error(error_msg)
-        logger.error(f"Exception details: {repr(e)}")
-        connection_status["connected"] = False
-        connection_status["last_error"] = error_msg
-        if ib_client:
-            ib_client = None
-        return False
+            return False  # Don't retry on connection refused
+            
+        except TimeoutError as e:
+            if attempt == len(client_ids_to_try):
+                # Last attempt - log as error
+                error_msg = f"API handshake timeout with IB Gateway. This usually means:\n"
+                error_msg += "1. API connections are not enabled in IB Gateway settings\n"
+                error_msg += "2. IB Gateway requires authentication/login\n"
+                error_msg += f"3. All client IDs {client_ids_to_try} are in use\n"
+                error_msg += f"Original error: {str(e)}"
+                logger.error(error_msg)
+                connection_status["connected"] = False
+                connection_status["last_error"] = error_msg
+                return False
+            else:
+                # Not last attempt - just warn and try next client ID
+                logger.warning(f"Attempt {attempt} with client ID {client_id} timed out, trying next client ID...")
+                continue
+                
+        except Exception as e:
+            error_msg = f"Attempt {attempt} failed: {type(e).__name__}: {str(e)}"
+            if not str(e):
+                error_msg = f"Attempt {attempt} failed: {type(e).__name__} (no error message provided)"
+            logger.warning(error_msg)
+            
+            if attempt == len(client_ids_to_try):
+                # Last attempt
+                logger.error(f"All connection attempts failed. Exception details: {repr(e)}")
+                connection_status["connected"] = False
+                connection_status["last_error"] = error_msg
+                if ib_client:
+                    ib_client = None
+                return False
+            else:
+                continue
+    
+    # Should not reach here, but just in case
+    error_msg = f"All {len(client_ids_to_try)} connection attempts failed"
+    logger.error(error_msg)
+    connection_status["connected"] = False
+    connection_status["last_error"] = error_msg
+    return False
 
 async def connect_to_ib():
     """Async wrapper for IB Gateway connection"""
