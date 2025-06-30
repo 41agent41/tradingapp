@@ -96,7 +96,7 @@ router.get('/history', async (req: Request, res: Response) => {
       detail: errorMessage,
       ib_service_status: statusCode,
       ib_service_url: `${IB_SERVICE_URL}/market-data/history`,
-      symbol,
+      symbol: req.query.symbol,
       timeframe: req.query.timeframe,
       period: req.query.period
     });
