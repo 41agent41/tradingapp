@@ -35,9 +35,9 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
   const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
   const socket = useRef<Socket | null>(null);
   
-  const [currentSymbol, setCurrentSymbol] = useState('MSFT');
-  const [symbolInput, setSymbolInput] = useState('MSFT');
-  const [currentTimeframe, setCurrentTimeframe] = useState('1hour');
+  const [currentSymbol, setCurrentSymbol] = useState('AAPL');
+  const [symbolInput, setSymbolInput] = useState('AAPL');
+  const [currentTimeframe, setCurrentTimeframe] = useState('5min');
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -188,7 +188,7 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
     try {
       const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
       const response = await fetch(
-        `${backendUrl}/api/market-data/history?symbol=${currentSymbol}&timeframe=${currentTimeframe}&period=6M`
+        `${backendUrl}/api/market-data/history?symbol=${currentSymbol}&timeframe=${currentTimeframe}&period=90D`
       );
       
       if (!response.ok) {

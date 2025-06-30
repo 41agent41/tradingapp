@@ -294,7 +294,7 @@ async def get_account_summary_async():
     return await loop.run_in_executor(None, get_account_summary_sync)
 
 @app.get("/market-data/history")
-async def get_historical_data(symbol: str, timeframe: str, period: str = "6M"):
+async def get_historical_data(symbol: str, timeframe: str, period: str = "90D"):
     """Get historical market data for a symbol"""
     if not ib_client or not ib_client.isConnected():
         raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")
@@ -306,8 +306,8 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "6M"):
         
         symbol = symbol.upper().strip()
         
-        # Create contract for the specified stock
-        contract = Stock(symbol, 'SMART', 'USD')
+        # Create contract for the specified stock with AUD currency
+        contract = Stock(symbol, 'SMART', 'AUD')
         
         # Qualify the contract to populate conId (using thread executor)
         qualified_contract = await qualify_contract_async(contract)
@@ -332,6 +332,7 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "6M"):
         
         # Map period to duration string
         duration_map = {
+            '90D': '90 D',  # 90 days
             '12M': '1 Y',  # 12 months = 1 year
             '6M': '6 M',
             '3M': '3 M',
@@ -340,7 +341,7 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "6M"):
             '1D': '1 D'
         }
         
-        duration = duration_map.get(period, '1 Y')
+        duration = duration_map.get(period, '90 D')
         
         logger.info(f"Requesting historical data for {symbol}: duration={duration}, barSize={bar_size}, contractId={qualified_contract.conId}")
         
@@ -418,8 +419,8 @@ async def get_realtime_data(symbol: str):
         
         symbol = symbol.upper().strip()
         
-        # Create contract for the specified stock
-        contract = Stock(symbol, 'SMART', 'USD')
+        # Create contract for the specified stock with AUD currency
+        contract = Stock(symbol, 'SMART', 'AUD')
         
         # Qualify the contract to populate conId (using thread executor)
         qualified_contract = await qualify_contract_async(contract)
@@ -522,7 +523,7 @@ async def subscribe_market_data(request: Dict[str, Any]):
             raise HTTPException(status_code=400, detail="Symbol is required")
         
         # Create and qualify contract (using thread executor)
-        contract = Stock(symbol, 'SMART', 'USD')
+        contract = Stock(symbol, 'SMART', 'AUD')
         qualified_contract = await qualify_contract_async(contract)
         if not qualified_contract:
             raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}. Symbol may not exist or may not be available.")
@@ -555,7 +556,7 @@ async def unsubscribe_market_data(request: Dict[str, Any]):
             raise HTTPException(status_code=400, detail="Symbol is required")
         
         # Create and qualify contract (using thread executor)
-        contract = Stock(symbol, 'SMART', 'USD')
+        contract = Stock(symbol, 'SMART', 'AUD')
         qualified_contract = await qualify_contract_async(contract)
         if not qualified_contract:
             raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}. Symbol may not exist or may not be available.")
