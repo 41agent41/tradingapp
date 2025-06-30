@@ -73,7 +73,8 @@ export default function HomePage() {
   const [connectionStatus, setConnectionStatus] = useState('Connecting...');
   const [socket, setSocket] = useState<Socket | null>(null);
   const [ibStatus, setIbStatus] = useState<any>(null);
-  const [showDebug, setShowDebug] = useState(false);
+  const [showDebug, setShowDebug] = useState(true); // Start with debug visible for testing
+  const [testCounter, setTestCounter] = useState(0);
 
   useEffect(() => {
     // Use the backend URL from environment or default to localhost
@@ -139,6 +140,12 @@ export default function HomePage() {
     }
   };
 
+  const handleDebugToggle = () => {
+    console.log('Debug button clicked, current showDebug:', showDebug);
+    setShowDebug(!showDebug);
+    console.log('Debug button clicked, new showDebug:', !showDebug);
+  };
+
   return (
     <main className="min-h-screen bg-gray-100 p-6">
       <div className="max-w-7xl mx-auto">
@@ -171,12 +178,22 @@ export default function HomePage() {
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-xl font-bold text-gray-900">Connection Debug</h2>
-            <button
-              onClick={() => setShowDebug(!showDebug)}
-              className="bg-gray-500 hover:bg-gray-700 text-white font-bold py-1 px-3 rounded text-sm"
-            >
-              {showDebug ? 'Hide' : 'Show'} Debug
-            </button>
+            <div className="flex items-center space-x-2">
+              <span className="text-xs text-gray-500">Debug: {showDebug ? 'ON' : 'OFF'}</span>
+              <span className="text-xs text-gray-500">Counter: {testCounter}</span>
+              <button
+                onClick={() => setTestCounter(testCounter + 1)}
+                className="bg-purple-500 hover:bg-purple-700 text-white font-bold py-1 px-2 rounded text-xs"
+              >
+                Test +1
+              </button>
+              <button
+                onClick={handleDebugToggle}
+                className="bg-gray-500 hover:bg-gray-700 text-white font-bold py-1 px-3 rounded text-sm"
+              >
+                {showDebug ? 'Hide' : 'Show'} Debug
+              </button>
+            </div>
           </div>
           
           {showDebug && (
