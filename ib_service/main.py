@@ -269,16 +269,20 @@ def get_account_summary_sync():
         # Use the first account
         account = accounts[0]
         
-        # Request account summary with correct parameters
-        account_summary = ib_client.reqAccountSummary(
-            "All",  # groupName
-            "AccountType,NetLiquidation,TotalCashValue,SettledCash,AccruedCash,BuyingPower,ExcessLiquidity,Cushion,LookAheadNextChange,DayTradesRemaining"  # tags
-        )
-        
-        # Get account values for additional details
+        # Get account values (simpler approach that works consistently)
         account_values = ib_client.accountValues()
         
-        return (account, account_summary, account_values), None
+        # Parse account values into a more usable format
+        account_data = {}
+        for value in account_values:
+            if hasattr(value, 'tag') and hasattr(value, 'value'):
+                account_data[value.tag] = {
+                    "value": value.value,
+                    "currency": getattr(value, 'currency', 'USD'),
+                    "account": getattr(value, 'account', account)
+                }
+        
+        return (account, account_data), None
         
     except Exception as e:
         logger.error(f"Error in get_account_summary_sync: {str(e)}")
@@ -424,21 +428,80 @@ async def get_realtime_data(symbol: str):
         # Wait briefly for data to arrive
         await asyncio.sleep(0.5)
         
-        # Get the latest tick data
-        return {
+        # Helper function to safely convert values, handling NaN
+        def safe_float(value):
+            if value is None:
+                return None
+            try:
+                if str(value).lower() in ['nan', '']:
+                    return None
+                float_val = float(value)
+                if float_val != float_val:  # Check for NaN
+                    return None
+                if float_val <= 0:  # Filter out zero or negative values
+                    return None
+                return float_val
+            except (ValueError, TypeError):
+                return None
+        
+        def safe_int(value):
+            if value is None:
+                return None
+            try:
+                if str(value).lower() in ['nan', '']:
+                    return None
+                float_val = float(value)
+                if float_val != float_val:  # Check for NaN
+                    return None
+                if float_val < 0:  # Filter out negative values
+                    return None
+                return int(float_val)
+            except (ValueError, TypeError):
+                return None
+        
+        # Get the latest tick data with safe conversions
+        bid = safe_float(ticker.bid)
+        ask = safe_float(ticker.ask) 
+        last = safe_float(ticker.last)
+        close = safe_float(ticker.close)
+        volume = safe_int(ticker.volume)
+        
+        # Check if we have any valid data
+        has_data = any([bid, ask, last, close, volume])
+        
+        response_data = {
             "symbol": symbol.upper(),
-            "bid": float(ticker.bid) if ticker.bid and ticker.bid > 0 else None,
-            "ask": float(ticker.ask) if ticker.ask and ticker.ask > 0 else None,
-            "last": float(ticker.last) if ticker.last and ticker.last > 0 else None,
-            "close": float(ticker.close) if ticker.close and ticker.close > 0 else None,
-            "volume": int(ticker.volume) if ticker.volume else None,
+            "bid": bid,
+            "ask": ask,
+            "last": last,
+            "close": close,
+            "volume": volume,
             "timestamp": datetime.now().isoformat(),
             "market_data_type": getattr(ticker, 'marketDataType', 'Unknown'),
-            "contract_id": qualified_contract.conId
+            "contract_id": qualified_contract.conId,
+            "has_valid_data": has_data
         }
+        
+        # Add market data status information
+        if not has_data:
+            response_data["status"] = "NO_DATA"
+            response_data["message"] = "No real-time market data available. This may be due to: 1) Market data subscription required, 2) Markets closed, 3) Delayed data only"
+        else:
+            response_data["status"] = "SUCCESS"
+            
+        return response_data
         
     except Exception as e:
         logger.error(f"Error getting real-time data for {symbol}: {str(e)}")
+        # Check if this is a market data subscription error
+        if "10089" in str(e) or "subscription" in str(e).lower():
+            return {
+                "symbol": symbol.upper(),
+                "status": "SUBSCRIPTION_REQUIRED",
+                "message": "Real-time market data requires additional IB subscription. Delayed data may be available.",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
         raise HTTPException(status_code=500, detail=f"Error getting real-time data: {str(e)}")
 
 @app.post("/market-data/subscribe")
@@ -691,34 +754,48 @@ async def get_account_info():
         if not result:
             raise HTTPException(status_code=404, detail="No account data available")
         
-        account, account_summary, account_values = result
+        account, account_data = result
         
-        # Parse account summary into a more usable format
-        summary_dict = {}
-        for item in account_summary:
-            summary_dict[item.tag] = {
-                "value": item.value,
-                "currency": item.currency
-            }
+        # Extract key account information with safe conversions
+        def safe_float_account(key, default="0"):
+            try:
+                value = account_data.get(key, {}).get("value", default)
+                return float(value) if value and value != "" else 0.0
+            except (ValueError, TypeError):
+                return 0.0
+        
+        def safe_int_account(key, default="0"):
+            try:
+                value = account_data.get(key, {}).get("value", default)
+                return int(float(value)) if value and value != "" else 0
+            except (ValueError, TypeError):
+                return 0
+        
+        def safe_str_account(key, default="Unknown"):
+            try:
+                value = account_data.get(key, {}).get("value", default)
+                return str(value) if value else default
+            except (TypeError):
+                return default
         
         # Extract key account information
         account_info = {
             "account_number": account,
-            "account_type": summary_dict.get("AccountType", {}).get("value", "Unknown"),
-            "net_liquidation": float(summary_dict.get("NetLiquidation", {}).get("value", "0")),
-            "total_cash": float(summary_dict.get("TotalCashValue", {}).get("value", "0")),
-            "settled_cash": float(summary_dict.get("SettledCash", {}).get("value", "0")),
-            "buying_power": float(summary_dict.get("BuyingPower", {}).get("value", "0")),
-            "excess_liquidity": float(summary_dict.get("ExcessLiquidity", {}).get("value", "0")),
-            "day_trades_remaining": int(summary_dict.get("DayTradesRemaining", {}).get("value", "0")),
-            "currency": summary_dict.get("NetLiquidation", {}).get("currency", "USD"),
+            "account_type": safe_str_account("AccountType", "Unknown"),
+            "net_liquidation": safe_float_account("NetLiquidation"),
+            "total_cash": safe_float_account("TotalCashValue"),
+            "settled_cash": safe_float_account("SettledCash"),
+            "buying_power": safe_float_account("BuyingPower"),
+            "excess_liquidity": safe_float_account("ExcessLiquidity"),
+            "day_trades_remaining": safe_int_account("DayTradesRemaining"),
+            "currency": safe_str_account("Currency", "USD"),
             "last_updated": datetime.now().isoformat()
         }
         
         return {
             "status": "success",
             "account_info": account_info,
-            "raw_summary": summary_dict
+            "available_fields": list(account_data.keys())[:10]  # Show first 10 available fields
         }
         
     except Exception as e:
