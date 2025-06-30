@@ -51,23 +51,23 @@ def connect_to_ib_sync():
             logger.info(f"Attempt {attempt}: Connecting to IB Gateway at {connection_status['host']}:{connection_status['port']} with client ID {client_id}")
             
             # Create IB client - let it handle its own event loop
-        ib_client = IB()
+            ib_client = IB()
             
             # Add more detailed logging
             logger.info("IB client created, attempting connection...")
             
             ib_client.connect(
-            host=connection_status['host'],
-            port=connection_status['port'],
+                host=connection_status['host'],
+                port=connection_status['port'],
                 clientId=client_id,
                 timeout=10  # Reduced timeout for faster retries
-        )
+            )
         
             # Verify connection was successful
             if ib_client.isConnected():
-        connection_status["connected"] = True
+                connection_status["connected"] = True
                 connection_status["client_id"] = client_id  # Update successful client ID
-        connection_status["last_error"] = None
+                connection_status["last_error"] = None
                 logger.info(f"Successfully connected to Interactive Brokers Gateway with client ID {client_id}")
                 return True
             else:
@@ -98,7 +98,7 @@ def connect_to_ib_sync():
                 logger.warning(f"Attempt {attempt} with client ID {client_id} timed out, trying next client ID...")
                 continue
         
-    except Exception as e:
+        except Exception as e:
             error_msg = f"Attempt {attempt} failed: {type(e).__name__}: {str(e)}"
             if not str(e):
                 error_msg = f"Attempt {attempt} failed: {type(e).__name__} (no error message provided)"
@@ -117,10 +117,10 @@ def connect_to_ib_sync():
     
     # Should not reach here, but just in case
     error_msg = f"All {len(client_ids_to_try)} connection attempts failed"
-        logger.error(error_msg)
-        connection_status["connected"] = False
-        connection_status["last_error"] = error_msg
-        return False
+    logger.error(error_msg)
+    connection_status["connected"] = False
+    connection_status["last_error"] = error_msg
+    return False
 
 async def connect_to_ib():
     """Async wrapper for IB Gateway connection"""
@@ -294,7 +294,7 @@ async def get_account_summary_async():
     return await loop.run_in_executor(None, get_account_summary_sync)
 
 @app.get("/market-data/history")
-async def get_historical_data(symbol: str, timeframe: str, period: str = "12M"):
+async def get_historical_data(symbol: str, timeframe: str, period: str = "6M"):
     """Get historical market data for a symbol"""
     if not ib_client or not ib_client.isConnected():
         raise HTTPException(status_code=503, detail="Not connected to Interactive Brokers Gateway")

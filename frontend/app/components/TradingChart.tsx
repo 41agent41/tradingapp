@@ -188,7 +188,7 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
     try {
       const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
       const response = await fetch(
-        `${backendUrl}/api/market-data/history?symbol=${currentSymbol}&timeframe=${currentTimeframe}&period=12M`
+        `${backendUrl}/api/market-data/history?symbol=${currentSymbol}&timeframe=${currentTimeframe}&period=6M`
       );
       
       if (!response.ok) {
