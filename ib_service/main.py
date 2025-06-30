@@ -306,8 +306,9 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "90D"):
         
         symbol = symbol.upper().strip()
         
-        # Create contract for the specified stock with AUD currency
-        contract = Stock(symbol, 'SMART', 'AUD')
+        # Create contract for the specified stock with appropriate currency
+        currency = get_currency_for_symbol(symbol)
+        contract = Stock(symbol, 'SMART', currency)
         
         # Qualify the contract to populate conId (using thread executor)
         qualified_contract = await qualify_contract_async(contract)
@@ -419,8 +420,9 @@ async def get_realtime_data(symbol: str):
         
         symbol = symbol.upper().strip()
         
-        # Create contract for the specified stock with AUD currency
-        contract = Stock(symbol, 'SMART', 'AUD')
+        # Create contract for the specified stock with appropriate currency
+        currency = get_currency_for_symbol(symbol)
+        contract = Stock(symbol, 'SMART', currency)
         
         # Qualify the contract to populate conId (using thread executor)
         qualified_contract = await qualify_contract_async(contract)
@@ -523,7 +525,8 @@ async def subscribe_market_data(request: Dict[str, Any]):
             raise HTTPException(status_code=400, detail="Symbol is required")
         
         # Create and qualify contract (using thread executor)
-        contract = Stock(symbol, 'SMART', 'AUD')
+        currency = get_currency_for_symbol(symbol)
+        contract = Stock(symbol, 'SMART', currency)
         qualified_contract = await qualify_contract_async(contract)
         if not qualified_contract:
             raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}. Symbol may not exist or may not be available.")
@@ -556,7 +559,8 @@ async def unsubscribe_market_data(request: Dict[str, Any]):
             raise HTTPException(status_code=400, detail="Symbol is required")
         
         # Create and qualify contract (using thread executor)
-        contract = Stock(symbol, 'SMART', 'AUD')
+        currency = get_currency_for_symbol(symbol)
+        contract = Stock(symbol, 'SMART', currency)
         qualified_contract = await qualify_contract_async(contract)
         if not qualified_contract:
             raise HTTPException(status_code=404, detail=f"Could not qualify contract for {symbol}. Symbol may not exist or may not be available.")
@@ -882,6 +886,38 @@ async def get_orders():
     except Exception as e:
         logger.error(f"Error getting orders: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error getting orders: {str(e)}")
+
+def get_currency_for_symbol(symbol: str) -> str:
+    """
+    Determine the appropriate currency for a stock symbol.
+    This is a basic implementation - in production, you'd use a more comprehensive mapping.
+    """
+    symbol = symbol.upper().strip()
+    
+    # US stocks typically use USD
+    us_exchanges = [
+        # Major US stocks
+        'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'JNJ',
+        'V', 'WMT', 'PG', 'UNH', 'DIS', 'HD', 'MA', 'BAC', 'ADBE', 'CRM', 'NFLX',
+        'XOM', 'CVX', 'ABBV', 'PFE', 'TMO', 'COST', 'AVGO', 'ABT', 'ACN', 'MRK',
+        'LLY', 'CSCO', 'DHR', 'VZ', 'ORCL', 'KO', 'WFC', 'CMCSA', 'PEP', 'IBM'
+    ]
+    
+    # Australian stocks typically use AUD (ASX format often includes .AX)
+    if symbol.endswith('.AX') or symbol in ['CBA', 'BHP', 'CSL', 'WBC', 'ANZ', 'NAB', 'WES', 'TLS', 'MQG', 'RIO']:
+        return 'AUD'
+    
+    # US stocks use USD
+    if symbol in us_exchanges:
+        return 'USD'
+    
+    # Default based on common patterns
+    if len(symbol) <= 4 and symbol.isalpha():
+        # Most 1-4 letter symbols are US stocks
+        return 'USD'
+    
+    # Fallback to USD for unknown symbols (can be changed to AUD if needed)
+    return 'USD'
 
 if __name__ == "__main__":
     import uvicorn

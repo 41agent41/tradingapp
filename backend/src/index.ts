@@ -29,6 +29,9 @@ app.use(cors({
 
 app.use(bodyParser.json());
 
+// Track active market data subscriptions
+const activeSubscriptions = new Set<string>();
+
 // Socket.io connection handling
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
@@ -50,6 +53,7 @@ io.on('connection', (socket) => {
       });
       
       socket.emit('subscription-confirmed', { symbol, timeframe });
+      activeSubscriptions.add(symbol.toUpperCase());
     } catch (error) {
       console.error('Error subscribing to market data:', error);
       socket.emit('subscription-error', { symbol, timeframe, error: 'Failed to subscribe' });
@@ -67,6 +71,7 @@ io.on('connection', (socket) => {
       });
       
       socket.emit('unsubscription-confirmed', { symbol });
+      activeSubscriptions.delete(symbol.toUpperCase());
     } catch (error) {
       console.error('Error unsubscribing from market data:', error);
       socket.emit('unsubscription-error', { symbol, error: 'Failed to unsubscribe' });
@@ -103,22 +108,34 @@ async function fetchAndEmitAccountData() {
   }
 }
 
-// Function to fetch and emit real-time market data
+// Function to fetch and emit real-time market data for active subscriptions
 async function fetchAndEmitMarketData() {
   try {
-    // For now, focus on MSFT real-time data
-    const response = await axios.get(`${IB_SERVICE_URL}/market-data/realtime?symbol=MSFT`).catch(err => ({ data: { error: err.message } }));
-    
-    if (response.data && !response.data.error) {
-      // Emit real-time market data to all connected clients
-      io.emit('market-data-update', {
-        symbol: 'MSFT',
-        data: response.data,
-        timestamp: new Date().toISOString()
-      });
+    if (activeSubscriptions.size === 0) {
+      return; // No active subscriptions
     }
+
+    // Fetch real-time data for all active symbols
+    const promises = Array.from(activeSubscriptions).map(async (symbol) => {
+      try {
+        const response = await axios.get(`${IB_SERVICE_URL}/market-data/realtime?symbol=${symbol}`);
+        
+        if (response.data && !response.data.error) {
+          // Emit real-time market data to all connected clients
+          io.emit('market-data-update', {
+            symbol: symbol,
+            data: response.data,
+            timestamp: new Date().toISOString()
+          });
+        }
+      } catch (error) {
+        console.error(`Error fetching real-time data for ${symbol}:`, error);
+      }
+    });
+
+    await Promise.all(promises);
   } catch (error) {
-    console.error('Error fetching real-time market data:', error);
+    console.error('Error in fetchAndEmitMarketData:', error);
   }
 }
 

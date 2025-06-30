@@ -36,10 +36,10 @@ router.get('/history', async (req: Request, res: Response) => {
       });
     }
 
-    // Validate symbol (for now, only support MSFT)
-    if (symbol.toUpperCase() !== 'MSFT') {
+    // Validate symbol - basic validation
+    if (!/^[A-Z]{1,10}$/.test(symbol.toUpperCase())) {
       return res.status(400).json({
-        error: 'Only MSFT symbol is currently supported',
+        error: 'Invalid symbol format. Symbol should be 1-10 uppercase letters.',
         symbol: symbol
       });
     }
