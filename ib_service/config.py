@@ -18,7 +18,7 @@ class IBServiceConfig(BaseSettings):
     log_level: str = Field(default="INFO", description="Logging level")
     
     # IB Gateway Configuration
-    ib_host: str = Field(default="10.7.3.21", description="IB Gateway host")
+    ib_host: str = Field(default="localhost", description="IB Gateway host")
     ib_port: int = Field(default=4002, description="IB Gateway port")
     ib_client_id: int = Field(default=1, description="IB client ID")
     ib_timeout: int = Field(default=30, description="IB connection timeout in seconds")
@@ -41,7 +41,7 @@ class IBServiceConfig(BaseSettings):
     
     # CORS Configuration
     cors_origins: List[str] = Field(
-        default=["http://localhost:3000", "http://10.7.3.20:3000"],
+        default=["http://localhost:3000"],
         description="Allowed CORS origins"
     )
     

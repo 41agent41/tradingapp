@@ -46,7 +46,7 @@ RUN chown -R ibservice:ibservice /app /home/ibservice/.local
 
 # Verify that fastapi is installed
 RUN python -c "import fastapi; print('FastAPI version:', fastapi.__version__)" || \
-    pip install fastapi uvicorn ib-async --no-cache-dir
+    pip install fastapi uvicorn ib_insync --no-cache-dir
 
 # Switch to non-root user
 USER ibservice
@@ -61,8 +61,8 @@ EXPOSE 8000
 # Use environment variables for configuration
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
-ENV IB_HOST=10.7.3.21
-ENV IB_PORT=4002
+# IB configuration will come from docker-compose environment variables
+# ENV IB_HOST, IB_PORT, IB_CLIENT_ID set by docker-compose
 ENV IB_LOG_LEVEL=INFO
 
 # Run the improved application

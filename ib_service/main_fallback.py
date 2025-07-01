@@ -32,7 +32,7 @@ app.add_middleware(
 ib_client: Optional[IB] = None
 connection_status = {
     "connected": False,
-    "host": os.getenv("IB_HOST", "10.7.3.21"),
+    "host": os.getenv("IB_HOST", "localhost"),
     "port": int(os.getenv("IB_PORT", "4002")),
     "client_id": int(os.getenv("IB_CLIENT_ID", "1")),
     "last_error": None

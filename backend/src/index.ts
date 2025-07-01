@@ -273,7 +273,7 @@ app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok' }))
 
 server.listen(PORT, HOST, () => {
   console.log(`Backend listening on ${HOST}:${PORT}`);
-  console.log(`CORS enabled for: http://10.7.3.20:3000, http://localhost:3000`);
+  console.log(`CORS enabled for: ${corsOrigins.join(', ')}`);
   console.log(`Socket.io enabled for real-time updates`);
   console.log(`IB Service URL: ${IB_SERVICE_URL}`);
   console.log(`API Documentation available at: http://${HOST}:${PORT}/`);

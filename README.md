@@ -12,7 +12,7 @@ A web-based trading platform integrating with Interactive Brokers, built with Ne
 ## Project Structure
 - `frontend/` — Next.js 14 + TypeScript + Tailwind CSS
 - `backend/` — Node.js + Express + TypeScript
-- `ib_service/` — Python FastAPI microservice (ib_async)
+- `ib_service/` — Python FastAPI microservice (ib_insync)
 - `docker-compose.yml` — Orchestrates all services
 
 ## Remote Server Deployment
@@ -106,7 +106,7 @@ docker-compose up --build
 - **Database connection**: Check PostgreSQL credentials in `.env`
 
 ## IB Integration
-- **Python (ib_async)**: Provided in `ib_service/`.
+- **Python (ib_insync)**: Provided in `ib_service/`.
 - **Node.js (node-ib)**: Install and use in `backend/` if preferred.
 
 ## License
