@@ -10,9 +10,15 @@ import axios from 'axios';
 
 const app = express();
 const server = createServer(app);
+
+// Parse CORS origins from environment variable or use defaults
+const corsOrigins = process.env.CORS_ORIGINS 
+  ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim())
+  : ['http://localhost:3000'];
+
 const io = new Server(server, {
   cors: {
-    origin: ['http://10.7.3.20:3000', 'http://localhost:3000'],
+    origin: corsOrigins,
     methods: ['GET', 'POST']
   }
 });
@@ -23,7 +29,7 @@ const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
 
 // Configure CORS to allow requests from frontend
 app.use(cors({
-  origin: ['http://10.7.3.20:3000', 'http://localhost:3000'],
+  origin: corsOrigins,
   credentials: true
 }));
 
@@ -160,7 +166,7 @@ app.get('/', (_req: Request, res: Response) => {
       enabled: true,
       events: ['accountData']
     },
-    documentation: 'This is the backend API for TradingApp. Use the frontend at http://10.7.3.20:3000 for the web interface.'
+    documentation: 'This is the backend API for TradingApp. Use the frontend for the web interface.'
   });
 });
 

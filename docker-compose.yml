@@ -3,9 +3,11 @@ services:
     build: ./backend
     env_file: .env
     environment:
-      - PORT=4000
+      - PORT=${BACKEND_PORT:-4000}
+      - NODE_ENV=${NODE_ENV:-production}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
     ports:
-      - "4000:4000"
+      - "${BACKEND_PORT:-4000}:${BACKEND_PORT:-4000}"
     volumes:
       - ./.env:/app/.env:ro
     depends_on:
@@ -15,34 +17,57 @@ services:
     networks:
       - tradingapp-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT:-4000}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+      
   frontend:
     build: ./frontend
     env_file: .env
     environment:
-      - PORT=3000
+      - PORT=${FRONTEND_PORT:-3000}
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+      - NODE_ENV=${NODE_ENV:-production}
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:${FRONTEND_PORT:-3000}"
     depends_on:
       - backend
     networks:
       - tradingapp-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${FRONTEND_PORT:-3000}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+      
   ib_service:
     build: ./ib_service
     env_file: .env
     environment:
-      - IB_HOST=10.7.3.21
-      - IB_PORT=4002
-      - IB_CLIENT_ID=1
+      - IB_HOST=${IB_HOST:-localhost}
+      - IB_PORT=${IB_PORT:-4002}
+      - IB_CLIENT_ID=${IB_CLIENT_ID:-1}
+      - IB_LOG_LEVEL=${IB_LOG_LEVEL:-INFO}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
     ports:
-      - "8000:8000"
+      - "${IB_SERVICE_PORT:-8000}:8000"
     networks:
       - tradingapp-network
     restart: unless-stopped
-    # Allow connection to external IB Gateway
+    # Allow connection to external IB Gateway (configurable)
     extra_hosts:
-      - "10.7.3.21:10.7.3.21"
+      - "${IB_HOST:-localhost}:${IB_HOST:-localhost}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
   postgres:
     image: postgres:15-alpine
     restart: always

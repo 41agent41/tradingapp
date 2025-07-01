@@ -1,42 +1,52 @@
-# Multi-stage Dockerfile for IB Service with optimization
+# Multi-stage Dockerfile for IB Service with optimization  
 FROM python:3.11-slim as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
     python3-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install dependencies
+# Create app directory and copy requirements
 WORKDIR /app
 COPY requirements.txt ./
-RUN pip install --no-cache-dir --user -r requirements.txt
+
+# Install Python dependencies with verbose output for debugging
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir --user -r requirements.txt --verbose
 
 # Production stage
 FROM python:3.11-slim
 
-# Install runtime dependencies only
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-WORKDIR /app
-
-# Copy installed packages from builder stage
-COPY --from=builder /root/.local /root/.local
-
-# Make sure scripts in .local are usable
-ENV PATH=/root/.local/bin:$PATH
-
-# Create a non-root user
+# Create a non-root user first
 RUN useradd --create-home --shell /bin/bash --uid 1000 ibservice
 
-# Copy application code
+WORKDIR /app
+
+# Copy installed packages from builder stage to both root and user locations
+COPY --from=builder /root/.local /root/.local
+COPY --from=builder /root/.local /home/ibservice/.local
+
+# Set up Python path for both root and user
+ENV PATH=/root/.local/bin:/home/ibservice/.local/bin:$PATH
+ENV PYTHONPATH=/app:/root/.local/lib/python3.11/site-packages:/home/ibservice/.local/lib/python3.11/site-packages
+
+# Copy application code as root (needed for proper permissions)
 COPY . .
 
-# Set ownership
-RUN chown -R ibservice:ibservice /app
+# Fix ownership after copying all files
+RUN chown -R ibservice:ibservice /app /home/ibservice/.local
+
+# Verify that fastapi is installed
+RUN python -c "import fastapi; print('FastAPI version:', fastapi.__version__)" || \
+    pip install fastapi uvicorn ib-async --no-cache-dir
 
 # Switch to non-root user
 USER ibservice

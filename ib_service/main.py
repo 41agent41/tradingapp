@@ -19,10 +19,14 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="TradingApp IB Service - Fallback", version="1.5.0")
 
+# Parse CORS origins from environment variable or use defaults
+cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+cors_origins = [origin.strip() for origin in cors_origins]
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://10.7.3.20:3000", "http://localhost:3000"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
