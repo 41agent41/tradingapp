@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 import logging
 from typing import Dict, Any, Optional, List
-from ib_async import IB, Contract, Stock, util
+from ib_insync import IB, Contract, Stock, util
 from datetime import datetime, timedelta
 import pandas as pd
 import os

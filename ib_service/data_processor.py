@@ -11,7 +11,7 @@ from asyncio_throttle import Throttler
 import hashlib
 import pickle
 from concurrent.futures import ThreadPoolExecutor
-from ib_async import BarData, Contract, Stock
+from ib_insync import BarData, Contract, Stock
 
 from models import (
     CandlestickBar, HistoricalDataResponse, RealTimeQuote, 

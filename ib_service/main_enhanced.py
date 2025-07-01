@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse, Response
 from prometheus_client import Counter, Histogram, Gauge, generate_latest
 from prometheus_client.openmetrics.exposition import CONTENT_TYPE_LATEST
 
-from ib_async import Contract, Stock, util
+from ib_insync import Contract, Stock, util
 
 # Import our improved components
 from config import config

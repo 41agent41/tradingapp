@@ -1,7 +1,7 @@
 # Core dependencies (guaranteed to work)
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-ib-async==0.21.7
+ib_insync==0.20.0
 python-multipart==0.0.6
 
 # Enhanced dependencies (for full features after rebuild)

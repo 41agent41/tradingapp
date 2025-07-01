@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Set
 from datetime import datetime, timedelta
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from ib_async import IB, Contract, Stock
+from ib_insync import IB, Contract, Stock
 import threading
 import concurrent.futures
 from contextlib import asynccontextmanager
