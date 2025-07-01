@@ -45,9 +45,8 @@
 ### **New Files Created:**
 1. `env.template` - Environment configuration template
 2. `REMOTE_DEPLOYMENT_GUIDE.md` - Complete deployment guide
-3. `rebuild-ib-service.sh` - Automated deployment script (Linux/Mac)
-4. `rebuild-ib-service.ps1` - Automated deployment script (Windows)
-5. `REMOTE_DEPLOYMENT_FIXES.md` - This summary document
+3. `rebuild-ib-service.sh` - Automated deployment script for remote servers
+4. `REMOTE_DEPLOYMENT_FIXES.md` - This summary document
 
 ### **Modified Files:**
 1. **`docker-compose.yml`**:
