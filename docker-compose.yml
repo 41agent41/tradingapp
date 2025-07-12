@@ -59,9 +59,9 @@ services:
     networks:
       - tradingapp-network
     restart: unless-stopped
-    # Allow connection to external IB Gateway (configurable)
-    extra_hosts:
-      - "${IB_HOST:-localhost}:127.0.0.1"
+    # Allow connection to external IB Gateway (remote host)
+    # Note: extra_hosts is only needed if IB_HOST is not a valid IP address
+    # For remote IB Gateway, ensure IB_HOST is set to the actual IP address
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

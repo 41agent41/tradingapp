@@ -142,33 +142,41 @@ setup_environment() {
     if [ ! -f .env ]; then
         print_info "Creating .env file..."
         cat > .env << EOF
-# Database Configuration
-POSTGRES_USER=tradingapp
-POSTGRES_PASSWORD=tradingapp123
-POSTGRES_DB=tradingapp
+# Backend/Frontend
+NODE_ENV=production
+PORT=4000
+FRONTEND_URL=http://$(hostname -I | awk '{print $1}'):3000
+BACKEND_URL=http://$(hostname -I | awk '{print $1}'):4000
+IB_SERVICE_URL=http://$(hostname -I | awk '{print $1}'):8000
 
-# Redis Configuration
+# PostgreSQL
+POSTGRES_USER=tradinguser
+POSTGRES_PASSWORD=tradingpass
+POSTGRES_DB=tradingdb
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+
+# Redis
 REDIS_HOST=redis
 REDIS_PORT=6379
 
-# Backend Configuration
-PORT=4000
-
-# Frontend Configuration
-# IMPORTANT: Update this to your server's actual IP address or domain
-NEXT_PUBLIC_API_URL=http://$(hostname -I | awk '{print $1}'):4000
-
-# IB Service Configuration
-IB_PORT=8000
-
 # Interactive Brokers Configuration
-IB_HOST=localhost
-IB_PORT_GATEWAY=4002
+# IMPORTANT: Set IB_HOST to your remote IB Gateway IP address
+IB_HOST=YOUR_IB_GATEWAY_IP
+IB_PORT=4002
 IB_CLIENT_ID=1
+IB_LOG_LEVEL=INFO
 EOF
         print_status ".env file created successfully!"
+        print_warning "⚠️  IMPORTANT: Please update IB_HOST in .env to your remote IB Gateway IP address"
     else
         print_status ".env file already exists."
+        
+        # Check if IB_HOST is still set to localhost or default value
+        if grep -q "IB_HOST=localhost\|IB_HOST=YOUR_IB_GATEWAY_IP" .env; then
+            print_warning "⚠️  IB_HOST is still set to localhost or default value"
+            print_info "Please update IB_HOST in .env to your remote IB Gateway IP address"
+        fi
     fi
     
     # Set proper permissions
