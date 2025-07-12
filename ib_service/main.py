@@ -109,8 +109,19 @@ def connect_to_ib_sync():
 
 async def connect_to_ib():
     """Async wrapper for IB Gateway connection"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, connect_to_ib_sync)
+    try:
+        # Try to get the current event loop
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # If there's no event loop in the current thread, create one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        return await loop.run_in_executor(None, connect_to_ib_sync)
+    except Exception as e:
+        logger.error(f"Error in async connection wrapper: {str(e)}")
+        return False
 
 @app.on_event("startup")
 async def startup_event():

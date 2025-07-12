@@ -403,9 +403,9 @@ test_connections() {
     
     echo ""
     print_info "Testing Backend Health..."
-    if curl -s http://localhost:4000/health > /dev/null; then
+    if curl -s http://localhost:4000/api/health > /dev/null; then
         print_status "Backend health check is responding"
-        curl -s http://localhost:4000/health | jq . 2>/dev/null || curl -s http://localhost:4000/health
+        curl -s http://localhost:4000/api/health | jq . 2>/dev/null || curl -s http://localhost:4000/api/health
     else
         print_error "Backend health check is not responding"
     fi
