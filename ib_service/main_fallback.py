@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import os
 import threading
+import concurrent.futures
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -95,9 +96,22 @@ def connect_to_ib_sync():
     return False
 
 async def connect_to_ib():
-    """Async wrapper for IB Gateway connection"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, connect_to_ib_sync)
+    """Async wrapper for IB Gateway connection with proper event loop handling"""
+    try:
+        # Get the current event loop, or create a new one if none exists
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No event loop in current thread, create one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Use ThreadPoolExecutor to run the sync function
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            return await loop.run_in_executor(executor, connect_to_ib_sync)
+    except Exception as e:
+        logger.error(f"Error in async connection wrapper: {str(e)}")
+        return False
 
 @app.on_event("startup")
 async def startup_event():
@@ -223,39 +237,53 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "90D"):
         if timeframe not in valid_timeframes:
             raise HTTPException(status_code=400, detail=f"Invalid timeframe. Must be one of: {valid_timeframes}")
         
-        # Create contract
-        contract = Stock(symbol.upper(), 'SMART', 'USD')
+        # Get the current event loop
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         
-        # Qualify contract
-        qualified_contracts = ib_client.qualifyContracts(contract)
-        if not qualified_contracts:
-            raise HTTPException(status_code=404, detail=f"Symbol {symbol} not found")
+        # Create contract and get data in executor
+        def get_historical_data_sync():
+            contract = Stock(symbol.upper(), 'SMART', 'USD')
+            
+            # Qualify contract
+            qualified_contracts = ib_client.qualifyContracts(contract)
+            if not qualified_contracts:
+                return None
+            
+            qualified_contract = qualified_contracts[0]
+            
+            # Convert timeframe to IB format
+            ib_timeframe_map = {
+                '5min': '5 mins',
+                '15min': '15 mins', 
+                '30min': '30 mins',
+                '1hour': '1 hour',
+                '4hour': '4 hours',
+                '8hour': '8 hours',
+                '1day': '1 day'
+            }
+            
+            ib_timeframe = ib_timeframe_map.get(timeframe, '1 hour')
+            
+            # Request historical data
+            bars = ib_client.reqHistoricalData(
+                qualified_contract,
+                endDateTime='',
+                durationStr=period,
+                barSizeSetting=ib_timeframe,
+                whatToShow='TRADES',
+                useRTH=True,
+                formatDate=1
+            )
+            
+            return bars
         
-        qualified_contract = qualified_contracts[0]
-        
-        # Convert timeframe to IB format
-        ib_timeframe_map = {
-            '5min': '5 mins',
-            '15min': '15 mins', 
-            '30min': '30 mins',
-            '1hour': '1 hour',
-            '4hour': '4 hours',
-            '8hour': '8 hours',
-            '1day': '1 day'
-        }
-        
-        ib_timeframe = ib_timeframe_map.get(timeframe, '1 hour')
-        
-        # Request historical data
-        bars = ib_client.reqHistoricalData(
-            qualified_contract,
-            endDateTime='',
-            durationStr=period,
-            barSizeSetting=ib_timeframe,
-            whatToShow='TRADES',
-            useRTH=True,
-            formatDate=1
-        )
+        # Execute in thread pool
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            bars = await loop.run_in_executor(executor, get_historical_data_sync)
         
         if not bars:
             raise HTTPException(status_code=404, detail=f"No data available for {symbol}")
@@ -302,16 +330,32 @@ async def get_realtime_data(symbol: str):
         raise HTTPException(status_code=503, detail="Not connected to IB Gateway")
     
     try:
-        contract = Stock(symbol.upper(), 'SMART', 'USD')
+        # Get the current event loop
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         
-        qualified_contracts = ib_client.qualifyContracts(contract)
-        if not qualified_contracts:
+        def get_realtime_data_sync():
+            contract = Stock(symbol.upper(), 'SMART', 'USD')
+            
+            qualified_contracts = ib_client.qualifyContracts(contract)
+            if not qualified_contracts:
+                return None
+            
+            qualified_contract = qualified_contracts[0]
+            
+            # Get ticker data
+            ticker = ib_client.reqMktData(qualified_contract, '', False, False)
+            return ticker
+        
+        # Execute in thread pool
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            ticker = await loop.run_in_executor(executor, get_realtime_data_sync)
+        
+        if not ticker:
             raise HTTPException(status_code=404, detail=f"Symbol {symbol} not found")
-        
-        qualified_contract = qualified_contracts[0]
-        
-        # Get ticker data
-        ticker = ib_client.reqMktData(qualified_contract, '', False, False)
         
         # Wait for data
         await asyncio.sleep(2)
@@ -365,7 +409,20 @@ async def get_account_info():
         raise HTTPException(status_code=503, detail="Not connected to IB Gateway")
     
     try:
-        account_summary = ib_client.accountSummary()
+        # Get the current event loop
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        def get_account_info_sync():
+            account_summary = ib_client.accountSummary()
+            return account_summary
+        
+        # Execute in thread pool
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            account_summary = await loop.run_in_executor(executor, get_account_info_sync)
         
         account_data = {}
         for item in account_summary:
