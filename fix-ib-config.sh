@@ -32,10 +32,10 @@ else
 fi
 echo ""
 
-# Get current values
-CURRENT_IB_HOST=$(grep "^IB_HOST=" .env 2>/dev/null | cut -d'=' -f2 || echo "")
-CURRENT_IB_PORT=$(grep "^IB_PORT=" .env 2>/dev/null | cut -d'=' -f2 || echo "4002")
-CURRENT_IB_CLIENT_ID=$(grep "^IB_CLIENT_ID=" .env 2>/dev/null | cut -d'=' -f2 || echo "1")
+# Get current values (handle cases where variables are appended without newlines)
+CURRENT_IB_HOST=$(grep -o "IB_HOST=[^[:space:]]*" .env 2>/dev/null | cut -d'=' -f2 || echo "")
+CURRENT_IB_PORT=$(grep -o "IB_PORT=[^[:space:]]*" .env 2>/dev/null | cut -d'=' -f2 || echo "4002")
+CURRENT_IB_CLIENT_ID=$(grep -o "IB_CLIENT_ID=[^[:space:]]*" .env 2>/dev/null | cut -d'=' -f2 || echo "1")
 
 echo -e "${BLUE}Current Configuration:${NC}"
 echo "IB Gateway IP: ${CURRENT_IB_HOST:-Not set}"
@@ -57,12 +57,18 @@ IB_CLIENT_ID=${IB_CLIENT_ID:-$CURRENT_IB_CLIENT_ID}
 # Update .env file
 echo -e "${BLUE}Updating .env file...${NC}"
 
-# Remove existing lines if they exist
-sed -i '/^IB_HOST=/d' .env 2>/dev/null || true
-sed -i '/^IB_PORT=/d' .env 2>/dev/null || true
-sed -i '/^IB_CLIENT_ID=/d' .env 2>/dev/null || true
+# Remove existing lines if they exist (handle cases where they're appended)
+sed -i 's/IB_HOST=[^[:space:]]*//g' .env 2>/dev/null || true
+sed -i 's/IB_PORT=[^[:space:]]*//g' .env 2>/dev/null || true
+sed -i 's/IB_CLIENT_ID=[^[:space:]]*//g' .env 2>/dev/null || true
+
+# Clean up the .env file (remove trailing spaces and ensure proper formatting)
+sed -i 's/[[:space:]]*$//' .env 2>/dev/null || true
+sed -i '/^$/d' .env 2>/dev/null || true
 
 # Add new lines
+echo "" >> .env
+echo "# Interactive Brokers Configuration" >> .env
 echo "IB_HOST=$IB_GATEWAY_IP" >> .env
 echo "IB_PORT=$IB_GATEWAY_PORT" >> .env
 echo "IB_CLIENT_ID=$IB_CLIENT_ID" >> .env
