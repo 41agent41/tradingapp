@@ -110,14 +110,13 @@ def connect_to_ib_sync():
 async def connect_to_ib():
     """Async wrapper for IB Gateway connection"""
     try:
-        # Use asyncio.to_thread for Python 3.9+ or fallback to run_in_executor
-        try:
-            # Python 3.9+ approach
-            return await asyncio.to_thread(connect_to_ib_sync)
-        except AttributeError:
-            # Fallback for older Python versions
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, connect_to_ib_sync)
+        # Use ThreadPoolExecutor with proper event loop handling
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, connect_to_ib_sync)
+    except RuntimeError as e:
+        # If we're not in an event loop, run synchronously
+        logger.warning(f"No event loop available, running connection synchronously: {str(e)}")
+        return connect_to_ib_sync()
     except Exception as e:
         logger.error(f"Error in async connection wrapper: {str(e)}")
         return False
@@ -128,13 +127,24 @@ async def startup_event():
     logger.info("Starting IB Service (Fallback Version)...")
     
     try:
-        await connect_to_ib()
-        if connection_status["connected"]:
+        # Try async connection first
+        success = await connect_to_ib()
+        if success and connection_status["connected"]:
             logger.info("Successfully connected to IB Gateway during startup")
         else:
             logger.warning("Could not connect to IB Gateway during startup")
     except Exception as e:
         logger.error(f"Error during startup connection attempt: {str(e)}")
+        # Fallback to synchronous connection
+        try:
+            logger.info("Attempting synchronous connection as fallback...")
+            connect_to_ib_sync()
+            if connection_status["connected"]:
+                logger.info("Successfully connected to IB Gateway using synchronous fallback")
+            else:
+                logger.warning("Synchronous connection also failed")
+        except Exception as sync_error:
+            logger.error(f"Synchronous connection fallback also failed: {str(sync_error)}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -204,11 +214,18 @@ async def get_connection_status():
 async def connect():
     """Connect to IB Gateway"""
     try:
+        # Try async connection first
         success = await connect_to_ib()
-        if success:
+        if success and connection_status["connected"]:
             return {"message": "Successfully connected to IB Gateway", "connected": True}
         else:
-            raise HTTPException(status_code=503, detail="Failed to connect to IB Gateway")
+            # Fallback to synchronous connection
+            logger.info("Async connection failed, trying synchronous fallback...")
+            success = connect_to_ib_sync()
+            if success and connection_status["connected"]:
+                return {"message": "Successfully connected to IB Gateway (synchronous)", "connected": True}
+            else:
+                raise HTTPException(status_code=503, detail="Failed to connect to IB Gateway")
     except Exception as e:
         logger.error(f"Connection attempt failed: {str(e)}")
         raise HTTPException(status_code=503, detail=f"Connection failed: {str(e)}")
