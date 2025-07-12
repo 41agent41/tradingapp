@@ -61,7 +61,7 @@ services:
     restart: unless-stopped
     # Allow connection to external IB Gateway (configurable)
     extra_hosts:
-      - "${IB_HOST:-localhost}:${IB_HOST:-localhost}"
+      - "${IB_HOST:-localhost}:127.0.0.1"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
