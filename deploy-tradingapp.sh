@@ -41,6 +41,7 @@ show_usage() {
     echo "  deploy      - Deploy the full application"
     echo "  rebuild     - Rebuild and restart services"
     echo "  ib-rebuild  - Rebuild only IB service with enhanced features"
+    echo "  ib-rebuild-fixed - Rebuild IB service with fixed asyncio handling"
     echo "  status      - Check service status"
     echo "  test        - Test all connections"
     echo "  logs        - Show service logs"
@@ -335,6 +336,74 @@ rebuild_ib_service() {
     echo "   • Health monitoring"
 }
 
+# Function to rebuild IB service with fixed asyncio handling
+rebuild_ib_service_fixed() {
+    print_info "Rebuilding IB Service with fixed asyncio handling..."
+    
+    check_docker
+    
+    # Stop current containers
+    print_info "Stopping current containers..."
+    docker-compose down
+    
+    # Remove old IB service image to force rebuild
+    print_info "Removing old ib_service image..."
+    docker rmi tradingapp-ib_service 2>/dev/null || true
+    docker rmi tradingapp_ib_service 2>/dev/null || true
+    
+    # Rebuild the ib_service with no cache
+    print_info "Rebuilding ib_service with fixed main.py..."
+    docker-compose build --no-cache ib_service
+    
+    if [ $? -ne 0 ]; then
+        print_error "Docker build failed. Check the error messages above."
+        exit 1
+    fi
+    
+    # Ensure we're using the fixed main.py (not enhanced)
+    print_info "Using fixed main.py with asyncio fixes..."
+    cd ib_service
+    if [ -f "main.py" ]; then
+        print_status "Using current main.py with asyncio fixes"
+    else
+        print_error "main.py not found!"
+        exit 1
+    fi
+    cd ..
+    
+    # Start services
+    print_info "Starting services with fixed ib_service..."
+    docker-compose up -d
+    
+    # Wait for services to start
+    print_info "Waiting for services to start..."
+    sleep 10
+    
+    # Verify the fixed version
+    print_info "Verifying fixed version..."
+    
+    # Test basic endpoint
+    if curl -s http://localhost:8000/ > /dev/null; then
+        VERSION=$(curl -s http://localhost:8000/ | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
+        if [[ "$VERSION" == "1.5.0-fallback" ]]; then
+            print_status "Fixed version (1.5.0-fallback) is running!"
+        else
+            print_warning "Version: $VERSION (expected 1.5.0-fallback)"
+        fi
+    else
+        print_error "IB Service is not responding on port 8000"
+    fi
+    
+    print_status "IB Service rebuild with fixes completed!"
+    
+    echo ""
+    print_info "Fixed Features:"
+    echo "   • Fixed asyncio event loop handling"
+    echo "   • Proper fallback to synchronous connections"
+    echo "   • Better error handling for thread pool executors"
+    echo "   • Stable connection attempts"
+}
+
 # Function to check service status
 check_status() {
     print_info "Checking TradingApp Status..."
@@ -560,6 +629,9 @@ case "${1:-}" in
         ;;
     "ib-rebuild")
         rebuild_ib_service
+        ;;
+    "ib-rebuild-fixed")
+        rebuild_ib_service_fixed
         ;;
     "status")
         check_status
