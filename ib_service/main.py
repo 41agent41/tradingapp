@@ -65,8 +65,10 @@ def connect_to_ib_sync():
             
             logger.info(f"Attempt {attempt}: Connecting to IB Gateway at {connection_status['host']}:{connection_status['port']} with client ID {client_id}")
             
+            # Create new IB client instance
             ib_client = IB()
             
+            # Set connection parameters
             ib_client.connect(
                 host=connection_status['host'],
                 port=connection_status['port'],
@@ -74,6 +76,66 @@ def connect_to_ib_sync():
                 timeout=10
             )
         
+            # Check connection status
+            if ib_client.isConnected():
+                connection_status["connected"] = True
+                connection_status["client_id"] = client_id
+                connection_status["last_error"] = None
+                logger.info(f"Successfully connected to Interactive Brokers Gateway with client ID {client_id}")
+                return True
+            else:
+                logger.warning(f"Connection attempt {attempt} with client ID {client_id} failed")
+                continue
+            
+        except ConnectionRefusedError as e:
+            error_msg = f"Connection refused by IB Gateway - {str(e)}"
+            logger.error(error_msg)
+            connection_status["connected"] = False
+            connection_status["last_error"] = error_msg
+            return False
+            
+        except Exception as e:
+            error_msg = f"Attempt {attempt} failed: {type(e).__name__}: {str(e)}"
+            logger.warning(error_msg)
+            
+            if attempt == len(client_ids_to_try):
+                logger.error(f"All connection attempts failed")
+                connection_status["connected"] = False
+                connection_status["last_error"] = error_msg
+                if ib_client:
+                    ib_client = None
+                return False
+            else:
+                continue
+    
+    return False
+
+def connect_to_ib_direct():
+    """Direct synchronous connection without async wrapper"""
+    global ib_client, connection_status
+    
+    client_ids_to_try = [1, 2, 3, 4, 5]
+    
+    for attempt, client_id in enumerate(client_ids_to_try, 1):
+        try:
+            if ib_client and ib_client.isConnected():
+                logger.info("Disconnecting existing IB client before reconnecting")
+                ib_client.disconnect()
+            
+            logger.info(f"Attempt {attempt}: Connecting to IB Gateway at {connection_status['host']}:{connection_status['port']} with client ID {client_id}")
+            
+            # Create new IB client instance
+            ib_client = IB()
+            
+            # Set connection parameters
+            ib_client.connect(
+                host=connection_status['host'],
+                port=connection_status['port'],
+                clientId=client_id,
+                timeout=10
+            )
+        
+            # Check connection status
             if ib_client.isConnected():
                 connection_status["connected"] = True
                 connection_status["client_id"] = client_id
@@ -110,16 +172,19 @@ def connect_to_ib_sync():
 async def connect_to_ib():
     """Async wrapper for IB Gateway connection"""
     try:
-        # Use ThreadPoolExecutor with proper event loop handling
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, connect_to_ib_sync)
-    except RuntimeError as e:
-        # If we're not in an event loop, run synchronously
-        logger.warning(f"No event loop available, running connection synchronously: {str(e)}")
-        return connect_to_ib_sync()
+        # Try to get the current event loop
+        try:
+            loop = asyncio.get_running_loop()
+            # Use ThreadPoolExecutor with proper event loop handling
+            return await loop.run_in_executor(None, connect_to_ib_direct)
+        except RuntimeError:
+            # If there's no event loop in the current thread, run directly
+            logger.warning("No event loop available, running connection directly")
+            return connect_to_ib_direct()
     except Exception as e:
         logger.error(f"Error in async connection wrapper: {str(e)}")
-        return False
+        # Fallback to direct connection
+        return connect_to_ib_direct()
 
 @app.on_event("startup")
 async def startup_event():
@@ -127,24 +192,24 @@ async def startup_event():
     logger.info("Starting IB Service (Fallback Version)...")
     
     try:
-        # Try async connection first
-        success = await connect_to_ib()
+        # Try direct connection first (avoids event loop issues)
+        success = connect_to_ib_direct()
         if success and connection_status["connected"]:
             logger.info("Successfully connected to IB Gateway during startup")
         else:
             logger.warning("Could not connect to IB Gateway during startup")
     except Exception as e:
         logger.error(f"Error during startup connection attempt: {str(e)}")
-        # Fallback to synchronous connection
+        # Try async as fallback
         try:
-            logger.info("Attempting synchronous connection as fallback...")
-            connect_to_ib_sync()
-            if connection_status["connected"]:
-                logger.info("Successfully connected to IB Gateway using synchronous fallback")
+            logger.info("Attempting async connection as fallback...")
+            success = await connect_to_ib()
+            if success and connection_status["connected"]:
+                logger.info("Successfully connected to IB Gateway using async fallback")
             else:
-                logger.warning("Synchronous connection also failed")
-        except Exception as sync_error:
-            logger.error(f"Synchronous connection fallback also failed: {str(sync_error)}")
+                logger.warning("Async connection also failed")
+        except Exception as async_error:
+            logger.error(f"Async connection fallback also failed: {str(async_error)}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -214,16 +279,16 @@ async def get_connection_status():
 async def connect():
     """Connect to IB Gateway"""
     try:
-        # Try async connection first
-        success = await connect_to_ib()
+        # Try direct connection first (avoids event loop issues)
+        success = connect_to_ib_direct()
         if success and connection_status["connected"]:
             return {"message": "Successfully connected to IB Gateway", "connected": True}
         else:
-            # Fallback to synchronous connection
-            logger.info("Async connection failed, trying synchronous fallback...")
-            success = connect_to_ib_sync()
+            # Fallback to async connection
+            logger.info("Direct connection failed, trying async fallback...")
+            success = await connect_to_ib()
             if success and connection_status["connected"]:
-                return {"message": "Successfully connected to IB Gateway (synchronous)", "connected": True}
+                return {"message": "Successfully connected to IB Gateway (async)", "connected": True}
             else:
                 raise HTTPException(status_code=503, detail="Failed to connect to IB Gateway")
     except Exception as e:
