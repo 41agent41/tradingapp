@@ -28,65 +28,129 @@ print_info() {
     echo -e "${BLUE}ℹ️  $1${NC}"
 }
 
+# Function to read environment variable from .env file
+read_env_var() {
+    local var_name=$1
+    local default_value=$2
+    
+    if [ -f .env ]; then
+        local value=$(grep "^${var_name}=" .env | cut -d'=' -f2- 2>/dev/null || echo "")
+        if [ -n "$value" ]; then
+            echo "$value"
+        else
+            echo "$default_value"
+        fi
+    else
+        echo "$default_value"
+    fi
+}
+
+# Function to write environment variable to .env file
+write_env_var() {
+    local var_name=$1
+    local value=$2
+    
+    if [ -f .env ]; then
+        if grep -q "^${var_name}=" .env; then
+            # Update existing line
+            sed -i "s/^${var_name}=.*/${var_name}=${value}/" .env
+        else
+            # Add new line
+            echo "${var_name}=${value}" >> .env
+        fi
+    else
+        # Create .env file with the variable
+        echo "${var_name}=${value}" > .env
+    fi
+}
+
+# Function to display current configuration
+show_config() {
+    echo ""
+    print_info "Current Configuration:"
+    echo "========================"
+    echo "IB Gateway IP: $(read_env_var 'IB_HOST' 'Not set')"
+    echo "IB Gateway Port: $(read_env_var 'IB_PORT' '4002')"
+    echo "Client ID: $(read_env_var 'IB_CLIENT_ID' '1')"
+    echo ""
+}
+
+# Function to test connectivity
+test_connectivity() {
+    local host=$(read_env_var 'IB_HOST' '')
+    local port=$(read_env_var 'IB_PORT' '4002')
+    
+    if [ -z "$host" ]; then
+        print_error "IB_HOST is not configured"
+        return 1
+    fi
+    
+    print_info "Testing connectivity to IB Gateway at $host:$port..."
+    
+    # Test ping
+    if ping -c 1 -W 3 "$host" > /dev/null 2>&1; then
+        print_status "✅ Host is reachable"
+    else
+        print_warning "⚠️  Host is not reachable"
+    fi
+    
+    # Test port connectivity (if nc is available)
+    if command -v nc > /dev/null 2>&1; then
+        if nc -z -w 3 "$host" "$port" 2>/dev/null; then
+            print_status "✅ Port $port is accessible"
+        else
+            print_warning "⚠️  Port $port is not accessible"
+        fi
+    else
+        print_info "Note: netcat not available, skipping port test"
+    fi
+}
+
 echo "🔧 IB Gateway Configuration Helper"
 echo "=================================="
 echo ""
 
-# Check if .env file exists
+# Check if .env file exists, create if not
 if [ ! -f .env ]; then
-    print_error ".env file not found. Please run './deploy-tradingapp.sh deploy' first to create it."
-    exit 1
+    print_info "Creating .env file..."
+    touch .env
 fi
 
-# Function to ensure required environment variables exist
-ensure_env_vars() {
-    local missing_vars=()
-    
-    # Check for required variables
-    if ! grep -q "^IB_PORT=" .env; then
-        missing_vars+=("IB_PORT")
-    fi
-    
-    if ! grep -q "^IB_CLIENT_ID=" .env; then
-        missing_vars+=("IB_CLIENT_ID")
-    fi
-    
-    # Add missing variables with defaults
-    for var in "${missing_vars[@]}"; do
-        case $var in
-            "IB_PORT")
-                echo "IB_PORT=4002" >> .env
-                print_info "Added IB_PORT=4002"
-                ;;
-            "IB_CLIENT_ID")
-                echo "IB_CLIENT_ID=1" >> .env
-                print_info "Added IB_CLIENT_ID=1"
-                ;;
-        esac
-    done
-}
+# Ensure required variables exist with defaults
+if [ -z "$(read_env_var 'IB_PORT' '')" ]; then
+    write_env_var 'IB_PORT' '4002'
+    print_info "Set IB_PORT=4002"
+fi
 
-# Ensure all required variables exist
-ensure_env_vars
+if [ -z "$(read_env_var 'IB_CLIENT_ID' '')" ]; then
+    write_env_var 'IB_CLIENT_ID' '1'
+    print_info "Set IB_CLIENT_ID=1"
+fi
 
-# Get current IB_HOST value (handle empty or missing values)
-CURRENT_IB_HOST=$(grep "^IB_HOST=" .env | cut -d'=' -f2 2>/dev/null || echo "")
+# Show current configuration
+show_config
 
-print_info "Current IB_HOST configuration: $CURRENT_IB_HOST"
-echo ""
+# Get current IB_HOST value
+CURRENT_IB_HOST=$(read_env_var 'IB_HOST' '')
 
-# Check if it's still the default value or empty
-if [[ -z "$CURRENT_IB_HOST" || "$CURRENT_IB_HOST" == "localhost" || "$CURRENT_IB_HOST" == "YOUR_IB_GATEWAY_IP" ]]; then
-    print_warning "IB_HOST is still set to default value"
+# Check if IB_HOST needs configuration
+if [ -z "$CURRENT_IB_HOST" ]; then
+    print_warning "IB_HOST is not configured"
     echo ""
     
-    echo "Please provide your remote IB Gateway IP address:"
+    echo "Please provide your remote IB Gateway configuration:"
     read -p "IB Gateway IP: " IB_GATEWAY_IP
     
     if [ -z "$IB_GATEWAY_IP" ]; then
         print_error "No IP address provided. Exiting."
         exit 1
     fi
+    
+    read -p "IB Gateway Port [4002]: " IB_GATEWAY_PORT
+    IB_GATEWAY_PORT=${IB_GATEWAY_PORT:-4002}
+    
+    read -p "Client ID [1]: " IB_CLIENT_ID
+    IB_CLIENT_ID=${IB_CLIENT_ID:-1}
     
     # Validate IP address format (basic validation)
     if [[ ! $IB_GATEWAY_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -100,33 +164,25 @@ if [[ -z "$CURRENT_IB_HOST" || "$CURRENT_IB_HOST" == "localhost" || "$CURRENT_IB
     
     # Update the .env file
     print_info "Updating .env file..."
-    if grep -q "^IB_HOST=" .env; then
-        # Update existing line
-        sed -i "s/^IB_HOST=.*/IB_HOST=$IB_GATEWAY_IP/" .env
-    else
-        # Add new line
-        echo "IB_HOST=$IB_GATEWAY_IP" >> .env
-    fi
+    write_env_var 'IB_HOST' "$IB_GATEWAY_IP"
+    write_env_var 'IB_PORT' "$IB_GATEWAY_PORT"
+    write_env_var 'IB_CLIENT_ID' "$IB_CLIENT_ID"
     
-    print_status "IB_HOST updated to: $IB_GATEWAY_IP"
-    echo ""
+    print_status "Configuration updated successfully!"
+    
+    # Show updated configuration
+    show_config
     
     # Test connectivity
-    print_info "Testing connectivity to IB Gateway..."
-    if ping -c 1 -W 3 "$IB_GATEWAY_IP" > /dev/null 2>&1; then
-        print_status "✅ IB Gateway is reachable"
-    else
-        print_warning "⚠️  Could not reach IB Gateway at $IB_GATEWAY_IP"
-        print_info "This might be normal if the gateway is not running or behind a firewall"
-    fi
+    test_connectivity
     
 else
-    print_status "IB_HOST is already configured: $CURRENT_IB_HOST"
+    print_status "IB_HOST is already configured"
     echo ""
     
     echo "Options:"
     echo "1. Test current connection"
-    echo "2. Update IB Gateway IP"
+    echo "2. Update IB Gateway configuration"
     echo "3. Exit"
     echo ""
     read -p "Choose an option (1-3): " -n 1 -r
@@ -134,30 +190,39 @@ else
     
     case $REPLY in
         1)
-            print_info "Testing connectivity to IB Gateway..."
-            if ping -c 1 -W 3 "$CURRENT_IB_HOST" > /dev/null 2>&1; then
-                print_status "✅ IB Gateway is reachable"
-            else
-                print_warning "⚠️  Could not reach IB Gateway at $CURRENT_IB_HOST"
-            fi
+            test_connectivity
             ;;
         2)
-            echo "Please provide the new IB Gateway IP address:"
-            read -p "IB Gateway IP: " IB_GATEWAY_IP
+            echo "Please provide the new IB Gateway configuration:"
+            read -p "IB Gateway IP [$CURRENT_IB_HOST]: " IB_GATEWAY_IP
+            IB_GATEWAY_IP=${IB_GATEWAY_IP:-$CURRENT_IB_HOST}
+            
+            CURRENT_IB_PORT=$(read_env_var 'IB_PORT' '4002')
+            read -p "IB Gateway Port [$CURRENT_IB_PORT]: " IB_GATEWAY_PORT
+            IB_GATEWAY_PORT=${IB_GATEWAY_PORT:-$CURRENT_IB_PORT}
+            
+            CURRENT_IB_CLIENT_ID=$(read_env_var 'IB_CLIENT_ID' '1')
+            read -p "Client ID [$CURRENT_IB_CLIENT_ID]: " IB_CLIENT_ID
+            IB_CLIENT_ID=${IB_CLIENT_ID:-$CURRENT_IB_CLIENT_ID}
             
             if [ -z "$IB_GATEWAY_IP" ]; then
                 print_error "No IP address provided. Exiting."
                 exit 1
             fi
             
-            if grep -q "^IB_HOST=" .env; then
-                # Update existing line
-                sed -i "s/^IB_HOST=.*/IB_HOST=$IB_GATEWAY_IP/" .env
-            else
-                # Add new line
-                echo "IB_HOST=$IB_GATEWAY_IP" >> .env
-            fi
-            print_status "IB_HOST updated to: $IB_GATEWAY_IP"
+            # Update the .env file
+            print_info "Updating .env file..."
+            write_env_var 'IB_HOST' "$IB_GATEWAY_IP"
+            write_env_var 'IB_PORT' "$IB_GATEWAY_PORT"
+            write_env_var 'IB_CLIENT_ID' "$IB_CLIENT_ID"
+            
+            print_status "Configuration updated successfully!"
+            
+            # Show updated configuration
+            show_config
+            
+            # Test connectivity
+            test_connectivity
             ;;
         3)
             print_info "Exiting..."
@@ -171,15 +236,8 @@ else
 fi
 
 echo ""
-print_info "Configuration Summary:"
-echo "=========================="
-echo "IB Gateway IP: $(grep "^IB_HOST=" .env | cut -d'=' -f2 2>/dev/null || echo "Not set")"
-echo "IB Gateway Port: $(grep "^IB_PORT=" .env | cut -d'=' -f2 2>/dev/null || echo "Not set")"
-echo "Client ID: $(grep "^IB_CLIENT_ID=" .env | cut -d'=' -f2 2>/dev/null || echo "Not set")"
-echo ""
-
 print_info "Next steps:"
 echo "1. Ensure your IB Gateway is running on the remote host"
-echo "2. Make sure port 4002 is accessible from this server"
+echo "2. Make sure port $(read_env_var 'IB_PORT' '4002') is accessible from this server"
 echo "3. Run './deploy-tradingapp.sh deploy' to deploy with new configuration"
 echo "4. Run './deploy-tradingapp.sh test' to test all connections" 
