@@ -32,10 +32,19 @@ else
 fi
 echo ""
 
-# Get current values (handle cases where variables are appended without newlines)
-CURRENT_IB_HOST=$(grep -o "IB_HOST=[^[:space:]]*" .env 2>/dev/null | cut -d'=' -f2 || echo "")
-CURRENT_IB_PORT=$(grep -o "IB_PORT=[^[:space:]]*" .env 2>/dev/null | cut -d'=' -f2 || echo "4002")
-CURRENT_IB_CLIENT_ID=$(grep -o "IB_CLIENT_ID=[^[:space:]]*" .env 2>/dev/null | cut -d'=' -f2 || echo "1")
+# Get current values (handle cases where variables are joined together)
+CURRENT_IB_HOST=$(grep -o "IB_HOST=[^[:space:]]*" .env 2>/dev/null | head -1 | cut -d'=' -f2 || echo "")
+CURRENT_IB_PORT=$(grep -o "IB_PORT=[^[:space:]]*" .env 2>/dev/null | head -1 | cut -d'=' -f2 || echo "4002")
+CURRENT_IB_CLIENT_ID=$(grep -o "IB_CLIENT_ID=[^[:space:]]*" .env 2>/dev/null | head -1 | cut -d'=' -f2 || echo "1")
+
+# Handle the case where IB_HOST is joined to another variable
+if [ -z "$CURRENT_IB_HOST" ]; then
+    # Look for patterns like REDIS_PORT=6379IB_HOST=10.7.3.21
+    JOINED_LINE=$(grep "IB_HOST=" .env 2>/dev/null | head -1 || echo "")
+    if [[ "$JOINED_LINE" =~ IB_HOST=([^[:space:]]*) ]]; then
+        CURRENT_IB_HOST="${BASH_REMATCH[1]}"
+    fi
+fi
 
 echo -e "${BLUE}Current Configuration:${NC}"
 echo "IB Gateway IP: ${CURRENT_IB_HOST:-Not set}"
@@ -54,24 +63,37 @@ IB_GATEWAY_PORT=${IB_GATEWAY_PORT:-$CURRENT_IB_PORT}
 read -p "Client ID [$CURRENT_IB_CLIENT_ID]: " IB_CLIENT_ID
 IB_CLIENT_ID=${IB_CLIENT_ID:-$CURRENT_IB_CLIENT_ID}
 
-# Update .env file
-echo -e "${BLUE}Updating .env file...${NC}"
+# Update .env file with proper formatting
+echo -e "${BLUE}Reformatting .env file...${NC}"
 
-# Remove existing lines if they exist (handle cases where they're appended)
-sed -i 's/IB_HOST=[^[:space:]]*//g' .env 2>/dev/null || true
-sed -i 's/IB_PORT=[^[:space:]]*//g' .env 2>/dev/null || true
-sed -i 's/IB_CLIENT_ID=[^[:space:]]*//g' .env 2>/dev/null || true
+# Create a properly formatted .env file
+cat > .env.new << EOF
+# Backend/Frontend
+NODE_ENV=production
+PORT=4000
+FRONTEND_URL=http://10.7.3.20:3000
+BACKEND_URL=http://10.7.3.20:4000
+IB_SERVICE_URL=http://10.7.3.20:8000
 
-# Clean up the .env file (remove trailing spaces and ensure proper formatting)
-sed -i 's/[[:space:]]*$//' .env 2>/dev/null || true
-sed -i '/^$/d' .env 2>/dev/null || true
+# PostgreSQL
+POSTGRES_USER=tradinguser
+POSTGRES_PASSWORD=tradingpass
+POSTGRES_DB=tradingdb
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
 
-# Add new lines
-echo "" >> .env
-echo "# Interactive Brokers Configuration" >> .env
-echo "IB_HOST=$IB_GATEWAY_IP" >> .env
-echo "IB_PORT=$IB_GATEWAY_PORT" >> .env
-echo "IB_CLIENT_ID=$IB_CLIENT_ID" >> .env
+# Redis
+REDIS_HOST=redis
+REDIS_PORT=6379
+
+# Interactive Brokers Configuration
+IB_HOST=$IB_GATEWAY_IP
+IB_PORT=$IB_GATEWAY_PORT
+IB_CLIENT_ID=$IB_CLIENT_ID
+EOF
+
+# Replace the old .env file with the new one
+mv .env.new .env
 
 echo -e "${GREEN}✅ Configuration updated successfully!${NC}"
 echo ""
