@@ -38,14 +38,45 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
-# Get current IB_HOST value
-CURRENT_IB_HOST=$(grep "^IB_HOST=" .env | cut -d'=' -f2)
+# Function to ensure required environment variables exist
+ensure_env_vars() {
+    local missing_vars=()
+    
+    # Check for required variables
+    if ! grep -q "^IB_PORT=" .env; then
+        missing_vars+=("IB_PORT")
+    fi
+    
+    if ! grep -q "^IB_CLIENT_ID=" .env; then
+        missing_vars+=("IB_CLIENT_ID")
+    fi
+    
+    # Add missing variables with defaults
+    for var in "${missing_vars[@]}"; do
+        case $var in
+            "IB_PORT")
+                echo "IB_PORT=4002" >> .env
+                print_info "Added IB_PORT=4002"
+                ;;
+            "IB_CLIENT_ID")
+                echo "IB_CLIENT_ID=1" >> .env
+                print_info "Added IB_CLIENT_ID=1"
+                ;;
+        esac
+    done
+}
+
+# Ensure all required variables exist
+ensure_env_vars
+
+# Get current IB_HOST value (handle empty or missing values)
+CURRENT_IB_HOST=$(grep "^IB_HOST=" .env | cut -d'=' -f2 2>/dev/null || echo "")
 
 print_info "Current IB_HOST configuration: $CURRENT_IB_HOST"
 echo ""
 
-# Check if it's still the default value
-if [[ "$CURRENT_IB_HOST" == "localhost" || "$CURRENT_IB_HOST" == "YOUR_IB_GATEWAY_IP" ]]; then
+# Check if it's still the default value or empty
+if [[ -z "$CURRENT_IB_HOST" || "$CURRENT_IB_HOST" == "localhost" || "$CURRENT_IB_HOST" == "YOUR_IB_GATEWAY_IP" ]]; then
     print_warning "IB_HOST is still set to default value"
     echo ""
     
@@ -69,7 +100,13 @@ if [[ "$CURRENT_IB_HOST" == "localhost" || "$CURRENT_IB_HOST" == "YOUR_IB_GATEWA
     
     # Update the .env file
     print_info "Updating .env file..."
-    sed -i "s/^IB_HOST=.*/IB_HOST=$IB_GATEWAY_IP/" .env
+    if grep -q "^IB_HOST=" .env; then
+        # Update existing line
+        sed -i "s/^IB_HOST=.*/IB_HOST=$IB_GATEWAY_IP/" .env
+    else
+        # Add new line
+        echo "IB_HOST=$IB_GATEWAY_IP" >> .env
+    fi
     
     print_status "IB_HOST updated to: $IB_GATEWAY_IP"
     echo ""
@@ -113,7 +150,13 @@ else
                 exit 1
             fi
             
-            sed -i "s/^IB_HOST=.*/IB_HOST=$IB_GATEWAY_IP/" .env
+            if grep -q "^IB_HOST=" .env; then
+                # Update existing line
+                sed -i "s/^IB_HOST=.*/IB_HOST=$IB_GATEWAY_IP/" .env
+            else
+                # Add new line
+                echo "IB_HOST=$IB_GATEWAY_IP" >> .env
+            fi
             print_status "IB_HOST updated to: $IB_GATEWAY_IP"
             ;;
         3)
@@ -130,9 +173,9 @@ fi
 echo ""
 print_info "Configuration Summary:"
 echo "=========================="
-echo "IB Gateway IP: $(grep "^IB_HOST=" .env | cut -d'=' -f2)"
-echo "IB Gateway Port: $(grep "^IB_PORT=" .env | cut -d'=' -f2)"
-echo "Client ID: $(grep "^IB_CLIENT_ID=" .env | cut -d'=' -f2)"
+echo "IB Gateway IP: $(grep "^IB_HOST=" .env | cut -d'=' -f2 2>/dev/null || echo "Not set")"
+echo "IB Gateway Port: $(grep "^IB_PORT=" .env | cut -d'=' -f2 2>/dev/null || echo "Not set")"
+echo "Client ID: $(grep "^IB_CLIENT_ID=" .env | cut -d'=' -f2 2>/dev/null || echo "Not set")"
 echo ""
 
 print_info "Next steps:"
