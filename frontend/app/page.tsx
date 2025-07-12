@@ -1,68 +1,42 @@
 'use client';
 
-import Link from 'next/link';
-import { useEffect, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
-import TradingChart from './components/TradingChart';
+import React from 'react';
+import MarketDataFilter from './components/MarketDataFilter';
 
 export default function HomePage() {
-  const [connectionStatus, setConnectionStatus] = useState('Connecting...');
-  const [socket, setSocket] = useState<Socket | null>(null);
-
-  useEffect(() => {
-    // Use the backend URL from environment or default to localhost
-    const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
-    const newSocket = io(backendUrl);
-    setSocket(newSocket);
-
-    newSocket.on('connect', () => {
-      setConnectionStatus('Connected');
-      console.log('Connected to backend');
-    });
-
-    newSocket.on('disconnect', () => {
-      setConnectionStatus('Disconnected');
-      console.log('Disconnected from backend');
-    });
-
-    return () => {
-      newSocket.close();
-    };
-  }, []);
-
   return (
-    <main className="min-h-screen bg-gray-100">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="bg-white shadow-sm border-b border-gray-200 px-6 py-4">
-          <div className="flex justify-between items-center">
-            <h1 className="text-3xl font-bold text-gray-900">TradingApp</h1>
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <header className="bg-white shadow-sm border-b">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center py-6">
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">Trading App</h1>
+              <p className="text-sm text-gray-600">Interactive Brokers Market Data</p>
+            </div>
             <div className="flex items-center space-x-4">
-              <div className={`px-3 py-1 rounded-full text-sm font-medium ${
-                connectionStatus === 'Connected' ? 'bg-green-100 text-green-800' : 
-                connectionStatus === 'Connecting...' ? 'bg-yellow-100 text-yellow-800' :
-                'bg-red-100 text-red-800'
-              }`}>
-                {connectionStatus}
+              <div className="text-sm text-gray-500">
+                Connected to IB Gateway
               </div>
-              <Link 
-                href="/account" 
-                className="bg-blue-500 hover:bg-blue-600 text-white font-medium py-2 px-4 rounded-md transition-colors"
-              >
-                Account
-              </Link>
             </div>
           </div>
         </div>
+      </header>
 
-        {/* Main Trading Chart */}
-        <div className="p-6">
-          <TradingChart 
-            onTimeframeChange={(timeframe) => console.log('Timeframe changed:', timeframe)}
-            onSymbolChange={(symbol) => console.log('Symbol changed:', symbol)}
-          />
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="mb-8">
+          <h2 className="text-lg font-medium text-gray-900 mb-2">
+            Market Data Search & Filter
+          </h2>
+          <p className="text-gray-600">
+            Search for stocks, options, futures, and other financial instruments using Interactive Brokers data.
+          </p>
         </div>
-      </div>
-    </main>
+
+        {/* Market Data Filter Component */}
+        <MarketDataFilter />
+      </main>
+    </div>
   );
 } 

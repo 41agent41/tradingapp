@@ -12,6 +12,15 @@ interface MarketDataQuery {
   period: string;
 }
 
+// Interface for search request parameters
+interface SearchQuery {
+  symbol: string;
+  secType: string;
+  exchange?: string;
+  currency?: string;
+  searchByName?: boolean;
+}
+
 // Interface for candlestick data
 interface CandlestickBar {
   time: number;
@@ -21,6 +30,139 @@ interface CandlestickBar {
   close: number;
   volume: number;
 }
+
+// Contract search endpoint
+router.post('/search', async (req: Request, res: Response) => {
+  try {
+    const { symbol, secType, exchange, currency, searchByName } = req.body as SearchQuery;
+
+    // Validate required parameters
+    if (!symbol || !secType) {
+      return res.status(400).json({
+        error: 'Missing required parameters',
+        required: ['symbol', 'secType'],
+        received: { symbol, secType, exchange, currency, searchByName }
+      });
+    }
+
+    // Validate symbol - basic validation
+    if (typeof symbol !== 'string' || symbol.trim().length === 0) {
+      return res.status(400).json({
+        error: 'Invalid symbol format. Symbol must be a non-empty string.',
+        symbol: symbol
+      });
+    }
+
+    // Validate security type
+    const validSecTypes = ['STK', 'OPT', 'FUT', 'CASH', 'BOND', 'CFD', 'CMDTY', 'CRYPTO', 'WAR', 'FUND', 'IND', 'BAG'];
+    if (!validSecTypes.includes(secType)) {
+      return res.status(400).json({
+        error: 'Invalid security type',
+        valid_secTypes: validSecTypes,
+        received: secType
+      });
+    }
+
+    console.log(`Searching contracts for ${symbol} - ${secType}`);
+
+    // Request contract search from IB service
+    const searchPayload = {
+      symbol: symbol.trim().toUpperCase(),
+      secType: secType,
+      name: searchByName || false
+    };
+
+    const response = await axios.post(`${IB_SERVICE_URL}/contract/search`, searchPayload, {
+      timeout: 30000 // 30 second timeout for search
+    });
+
+    if (response.data.error) {
+      return res.status(500).json({
+        error: 'IB Service returned error',
+        detail: response.data.error,
+        ib_service_url: `${IB_SERVICE_URL}/contract/search`
+      });
+    }
+
+    // Process and filter results based on additional criteria
+    let results = response.data.results || response.data || [];
+    
+    // Ensure results is an array
+    if (!Array.isArray(results)) {
+      results = [];
+    }
+
+    // Filter by exchange if specified
+    if (exchange && exchange !== 'SMART') {
+      results = results.filter((contract: any) => {
+        // Check if exchange matches in sections or description
+        if (contract.sections) {
+          return contract.sections.some((section: any) => 
+            section.exchange && section.exchange.includes(exchange)
+          );
+        }
+        return contract.description && contract.description.includes(exchange);
+      });
+    }
+
+    // Filter by currency if specified
+    if (currency) {
+      results = results.filter((contract: any) => {
+        return contract.currency === currency || 
+               contract.description?.includes(currency) ||
+               !contract.currency; // Include contracts without currency specified
+      });
+    }
+
+    // Transform results to a consistent format
+    const transformedResults = results.map((contract: any) => {
+      // Extract the relevant section for the requested secType
+      let relevantSection = null;
+      if (contract.sections) {
+        relevantSection = contract.sections.find((section: any) => section.secType === secType);
+      }
+
+      return {
+        conid: contract.conid,
+        symbol: contract.symbol,
+        companyName: contract.companyName || contract.symbol,
+        description: contract.description || '',
+        secType: secType,
+        currency: contract.currency || currency || '',
+        exchange: relevantSection?.exchange || contract.exchange || exchange || '',
+        sections: contract.sections || []
+      };
+    });
+
+    // Return the processed results
+    res.json({
+      symbol: symbol.toUpperCase(),
+      secType,
+      exchange: exchange || 'ANY',
+      currency: currency || 'ANY',
+      searchByName: searchByName || false,
+      results: transformedResults,
+      count: transformedResults.length,
+      source: 'Interactive Brokers',
+      last_updated: new Date().toISOString()
+    });
+
+  } catch (error: any) {
+    console.error('Error searching contracts:', error);
+    
+    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
+    const statusCode = error.response?.status || 500;
+    
+    res.status(statusCode).json({
+      error: 'Failed to search contracts',
+      detail: errorMessage,
+      ib_service_status: statusCode,
+      ib_service_url: `${IB_SERVICE_URL}/contract/search`,
+      symbol: req.body.symbol,
+      secType: req.body.secType
+    });
+  }
+});
 
 // Get historical market data
 router.get('/history', async (req: Request, res: Response) => {

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import os
 import threading
+from pydantic import BaseModel
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -41,6 +42,14 @@ connection_status = {
     "client_id": int(os.getenv("IB_CLIENT_ID", "1")),
     "last_error": None
 }
+
+# Request models
+class ContractSearchRequest(BaseModel):
+    symbol: str
+    secType: str
+    name: Optional[bool] = False
+    exchange: Optional[str] = None
+    currency: Optional[str] = None
 
 def connect_to_ib_sync():
     """Synchronous function to connect to IB Gateway"""
@@ -144,6 +153,7 @@ async def root():
             "health": "/health",
             "connection": "/connection",
             "market_data": "/market-data/*",
+            "contract": "/contract/*",
             "account": "/account"
         }
     }
@@ -192,6 +202,102 @@ async def connect():
     except Exception as e:
         logger.error(f"Connection attempt failed: {str(e)}")
         raise HTTPException(status_code=503, detail=f"Connection failed: {str(e)}")
+
+@app.post("/contract/search")
+async def search_contracts(request: ContractSearchRequest):
+    """Search for contracts using IB API"""
+    
+    if not ib_client or not ib_client.isConnected():
+        raise HTTPException(status_code=503, detail="Not connected to IB Gateway")
+    
+    try:
+        # Validate inputs
+        if not request.symbol or len(request.symbol) > 10:
+            raise HTTPException(status_code=400, detail="Invalid symbol")
+        
+        # Valid security types
+        valid_sectypes = ['STK', 'OPT', 'FUT', 'CASH', 'BOND', 'CFD', 'CMDTY', 'CRYPTO', 'WAR', 'FUND', 'IND', 'BAG']
+        if request.secType not in valid_sectypes:
+            raise HTTPException(status_code=400, detail=f"Invalid secType. Must be one of: {valid_sectypes}")
+        
+        logger.info(f"Searching for contracts: symbol={request.symbol}, secType={request.secType}, name={request.name}")
+        
+        # Create a base contract for search
+        contract = Contract()
+        contract.symbol = request.symbol.upper()
+        contract.secType = request.secType
+        
+        if request.currency:
+            contract.currency = request.currency.upper()
+        elif request.secType == 'STK':
+            contract.currency = 'USD'  # Default for stocks
+        
+        if request.exchange:
+            contract.exchange = request.exchange.upper()
+        elif request.secType == 'STK':
+            contract.exchange = 'SMART'  # Default for stocks
+        
+        # Use reqContractDetails to search for contracts
+        try:
+            contract_details = ib_client.reqContractDetails(contract)
+            
+            if not contract_details:
+                # If no exact match, try a more flexible search
+                logger.info(f"No exact match found, trying flexible search")
+                
+                # For stocks, try different exchanges
+                if request.secType == 'STK':
+                    contract.exchange = ''  # Clear exchange for broader search
+                    contract_details = ib_client.reqContractDetails(contract)
+            
+            # Transform results to match expected format
+            results = []
+            for detail in contract_details:
+                contract_obj = detail.contract
+                
+                # Create result entry
+                result_entry = {
+                    "conid": str(contract_obj.conId),
+                    "symbol": contract_obj.symbol,
+                    "companyName": detail.longName or contract_obj.symbol,
+                    "description": f"{contract_obj.primaryExchange or contract_obj.exchange}",
+                    "secType": contract_obj.secType,
+                    "currency": contract_obj.currency,
+                    "exchange": contract_obj.exchange,
+                    "primaryExchange": contract_obj.primaryExchange,
+                    "sections": [
+                        {
+                            "secType": contract_obj.secType,
+                            "exchange": contract_obj.exchange,
+                            "currency": contract_obj.currency
+                        }
+                    ]
+                }
+                results.append(result_entry)
+            
+            logger.info(f"Found {len(results)} contracts for {request.symbol}")
+            
+            return {
+                "results": results,
+                "count": len(results),
+                "symbol": request.symbol.upper(),
+                "secType": request.secType,
+                "searchByName": request.name,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+        except Exception as search_error:
+            logger.error(f"Contract search error: {str(search_error)}")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No contracts found for {request.symbol} ({request.secType}): {str(search_error)}"
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in contract search: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 def safe_float(value, default=0.0):
     """Safely convert value to float"""
@@ -267,36 +373,28 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "90D"):
         # Convert to standard format
         formatted_bars = []
         for bar in bars:
-            try:
-                formatted_bar = {
-                    "time": int(bar.date.timestamp()),
-                    "open": safe_float(bar.open),
-                    "high": safe_float(bar.high),
-                    "low": safe_float(bar.low),
-                    "close": safe_float(bar.close),
-                    "volume": safe_int(bar.volume)
-                }
-                formatted_bars.append(formatted_bar)
-            except Exception as e:
-                logger.warning(f"Skipping invalid bar: {e}")
-                continue
+            formatted_bars.append({
+                "time": int(bar.date.timestamp()),
+                "open": safe_float(bar.open),
+                "high": safe_float(bar.high),
+                "low": safe_float(bar.low),
+                "close": safe_float(bar.close),
+                "volume": safe_int(bar.volume)
+            })
         
         return {
             "symbol": symbol.upper(),
             "timeframe": timeframe,
             "period": period,
             "bars": formatted_bars,
-            "count": len(formatted_bars),
-            "source": "Interactive Brokers",
-            "last_updated": datetime.utcnow().isoformat(),
-            "version": "fallback"
+            "count": len(formatted_bars)
         }
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to fetch historical data for {symbol}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch historical data: {str(e)}")
 
 @app.get("/market-data/realtime")
 async def get_realtime_data(symbol: str):
@@ -338,28 +436,23 @@ async def get_realtime_data(symbol: str):
 
 @app.post("/market-data/subscribe")
 async def subscribe_market_data(request: dict):
-    """Subscribe to market data"""
+    """Subscribe to real-time market data"""
     symbol = request.get("symbol")
     if not symbol:
         raise HTTPException(status_code=400, detail="Symbol is required")
     
-    return {
-        "message": f"Subscribed to {symbol}",
-        "symbol": symbol.upper(),
-        "note": "Basic subscription - rebuild Docker image for full features"
-    }
+    # TODO: Implement subscription logic
+    return {"message": f"Subscribed to {symbol}", "status": "pending"}
 
 @app.post("/market-data/unsubscribe")
 async def unsubscribe_market_data(request: dict):
-    """Unsubscribe from market data"""
+    """Unsubscribe from real-time market data"""
     symbol = request.get("symbol")
     if not symbol:
         raise HTTPException(status_code=400, detail="Symbol is required")
     
-    return {
-        "message": f"Unsubscribed from {symbol}",
-        "symbol": symbol.upper()
-    }
+    # TODO: Implement unsubscription logic
+    return {"message": f"Unsubscribed from {symbol}", "status": "completed"}
 
 @app.get("/account")
 async def get_account_info():
@@ -369,20 +462,16 @@ async def get_account_info():
         raise HTTPException(status_code=503, detail="Not connected to IB Gateway")
     
     try:
-        account_summary = ib_client.accountSummary()
+        # Get account summary
+        account_values = ib_client.accountSummary()
         
-        account_data = {}
-        for item in account_summary:
-            account_data[item.tag] = item.value
+        account_info = {}
+        for item in account_values:
+            account_info[item.tag] = item.value
         
         return {
-            "account_id": account_data.get('AccountCode', 'Unknown'),
-            "net_liquidation": safe_float(account_data.get('NetLiquidation', 0)),
-            "total_cash": safe_float(account_data.get('TotalCashValue', 0)),
-            "buying_power": safe_float(account_data.get('BuyingPower', 0)),
-            "currency": account_data.get('Currency', 'USD'),
-            "timestamp": datetime.utcnow().isoformat(),
-            "version": "fallback"
+            "account_info": account_info,
+            "timestamp": datetime.utcnow().isoformat()
         }
         
     except Exception as e:
