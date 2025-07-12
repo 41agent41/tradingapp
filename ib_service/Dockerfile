@@ -65,5 +65,5 @@ ENV PYTHONUNBUFFERED=1
 # ENV IB_HOST, IB_PORT, IB_CLIENT_ID set by docker-compose
 ENV IB_LOG_LEVEL=INFO
 
-# Run the enhanced application
-CMD ["python", "main_enhanced.py"] 
+# Run the improved application
+CMD ["python", "main.py"] 
