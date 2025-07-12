@@ -15,7 +15,7 @@ const io = new SocketIOServer(server, {
   }
 });
 
-const PORT = process.env.PORT || 4000;
+const PORT = (process.env.PORT ? parseInt(process.env.PORT, 10) : 4000);
 const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
 
 // Middleware
