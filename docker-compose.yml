@@ -53,7 +53,7 @@ services:
       - IB_PORT=${IB_PORT:-4002}
       - IB_CLIENT_ID=${IB_CLIENT_ID:-1}
       - IB_LOG_LEVEL=${IB_LOG_LEVEL:-INFO}
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - IB_CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
     ports:
       - "${IB_SERVICE_PORT:-8000}:8000"
     networks:
