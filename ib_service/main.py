@@ -192,6 +192,33 @@ async def root():
     }
 
 
+@app.get("/debug")
+async def debug_config():
+    """Debug endpoint to show environment variables and configuration"""
+    import os
+    
+    # Get all IB_ environment variables
+    ib_env_vars = {k: v for k, v in os.environ.items() if k.startswith('IB_')}
+    
+    # Get current configuration values
+    current_config = {
+        "ib_host": config.ib_host,
+        "ib_port": config.ib_port,
+        "ib_client_id": config.ib_client_id,
+        "ib_timeout": config.ib_timeout,
+        "max_connections": config.max_connections,
+        "data_cache_ttl": config.data_cache_ttl,
+        "rate_limit_requests_per_minute": config.rate_limit_requests_per_minute
+    }
+    
+    return {
+        "environment_variables": ib_env_vars,
+        "current_config": current_config,
+        "env_file_loaded": os.path.exists("/app/.env"),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
 @app.get("/health")
 async def health_check():
     """Comprehensive health check"""

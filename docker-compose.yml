@@ -54,8 +54,14 @@ services:
       - IB_CLIENT_ID=${IB_CLIENT_ID:-1}
       - IB_LOG_LEVEL=${IB_LOG_LEVEL:-INFO}
       - IB_CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - IB_TIMEOUT=${IB_TIMEOUT:-30}
+      - IB_MAX_CONNECTIONS=${IB_MAX_CONNECTIONS:-5}
+      - IB_DATA_CACHE_TTL=${IB_DATA_CACHE_TTL:-300}
+      - IB_RATE_LIMIT_REQUESTS_PER_MINUTE=${IB_RATE_LIMIT_REQUESTS_PER_MINUTE:-100}
     ports:
       - "${IB_SERVICE_PORT:-8000}:8000"
+    volumes:
+      - ./.env:/app/.env:ro
     networks:
       - tradingapp-network
     restart: unless-stopped
