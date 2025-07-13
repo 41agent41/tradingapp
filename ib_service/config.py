@@ -85,7 +85,23 @@ class IBServiceConfig(BaseSettings):
         env_prefix = "IB_"
         case_sensitive = False
         env_file = ".env"
+        env_file_encoding = "utf-8"
 
 
-# Global configuration instance
-config = IBServiceConfig() 
+def get_config() -> IBServiceConfig:
+    """Get configuration instance with proper environment variable loading"""
+    # Force reload of environment variables
+    import os
+    from pydantic_settings import SettingsConfigDict
+    
+    # Create config with explicit settings
+    return IBServiceConfig(
+        _env_file=".env",
+        _env_file_encoding="utf-8",
+        _env_prefix="IB_",
+        _case_sensitive=False
+    )
+
+
+# Global configuration instance - use function to ensure proper loading
+config = get_config() 
