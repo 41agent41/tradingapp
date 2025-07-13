@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, Response
 from ib_insync import Contract, Stock, util
 
 # Import our improved components
-from config import config
+from config import get_config
 from models import (
     MarketDataRequest, HistoricalDataResponse, RealTimeQuote,
     ConnectionStatus, HealthStatus, ErrorResponse, AccountSummary,
@@ -26,6 +26,9 @@ from models import (
 )
 from connection_manager import connection_pool, get_connection_status, test_connection
 from data_processor import data_processor
+
+# Get configuration dynamically
+config = get_config()
 
 
 # Configure structured logging
