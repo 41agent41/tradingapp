@@ -18,8 +18,10 @@ from models import (
     DataQualityMetrics, MarketDataRequest, safe_float, safe_int, 
     validate_price_data
 )
-from config import config
+from config import get_config
 
+# Get configuration dynamically
+config = get_config()
 
 logger = structlog.get_logger(__name__)
 

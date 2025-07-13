@@ -13,8 +13,11 @@ import threading
 import concurrent.futures
 from contextlib import asynccontextmanager
 
-from config import config
+from config import get_config
 from models import ConnectionStatus
+
+# Get configuration dynamically
+config = get_config()
 
 
 logger = structlog.get_logger(__name__)
