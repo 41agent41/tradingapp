@@ -93,8 +93,24 @@ def get_config() -> IBServiceConfig:
     # Force reload of environment variables
     import os
     
-    # Create config with explicit settings
+    # Get environment variables directly
+    ib_host = os.environ.get('IB_HOST', 'localhost')
+    ib_port = int(os.environ.get('IB_PORT', '4002'))
+    ib_client_id = int(os.environ.get('IB_CLIENT_ID', '1'))
+    ib_timeout = int(os.environ.get('IB_TIMEOUT', '30'))
+    max_connections = int(os.environ.get('IB_MAX_CONNECTIONS', '5'))
+    data_cache_ttl = int(os.environ.get('IB_DATA_CACHE_TTL', '300'))
+    rate_limit = int(os.environ.get('IB_RATE_LIMIT_REQUESTS_PER_MINUTE', '100'))
+    
+    # Create config with explicit values
     return IBServiceConfig(
+        ib_host=ib_host,
+        ib_port=ib_port,
+        ib_client_id=ib_client_id,
+        ib_timeout=ib_timeout,
+        max_connections=max_connections,
+        data_cache_ttl=data_cache_ttl,
+        rate_limit_requests_per_minute=rate_limit,
         _env_file=".env",
         _env_file_encoding="utf-8",
         _env_prefix="IB_",
