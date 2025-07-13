@@ -2,7 +2,6 @@
 Improved IB Service with connection pooling, data validation, and proper async patterns
 """
 
-import asyncio
 import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
@@ -82,7 +81,7 @@ async def lifespan(app: FastAPI):
     try:
         # Initialize connection pool (non-blocking)
         try:
-            await connection_pool.initialize()
+            connection_pool.initialize()
             logger.info("Connection pool initialized successfully")
         except Exception as e:
             logger.warning("Connection pool initialization failed, will retry on demand", error=str(e))
@@ -108,7 +107,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down IB Service")
     
     try:
-        await connection_pool.shutdown()
+        connection_pool.shutdown()
         await data_processor.shutdown()
         logger.info("IB Service shutdown complete")
     except Exception as e:
@@ -230,7 +229,7 @@ async def health_check():
     
     # Check connection pool status (with error handling)
     try:
-        pool_status = await connection_pool.get_status()
+        pool_status = connection_pool.get_status()
         pool_healthy = pool_status["healthy_connections"] > 0
     except Exception as e:
         logger.warning("Failed to get connection pool status", error=str(e))
@@ -239,7 +238,7 @@ async def health_check():
     
     # Check IB Gateway connectivity (with error handling)
     try:
-        connection_test = await test_connection()
+        connection_test = test_connection()
         gateway_healthy = connection_test
     except Exception as e:
         logger.warning("Failed to test IB Gateway connection", error=str(e))
@@ -280,7 +279,7 @@ async def health_check():
 async def get_connection_info():
     """Get detailed connection status"""
     try:
-        return await get_connection_status()
+        return get_connection_status()
     except Exception as e:
         logger.warning("Failed to get connection status", error=str(e))
         # Return basic status if connection pool is not available
@@ -298,7 +297,7 @@ async def get_connection_info():
 async def connect_to_ib():
     """Force connection to IB Gateway"""
     try:
-        success = await test_connection()
+        success = test_connection()
         if success:
             CONNECTION_STATUS.set(1)
             return {"message": "Successfully connected to IB Gateway", "connected": True}
@@ -338,12 +337,8 @@ async def get_historical_data(
             # Create contract
             contract = create_contract(request.symbol)
             
-            # Qualify contract using executor
-            loop = asyncio.get_event_loop()
-            qualified_contracts = await loop.run_in_executor(
-                None,
-                lambda: connection.ib_client.qualifyContracts(contract)
-            )
+            # Qualify contract synchronously
+            qualified_contracts = connection.ib_client.qualifyContracts(contract)
             
             if not qualified_contracts:
                 raise HTTPException(status_code=404, detail=f"Symbol {request.symbol} not found")
@@ -363,18 +358,15 @@ async def get_historical_data(
             
             ib_timeframe = ib_timeframe_map.get(request.timeframe, '1 hour')
             
-            # Request historical data using executor
-            bars = await loop.run_in_executor(
-                None,
-                lambda: connection.ib_client.reqHistoricalData(
-                    qualified_contract,
-                    endDateTime='',
-                    durationStr=request.period,
-                    barSizeSetting=ib_timeframe,
-                    whatToShow='TRADES',
-                    useRTH=True,
-                    formatDate=1
-                )
+            # Request historical data synchronously
+            bars = connection.ib_client.reqHistoricalData(
+                qualified_contract,
+                endDateTime='',
+                durationStr=request.period,
+                barSizeSetting=ib_timeframe,
+                whatToShow='TRADES',
+                useRTH=True,
+                formatDate=1
             )
             
             if not bars:
@@ -410,26 +402,20 @@ async def get_realtime_data(symbol: str):
         try:
             contract = create_contract(symbol)
             
-            # Qualify contract using executor
-            loop = asyncio.get_event_loop()
-            qualified_contracts = await loop.run_in_executor(
-                None,
-                lambda: connection.ib_client.qualifyContracts(contract)
-            )
+            # Qualify contract synchronously
+            qualified_contracts = connection.ib_client.qualifyContracts(contract)
             
             if not qualified_contracts:
                 raise HTTPException(status_code=404, detail=f"Symbol {symbol} not found")
             
             qualified_contract = qualified_contracts[0]
             
-            # Get ticker data using executor
-            ticker = await loop.run_in_executor(
-                None,
-                lambda: connection.ib_client.reqMktData(qualified_contract, '', False, False)
-            )
+            # Get ticker data synchronously
+            ticker = connection.ib_client.reqMktData(qualified_contract, '', False, False)
             
             # Wait for data with timeout
-            await asyncio.sleep(2)
+            import time
+            time.sleep(2)
             
             # Process real-time quote
             quote = await data_processor.process_realtime_quote(ticker, symbol.upper())
@@ -505,12 +491,8 @@ async def get_account_info():
         # Get connection synchronously
         connection = connection_pool.get_connection_sync()
         try:
-            # Request account summary using executor
-            loop = asyncio.get_event_loop()
-            account_summary = await loop.run_in_executor(
-                None,
-                lambda: connection.ib_client.accountSummary()
-            )
+            # Request account summary synchronously
+            account_summary = connection.ib_client.accountSummary()
             
             # Process account data
             account_data = {}
@@ -540,7 +522,7 @@ async def get_account_info():
 @app.get("/pool-status")
 async def get_pool_status():
     """Get connection pool detailed status"""
-    return await connection_pool.get_status()
+    return connection_pool.get_status()
 
 
 @app.get("/gateway-health")
@@ -548,7 +530,7 @@ async def get_gateway_health():
     """Get IB Gateway health status"""
     try:
         # Test connection to IB Gateway
-        connection_test = await test_connection()
+        connection_test = test_connection()
         
         if connection_test:
             return {

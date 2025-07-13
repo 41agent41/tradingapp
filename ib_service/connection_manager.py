@@ -2,7 +2,6 @@
 Simple connection manager for IB Gateway without complex async patterns
 """
 
-import asyncio
 import time
 from typing import Dict, List, Optional, Set
 from datetime import datetime, timedelta
@@ -12,7 +11,6 @@ from ib_insync import IB, Contract, Stock
 import threading
 import concurrent.futures
 import time
-from contextlib import asynccontextmanager
 
 from config import get_config
 from models import ConnectionStatus
@@ -171,13 +169,13 @@ class SimpleConnectionManager:
         self.connection_lock = threading.Lock()
         self.initialized = False
         
-    async def initialize(self):
+    def initialize(self):
         """Initialize the connection manager (no connections created)"""
         logger.info("Initializing simple connection manager")
         self.initialized = True
         logger.info("Connection manager initialized successfully")
     
-    async def shutdown(self):
+    def shutdown(self):
         """Shutdown the connection manager"""
         logger.info("Shutting down connection manager")
         
@@ -223,7 +221,7 @@ class SimpleConnectionManager:
         """Release a connection"""
         connection.in_use = False
     
-    async def get_status(self) -> Dict[str, any]:
+    def get_status(self) -> Dict[str, any]:
         """Get connection status information"""
         with self.connection_lock:
             healthy_connections = sum(
@@ -252,7 +250,7 @@ class SimpleConnectionManager:
 connection_pool = SimpleConnectionManager()
 
 
-async def get_connection_status() -> ConnectionStatus:
+def get_connection_status() -> ConnectionStatus:
     """Get current connection status"""
     if not connection_pool.initialized:
         return ConnectionStatus(
@@ -287,7 +285,7 @@ async def get_connection_status() -> ConnectionStatus:
     )
 
 
-async def test_connection() -> bool:
+def test_connection() -> bool:
     """Test if we can establish a connection to IB Gateway"""
     try:
         # Get or create connection synchronously
