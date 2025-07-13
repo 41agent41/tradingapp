@@ -276,14 +276,14 @@ rebuild_ib_service() {
         exit 1
     fi
     
-    # Restore enhanced version
-    print_info "Restoring enhanced main.py version..."
+    # Verify enhanced version is in place
+    print_info "Verifying enhanced main.py version..."
     cd ib_service
-    if [ -f "main_enhanced.py" ]; then
-        cp main_enhanced.py main.py
-        print_status "Enhanced version restored"
+    if [ -f "main.py" ]; then
+        print_status "Enhanced main.py is in place"
     else
-        print_warning "main_enhanced.py not found. Enhanced features may not be available."
+        print_error "main.py not found!"
+        exit 1
     fi
     cd ..
     
