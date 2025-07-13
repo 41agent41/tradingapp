@@ -176,28 +176,30 @@ class SimpleConnectionManager:
                 self.connections[client_id] = IBConnection(client_id)
             return self.connections[client_id]
     
-    @asynccontextmanager
-    async def get_connection(self):
-        """Get a connection (creates on demand)"""
+    def get_connection_sync(self):
+        """Get a connection synchronously (creates on demand)"""
         if not self.initialized:
-            await self.initialize()
+            # Initialize synchronously
+            logger.info("Initializing simple connection manager")
+            self.initialized = True
+            logger.info("Connection manager initialized successfully")
         
         # Use client ID 1 for simplicity
         client_id = 1
         connection = self._get_or_create_connection(client_id)
         
-        try:
-            # Ensure connection is healthy
-            if not connection.is_healthy():
-                success = connection.connect()
-                if not success:
-                    raise ConnectionPoolError(f"Failed to establish connection for client {client_id}")
-            
-            connection.in_use = True
-            yield connection
-            
-        finally:
-            connection.in_use = False
+        # Ensure connection is healthy
+        if not connection.is_healthy():
+            success = connection.connect()
+            if not success:
+                raise ConnectionPoolError(f"Failed to establish connection for client {client_id}")
+        
+        connection.in_use = True
+        return connection
+    
+    def release_connection(self, connection):
+        """Release a connection"""
+        connection.in_use = False
     
     async def get_status(self) -> Dict[str, any]:
         """Get connection status information"""
@@ -266,8 +268,19 @@ async def get_connection_status() -> ConnectionStatus:
 async def test_connection() -> bool:
     """Test if we can establish a connection to IB Gateway"""
     try:
-        async with connection_pool.get_connection() as connection:
-            return connection.is_healthy()
+        # Get or create connection synchronously
+        client_id = 1
+        connection = connection_pool._get_or_create_connection(client_id)
+        
+        # Test connection synchronously
+        if not connection.is_healthy():
+            success = connection.connect()
+            if not success:
+                logger.error("Connection test failed", error="Failed to establish connection")
+                return False
+        
+        return connection.is_healthy()
+        
     except Exception as e:
         logger.error("Connection test failed", error=str(e))
         return False 

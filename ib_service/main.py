@@ -332,7 +332,9 @@ async def get_historical_data(
     
     # Fetch from IB Gateway
     try:
-        async with connection_pool.get_connection() as connection:
+        # Get connection synchronously
+        connection = connection_pool.get_connection_sync()
+        try:
             # Create contract
             contract = create_contract(request.symbol)
             
@@ -386,6 +388,8 @@ async def get_historical_data(
                        bars_count=len(response.bars))
             
             return response
+        finally:
+            connection_pool.release_connection(connection)
             
     except HTTPException:
         raise
@@ -401,7 +405,9 @@ async def get_realtime_data(symbol: str):
     """Get real-time market data"""
     
     try:
-        async with connection_pool.get_connection() as connection:
+        # Get connection synchronously
+        connection = connection_pool.get_connection_sync()
+        try:
             contract = create_contract(symbol)
             
             # Qualify contract using executor
@@ -432,6 +438,8 @@ async def get_realtime_data(symbol: str):
                 raise HTTPException(status_code=404, detail=f"No real-time data available for {symbol}")
             
             return quote
+        finally:
+            connection_pool.release_connection(connection)
             
     except HTTPException:
         raise
@@ -494,7 +502,9 @@ async def get_account_info():
     """Get account information"""
     
     try:
-        async with connection_pool.get_connection() as connection:
+        # Get connection synchronously
+        connection = connection_pool.get_connection_sync()
+        try:
             # Request account summary using executor
             loop = asyncio.get_event_loop()
             account_summary = await loop.run_in_executor(
@@ -519,6 +529,8 @@ async def get_account_info():
                 gross_position_value=safe_float(account_data.get('GrossPositionValue', 0)),
                 currency=account_data.get('Currency', 'USD')
             )
+        finally:
+            connection_pool.release_connection(connection)
             
     except Exception as e:
         logger.error("Failed to fetch account info", error=str(e))
