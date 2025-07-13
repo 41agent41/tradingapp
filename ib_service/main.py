@@ -495,7 +495,7 @@ if __name__ == "__main__":
     import uvicorn
     
     uvicorn.run(
-        "main_improved:app",
+        "main:app",
         host=config.host,
         port=config.port,
         log_level=config.log_level.lower(),
