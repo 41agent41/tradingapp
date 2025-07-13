@@ -11,7 +11,6 @@ pydantic-settings==2.1.0
 asyncio-throttle==1.0.2
 tenacity==8.2.3
 structlog==23.2.0
-prometheus-client==0.19.0
 
 # Additional utilities
 python-dateutil==2.8.2

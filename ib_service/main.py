@@ -12,8 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from prometheus_client import Counter, Histogram, Gauge, generate_latest
-from prometheus_client.openmetrics.exposition import CONTENT_TYPE_LATEST
+
 
 from ib_insync import Contract, Stock, util
 
@@ -41,73 +40,30 @@ structlog.configure(
 
 logger = structlog.get_logger(__name__)
 
-# Prometheus metrics - Initialize with error handling
-def get_prometheus_metrics():
-    """Get or create Prometheus metrics with error handling"""
-    try:
-        # Check if metrics already exist to avoid duplicates
-        from prometheus_client import REGISTRY
-        existing_metrics = [m._name for m in REGISTRY._collector_to_names.keys()]
-        
-        metrics = {}
-        
-        if 'ib_service_requests_total' not in existing_metrics:
-            metrics['REQUEST_COUNT'] = Counter('ib_service_requests_total', 'Total requests', ['method', 'endpoint'])
-        else:
-            # Find existing metric
-            for collector in REGISTRY._collector_to_names.keys():
-                if hasattr(collector, '_name') and collector._name == 'ib_service_requests_total':
-                    metrics['REQUEST_COUNT'] = collector
-                    break
-        
-        if 'ib_service_request_duration_seconds' not in existing_metrics:
-            metrics['REQUEST_DURATION'] = Histogram('ib_service_request_duration_seconds', 'Request duration')
-        else:
-            for collector in REGISTRY._collector_to_names.keys():
-                if hasattr(collector, '_name') and collector._name == 'ib_service_request_duration_seconds':
-                    metrics['REQUEST_DURATION'] = collector
-                    break
-        
-        if 'ib_service_connection_status' not in existing_metrics:
-            metrics['CONNECTION_STATUS'] = Gauge('ib_service_connection_status', 'Connection status (1=connected, 0=disconnected)')
-        else:
-            for collector in REGISTRY._collector_to_names.keys():
-                if hasattr(collector, '_name') and collector._name == 'ib_service_connection_status':
-                    metrics['CONNECTION_STATUS'] = collector
-                    break
-        
-        if 'ib_service_data_quality_score' not in existing_metrics:
-            metrics['DATA_QUALITY_SCORE'] = Gauge('ib_service_data_quality_score', 'Data quality score', ['symbol'])
-        else:
-            for collector in REGISTRY._collector_to_names.keys():
-                if hasattr(collector, '_name') and collector._name == 'ib_service_data_quality_score':
-                    metrics['DATA_QUALITY_SCORE'] = collector
-                    break
-        
-        return metrics
-        
-    except Exception as e:
-        logger.warning("Failed to initialize Prometheus metrics, using dummy metrics", error=str(e))
-        # Return dummy metrics that don't do anything
-        class DummyMetric:
-            def inc(self, *args, **kwargs): pass
-            def observe(self, *args, **kwargs): pass
-            def set(self, *args, **kwargs): pass
-            def labels(self, *args, **kwargs): return self
-        
-        return {
-            'REQUEST_COUNT': DummyMetric(),
-            'REQUEST_DURATION': DummyMetric(),
-            'CONNECTION_STATUS': DummyMetric(),
-            'DATA_QUALITY_SCORE': DummyMetric()
-        }
+# Simple metrics tracking (no Prometheus)
+class SimpleMetrics:
+    def __init__(self):
+        self.request_count = 0
+        self.connection_status = 0
+    
+    def inc(self, *args, **kwargs):
+        self.request_count += 1
+    
+    def observe(self, *args, **kwargs):
+        pass
+    
+    def set(self, value, *args, **kwargs):
+        if 'connection_status' in str(args):
+            self.connection_status = value
+    
+    def labels(self, *args, **kwargs):
+        return self
 
-# Initialize metrics
-metrics = get_prometheus_metrics()
-REQUEST_COUNT = metrics['REQUEST_COUNT']
-REQUEST_DURATION = metrics['REQUEST_DURATION']
-CONNECTION_STATUS = metrics['CONNECTION_STATUS']
-DATA_QUALITY_SCORE = metrics['DATA_QUALITY_SCORE']
+# Initialize simple metrics
+REQUEST_COUNT = SimpleMetrics()
+REQUEST_DURATION = SimpleMetrics()
+CONNECTION_STATUS = SimpleMetrics()
+DATA_QUALITY_SCORE = SimpleMetrics()
 
 # Service state
 service_start_time = time.time()
@@ -242,7 +198,6 @@ async def root():
             "Caching with TTL",
             "Rate limiting",
             "Structured logging",
-            "Prometheus metrics",
             "Data quality monitoring"
         ]
     }
