@@ -91,20 +91,9 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("Data processor initialization failed, will retry on demand", error=str(e))
         
-        # Test initial connection (non-blocking)
-        try:
-            connection_test = await test_connection()
-            if connection_test:
-                logger.info("Initial connection test successful")
-                CONNECTION_STATUS.set(1)
-            else:
-                logger.warning("Initial connection test failed - will retry on demand")
-                CONNECTION_STATUS.set(0)
-        except Exception as e:
-            logger.warning("Initial connection test failed - will retry on demand", error=str(e))
-            CONNECTION_STATUS.set(0)
-        
-        logger.info("IB Service startup complete")
+        # Don't test initial connection - let it fail gracefully on first request
+        logger.info("IB Service startup complete - connections will be established on demand")
+        CONNECTION_STATUS.set(0)  # Start with disconnected status
         
     except Exception as e:
         logger.error("Failed to initialize IB Service", error=str(e))

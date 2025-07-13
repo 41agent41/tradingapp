@@ -1,5 +1,5 @@
 """
-Advanced connection manager for IB Gateway with pooling, heartbeat, and retry logic
+Simple connection manager for IB Gateway without complex async patterns
 """
 
 import asyncio
@@ -26,7 +26,7 @@ class ConnectionPoolError(Exception):
 
 
 class IBConnection:
-    """Individual IB connection wrapper with heartbeat monitoring"""
+    """Simple IB connection wrapper"""
     
     def __init__(self, client_id: int):
         self.client_id = client_id
@@ -36,10 +36,10 @@ class IBConnection:
         self.connection_time = None
         self.last_error = None
         self.in_use = False
-        self.lock = threading.Lock()  # Use threading lock instead of asyncio
+        self.lock = threading.Lock()
     
     def connect(self) -> bool:
-        """Connect to IB Gateway with simplified synchronous approach"""
+        """Connect to IB Gateway synchronously"""
         with self.lock:
             try:
                 if self.ib_client and self.ib_client.isConnected():
@@ -138,171 +138,91 @@ class IBConnection:
         return False
 
 
-class IBConnectionPool:
-    """Connection pool manager for IB Gateway connections"""
+class SimpleConnectionManager:
+    """Simple connection manager that creates connections on demand"""
     
     def __init__(self):
         self.connections: Dict[int, IBConnection] = {}
-        self.available_connections: asyncio.Queue = asyncio.Queue()
-        self.max_connections = config.max_connections
-        self.heartbeat_task: Optional[asyncio.Task] = None
-        self.pool_lock = asyncio.Lock()
+        self.connection_lock = threading.Lock()
         self.initialized = False
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_connections)
         
     async def initialize(self):
-        """Initialize the connection pool"""
-        async with self.pool_lock:
-            if self.initialized:
-                return
-            
-            logger.info("Initializing IB connection pool", 
-                       max_connections=self.max_connections)
-            
-            # Create connections
-            for i in range(1, self.max_connections + 1):
-                connection = IBConnection(client_id=i)
-                self.connections[i] = connection
-                await self.available_connections.put(connection)
-            
-            # Start heartbeat monitoring
-            self.heartbeat_task = asyncio.create_task(self._heartbeat_monitor())
-            self.initialized = True
-            
-            logger.info("Connection pool initialized successfully")
+        """Initialize the connection manager (no connections created)"""
+        logger.info("Initializing simple connection manager")
+        self.initialized = True
+        logger.info("Connection manager initialized successfully")
     
     async def shutdown(self):
-        """Shutdown the connection pool"""
-        logger.info("Shutting down connection pool")
+        """Shutdown the connection manager"""
+        logger.info("Shutting down connection manager")
         
-        # Cancel heartbeat task
-        if self.heartbeat_task:
-            self.heartbeat_task.cancel()
-            try:
-                await self.heartbeat_task
-            except asyncio.CancelledError:
-                pass
-        
-        # Disconnect all connections
-        for connection in self.connections.values():
-            connection.disconnect()
-        
-        # Shutdown executor
-        self.executor.shutdown(wait=True)
+        with self.connection_lock:
+            # Disconnect all connections
+            for connection in self.connections.values():
+                connection.disconnect()
+            
+            self.connections.clear()
         
         self.initialized = False
-        logger.info("Connection pool shutdown complete")
+        logger.info("Connection manager shutdown complete")
+    
+    def _get_or_create_connection(self, client_id: int) -> IBConnection:
+        """Get existing connection or create new one"""
+        with self.connection_lock:
+            if client_id not in self.connections:
+                self.connections[client_id] = IBConnection(client_id)
+            return self.connections[client_id]
     
     @asynccontextmanager
     async def get_connection(self):
-        """Get a connection from the pool with context manager"""
+        """Get a connection (creates on demand)"""
         if not self.initialized:
             await self.initialize()
         
-        connection = None
+        # Use client ID 1 for simplicity
+        client_id = 1
+        connection = self._get_or_create_connection(client_id)
+        
         try:
-            # Get available connection with timeout
-            connection = await asyncio.wait_for(
-                self.available_connections.get(), 
-                timeout=30.0
-            )
-            
-            # Ensure connection is healthy using executor
+            # Ensure connection is healthy
             if not connection.is_healthy():
-                success = await asyncio.get_event_loop().run_in_executor(
-                    self.executor, 
-                    self._ensure_connected_sync, 
-                    connection
-                )
+                success = connection.connect()
                 if not success:
-                    raise ConnectionPoolError(f"Failed to establish connection for client {connection.client_id}")
+                    raise ConnectionPoolError(f"Failed to establish connection for client {client_id}")
             
             connection.in_use = True
             yield connection
             
-        except asyncio.TimeoutError:
-            raise ConnectionPoolError("Timeout waiting for available connection")
-        
         finally:
-            if connection:
-                connection.in_use = False
-                await self.available_connections.put(connection)
-    
-    def _ensure_connected_sync(self, connection: IBConnection) -> bool:
-        """Ensure connection is established with retry logic (synchronous)"""
-        if connection.is_healthy():
-            return True
-        
-        @retry(
-            stop=stop_after_attempt(config.connection_retry_attempts),
-            wait=wait_exponential(
-                multiplier=config.connection_retry_delay,
-                max=config.connection_retry_max_delay
-            ),
-            retry=retry_if_exception_type((ConnectionPoolError, ConnectionRefusedError, TimeoutError))
-        )
-        def _connect_with_retry():
-            success = connection.connect()
-            if not success:
-                raise ConnectionPoolError(f"Connection failed for client {connection.client_id}")
-            return success
-        
-        try:
-            return _connect_with_retry()
-        except Exception as e:
-            logger.error("Failed to establish connection after retries", 
-                        client_id=connection.client_id, 
-                        error=str(e))
-            return False
-    
-    async def _heartbeat_monitor(self):
-        """Background task to monitor connection health"""
-        logger.info("Starting heartbeat monitor")
-        
-        while True:
-            try:
-                await asyncio.sleep(config.heartbeat_interval)
-                
-                # Check all connections using executor
-                for connection in self.connections.values():
-                    if connection.connected and not connection.in_use:
-                        await asyncio.get_event_loop().run_in_executor(
-                            self.executor,
-                            connection.heartbeat
-                        )
-                
-            except asyncio.CancelledError:
-                logger.info("Heartbeat monitor cancelled")
-                break
-            except Exception as e:
-                logger.error("Error in heartbeat monitor", error=str(e))
+            connection.in_use = False
     
     async def get_status(self) -> Dict[str, any]:
-        """Get pool status information"""
-        healthy_connections = sum(
-            1 for conn in self.connections.values() 
-            if conn.is_healthy()
-        )
-        
-        return {
-            "total_connections": len(self.connections),
-            "healthy_connections": healthy_connections,
-            "available_connections": self.available_connections.qsize(),
-            "connections": {
-                client_id: {
-                    "connected": conn.connected,
-                    "in_use": conn.in_use,
-                    "last_heartbeat": conn.last_heartbeat.isoformat() if conn.last_heartbeat else None,
-                    "connection_time": conn.connection_time.isoformat() if conn.connection_time else None,
-                    "last_error": conn.last_error
+        """Get connection status information"""
+        with self.connection_lock:
+            healthy_connections = sum(
+                1 for conn in self.connections.values() 
+                if conn.is_healthy()
+            )
+            
+            return {
+                "total_connections": len(self.connections),
+                "healthy_connections": healthy_connections,
+                "available_connections": len(self.connections),
+                "connections": {
+                    client_id: {
+                        "connected": conn.connected,
+                        "in_use": conn.in_use,
+                        "last_heartbeat": conn.last_heartbeat.isoformat() if conn.last_heartbeat else None,
+                        "connection_time": conn.connection_time.isoformat() if conn.connection_time else None,
+                        "last_error": conn.last_error
+                    }
+                    for client_id, conn in self.connections.items()
                 }
-                for client_id, conn in self.connections.items()
             }
-        }
 
 
-# Global connection pool instance
-connection_pool = IBConnectionPool()
+# Global connection manager instance
+connection_pool = SimpleConnectionManager()
 
 
 async def get_connection_status() -> ConnectionStatus:
@@ -313,20 +233,22 @@ async def get_connection_status() -> ConnectionStatus:
             host=config.ib_host,
             port=config.ib_port,
             client_id=0,
-            last_error="Connection pool not initialized"
+            last_error="Connection manager not initialized"
         )
     
-    # Get status of first healthy connection
-    for client_id, connection in connection_pool.connections.items():
-        if connection.is_healthy():
-            return ConnectionStatus(
-                connected=True,
-                host=config.ib_host,
-                port=config.ib_port,
-                client_id=client_id,
-                connection_time=connection.connection_time,
-                last_heartbeat=connection.last_heartbeat
-            )
+    # Get status of first connection
+    with connection_pool.connection_lock:
+        if connection_pool.connections:
+            client_id, connection = next(iter(connection_pool.connections.items()))
+            if connection.is_healthy():
+                return ConnectionStatus(
+                    connected=True,
+                    host=config.ib_host,
+                    port=config.ib_port,
+                    client_id=client_id,
+                    connection_time=connection.connection_time,
+                    last_heartbeat=connection.last_heartbeat
+                )
     
     # No healthy connections found
     return ConnectionStatus(
