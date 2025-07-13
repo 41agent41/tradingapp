@@ -66,13 +66,17 @@ class IBConnection:
                         logger.info(f"Connection attempt {attempt + 1}/{max_retries}", 
                                    client_id=self.client_id)
                         
-                        # Connect synchronously
+                        # Connect synchronously with detailed logging
+                        logger.info(f"Attempting connection to {config.ib_host}:{config.ib_port} with client ID {self.client_id}")
+                        
                         self.ib_client.connect(
                             host=config.ib_host,
                             port=config.ib_port,
                             clientId=self.client_id,
                             timeout=config.ib_timeout
                         )
+                        
+                        logger.info("Connection attempt completed, checking if connected...")
                         
                         if self.ib_client.isConnected():
                             self.connected = True

@@ -96,7 +96,7 @@ def get_config() -> IBServiceConfig:
     # Get environment variables directly
     ib_host = os.environ.get('IB_HOST', 'localhost')
     ib_port = int(os.environ.get('IB_PORT', '4002'))
-    ib_client_id = int(os.environ.get('IB_CLIENT_ID', '1'))
+    ib_client_id = int(os.environ.get('IB_CLIENT_ID', '999'))  # Use different client ID to avoid conflicts
     ib_timeout = int(os.environ.get('IB_TIMEOUT', '60'))  # Increased timeout to 60 seconds
     max_connections = int(os.environ.get('IB_MAX_CONNECTIONS', '5'))
     data_cache_ttl = int(os.environ.get('IB_DATA_CACHE_TTL', '300'))
