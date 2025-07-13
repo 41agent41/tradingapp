@@ -500,6 +500,41 @@ async def get_pool_status():
     return await connection_pool.get_status()
 
 
+@app.get("/gateway-health")
+async def get_gateway_health():
+    """Get IB Gateway health status"""
+    try:
+        # Test connection to IB Gateway
+        connection_test = await test_connection()
+        
+        if connection_test:
+            return {
+                "status": "healthy",
+                "gateway": "connected",
+                "host": config.ib_host,
+                "port": config.ib_port,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        else:
+            return {
+                "status": "unhealthy",
+                "gateway": "disconnected",
+                "host": config.ib_host,
+                "port": config.ib_port,
+                "error": "Connection refused - IB Gateway not accessible",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "gateway": "error",
+            "host": config.ib_host,
+            "port": config.ib_port,
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+
 if __name__ == "__main__":
     import uvicorn
     
