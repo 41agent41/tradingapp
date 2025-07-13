@@ -68,6 +68,16 @@ class IBServiceConfig(BaseSettings):
             raise ValueError(f'Log level must be one of: {valid_levels}')
         return v.upper()
     
+    @validator('cors_origins', pre=True)
+    def parse_cors_origins(cls, v):
+        if isinstance(v, str):
+            # Split by comma and strip whitespace
+            return [origin.strip() for origin in v.split(',') if origin.strip()]
+        elif isinstance(v, list):
+            return v
+        else:
+            return ["http://localhost:3000"]  # Default fallback
+    
     @validator('cors_origins')
     def validate_cors_origins(cls, v):
         if not v:
