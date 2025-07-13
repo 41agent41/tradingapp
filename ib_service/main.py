@@ -40,8 +40,8 @@ connection_status = {
 
 class MarketDataRequest(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=10)
-    timeframe: str = Field(..., regex=r'^(5min|15min|30min|1hour|4hour|8hour|1day)$')
-    period: str = Field(default="1Y", regex=r'^(1D|1W|1M|3M|6M|1Y)$')
+    timeframe: str = Field(..., pattern=r'^(5min|15min|30min|1hour|4hour|8hour|1day)$')
+    period: str = Field(default="1Y", pattern=r'^(1D|1W|1M|3M|6M|1Y)$')
 
 class CandlestickBar(BaseModel):
     timestamp: float
