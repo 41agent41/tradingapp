@@ -36,11 +36,11 @@ class IBConnection:
         self.connection_time = None
         self.last_error = None
         self.in_use = False
-        self.lock = asyncio.Lock()
+        self.lock = threading.Lock()  # Use threading lock instead of asyncio
     
-    async def connect(self) -> bool:
-        """Connect to IB Gateway with improved error handling"""
-        async with self.lock:
+    def connect(self) -> bool:
+        """Connect to IB Gateway with simplified synchronous approach"""
+        with self.lock:
             try:
                 if self.ib_client and self.ib_client.isConnected():
                     logger.info("Connection already established", client_id=self.client_id)
@@ -54,18 +54,13 @@ class IBConnection:
                 # Create new IB client
                 self.ib_client = IB()
                 
-                # Connect with timeout using proper event loop handling
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    # No event loop in current thread, run directly
-                    self._connect_sync()
-                else:
-                    # Use executor with proper event loop
-                    await asyncio.wait_for(
-                        loop.run_in_executor(None, self._connect_sync),
-                        timeout=config.ib_timeout
-                    )
+                # Connect synchronously
+                self.ib_client.connect(
+                    host=config.ib_host,
+                    port=config.ib_port,
+                    clientId=self.client_id,
+                    timeout=config.ib_timeout
+                )
                 
                 if self.ib_client.isConnected():
                     self.connected = True
@@ -79,13 +74,6 @@ class IBConnection:
                 else:
                     raise ConnectionPoolError("Connection established but client reports not connected")
                     
-            except asyncio.TimeoutError:
-                error_msg = f"Connection timeout after {config.ib_timeout} seconds"
-                logger.error(error_msg, client_id=self.client_id)
-                self.last_error = error_msg
-                self.connected = False
-                return False
-                
             except Exception as e:
                 error_msg = f"Connection failed: {str(e)}"
                 logger.error(error_msg, client_id=self.client_id, error=str(e))
@@ -93,28 +81,12 @@ class IBConnection:
                 self.connected = False
                 return False
     
-    def _connect_sync(self):
-        """Synchronous connection method for executor"""
-        self.ib_client.connect(
-            host=config.ib_host,
-            port=config.ib_port,
-            clientId=self.client_id,
-            timeout=config.ib_timeout
-        )
-    
-    async def disconnect(self):
+    def disconnect(self):
         """Disconnect from IB Gateway"""
-        async with self.lock:
+        with self.lock:
             try:
                 if self.ib_client and self.ib_client.isConnected():
-                    try:
-                        loop = asyncio.get_running_loop()
-                    except RuntimeError:
-                        # No event loop in current thread, run directly
-                        self.ib_client.disconnect()
-                    else:
-                        # Use executor with proper event loop
-                        await loop.run_in_executor(None, self.ib_client.disconnect)
+                    self.ib_client.disconnect()
                     
                 self.connected = False
                 self.in_use = False
@@ -128,24 +100,14 @@ class IBConnection:
                            client_id=self.client_id, 
                            error=str(e))
     
-    async def heartbeat(self) -> bool:
+    def heartbeat(self) -> bool:
         """Perform heartbeat check"""
         if not self.connected or not self.ib_client:
             return False
         
         try:
-            # Simple connection check with proper event loop handling
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                # No event loop in current thread, run directly
-                is_connected = self.ib_client.isConnected()
-            else:
-                # Use executor with proper event loop
-                is_connected = await loop.run_in_executor(
-                    None, 
-                    lambda: self.ib_client.isConnected()
-                )
+            # Simple connection check
+            is_connected = self.ib_client.isConnected()
             
             if is_connected:
                 self.last_heartbeat = datetime.utcnow()
@@ -186,6 +148,7 @@ class IBConnectionPool:
         self.heartbeat_task: Optional[asyncio.Task] = None
         self.pool_lock = asyncio.Lock()
         self.initialized = False
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_connections)
         
     async def initialize(self):
         """Initialize the connection pool"""
@@ -222,7 +185,10 @@ class IBConnectionPool:
         
         # Disconnect all connections
         for connection in self.connections.values():
-            await connection.disconnect()
+            connection.disconnect()
+        
+        # Shutdown executor
+        self.executor.shutdown(wait=True)
         
         self.initialized = False
         logger.info("Connection pool shutdown complete")
@@ -241,9 +207,13 @@ class IBConnectionPool:
                 timeout=30.0
             )
             
-            # Ensure connection is healthy
+            # Ensure connection is healthy using executor
             if not connection.is_healthy():
-                success = await self._ensure_connected(connection)
+                success = await asyncio.get_event_loop().run_in_executor(
+                    self.executor, 
+                    self._ensure_connected_sync, 
+                    connection
+                )
                 if not success:
                     raise ConnectionPoolError(f"Failed to establish connection for client {connection.client_id}")
             
@@ -258,8 +228,8 @@ class IBConnectionPool:
                 connection.in_use = False
                 await self.available_connections.put(connection)
     
-    async def _ensure_connected(self, connection: IBConnection) -> bool:
-        """Ensure connection is established with retry logic"""
+    def _ensure_connected_sync(self, connection: IBConnection) -> bool:
+        """Ensure connection is established with retry logic (synchronous)"""
         if connection.is_healthy():
             return True
         
@@ -271,14 +241,14 @@ class IBConnectionPool:
             ),
             retry=retry_if_exception_type((ConnectionPoolError, ConnectionRefusedError, TimeoutError))
         )
-        async def _connect_with_retry():
-            success = await connection.connect()
+        def _connect_with_retry():
+            success = connection.connect()
             if not success:
                 raise ConnectionPoolError(f"Connection failed for client {connection.client_id}")
             return success
         
         try:
-            return await _connect_with_retry()
+            return _connect_with_retry()
         except Exception as e:
             logger.error("Failed to establish connection after retries", 
                         client_id=connection.client_id, 
@@ -293,10 +263,13 @@ class IBConnectionPool:
             try:
                 await asyncio.sleep(config.heartbeat_interval)
                 
-                # Check all connections
+                # Check all connections using executor
                 for connection in self.connections.values():
                     if connection.connected and not connection.in_use:
-                        await connection.heartbeat()
+                        await asyncio.get_event_loop().run_in_executor(
+                            self.executor,
+                            connection.heartbeat
+                        )
                 
             except asyncio.CancelledError:
                 logger.info("Heartbeat monitor cancelled")

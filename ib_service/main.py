@@ -198,7 +198,7 @@ async def root():
             "Caching with TTL",
             "Rate limiting",
             "Structured logging",
-            "Data quality monitoring"
+            "Health monitoring"
         ]
     }
 
@@ -316,8 +316,9 @@ async def get_historical_data(
             # Create contract
             contract = create_contract(request.symbol)
             
-            # Qualify contract
-            qualified_contracts = await asyncio.get_event_loop().run_in_executor(
+            # Qualify contract using executor
+            loop = asyncio.get_event_loop()
+            qualified_contracts = await loop.run_in_executor(
                 None,
                 lambda: connection.ib_client.qualifyContracts(contract)
             )
@@ -340,8 +341,8 @@ async def get_historical_data(
             
             ib_timeframe = ib_timeframe_map.get(request.timeframe, '1 hour')
             
-            # Request historical data
-            bars = await asyncio.get_event_loop().run_in_executor(
+            # Request historical data using executor
+            bars = await loop.run_in_executor(
                 None,
                 lambda: connection.ib_client.reqHistoricalData(
                     qualified_contract,
@@ -383,8 +384,9 @@ async def get_realtime_data(symbol: str):
         async with connection_pool.get_connection() as connection:
             contract = create_contract(symbol)
             
-            # Qualify contract
-            qualified_contracts = await asyncio.get_event_loop().run_in_executor(
+            # Qualify contract using executor
+            loop = asyncio.get_event_loop()
+            qualified_contracts = await loop.run_in_executor(
                 None,
                 lambda: connection.ib_client.qualifyContracts(contract)
             )
@@ -394,8 +396,8 @@ async def get_realtime_data(symbol: str):
             
             qualified_contract = qualified_contracts[0]
             
-            # Get ticker data
-            ticker = await asyncio.get_event_loop().run_in_executor(
+            # Get ticker data using executor
+            ticker = await loop.run_in_executor(
                 None,
                 lambda: connection.ib_client.reqMktData(qualified_contract, '', False, False)
             )
@@ -473,8 +475,9 @@ async def get_account_info():
     
     try:
         async with connection_pool.get_connection() as connection:
-            # Request account summary
-            account_summary = await asyncio.get_event_loop().run_in_executor(
+            # Request account summary using executor
+            loop = asyncio.get_event_loop()
+            account_summary = await loop.run_in_executor(
                 None,
                 lambda: connection.ib_client.accountSummary()
             )
@@ -511,10 +514,11 @@ async def get_pool_status():
 if __name__ == "__main__":
     import uvicorn
     
+    # Ensure we bind to the correct host and port
     uvicorn.run(
         "main:app",
-        host=config.host,
-        port=config.port,
+        host="0.0.0.0",  # Bind to all interfaces
+        port=8000,       # Use default port
         log_level=config.log_level.lower(),
         reload=config.debug
     ) 

@@ -385,10 +385,10 @@ rebuild_ib_service_fixed() {
     # Test basic endpoint
     if curl -s http://localhost:8000/ > /dev/null; then
         VERSION=$(curl -s http://localhost:8000/ | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
-        if [[ "$VERSION" == "1.5.0-fallback" ]]; then
-            print_status "Fixed version (1.5.0-fallback) is running!"
+        if [[ "$VERSION" == "2.0.0" ]]; then
+            print_status "Fixed version (2.0.0) is running!"
         else
-            print_warning "Version: $VERSION (expected 1.5.0-fallback)"
+            print_warning "Version: $VERSION (expected 2.0.0)"
         fi
     else
         print_error "IB Service is not responding on port 8000"
@@ -402,6 +402,12 @@ rebuild_ib_service_fixed() {
     echo "   • Proper fallback to synchronous connections"
     echo "   • Better error handling for thread pool executors"
     echo "   • Stable connection attempts"
+    echo "   • Enhanced connection pooling"
+    echo "   • Data validation with Pydantic"
+    echo "   • TTL-based caching"
+    echo "   • Rate limiting"
+    echo "   • Structured logging"
+    echo "   • Health monitoring"
 }
 
 
