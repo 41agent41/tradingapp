@@ -54,14 +54,18 @@ class IBConnection:
                 # Create new IB client
                 self.ib_client = IB()
                 
-                # Connect with timeout
-                await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(
-                        None, 
-                        self._connect_sync
-                    ),
-                    timeout=config.ib_timeout
-                )
+                # Connect with timeout using proper event loop handling
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    # No event loop in current thread, run directly
+                    self._connect_sync()
+                else:
+                    # Use executor with proper event loop
+                    await asyncio.wait_for(
+                        loop.run_in_executor(None, self._connect_sync),
+                        timeout=config.ib_timeout
+                    )
                 
                 if self.ib_client.isConnected():
                     self.connected = True
@@ -103,10 +107,14 @@ class IBConnection:
         async with self.lock:
             try:
                 if self.ib_client and self.ib_client.isConnected():
-                    await asyncio.get_event_loop().run_in_executor(
-                        None, 
-                        self.ib_client.disconnect
-                    )
+                    try:
+                        loop = asyncio.get_running_loop()
+                    except RuntimeError:
+                        # No event loop in current thread, run directly
+                        self.ib_client.disconnect()
+                    else:
+                        # Use executor with proper event loop
+                        await loop.run_in_executor(None, self.ib_client.disconnect)
                     
                 self.connected = False
                 self.in_use = False
@@ -126,11 +134,18 @@ class IBConnection:
             return False
         
         try:
-            # Simple connection check
-            is_connected = await asyncio.get_event_loop().run_in_executor(
-                None, 
-                lambda: self.ib_client.isConnected()
-            )
+            # Simple connection check with proper event loop handling
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No event loop in current thread, run directly
+                is_connected = self.ib_client.isConnected()
+            else:
+                # Use executor with proper event loop
+                is_connected = await loop.run_in_executor(
+                    None, 
+                    lambda: self.ib_client.isConnected()
+                )
             
             if is_connected:
                 self.last_heartbeat = datetime.utcnow()
