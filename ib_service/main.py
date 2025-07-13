@@ -203,15 +203,16 @@ async def debug_config():
     # Get all IB_ environment variables
     ib_env_vars = {k: v for k, v in os.environ.items() if k.startswith('IB_')}
     
-    # Get current configuration values
+    # Get current configuration values dynamically
+    current_config_instance = get_config()
     current_config = {
-        "ib_host": config.ib_host,
-        "ib_port": config.ib_port,
-        "ib_client_id": config.ib_client_id,
-        "ib_timeout": config.ib_timeout,
-        "max_connections": config.max_connections,
-        "data_cache_ttl": config.data_cache_ttl,
-        "rate_limit_requests_per_minute": config.rate_limit_requests_per_minute
+        "ib_host": current_config_instance.ib_host,
+        "ib_port": current_config_instance.ib_port,
+        "ib_client_id": current_config_instance.ib_client_id,
+        "ib_timeout": current_config_instance.ib_timeout,
+        "max_connections": current_config_instance.max_connections,
+        "data_cache_ttl": current_config_instance.data_cache_ttl,
+        "rate_limit_requests_per_minute": current_config_instance.rate_limit_requests_per_minute
     }
     
     return {

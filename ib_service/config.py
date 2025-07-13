@@ -92,7 +92,6 @@ def get_config() -> IBServiceConfig:
     """Get configuration instance with proper environment variable loading"""
     # Force reload of environment variables
     import os
-    from pydantic_settings import SettingsConfigDict
     
     # Create config with explicit settings
     return IBServiceConfig(
@@ -103,5 +102,4 @@ def get_config() -> IBServiceConfig:
     )
 
 
-# Global configuration instance - use function to ensure proper loading
-config = get_config() 
+# No global instance - each module should call get_config() when needed 
