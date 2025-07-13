@@ -35,12 +35,21 @@ Complete guide for deploying TradingApp with market data filtering and TradingVi
 
 ## 🚀 Single Command Deployment
 
+# as root - Local user creation
+sudo adduser <username>
+sudo usermod -aG sudo <username>
+
+# as root - install git
+apt install git
+
 ### Quick Start (Recommended)
 
 ```bash
 # 1. Clone repository
 git clone https://github.com/your-username/tradingapp.git
 cd tradingapp
+
+chmod +x *.sh
 
 # 2. Install dependencies (first time only)
 ./deploy-tradingapp.sh install
