@@ -42,7 +42,6 @@ show_usage() {
     echo "  rebuild     - Rebuild and restart services"
     echo "  ib-rebuild  - Rebuild only IB service with enhanced features"
     echo "  ib-rebuild-fixed - Rebuild IB service with fixed asyncio handling"
-    echo "  ib-simple   - Rebuild IB service with simple working version"
     echo "  status      - Check service status"
     echo "  test        - Test all connections"
     echo "  logs        - Show service logs"
@@ -405,76 +404,7 @@ rebuild_ib_service_fixed() {
     echo "   • Stable connection attempts"
 }
 
-# Function to rebuild IB service with simple working version
-rebuild_ib_service_simple() {
-    print_info "Rebuilding IB Service with simple working version..."
-    
-    check_docker
-    
-    # Stop current containers
-    print_info "Stopping current containers..."
-    docker-compose down
-    
-    # Remove old IB service image to force rebuild
-    print_info "Removing old ib_service image..."
-    docker rmi tradingapp-ib_service 2>/dev/null || true
-    docker rmi tradingapp_ib_service 2>/dev/null || true
-    
-    # Switch to simple version
-    print_info "Switching to simple main.py version..."
-    cd ib_service
-    if [ -f "main_simple.py" ]; then
-        cp main_simple.py main.py
-        print_status "Simple version activated"
-    else
-        print_error "main_simple.py not found!"
-        exit 1
-    fi
-    cd ..
-    
-    # Rebuild the ib_service with no cache
-    print_info "Rebuilding ib_service with simple version..."
-    docker-compose build --no-cache ib_service
-    
-    if [ $? -ne 0 ]; then
-        print_error "Docker build failed. Check the error messages above."
-        exit 1
-    fi
-    
-    # Start services
-    print_info "Starting services with simple ib_service..."
-    docker-compose up -d
-    
-    # Wait for services to start
-    print_info "Waiting for services to start..."
-    sleep 10
-    
-    # Verify the simple version
-    print_info "Verifying simple version..."
-    
-    # Test basic endpoint
-    if curl -s http://localhost:8000/ > /dev/null; then
-        VERSION=$(curl -s http://localhost:8000/ | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
-        if [[ "$VERSION" == "1.5.1-simple" ]]; then
-            print_status "Simple version (1.5.1-simple) is running!"
-        else
-            print_warning "Version: $VERSION (expected 1.5.1-simple)"
-        fi
-    else
-        print_error "IB Service is not responding on port 8000"
-    fi
-    
-    print_status "IB Service rebuild with simple version completed!"
-    
-    echo ""
-    print_info "Simple Version Features:"
-    echo "   • Fixed asyncio event loop handling"
-    echo "   • Proper ThreadPoolExecutor usage"
-    echo "   • Basic market data functionality"
-    echo "   • Account information"
-    echo "   • Stable connection attempts"
-    echo "   • No complex dependencies"
-}
+
 
 # Function to check service status
 check_status() {
@@ -705,9 +635,7 @@ case "${1:-}" in
     "ib-rebuild-fixed")
         rebuild_ib_service_fixed
         ;;
-    "ib-simple")
-        rebuild_ib_service_simple
-        ;;
+
     "status")
         check_status
         ;;
