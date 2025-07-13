@@ -11,6 +11,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from ib_insync import IB, Contract, Stock
 import threading
 import concurrent.futures
+import time
 from contextlib import asynccontextmanager
 
 from config import get_config
@@ -42,7 +43,7 @@ class IBConnection:
         self.lock = threading.Lock()
     
     def connect(self) -> bool:
-        """Connect to IB Gateway synchronously"""
+        """Connect to IB Gateway synchronously with retry logic"""
         with self.lock:
             try:
                 if self.ib_client and self.ib_client.isConnected():
@@ -52,33 +53,50 @@ class IBConnection:
                 logger.info("Establishing connection to IB Gateway", 
                            client_id=self.client_id, 
                            host=config.ib_host, 
-                           port=config.ib_port)
+                           port=config.ib_port,
+                           timeout=config.ib_timeout)
                 
                 # Create new IB client
                 self.ib_client = IB()
                 
-                # Connect synchronously
-                self.ib_client.connect(
-                    host=config.ib_host,
-                    port=config.ib_port,
-                    clientId=self.client_id,
-                    timeout=config.ib_timeout
-                )
-                
-                if self.ib_client.isConnected():
-                    self.connected = True
-                    self.connection_time = datetime.utcnow()
-                    self.last_heartbeat = datetime.utcnow()
-                    self.last_error = None
-                    
-                    logger.info("Successfully connected to IB Gateway", 
-                               client_id=self.client_id)
-                    return True
-                else:
-                    raise ConnectionPoolError("Connection established but client reports not connected")
+                # Connect synchronously with retry
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        logger.info(f"Connection attempt {attempt + 1}/{max_retries}", 
+                                   client_id=self.client_id)
+                        
+                        # Connect synchronously
+                        self.ib_client.connect(
+                            host=config.ib_host,
+                            port=config.ib_port,
+                            clientId=self.client_id,
+                            timeout=config.ib_timeout
+                        )
+                        
+                        if self.ib_client.isConnected():
+                            self.connected = True
+                            self.connection_time = datetime.utcnow()
+                            self.last_heartbeat = datetime.utcnow()
+                            self.last_error = None
+                            
+                            logger.info("Successfully connected to IB Gateway", 
+                                       client_id=self.client_id)
+                            return True
+                        else:
+                            raise ConnectionPoolError("Connection established but client reports not connected")
+                            
+                    except Exception as e:
+                        logger.warning(f"Connection attempt {attempt + 1} failed", 
+                                     client_id=self.client_id, 
+                                     error=str(e))
+                        if attempt < max_retries - 1:
+                            time.sleep(2)  # Wait 2 seconds before retry
+                        else:
+                            raise e
                     
             except Exception as e:
-                error_msg = f"Connection failed: {str(e)}"
+                error_msg = f"Connection failed after {max_retries} attempts: {str(e)}"
                 logger.error(error_msg, client_id=self.client_id, error=str(e))
                 self.last_error = error_msg
                 self.connected = False
