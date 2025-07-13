@@ -49,6 +49,7 @@ show_usage() {
     echo "  test        - Test all connections"
     echo "  diagnose    - Run comprehensive diagnostics"
     echo "  fix         - Auto-fix common issues"
+    echo "  ib-help     - IB Gateway setup instructions"
     echo "  clean       - Clean up and reset"
     echo ""
     echo "Examples:"
@@ -164,12 +165,30 @@ test_ib_connection() {
     if [[ -f .env ]]; then
         source .env
         
-        # Test TCP connection
+        # Test basic network connectivity first
+        print_info "Testing network connectivity to $IB_HOST..."
+        if ping -c 1 -W 3 "$IB_HOST" > /dev/null 2>&1; then
+            print_status "Host $IB_HOST is reachable"
+        else
+            print_error "Host $IB_HOST is not reachable via ping"
+            print_warning "Check network connectivity and firewall settings"
+            return 1
+        fi
+        
+        # Test TCP connection to IB Gateway port
+        print_info "Testing IB Gateway port $IB_HOST:$IB_PORT..."
         if timeout 5 bash -c "echo >/dev/tcp/$IB_HOST/$IB_PORT" 2>/dev/null; then
             print_status "IB Gateway is reachable at $IB_HOST:$IB_PORT"
             return 0
         else
             print_error "Cannot reach IB Gateway at $IB_HOST:$IB_PORT"
+            print_warning "IB Gateway troubleshooting needed:"
+            echo "  1. Ensure IB Gateway/TWS is running on $IB_HOST"
+            echo "  2. Check API settings: File → Global Configuration → API → Settings"
+            echo "  3. Verify 'Enable ActiveX and Socket Clients' is checked"
+            echo "  4. Confirm socket port is set to $IB_PORT"
+            echo "  5. Add $SERVER_IP to trusted IPs list"
+            echo "  6. Restart IB Gateway after configuration changes"
             return 1
         fi
     else
@@ -348,6 +367,73 @@ show_logs() {
     fi
 }
 
+show_ib_help() {
+    echo ""
+    print_info "🔧 IB Gateway Setup Instructions"
+    echo "=================================="
+    echo ""
+    
+    if [[ -f .env ]]; then
+        source .env
+        echo "Current Configuration:"
+        echo "  IB Gateway IP: $IB_HOST"
+        echo "  IB Gateway Port: $IB_PORT"
+        echo "  Trading Server IP: $SERVER_IP"
+        echo "  Client ID: $IB_CLIENT_ID"
+        echo ""
+    fi
+    
+    echo "📋 IB Gateway Setup Checklist:"
+    echo ""
+    echo "1. 🖥️  Start IB Gateway or TWS:"
+    echo "   - Launch IB Gateway or Trader Workstation"
+    echo "   - Log in with your Interactive Brokers account"
+    echo "   - Ensure it's connected (not offline mode)"
+    echo ""
+    
+    echo "2. ⚙️  Configure API Settings:"
+    echo "   - Go to: File → Global Configuration → API → Settings"
+    echo "   - ✅ Check 'Enable ActiveX and Socket Clients'"
+    echo "   - ✅ Set Socket port to: $IB_PORT"
+    echo "   - ✅ Set Master API client ID to: $IB_CLIENT_ID"
+    echo "   - ✅ Uncheck 'Read-Only API' (if you want to place orders)"
+    echo ""
+    
+    echo "3. 🌐 Configure Trusted IPs:"
+    echo "   - In the same API Settings window"
+    echo "   - Add trusted IP: $SERVER_IP"
+    echo "   - Add trusted IP: 127.0.0.1 (localhost)"
+    echo "   - Format: one IP per line"
+    echo ""
+    
+    echo "4. 💾 Apply and Restart:"
+    echo "   - Click 'Apply' then 'OK'"
+    echo "   - Close and restart IB Gateway/TWS"
+    echo "   - Wait for it to fully connect to IB servers"
+    echo ""
+    
+    echo "5. 🧪 Test Connection:"
+    echo "   - Run: ./tradingapp.sh test"
+    echo "   - Look for: ✅ IB Gateway connection test passed"
+    echo ""
+    
+    echo "📞 Common Issues:"
+    echo ""
+    echo "❌ 'Connection refused' → IB Gateway not running or wrong port"
+    echo "❌ 'Timeout' → Firewall blocking or wrong IP address"
+    echo "❌ 'Host unreachable' → Network connectivity issue"
+    echo "❌ 'Client ID conflict' → Try different client ID (1, 2, 3...)"
+    echo ""
+    
+    echo "🔧 Quick Tests:"
+    echo "   ping $IB_HOST                    # Test basic connectivity"
+    echo "   nc -zv $IB_HOST $IB_PORT        # Test port accessibility"
+    echo "   ./tradingapp.sh config           # Reconfigure IB settings"
+    echo ""
+    
+    print_status "After configuring IB Gateway, run: ./tradingapp.sh test"
+}
+
 # Main command handling
 case "${1:-}" in
     "setup")
@@ -398,6 +484,9 @@ case "${1:-}" in
         ;;
     "fix")
         fix_issues
+        ;;
+    "ib-help")
+        show_ib_help
         ;;
     "clean")
         print_warning "This will remove all containers and data. Continue? (y/N)"

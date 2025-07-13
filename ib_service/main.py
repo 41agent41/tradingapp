@@ -86,16 +86,26 @@ def get_ib_connection():
             return ib_client
         
         # Create new connection
-        logger.info(f"Connecting to IB Gateway at {IB_HOST}:{IB_PORT}")
+        logger.info(f"Connecting to IB Gateway at {IB_HOST}:{IB_PORT} (Client ID: {IB_CLIENT_ID})")
         ib_client = IB()
         
-        # Connect synchronously
-        ib_client.connect(
-            host=IB_HOST,
-            port=IB_PORT,
-            clientId=IB_CLIENT_ID,
-            timeout=IB_TIMEOUT
-        )
+        # Connect synchronously with better error handling
+        try:
+            ib_client.connect(
+                host=IB_HOST,
+                port=IB_PORT,
+                clientId=IB_CLIENT_ID,
+                timeout=IB_TIMEOUT
+            )
+        except TimeoutError:
+            raise Exception(f"Connection timeout - IB Gateway at {IB_HOST}:{IB_PORT} is not responding. Check if IB Gateway is running and API is enabled.")
+        except ConnectionRefusedError:
+            raise Exception(f"Connection refused - IB Gateway at {IB_HOST}:{IB_PORT} is not accepting connections. Check if port {IB_PORT} is correct and API is enabled.")
+        except OSError as e:
+            if "No route to host" in str(e):
+                raise Exception(f"Network unreachable - Cannot reach {IB_HOST}. Check IP address and network connectivity.")
+            else:
+                raise Exception(f"Network error: {str(e)}")
         
         if ib_client.isConnected():
             connection_status.update({
@@ -104,27 +114,40 @@ def get_ib_connection():
                 'last_error': None,
                 'connection_count': connection_status['connection_count'] + 1
             })
-            logger.info("Successfully connected to IB Gateway")
+            logger.info(f"Successfully connected to IB Gateway at {IB_HOST}:{IB_PORT}")
             return ib_client
         else:
-            raise Exception("Connection failed - client not connected")
+            raise Exception("Connection established but client reports not connected")
             
     except Exception as e:
-        error_msg = f"Connection failed: {str(e)}"
-        logger.error(error_msg)
+        error_msg = str(e)
+        logger.error(f"IB Gateway connection failed: {error_msg}")
+        
+        # Provide helpful error message based on error type
+        if "timeout" in error_msg.lower():
+            helpful_msg = f"IB Gateway connection timeout. Please check: 1) IB Gateway is running on {IB_HOST}, 2) API is enabled in IB Gateway settings, 3) Port {IB_PORT} is correct"
+        elif "refused" in error_msg.lower():
+            helpful_msg = f"IB Gateway refused connection. Please check: 1) IB Gateway API settings are enabled, 2) Port {IB_PORT} is correct, 3) Trusted IPs include this server"
+        elif "unreachable" in error_msg.lower():
+            helpful_msg = f"Cannot reach {IB_HOST}. Please check: 1) IP address is correct, 2) Network connectivity, 3) Firewall settings"
+        else:
+            helpful_msg = error_msg
+        
         connection_status.update({
             'connected': False,
-            'last_error': error_msg
+            'last_error': helpful_msg
         })
+        
         if ib_client:
             try:
                 ib_client.disconnect()
             except:
                 pass
         ib_client = None
+        
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=error_msg
+            detail=helpful_msg
         )
 
 def disconnect_ib():
