@@ -6,23 +6,16 @@ services:
       - PORT=${BACKEND_PORT:-4000}
       - NODE_ENV=${NODE_ENV:-production}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - IB_SERVICE_URL=http://ib_service:8000
     ports:
       - "${BACKEND_PORT:-4000}:${BACKEND_PORT:-4000}"
-    volumes:
-      - ./.env:/app/.env:ro
     depends_on:
+      - ib_service
       - postgres
       - redis
-      - ib_service
     networks:
       - tradingapp-network
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT:-4000}/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
       
   frontend:
     build: ./frontend
@@ -38,12 +31,6 @@ services:
     networks:
       - tradingapp-network
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${FRONTEND_PORT:-3000}"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
       
   ib_service:
     build: ./ib_service
@@ -52,31 +39,17 @@ services:
       - IB_HOST=${IB_HOST:-localhost}
       - IB_PORT=${IB_PORT:-4002}
       - IB_CLIENT_ID=${IB_CLIENT_ID:-1}
-      - IB_LOG_LEVEL=${IB_LOG_LEVEL:-INFO}
-      - IB_CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
       - IB_TIMEOUT=${IB_TIMEOUT:-30}
-      - IB_MAX_CONNECTIONS=${IB_MAX_CONNECTIONS:-5}
-      - IB_DATA_CACHE_TTL=${IB_DATA_CACHE_TTL:-300}
-      - IB_RATE_LIMIT_REQUESTS_PER_MINUTE=${IB_RATE_LIMIT_REQUESTS_PER_MINUTE:-100}
+      - IB_CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
     ports:
       - "${IB_SERVICE_PORT:-8000}:8000"
-    volumes:
-      - ./.env:/app/.env:ro
     networks:
       - tradingapp-network
     restart: unless-stopped
-    # Allow connection to external IB Gateway (remote host)
-    # Note: extra_hosts is only needed if IB_HOST is not a valid IP address
-    # For remote IB Gateway, ensure IB_HOST is set to the actual IP address
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      
   postgres:
     image: postgres:15-alpine
-    restart: always
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-tradingapp}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tradingapp123}
@@ -87,15 +60,18 @@ services:
       - pgdata:/var/lib/postgresql/data
     networks:
       - tradingapp-network
+      
   redis:
     image: redis:7-alpine
-    restart: always
+    restart: unless-stopped
     ports:
       - "6379:6379"
     networks:
       - tradingapp-network
+
 volumes:
   pgdata:
+
 networks:
   tradingapp-network:
     driver: bridge 

@@ -1,573 +1,477 @@
 """
-Improved IB Service with connection pooling, data validation, and proper async patterns
+Simplified IB Service - Synchronous architecture for reliable IB Gateway connections
 """
 
+import os
 import time
-from datetime import datetime, timedelta
+import logging
 from typing import Dict, List, Optional, Any
-import structlog
+from datetime import datetime
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, Field
+from ib_insync import IB, Stock, Contract, util
+import uvicorn
 
-
-from ib_insync import Contract, Stock, util
-
-# Import our improved components
-from config import get_config
-from models import (
-    MarketDataRequest, HistoricalDataResponse, RealTimeQuote,
-    ConnectionStatus, HealthStatus, ErrorResponse, AccountSummary,
-    Position, Order, SubscriptionRequest, DataQualityMetrics,
-    safe_float, safe_int
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-from connection_manager import connection_pool, get_connection_status, test_connection
-from data_processor import data_processor
+logger = logging.getLogger(__name__)
 
-# Get configuration dynamically
-config = get_config()
+# Configuration from environment
+IB_HOST = os.getenv('IB_HOST', 'localhost')
+IB_PORT = int(os.getenv('IB_PORT', '4002'))
+IB_CLIENT_ID = int(os.getenv('IB_CLIENT_ID', '1'))
+IB_TIMEOUT = int(os.getenv('IB_TIMEOUT', '30'))
+CORS_ORIGINS = os.getenv('IB_CORS_ORIGINS', 'http://localhost:3000').split(',')
 
+# Global IB connection
+ib_client = None
+connection_status = {
+    'connected': False,
+    'last_connected': None,
+    'last_error': None,
+    'connection_count': 0
+}
 
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.dev.ConsoleRenderer()
-    ],
-    wrapper_class=structlog.stdlib.BoundLogger,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    cache_logger_on_first_use=True,
-)
+class MarketDataRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=10)
+    timeframe: str = Field(..., regex=r'^(5min|15min|30min|1hour|4hour|8hour|1day)$')
+    period: str = Field(default="1Y", regex=r'^(1D|1W|1M|3M|6M|1Y)$')
 
-logger = structlog.get_logger(__name__)
+class CandlestickBar(BaseModel):
+    timestamp: float
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
 
-# Simple metrics tracking (no Prometheus)
-class SimpleMetrics:
-    def __init__(self):
-        self.request_count = 0
-        self.connection_status = 0
-    
-    def inc(self, *args, **kwargs):
-        self.request_count += 1
-    
-    def observe(self, *args, **kwargs):
-        pass
-    
-    def set(self, value, *args, **kwargs):
-        if 'connection_status' in str(args):
-            self.connection_status = value
-    
-    def labels(self, *args, **kwargs):
-        return self
+class HistoricalDataResponse(BaseModel):
+    symbol: str
+    timeframe: str
+    period: str
+    bars: List[CandlestickBar]
+    count: int
+    last_updated: str
 
-# Initialize simple metrics
-REQUEST_COUNT = SimpleMetrics()
-REQUEST_DURATION = SimpleMetrics()
-CONNECTION_STATUS = SimpleMetrics()
-DATA_QUALITY_SCORE = SimpleMetrics()
+class RealTimeQuote(BaseModel):
+    symbol: str
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    last: Optional[float] = None
+    volume: Optional[int] = None
+    timestamp: str
 
-# Service state
-service_start_time = time.time()
-active_subscriptions: Dict[str, datetime] = {}
+class ConnectionInfo(BaseModel):
+    connected: bool
+    host: str
+    port: int
+    client_id: int
+    last_connected: Optional[str] = None
+    last_error: Optional[str] = None
+    connection_count: int
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan management"""
-    # Startup
-    logger.info("Starting IB Service", version="2.0.0")
+def get_ib_connection():
+    """Get or create IB connection"""
+    global ib_client, connection_status
     
     try:
-        # Initialize connection pool (non-blocking)
-        try:
-            connection_pool.initialize()
-            logger.info("Connection pool initialized successfully")
-        except Exception as e:
-            logger.warning("Connection pool initialization failed, will retry on demand", error=str(e))
+        # Check if we have a valid connection
+        if ib_client and ib_client.isConnected():
+            return ib_client
         
-        # Initialize data processor (non-blocking)
-        try:
-            await data_processor.initialize()
-            logger.info("Data processor initialized successfully")
-        except Exception as e:
-            logger.warning("Data processor initialization failed, will retry on demand", error=str(e))
+        # Create new connection
+        logger.info(f"Connecting to IB Gateway at {IB_HOST}:{IB_PORT}")
+        ib_client = IB()
         
-        # Don't test initial connection - let it fail gracefully on first request
-        logger.info("IB Service startup complete - connections will be established on demand")
-        CONNECTION_STATUS.set(0)  # Start with disconnected status
+        # Connect synchronously
+        ib_client.connect(
+            host=IB_HOST,
+            port=IB_PORT,
+            clientId=IB_CLIENT_ID,
+            timeout=IB_TIMEOUT
+        )
         
+        if ib_client.isConnected():
+            connection_status.update({
+                'connected': True,
+                'last_connected': datetime.now().isoformat(),
+                'last_error': None,
+                'connection_count': connection_status['connection_count'] + 1
+            })
+            logger.info("Successfully connected to IB Gateway")
+            return ib_client
+        else:
+            raise Exception("Connection failed - client not connected")
+            
     except Exception as e:
-        logger.error("Failed to initialize IB Service", error=str(e))
-        # Don't fail startup - service should continue running for health checks
+        error_msg = f"Connection failed: {str(e)}"
+        logger.error(error_msg)
+        connection_status.update({
+            'connected': False,
+            'last_error': error_msg
+        })
+        if ib_client:
+            try:
+                ib_client.disconnect()
+            except:
+                pass
+        ib_client = None
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=error_msg
+        )
+
+def disconnect_ib():
+    """Disconnect from IB Gateway"""
+    global ib_client, connection_status
+    
+    if ib_client:
+        try:
+            ib_client.disconnect()
+            logger.info("Disconnected from IB Gateway")
+        except Exception as e:
+            logger.error(f"Error disconnecting: {e}")
+        finally:
+            ib_client = None
+            connection_status['connected'] = False
+
+def create_contract(symbol: str, sec_type: str = 'STK', exchange: str = 'SMART', currency: str = 'USD'):
+    """Create IB contract"""
+    if sec_type == 'STK':
+        return Stock(symbol, exchange, currency)
+    else:
+        contract = Contract()
+        contract.symbol = symbol
+        contract.secType = sec_type
+        contract.exchange = exchange
+        contract.currency = currency
+        return contract
+
+def convert_timeframe(timeframe: str) -> str:
+    """Convert timeframe to IB format"""
+    timeframe_map = {
+        '5min': '5 mins',
+        '15min': '15 mins',
+        '30min': '30 mins',
+        '1hour': '1 hour',
+        '4hour': '4 hours',
+        '8hour': '8 hours',
+        '1day': '1 day'
+    }
+    return timeframe_map.get(timeframe, '1 hour')
+
+def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDataResponse:
+    """Process IB bars into candlestick data"""
+    candlesticks = []
+    
+    for bar in bars:
+        try:
+            candlestick = CandlestickBar(
+                timestamp=bar.date.timestamp(),
+                open=float(bar.open),
+                high=float(bar.high),
+                low=float(bar.low),
+                close=float(bar.close),
+                volume=int(bar.volume)
+            )
+            candlesticks.append(candlestick)
+        except Exception as e:
+            logger.warning(f"Error processing bar: {e}")
+            continue
+    
+    return HistoricalDataResponse(
+        symbol=symbol,
+        timeframe=timeframe,
+        period=period,
+        bars=candlesticks,
+        count=len(candlesticks),
+        last_updated=datetime.now().isoformat()
+    )
+
+# Startup and shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    logger.info("Starting IB Service...")
+    logger.info(f"Configuration: {IB_HOST}:{IB_PORT}, Client ID: {IB_CLIENT_ID}")
+    
+    # Test connection on startup
+    try:
+        get_ib_connection()
+        logger.info("Initial connection test successful")
+    except Exception as e:
+        logger.warning(f"Initial connection test failed: {e}")
     
     yield
     
-    # Shutdown
-    logger.info("Shutting down IB Service")
-    
-    try:
-        connection_pool.shutdown()
-        await data_processor.shutdown()
-        logger.info("IB Service shutdown complete")
-    except Exception as e:
-        logger.error("Error during shutdown", error=str(e))
+    # Cleanup on shutdown
+    logger.info("Shutting down IB Service...")
+    disconnect_ib()
 
-
-# Create FastAPI app with improved configuration
+# FastAPI app
 app = FastAPI(
     title="TradingApp IB Service",
-    version="2.0.0",
-    description="Enhanced Interactive Brokers service with connection pooling and data validation",
+    description="Simplified Interactive Brokers service for TradingApp",
+    version="3.0.0",
     lifespan=lifespan
 )
 
-# Add CORS middleware with configuration
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.cors_origins_list,
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
-async def track_request_metrics(endpoint: str, method: str = "GET"):
-    """Dependency to track request metrics"""
-    REQUEST_COUNT.labels(method=method, endpoint=endpoint).inc()
-    start_time = time.time()
-    
-    yield
-    
-    REQUEST_DURATION.observe(time.time() - start_time)
-
-
-def create_contract(symbol: str) -> Contract:
-    """Create IB contract for symbol with validation"""
-    try:
-        # Validate symbol format
-        if not symbol or not symbol.isalpha() or len(symbol) > 10:
-            raise ValueError(f"Invalid symbol format: {symbol}")
-        
-        contract = Stock(symbol.upper(), 'SMART', 'USD')
-        return contract
-        
-    except Exception as e:
-        logger.error("Failed to create contract", symbol=symbol, error=str(e))
-        raise HTTPException(status_code=400, detail=f"Invalid symbol: {symbol}")
-
-
-@app.get("/")
-async def root():
-    """Service information and health status"""
-    uptime = time.time() - service_start_time
-    
-    return {
-        "service": "TradingApp IB Service",
-        "version": "2.0.0",
-        "status": "running",
-        "uptime_seconds": uptime,
-        "config": {
-            "ib_host": config.ib_host,
-            "ib_port": config.ib_port,
-            "max_connections": config.max_connections,
-            "cache_ttl": config.data_cache_ttl,
-            "rate_limit": config.rate_limit_requests_per_minute
-        },
-        "endpoints": {
-            "health": "/health",
-            "connection": "/connection",
-            "market_data": "/market-data/*",
-            "account": "/account",
-            "positions": "/positions",
-            "orders": "/orders",
-            "metrics": "/metrics"
-        },
-        "features": [
-            "Connection pooling",
-            "Data validation with Pydantic",
-            "Caching with TTL",
-            "Rate limiting",
-            "Structured logging",
-            "Health monitoring"
-        ]
-    }
-
-
-@app.get("/debug")
-async def debug_config():
-    """Debug endpoint to show environment variables and configuration"""
-    import os
-    
-    # Get all IB_ environment variables
-    ib_env_vars = {k: v for k, v in os.environ.items() if k.startswith('IB_')}
-    
-    # Get current configuration values dynamically
-    current_config_instance = get_config()
-    current_config = {
-        "ib_host": current_config_instance.ib_host,
-        "ib_port": current_config_instance.ib_port,
-        "ib_client_id": current_config_instance.ib_client_id,
-        "ib_timeout": current_config_instance.ib_timeout,
-        "max_connections": current_config_instance.max_connections,
-        "data_cache_ttl": current_config_instance.data_cache_ttl,
-        "rate_limit_requests_per_minute": current_config_instance.rate_limit_requests_per_minute
-    }
-    
-    return {
-        "environment_variables": ib_env_vars,
-        "current_config": current_config,
-        "env_file_loaded": os.path.exists("/app/.env"),
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
-
+# Health check endpoint
 @app.get("/health")
 async def health_check():
-    """Comprehensive health check"""
-    uptime = time.time() - service_start_time
-    
-    # Check connection pool status (with error handling)
-    try:
-        pool_status = connection_pool.get_status()
-        pool_healthy = pool_status["healthy_connections"] > 0
-    except Exception as e:
-        logger.warning("Failed to get connection pool status", error=str(e))
-        pool_status = {"total_connections": 0, "healthy_connections": 0, "available_connections": 0}
-        pool_healthy = False
-    
-    # Check IB Gateway connectivity (with error handling)
-    try:
-        connection_test = test_connection()
-        gateway_healthy = connection_test
-    except Exception as e:
-        logger.warning("Failed to test IB Gateway connection", error=str(e))
-        gateway_healthy = False
-    
-    # Determine overall health - service is healthy if it's running, even if connections fail
-    is_healthy = True  # Service itself is healthy if it's responding
-    connection_healthy = pool_healthy and gateway_healthy
-    
-    status = "healthy" if is_healthy else "unhealthy"
-    
-    services = {
-        "connection_pool": {
-            "status": "healthy" if pool_healthy else "unhealthy",
-            "total_connections": pool_status.get("total_connections", 0),
-            "healthy_connections": pool_status.get("healthy_connections", 0),
-            "available_connections": pool_status.get("available_connections", 0)
-        },
-        "ib_gateway": {
-            "status": "healthy" if gateway_healthy else "unhealthy",
-            "host": config.ib_host,
-            "port": config.ib_port
-        },
-        "data_processor": {
-            "status": "healthy",
-            "cache_size": len(data_processor.cache.cache) if hasattr(data_processor, 'cache') else 0
-        }
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "IB Service",
+        "version": "3.0.0",
+        "timestamp": datetime.now().isoformat()
     }
-    
-    return HealthStatus(
-        status=status,
-        services=services,
-        uptime_seconds=uptime
+
+# Root endpoint
+@app.get("/")
+async def root():
+    """Service information"""
+    return {
+        "service": "TradingApp IB Service",
+        "version": "3.0.0",
+        "status": "running",
+        "config": {
+            "ib_host": IB_HOST,
+            "ib_port": IB_PORT,
+            "client_id": IB_CLIENT_ID
+        },
+        "connection": connection_status
+    }
+
+# Connection status endpoint
+@app.get("/connection", response_model=ConnectionInfo)
+async def get_connection_status():
+    """Get connection status"""
+    return ConnectionInfo(
+        connected=connection_status['connected'],
+        host=IB_HOST,
+        port=IB_PORT,
+        client_id=IB_CLIENT_ID,
+        last_connected=connection_status['last_connected'],
+        last_error=connection_status['last_error'],
+        connection_count=connection_status['connection_count']
     )
 
-
-@app.get("/connection")
-async def get_connection_info():
-    """Get detailed connection status"""
-    try:
-        return get_connection_status()
-    except Exception as e:
-        logger.warning("Failed to get connection status", error=str(e))
-        # Return basic status if connection pool is not available
-        return {
-            "connected": False,
-            "host": config.ib_host,
-            "port": config.ib_port,
-            "client_id": 0,
-            "last_error": "Connection pool not available",
-            "timestamp": datetime.utcnow().isoformat()
-        }
-
-
+# Connect endpoint
 @app.post("/connect")
-async def connect_to_ib():
-    """Force connection to IB Gateway"""
+async def connect():
+    """Manually connect to IB Gateway"""
     try:
-        success = test_connection()
-        if success:
-            CONNECTION_STATUS.set(1)
-            return {"message": "Successfully connected to IB Gateway", "connected": True}
-        else:
-            CONNECTION_STATUS.set(0)
-            raise HTTPException(status_code=503, detail="Failed to connect to IB Gateway")
-    except Exception as e:
-        logger.error("Connection attempt failed", error=str(e))
-        raise HTTPException(status_code=503, detail=f"Connection failed: {str(e)}")
-
-
-@app.get("/market-data/history")
-async def get_historical_data(
-    symbol: str,
-    timeframe: str,
-    period: str = "1Y"
-):
-    """Get historical market data with validation and caching"""
-    
-    # Validate request using Pydantic
-    try:
-        request = MarketDataRequest(symbol=symbol, timeframe=timeframe, period=period)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
-    
-    # Check cache first
-    cached_data = await data_processor.get_cached_data(request)
-    if cached_data:
-        logger.info("Serving cached historical data", symbol=request.symbol)
-        return cached_data
-    
-    # Fetch from IB Gateway
-    try:
-        # Get connection synchronously
-        connection = connection_pool.get_connection_sync()
-        try:
-            # Create contract
-            contract = create_contract(request.symbol)
-            
-            # Qualify contract synchronously
-            qualified_contracts = connection.ib_client.qualifyContracts(contract)
-            
-            if not qualified_contracts:
-                raise HTTPException(status_code=404, detail=f"Symbol {request.symbol} not found")
-            
-            qualified_contract = qualified_contracts[0]
-            
-            # Convert timeframe to IB format
-            ib_timeframe_map = {
-                '5min': '5 mins',
-                '15min': '15 mins',
-                '30min': '30 mins',
-                '1hour': '1 hour',
-                '4hour': '4 hours',
-                '8hour': '8 hours',
-                '1day': '1 day'
+        ib = get_ib_connection()
+        return {
+            "status": "connected",
+            "message": "Successfully connected to IB Gateway",
+            "connection_info": {
+                "host": IB_HOST,
+                "port": IB_PORT,
+                "client_id": IB_CLIENT_ID,
+                "connected_at": connection_status['last_connected']
             }
-            
-            ib_timeframe = ib_timeframe_map.get(request.timeframe, '1 hour')
-            
-            # Request historical data synchronously
-            bars = connection.ib_client.reqHistoricalData(
-                qualified_contract,
-                endDateTime='',
-                durationStr=request.period,
-                barSizeSetting=ib_timeframe,
-                whatToShow='TRADES',
-                useRTH=True,
-                formatDate=1
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Connection failed: {str(e)}"
+        )
+
+# Disconnect endpoint
+@app.post("/disconnect")
+async def disconnect():
+    """Manually disconnect from IB Gateway"""
+    disconnect_ib()
+    return {
+        "status": "disconnected",
+        "message": "Disconnected from IB Gateway"
+    }
+
+# Historical data endpoint
+@app.get("/market-data/history", response_model=HistoricalDataResponse)
+async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y"):
+    """Get historical market data"""
+    try:
+        # Validate request
+        request = MarketDataRequest(symbol=symbol, timeframe=timeframe, period=period)
+        
+        # Get connection
+        ib = get_ib_connection()
+        
+        # Create and qualify contract
+        contract = create_contract(request.symbol.upper())
+        qualified_contracts = ib.qualifyContracts(contract)
+        
+        if not qualified_contracts:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Symbol {request.symbol} not found"
             )
-            
-            if not bars:
-                raise HTTPException(status_code=404, detail=f"No data available for {request.symbol}")
-            
-            # Process data through pipeline
-            response = await data_processor.process_historical_data(bars, request)
-            
-            logger.info("Historical data fetched and processed",
-                       symbol=request.symbol,
-                       bars_count=len(response.bars))
-            
-            return response
-        finally:
-            connection_pool.release_connection(connection)
-            
+        
+        qualified_contract = qualified_contracts[0]
+        
+        # Get historical data
+        ib_timeframe = convert_timeframe(request.timeframe)
+        
+        logger.info(f"Requesting historical data for {request.symbol}")
+        bars = ib.reqHistoricalData(
+            qualified_contract,
+            endDateTime='',
+            durationStr=request.period,
+            barSizeSetting=ib_timeframe,
+            whatToShow='TRADES',
+            useRTH=True,
+            formatDate=1
+        )
+        
+        if not bars:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No historical data available for {request.symbol}"
+            )
+        
+        # Process and return data
+        return process_bars(bars, request.symbol, request.timeframe, request.period)
+        
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Failed to fetch historical data", 
-                    symbol=request.symbol, 
-                    error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to fetch data: {str(e)}")
+        logger.error(f"Error getting historical data: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get historical data: {str(e)}"
+        )
 
-
-@app.get("/market-data/realtime")
+# Real-time data endpoint
+@app.get("/market-data/realtime", response_model=RealTimeQuote)
 async def get_realtime_data(symbol: str):
     """Get real-time market data"""
-    
     try:
-        # Get connection synchronously
-        connection = connection_pool.get_connection_sync()
-        try:
-            contract = create_contract(symbol)
-            
-            # Qualify contract synchronously
-            qualified_contracts = connection.ib_client.qualifyContracts(contract)
-            
-            if not qualified_contracts:
-                raise HTTPException(status_code=404, detail=f"Symbol {symbol} not found")
-            
-            qualified_contract = qualified_contracts[0]
-            
-            # Get ticker data synchronously
-            ticker = connection.ib_client.reqMktData(qualified_contract, '', False, False)
-            
-            # Wait for data with timeout
-            import time
-            time.sleep(2)
-            
-            # Process real-time quote
-            quote = await data_processor.process_realtime_quote(ticker, symbol.upper())
-            
-            if not quote:
-                raise HTTPException(status_code=404, detail=f"No real-time data available for {symbol}")
-            
-            return quote
-        finally:
-            connection_pool.release_connection(connection)
-            
+        # Get connection
+        ib = get_ib_connection()
+        
+        # Create and qualify contract
+        contract = create_contract(symbol.upper())
+        qualified_contracts = ib.qualifyContracts(contract)
+        
+        if not qualified_contracts:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Symbol {symbol} not found"
+            )
+        
+        qualified_contract = qualified_contracts[0]
+        
+        # Get ticker data
+        ticker = ib.reqMktData(qualified_contract, '', False, False)
+        
+        # Wait for data
+        ib.sleep(2)
+        
+        # Process quote
+        quote = RealTimeQuote(
+            symbol=symbol.upper(),
+            bid=float(ticker.bid) if ticker.bid and not util.isNan(ticker.bid) else None,
+            ask=float(ticker.ask) if ticker.ask and not util.isNan(ticker.ask) else None,
+            last=float(ticker.last) if ticker.last and not util.isNan(ticker.last) else None,
+            volume=int(ticker.volume) if ticker.volume and not util.isNan(ticker.volume) else None,
+            timestamp=datetime.now().isoformat()
+        )
+        
+        # Cancel market data subscription
+        ib.cancelMktData(qualified_contract)
+        
+        return quote
+        
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Failed to fetch real-time data", symbol=symbol, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to fetch real-time data: {str(e)}")
+        logger.error(f"Error getting real-time data: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get real-time data: {str(e)}"
+        )
 
-
-@app.post("/market-data/subscribe")
-async def subscribe_market_data(request: SubscriptionRequest):
-    """Subscribe to real-time market data updates"""
-    
+# Contract search endpoint
+@app.post("/contract/search")
+async def search_contracts(
+    symbol: str,
+    secType: str = "STK",
+    exchange: str = "SMART",
+    currency: str = "USD"
+):
+    """Search for contracts"""
     try:
-        # Add to active subscriptions
-        active_subscriptions[request.symbol] = datetime.utcnow()
+        # Get connection
+        ib = get_ib_connection()
         
-        logger.info("Market data subscription added", 
-                   symbol=request.symbol, 
-                   timeframe=request.timeframe)
+        # Create contract
+        contract = create_contract(symbol.upper(), secType, exchange, currency)
+        
+        # Qualify contracts
+        qualified_contracts = ib.qualifyContracts(contract)
+        
+        if not qualified_contracts:
+            return {"results": [], "count": 0}
+        
+        # Format results
+        results = []
+        for contract in qualified_contracts:
+            results.append({
+                "symbol": contract.symbol,
+                "secType": contract.secType,
+                "exchange": contract.exchange,
+                "currency": contract.currency,
+                "primaryExchange": getattr(contract, 'primaryExchange', ''),
+                "conId": contract.conId,
+                "localSymbol": getattr(contract, 'localSymbol', ''),
+                "tradingClass": getattr(contract, 'tradingClass', '')
+            })
         
         return {
-            "message": f"Subscribed to {request.symbol}",
-            "symbol": request.symbol,
-            "timeframe": request.timeframe,
-            "active_subscriptions": len(active_subscriptions)
-        }
-        
-    except Exception as e:
-        logger.error("Failed to subscribe to market data", 
-                    symbol=request.symbol, 
-                    error=str(e))
-        raise HTTPException(status_code=500, detail=f"Subscription failed: {str(e)}")
-
-
-@app.post("/market-data/unsubscribe")
-async def unsubscribe_market_data(request: SubscriptionRequest):
-    """Unsubscribe from real-time market data updates"""
-    
-    try:
-        if request.symbol in active_subscriptions:
-            del active_subscriptions[request.symbol]
-            
-        logger.info("Market data subscription removed", symbol=request.symbol)
-        
-        return {
-            "message": f"Unsubscribed from {request.symbol}",
-            "symbol": request.symbol,
-            "active_subscriptions": len(active_subscriptions)
-        }
-        
-    except Exception as e:
-        logger.error("Failed to unsubscribe from market data", 
-                    symbol=request.symbol, 
-                    error=str(e))
-        raise HTTPException(status_code=500, detail=f"Unsubscription failed: {str(e)}")
-
-
-@app.get("/account")
-async def get_account_info():
-    """Get account information"""
-    
-    try:
-        # Get connection synchronously
-        connection = connection_pool.get_connection_sync()
-        try:
-            # Request account summary synchronously
-            account_summary = connection.ib_client.accountSummary()
-            
-            # Process account data
-            account_data = {}
-            for item in account_summary:
-                account_data[item.tag] = item.value
-            
-            return AccountSummary(
-                account_id=account_data.get('AccountCode', 'Unknown'),
-                net_liquidation=safe_float(account_data.get('NetLiquidation', 0)),
-                total_cash=safe_float(account_data.get('TotalCashValue', 0)),
-                settled_cash=safe_float(account_data.get('SettledCash', 0)),
-                accrued_cash=safe_float(account_data.get('AccruedCash', 0)),
-                buying_power=safe_float(account_data.get('BuyingPower', 0)),
-                equity_with_loan=safe_float(account_data.get('EquityWithLoanValue', 0)),
-                previous_day_equity=safe_float(account_data.get('PreviousDayEquityWithLoanValue', 0)),
-                gross_position_value=safe_float(account_data.get('GrossPositionValue', 0)),
-                currency=account_data.get('Currency', 'USD')
-            )
-        finally:
-            connection_pool.release_connection(connection)
-            
-    except Exception as e:
-        logger.error("Failed to fetch account info", error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to fetch account info: {str(e)}")
-
-
-@app.get("/pool-status")
-async def get_pool_status():
-    """Get connection pool detailed status"""
-    return connection_pool.get_status()
-
-
-@app.get("/gateway-health")
-async def get_gateway_health():
-    """Get IB Gateway health status"""
-    try:
-        # Test connection to IB Gateway
-        connection_test = test_connection()
-        
-        if connection_test:
-            return {
-                "status": "healthy",
-                "gateway": "connected",
-                "host": config.ib_host,
-                "port": config.ib_port,
-                "timestamp": datetime.utcnow().isoformat()
+            "results": results,
+            "count": len(results),
+            "search_params": {
+                "symbol": symbol,
+                "secType": secType,
+                "exchange": exchange,
+                "currency": currency
             }
-        else:
-            return {
-                "status": "unhealthy",
-                "gateway": "disconnected",
-                "host": config.ib_host,
-                "port": config.ib_port,
-                "error": "Connection refused - IB Gateway not accessible",
-                "timestamp": datetime.utcnow().isoformat()
-            }
-    except Exception as e:
-        return {
-            "status": "unhealthy",
-            "gateway": "error",
-            "host": config.ib_host,
-            "port": config.ib_port,
-            "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
         }
-
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error searching contracts: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to search contracts: {str(e)}"
+        )
 
 if __name__ == "__main__":
-    import uvicorn
-    
-    # Ensure we bind to the correct host and port
+    logger.info("Starting IB Service...")
     uvicorn.run(
-        "main:app",
-        host="0.0.0.0",  # Bind to all interfaces
-        port=8000,       # Use default port
-        log_level=config.log_level.lower(),
-        reload=config.debug
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info"
     ) 

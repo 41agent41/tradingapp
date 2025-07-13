@@ -1,17 +1,10 @@
-# Core dependencies (guaranteed to work)
+# Simplified IB Service Dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 ib_insync==0.9.86
+pydantic==2.5.2
 python-multipart==0.0.6
 
-# Enhanced dependencies (for full features after rebuild)
-pandas==2.1.3
-pydantic==2.5.2
-pydantic-settings==2.1.0
-asyncio-throttle==1.0.2
-tenacity==8.2.3
-structlog==23.2.0
-
-# Additional utilities
+# Basic utilities
 python-dateutil==2.8.2
 pytz==2023.3
