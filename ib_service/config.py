@@ -39,10 +39,10 @@ class IBServiceConfig(BaseSettings):
     max_historical_bars: int = Field(default=10000, description="Maximum historical bars to fetch")
     rate_limit_requests_per_minute: int = Field(default=100, description="Rate limit for API requests")
     
-    # CORS Configuration
-    cors_origins: List[str] = Field(
-        default=["http://localhost:3000"],
-        description="Allowed CORS origins"
+    # CORS Configuration - Use string field and convert in validator
+    cors_origins: str = Field(
+        default="http://localhost:3000",
+        description="Allowed CORS origins (comma-separated)"
     )
     
     # Monitoring Configuration
@@ -68,21 +68,18 @@ class IBServiceConfig(BaseSettings):
             raise ValueError(f'Log level must be one of: {valid_levels}')
         return v.upper()
     
-    @validator('cors_origins', pre=True)
-    def parse_cors_origins(cls, v):
-        if isinstance(v, str):
-            # Split by comma and strip whitespace
-            return [origin.strip() for origin in v.split(',') if origin.strip()]
-        elif isinstance(v, list):
-            return v
-        else:
-            return ["http://localhost:3000"]  # Default fallback
-    
     @validator('cors_origins')
     def validate_cors_origins(cls, v):
-        if not v:
-            raise ValueError('At least one CORS origin must be specified')
-        return v
+        if not v or not v.strip():
+            return "http://localhost:3000"
+        return v.strip()
+    
+    @property
+    def cors_origins_list(self) -> List[str]:
+        """Get CORS origins as a list"""
+        if not self.cors_origins:
+            return ["http://localhost:3000"]
+        return [origin.strip() for origin in self.cors_origins.split(',') if origin.strip()]
     
     class Config:
         env_prefix = "IB_"

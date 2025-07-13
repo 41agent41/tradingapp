@@ -43,6 +43,7 @@ sudo usermod -aG sudo <username>
 apt install git
 
 ### Quick Start (Recommended)
+## all commands below to be executed as the tradingapp user which has sudo priviledges
 
 ```bash
 # 1. Clone repository
@@ -50,6 +51,9 @@ git clone https://github.com/your-username/tradingapp.git
 cd tradingapp
 
 chmod +x *.sh
+
+# Set IB Gateway details in .env file
+./fix-ib-config.sh
 
 # 2. Install dependencies (first time only)
 ./deploy-tradingapp.sh install
