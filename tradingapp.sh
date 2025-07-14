@@ -228,7 +228,7 @@ test_deployment() {
     local success=true
     
     # Test frontend
-    if curl -s -f http://localhost:3000 > /dev/null; then
+    if curl -s -f http://${SERVER_IP:-localhost}:3000 > /dev/null; then
         print_status "Frontend is responding"
     else
         print_error "Frontend is not responding"
@@ -236,7 +236,7 @@ test_deployment() {
     fi
     
     # Test backend
-    if curl -s -f http://localhost:4000 > /dev/null; then
+    if curl -s -f http://${SERVER_IP:-localhost}:4000 > /dev/null; then
         print_status "Backend is responding"
     else
         print_error "Backend is not responding"
@@ -244,7 +244,7 @@ test_deployment() {
     fi
     
     # Test IB service
-    if curl -s -f http://localhost:8000/health > /dev/null; then
+    if curl -s -f http://${SERVER_IP:-localhost}:8000/health > /dev/null; then
         print_status "IB Service is responding"
     else
         print_error "IB Service is not responding"

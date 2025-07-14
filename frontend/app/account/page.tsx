@@ -49,7 +49,11 @@ export default function AccountPage() {
   const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
 
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (!apiUrl) {
+    console.error('NEXT_PUBLIC_API_URL is not configured');
+    return <div>Configuration error: API URL not set</div>;
+  }
 
   // Fetch all data
   const fetchData = async () => {

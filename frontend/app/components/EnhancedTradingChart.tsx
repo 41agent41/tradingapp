@@ -153,7 +153,11 @@ export default function EnhancedTradingChart({
     setError(null);
     
     try {
-      const backendUrl = (typeof window !== 'undefined' && (window as any).ENV?.NEXT_PUBLIC_API_URL) || 'http://localhost:4000';
+      const backendUrl = (typeof window !== 'undefined' && (window as any).ENV?.NEXT_PUBLIC_API_URL) || process.env.NEXT_PUBLIC_API_URL;
+    if (!backendUrl) {
+      console.error('NEXT_PUBLIC_API_URL is not configured');
+      return;
+    }
       const response = await fetch(
         `${backendUrl}/api/market-data/history?symbol=${contract.symbol}&timeframe=${currentTimeframe}&period=${currentPeriod}`
       );

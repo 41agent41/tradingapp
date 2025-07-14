@@ -114,7 +114,11 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
 
   // Set up Socket.io connection for real-time data
   useEffect(() => {
-    const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+    const backendUrl = process.env.NEXT_PUBLIC_API_URL;
+    if (!backendUrl) {
+      console.error('NEXT_PUBLIC_API_URL is not configured');
+      return;
+    }
     socket.current = io(backendUrl);
 
     socket.current.on('connect', () => {
@@ -186,7 +190,10 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
     setError(null);
     
     try {
-      const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+      const backendUrl = process.env.NEXT_PUBLIC_API_URL;
+      if (!backendUrl) {
+        throw new Error('NEXT_PUBLIC_API_URL is not configured');
+      }
       const response = await fetch(
         `${backendUrl}/api/market-data/history?symbol=${currentSymbol}&timeframe=${currentTimeframe}&period=90D`
       );

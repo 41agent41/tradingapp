@@ -4,9 +4,20 @@ services:
     env_file: .env
     environment:
       - PORT=${BACKEND_PORT:-4000}
+      - HOST=${BACKEND_HOST:-0.0.0.0}
       - NODE_ENV=${NODE_ENV:-production}
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - CORS_ORIGINS=${CORS_ORIGINS}
       - IB_SERVICE_URL=http://ib_service:8000
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_USER=${POSTGRES_USER:-tradingapp}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-tradingapp123}
+      - POSTGRES_DB=${POSTGRES_DB:-tradingapp}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - JWT_SECRET=${JWT_SECRET}
+      - SESSION_SECRET=${SESSION_SECRET}
     ports:
       - "${BACKEND_PORT:-4000}:${BACKEND_PORT:-4000}"
     depends_on:
@@ -22,7 +33,8 @@ services:
     env_file: .env
     environment:
       - PORT=${FRONTEND_PORT:-3000}
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+      - HOST=${FRONTEND_HOST:-0.0.0.0}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
       - NODE_ENV=${NODE_ENV:-production}
     ports:
       - "${FRONTEND_PORT:-3000}:${FRONTEND_PORT:-3000}"
@@ -36,11 +48,11 @@ services:
     build: ./ib_service
     env_file: .env
     environment:
-      - IB_HOST=${IB_HOST:-host.docker.internal}
+      - IB_HOST=${IB_HOST}
       - IB_PORT=${IB_PORT:-4002}
       - IB_CLIENT_ID=${IB_CLIENT_ID:-1}
       - IB_TIMEOUT=${IB_TIMEOUT:-30}
-      - IB_CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - IB_CORS_ORIGINS=${IB_CORS_ORIGINS}
     ports:
       - "${IB_SERVICE_PORT:-8000}:8000"
     networks:

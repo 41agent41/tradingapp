@@ -23,11 +23,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration from environment
-IB_HOST = os.getenv('IB_HOST', 'localhost')
+IB_HOST = os.getenv('IB_HOST')
+if not IB_HOST:
+    raise ValueError("IB_HOST environment variable is required")
+
 IB_PORT = int(os.getenv('IB_PORT', '4002'))
 IB_CLIENT_ID = int(os.getenv('IB_CLIENT_ID', '1'))
 IB_TIMEOUT = int(os.getenv('IB_TIMEOUT', '30'))
-CORS_ORIGINS = os.getenv('IB_CORS_ORIGINS', 'http://localhost:3000').split(',')
+CORS_ORIGINS = os.getenv('IB_CORS_ORIGINS', '').split(',') if os.getenv('IB_CORS_ORIGINS') else []
 
 # Global IB connection
 ib_client = None

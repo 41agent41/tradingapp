@@ -118,7 +118,11 @@ export default function MarketDataFilter() {
 
   const checkConnection = async () => {
     try {
-      const backendUrl = (typeof window !== 'undefined' && (window as any).ENV?.NEXT_PUBLIC_API_URL) || 'http://localhost:4000';
+      const backendUrl = (typeof window !== 'undefined' && (window as any).ENV?.NEXT_PUBLIC_API_URL) || process.env.NEXT_PUBLIC_API_URL;
+      if (!backendUrl) {
+        setConnectionStatus('Error');
+        return;
+      }
       const response = await fetch(`${backendUrl}/api/health`);
       if (response.ok) {
         setConnectionStatus('Connected');
@@ -144,7 +148,10 @@ export default function MarketDataFilter() {
     setShowChart(false);
 
     try {
-      const backendUrl = (typeof window !== 'undefined' && (window as any).ENV?.NEXT_PUBLIC_API_URL) || 'http://localhost:4000';
+      const backendUrl = (typeof window !== 'undefined' && (window as any).ENV?.NEXT_PUBLIC_API_URL) || process.env.NEXT_PUBLIC_API_URL;
+      if (!backendUrl) {
+        throw new Error('NEXT_PUBLIC_API_URL is not configured');
+      }
       const response = await fetch(`${backendUrl}/api/market-data/search`, {
         method: 'POST',
         headers: {
@@ -184,7 +191,10 @@ export default function MarketDataFilter() {
     setLoading(true);
 
     try {
-      const backendUrl = (typeof window !== 'undefined' && (window as any).ENV?.NEXT_PUBLIC_API_URL) || 'http://localhost:4000';
+      const backendUrl = (typeof window !== 'undefined' && (window as any).ENV?.NEXT_PUBLIC_API_URL) || process.env.NEXT_PUBLIC_API_URL;
+      if (!backendUrl) {
+        throw new Error('NEXT_PUBLIC_API_URL is not configured');
+      }
       const response = await fetch(
         `${backendUrl}/api/market-data/realtime?symbol=${contract.symbol}&conid=${contract.conid}`
       );
