@@ -36,7 +36,7 @@ services:
     build: ./ib_service
     env_file: .env
     environment:
-      - IB_HOST=${IB_HOST:-localhost}
+      - IB_HOST=${IB_HOST:-host.docker.internal}
       - IB_PORT=${IB_PORT:-4002}
       - IB_CLIENT_ID=${IB_CLIENT_ID:-1}
       - IB_TIMEOUT=${IB_TIMEOUT:-30}
@@ -45,6 +45,8 @@ services:
       - "${IB_SERVICE_PORT:-8000}:8000"
     networks:
       - tradingapp-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
       
   postgres:
