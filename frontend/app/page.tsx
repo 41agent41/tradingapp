@@ -2,6 +2,7 @@
 
 import React from 'react';
 import MarketDataFilter from './components/MarketDataFilter';
+import MSFTRealtimeChart from './components/MSFTRealtimeChart';
 
 export default function HomePage() {
   return (
@@ -12,7 +13,7 @@ export default function HomePage() {
           <div className="flex justify-between items-center py-6">
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Trading App</h1>
-              <p className="text-sm text-gray-600">Interactive Brokers Market Data</p>
+              <p className="text-sm text-gray-600">Interactive Brokers Market Data & TradingView Charts</p>
             </div>
             <div className="flex items-center space-x-4">
               <div className="text-sm text-gray-500">
@@ -25,17 +26,26 @@ export default function HomePage() {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* MSFT Real-time Chart Section */}
+        <div className="mb-8">
+          <h2 className="text-lg font-medium text-gray-900 mb-4">
+            Real-time MSFT Chart
+          </h2>
+          <MSFTRealtimeChart />
+        </div>
+
+        {/* Market Data Search Section */}
         <div className="mb-8">
           <h2 className="text-lg font-medium text-gray-900 mb-2">
             Market Data Search & Filter
           </h2>
-          <p className="text-gray-600">
+          <p className="text-gray-600 mb-4">
             Search for stocks, options, futures, and other financial instruments using Interactive Brokers data.
           </p>
+          
+          {/* Market Data Filter Component */}
+          <MarketDataFilter />
         </div>
-
-        {/* Market Data Filter Component */}
-        <MarketDataFilter />
       </main>
     </div>
   );
