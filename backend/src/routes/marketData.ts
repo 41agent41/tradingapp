@@ -256,25 +256,45 @@ router.get('/realtime', async (req: Request, res: Response) => {
       });
     }
 
-    console.log(`Fetching real-time data for ${symbol}`);
+    console.log(`Fetching real-time data for ${symbol} from ${IB_SERVICE_URL}`);
 
     const response = await axios.get(`${IB_SERVICE_URL}/market-data/realtime`, {
       params: { symbol: (symbol as string).toUpperCase() },
-      timeout: 10000
+      timeout: 30000, // Increased to 30 seconds
+      headers: {
+        'Connection': 'close'
+      }
     });
 
+    console.log(`Successfully fetched data for ${symbol}:`, response.data);
     res.json(response.data);
 
   } catch (error: any) {
     console.error('Error fetching real-time market data:', error);
     
-    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
-    const statusCode = error.response?.status || 500;
+    let errorMessage = 'Unknown error';
+    let statusCode = 500;
+    
+    if (error.code === 'ECONNREFUSED') {
+      errorMessage = 'IB Service connection refused - service may be starting up';
+      statusCode = 503;
+    } else if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) {
+      errorMessage = 'IB Service timeout - service may be busy or starting up';
+      statusCode = 504;
+    } else if (error.response) {
+      errorMessage = error.response.data?.detail || error.response.statusText || 'IB Service error';
+      statusCode = error.response.status;
+    } else {
+      errorMessage = error.message || 'Failed to connect to IB Service';
+    }
     
     res.status(statusCode).json({
       error: 'Failed to fetch real-time market data',
       detail: errorMessage,
-      ib_service_status: statusCode
+      ib_service_status: statusCode,
+      ib_service_url: IB_SERVICE_URL,
+      symbol: symbol,
+      timestamp: new Date().toISOString()
     });
   }
 });
