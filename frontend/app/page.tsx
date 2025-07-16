@@ -2,7 +2,6 @@
 
 import React from 'react';
 import MarketDataFilter from './components/MarketDataFilter';
-import MSFTRealtimeChart from './components/MSFTRealtimeChart';
 
 export default function HomePage() {
   return (
@@ -26,12 +25,43 @@ export default function HomePage() {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* MSFT Real-time Chart Section */}
-        <div className="mb-8">
-          <h2 className="text-lg font-medium text-gray-900 mb-4">
-            Real-time MSFT Chart
-          </h2>
-          <MSFTRealtimeChart />
+        {/* Quick Access Links */}
+        <div className="mb-8 grid grid-cols-1 md:grid-cols-3 gap-4">
+          <a 
+            href="/msft" 
+            className="block p-6 bg-white rounded-lg shadow-sm border hover:shadow-md transition-shadow"
+          >
+            <div className="flex items-center">
+              <div className="text-2xl mr-3">📈</div>
+              <div>
+                <h3 className="text-lg font-medium text-gray-900">MSFT Real-time Chart</h3>
+                <p className="text-sm text-gray-600">Live Microsoft stock data with TradingView charts</p>
+              </div>
+            </div>
+          </a>
+          
+          <a 
+            href="/account" 
+            className="block p-6 bg-white rounded-lg shadow-sm border hover:shadow-md transition-shadow"
+          >
+            <div className="flex items-center">
+              <div className="text-2xl mr-3">👤</div>
+              <div>
+                <h3 className="text-lg font-medium text-gray-900">Account Settings</h3>
+                <p className="text-sm text-gray-600">Manage your trading account preferences</p>
+              </div>
+            </div>
+          </a>
+          
+          <div className="p-6 bg-gray-100 rounded-lg shadow-sm border">
+            <div className="flex items-center">
+              <div className="text-2xl mr-3">🔧</div>
+              <div>
+                <h3 className="text-lg font-medium text-gray-700">More Charts</h3>
+                <p className="text-sm text-gray-500">Additional timeframes coming soon</p>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Market Data Search Section */}
