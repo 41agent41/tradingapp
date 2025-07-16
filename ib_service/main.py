@@ -265,7 +265,15 @@ async def health_check():
         "status": "healthy",
         "service": "IB Service",
         "version": "3.0.0",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "connection": {
+            "ib_gateway": {
+                "connected": connection_status.get('connected', False),
+                "last_connected": connection_status.get('last_connected'),
+                "last_error": connection_status.get('last_error'),
+                "connection_count": connection_status.get('connection_count', 0)
+            }
+        }
     }
 
 # Root endpoint
