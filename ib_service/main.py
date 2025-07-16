@@ -79,8 +79,8 @@ class ConnectionInfo(BaseModel):
     last_error: Optional[str] = None
     connection_count: int
 
-def get_ib_connection():
-    """Get or create IB connection"""
+async def get_ib_connection():
+    """Get or create IB connection using proper event loop handling"""
     global ib_client, connection_status
     
     try:
@@ -88,29 +88,37 @@ def get_ib_connection():
         if ib_client and ib_client.isConnected():
             return ib_client
         
-        # Create new connection
+        # Create new connection using separate event loop to avoid conflicts
         logger.info(f"Connecting to IB Gateway at {IB_HOST}:{IB_PORT} (Client ID: {IB_CLIENT_ID})")
-        ib_client = IB()
         
-        # Connect synchronously with better error handling
-        try:
-            ib_client.connect(
-                host=IB_HOST,
-                port=IB_PORT,
-                clientId=IB_CLIENT_ID,
-                timeout=IB_TIMEOUT
-            )
-        except TimeoutError:
-            raise Exception(f"Connection timeout - IB Gateway at {IB_HOST}:{IB_PORT} is not responding. Check if IB Gateway is running and API is enabled.")
-        except ConnectionRefusedError:
-            raise Exception(f"Connection refused - IB Gateway at {IB_HOST}:{IB_PORT} is not accepting connections. Check if port {IB_PORT} is correct and API is enabled.")
-        except OSError as e:
-            if "No route to host" in str(e):
-                raise Exception(f"Network unreachable - Cannot reach {IB_HOST}. Check IP address and network connectivity.")
-            else:
-                raise Exception(f"Network error: {str(e)}")
+        def connect_operation():
+            """Connection operation to run in separate thread/event loop"""
+            global ib_client
+            ib_client = IB()
+            
+            # Connect with better error handling
+            try:
+                ib_client.connect(
+                    host=IB_HOST,
+                    port=IB_PORT,
+                    clientId=IB_CLIENT_ID,
+                    timeout=IB_TIMEOUT
+                )
+                return ib_client
+            except TimeoutError:
+                raise Exception(f"Connection timeout - IB Gateway at {IB_HOST}:{IB_PORT} is not responding. Check if IB Gateway is running and API is enabled.")
+            except ConnectionRefusedError:
+                raise Exception(f"Connection refused - IB Gateway at {IB_HOST}:{IB_PORT} is not accepting connections. Check if port {IB_PORT} is correct and API is enabled.")
+            except OSError as e:
+                if "No route to host" in str(e):
+                    raise Exception(f"Network unreachable - Cannot reach {IB_HOST}. Check IP address and network connectivity.")
+                else:
+                    raise Exception(f"Network error: {str(e)}")
         
-        if ib_client.isConnected():
+        # Run connection in separate event loop
+        ib_client = await run_ib_operation(connect_operation)
+        
+        if ib_client and ib_client.isConnected():
             connection_status.update({
                 'connected': True,
                 'last_connected': datetime.now().isoformat(),
@@ -229,7 +237,7 @@ async def lifespan(app: FastAPI):
     
     # Test connection on startup
     try:
-        get_ib_connection()
+        await get_ib_connection()
         logger.info("Initial connection test successful")
     except Exception as e:
         logger.warning(f"Initial connection test failed: {e}")
@@ -311,7 +319,7 @@ async def get_connection_status():
 async def connect():
     """Manually connect to IB Gateway"""
     try:
-        ib = get_ib_connection()
+        ib = await get_ib_connection()
         return {
             "status": "connected",
             "message": "Successfully connected to IB Gateway",
@@ -349,7 +357,7 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y"):
         request = MarketDataRequest(symbol=symbol, timeframe=timeframe, period=period)
         
         # Get connection
-        ib = get_ib_connection()
+        ib = await get_ib_connection()
         
         # Create and qualify contract
         contract = create_contract(request.symbol.upper())
@@ -549,7 +557,7 @@ async def search_contracts(
     """Search for contracts"""
     try:
         # Get connection
-        ib = get_ib_connection()
+        ib = await get_ib_connection()
         
         # Create contract
         contract = create_contract(symbol.upper(), secType, exchange, currency)
