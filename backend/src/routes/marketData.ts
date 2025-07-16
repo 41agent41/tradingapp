@@ -247,15 +247,15 @@ router.get('/history', async (req: Request, res: Response) => {
 
 // Get real-time market data (current price)
 router.get('/realtime', async (req: Request, res: Response) => {
+  const { symbol } = req.query;
+
+  if (!symbol) {
+    return res.status(400).json({
+      error: 'Symbol parameter is required'
+    });
+  }
+
   try {
-    const { symbol } = req.query;
-
-    if (!symbol) {
-      return res.status(400).json({
-        error: 'Symbol parameter is required'
-      });
-    }
-
     console.log(`Fetching real-time data for ${symbol} from ${IB_SERVICE_URL}`);
 
     const response = await axios.get(`${IB_SERVICE_URL}/market-data/realtime`, {
