@@ -414,19 +414,27 @@ async def run_ib_operation(operation):
     return await loop.run_in_executor(None, run_with_event_loop)
 
 def get_realtime_data_sync(symbol: str):
-    """Synchronous function to get real-time data"""
+    """Synchronous function to get real-time data with dedicated connection"""
+    ib_local = None
     try:
         logger.info(f"Starting real-time data request for symbol: {symbol}")
         
-        # Get connection
-        ib = get_ib_connection()
-        logger.info(f"IB connection obtained, connected: {ib.isConnected()}")
+        # Create a dedicated connection for this request to avoid thread conflicts
+        logger.info(f"Creating dedicated IB connection for {symbol}")
+        ib_local = IB()
+        ib_local.connect(
+            host=IB_HOST,
+            port=IB_PORT,
+            clientId=IB_CLIENT_ID + 1,  # Use different client ID to avoid conflicts
+            timeout=IB_TIMEOUT
+        )
+        logger.info(f"Dedicated connection established, connected: {ib_local.isConnected()}")
         
         # Create and qualify contract
         contract = create_contract(symbol.upper())
         logger.info(f"Created contract for {symbol}: {contract}")
         
-        qualified_contracts = ib.qualifyContracts(contract)
+        qualified_contracts = ib_local.qualifyContracts(contract)
         logger.info(f"Qualified contracts count: {len(qualified_contracts)}")
         
         if not qualified_contracts:
@@ -436,16 +444,27 @@ def get_realtime_data_sync(symbol: str):
         qualified_contract = qualified_contracts[0]
         logger.info(f"Using qualified contract: {qualified_contract}")
         
-        # Get ticker data
+        # Get ticker data with proper subscription
         logger.info(f"Requesting market data for {qualified_contract.symbol}")
-        ticker = ib.reqMktData(qualified_contract, '', False, False)
+        ticker = ib_local.reqMktData(qualified_contract, '', False, False)
         logger.info(f"Market data requested, ticker: {ticker}")
         
-        # Wait for data using ib.sleep (synchronous)
-        logger.info("Waiting 3 seconds for market data...")
-        ib.sleep(3)
+        # Wait longer for market data to populate
+        logger.info("Waiting 5 seconds for market data to populate...")
+        ib_local.sleep(5)
+        
+        # Force an update to get latest data
+        ib_local.reqMarketDataType(3)  # Request delayed-frozen data if live is not available
+        ib_local.sleep(2)
         
         logger.info(f"Ticker data after wait - bid: {ticker.bid}, ask: {ticker.ask}, last: {ticker.last}, volume: {ticker.volume}")
+        
+        # If still no data, try to get snapshot data
+        if not ticker.last or util.isNan(ticker.last):
+            logger.info("No live data received, requesting snapshot...")
+            ticker = ib_local.reqMktData(qualified_contract, '', True, False)  # Request snapshot
+            ib_local.sleep(3)
+            logger.info(f"Snapshot data - bid: {ticker.bid}, ask: {ticker.ask}, last: {ticker.last}, volume: {ticker.volume}")
         
         # Process quote
         quote = RealTimeQuote(
@@ -460,20 +479,26 @@ def get_realtime_data_sync(symbol: str):
         logger.info(f"Processed quote: {quote}")
         
         # Cancel market data subscription
-        ib.cancelMktData(qualified_contract)
+        ib_local.cancelMktData(qualified_contract)
         logger.info("Market data subscription cancelled")
         
         return quote
         
-    except HTTPException as he:
-        logger.error(f"HTTP Exception in get_realtime_data_sync: {he.detail}")
-        raise he
     except Exception as e:
         logger.error(f"Exception in get_realtime_data_sync: {type(e).__name__}: {str(e)}")
         logger.error(f"Exception details: {repr(e)}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise Exception(f"Failed to get real-time data for {symbol}: {type(e).__name__}: {str(e)}")
+    
+    finally:
+        # Always clean up the dedicated connection
+        if ib_local and ib_local.isConnected():
+            try:
+                logger.info("Cleaning up dedicated IB connection")
+                ib_local.disconnect()
+            except Exception as cleanup_error:
+                logger.warning(f"Error during connection cleanup: {cleanup_error}")
 
 # Real-time data endpoint
 @app.get("/market-data/realtime", response_model=RealTimeQuote)
