@@ -391,12 +391,27 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y"):
             detail=f"Failed to get historical data: {str(e)}"
         )
 
-# Helper function to run IB operations in executor
+# Helper function to run IB operations in executor with proper event loop
 async def run_ib_operation(operation):
-    """Run IB operation in a separate thread to avoid event loop conflicts"""
+    """Run IB operation in a separate thread with its own event loop"""
     import asyncio
+    
+    def run_with_event_loop():
+        """Create a new event loop for the thread and run the operation"""
+        # Create a new event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            # Run the operation in the new event loop
+            return operation()
+        finally:
+            # Clean up the event loop
+            loop.close()
+    
+    # Run the operation in a thread with its own event loop
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, operation)
+    return await loop.run_in_executor(None, run_with_event_loop)
 
 def get_realtime_data_sync(symbol: str):
     """Synchronous function to get real-time data"""
