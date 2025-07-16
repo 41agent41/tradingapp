@@ -401,26 +401,36 @@ async def run_ib_operation(operation):
 def get_realtime_data_sync(symbol: str):
     """Synchronous function to get real-time data"""
     try:
+        logger.info(f"Starting real-time data request for symbol: {symbol}")
+        
         # Get connection
         ib = get_ib_connection()
+        logger.info(f"IB connection obtained, connected: {ib.isConnected()}")
         
         # Create and qualify contract
         contract = create_contract(symbol.upper())
+        logger.info(f"Created contract for {symbol}: {contract}")
+        
         qualified_contracts = ib.qualifyContracts(contract)
+        logger.info(f"Qualified contracts count: {len(qualified_contracts)}")
         
         if not qualified_contracts:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Symbol {symbol} not found"
-            )
+            logger.error(f"No qualified contracts found for symbol: {symbol}")
+            raise Exception(f"Symbol {symbol} not found or cannot be qualified")
         
         qualified_contract = qualified_contracts[0]
+        logger.info(f"Using qualified contract: {qualified_contract}")
         
         # Get ticker data
+        logger.info(f"Requesting market data for {qualified_contract.symbol}")
         ticker = ib.reqMktData(qualified_contract, '', False, False)
+        logger.info(f"Market data requested, ticker: {ticker}")
         
         # Wait for data using ib.sleep (synchronous)
-        ib.sleep(2)
+        logger.info("Waiting 3 seconds for market data...")
+        ib.sleep(3)
+        
+        logger.info(f"Ticker data after wait - bid: {ticker.bid}, ask: {ticker.ask}, last: {ticker.last}, volume: {ticker.volume}")
         
         # Process quote
         quote = RealTimeQuote(
@@ -432,34 +442,52 @@ def get_realtime_data_sync(symbol: str):
             timestamp=datetime.now().isoformat()
         )
         
+        logger.info(f"Processed quote: {quote}")
+        
         # Cancel market data subscription
         ib.cancelMktData(qualified_contract)
+        logger.info("Market data subscription cancelled")
         
         return quote
         
+    except HTTPException as he:
+        logger.error(f"HTTP Exception in get_realtime_data_sync: {he.detail}")
+        raise he
     except Exception as e:
-        logger.error(f"Error getting real-time data: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get real-time data: {str(e)}"
-        )
+        logger.error(f"Exception in get_realtime_data_sync: {type(e).__name__}: {str(e)}")
+        logger.error(f"Exception details: {repr(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise Exception(f"Failed to get real-time data for {symbol}: {type(e).__name__}: {str(e)}")
 
 # Real-time data endpoint
 @app.get("/market-data/realtime", response_model=RealTimeQuote)
 async def get_realtime_data(symbol: str):
     """Get real-time market data"""
     try:
+        logger.info(f"Real-time data endpoint called for symbol: {symbol}")
+        
         # Run the synchronous operation in a separate thread
         quote = await run_ib_operation(lambda: get_realtime_data_sync(symbol))
+        
+        logger.info(f"Successfully retrieved real-time data for {symbol}")
         return quote
         
-    except HTTPException:
-        raise
+    except HTTPException as he:
+        logger.error(f"HTTP Exception in endpoint: {he.detail}")
+        raise he
     except Exception as e:
-        logger.error(f"Error getting real-time data: {e}")
+        logger.error(f"Unexpected error in real-time data endpoint: {type(e).__name__}: {str(e)}")
+        logger.error(f"Exception details: {repr(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # Create a proper error message
+        error_message = str(e) if str(e) else f"{type(e).__name__} occurred"
+        
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get real-time data: {str(e)}"
+            detail=f"Failed to get real-time data for {symbol}: {error_message}"
         )
 
 # Contract search endpoint
