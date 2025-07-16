@@ -360,10 +360,8 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y"):
         
         logger.info(f"Requesting historical data for {request.symbol}")
         
-        # Use asyncio to handle the request properly
-        import asyncio
-        bars = await asyncio.get_event_loop().run_in_executor(
-            None,
+        # Run the historical data request in executor
+        bars = await run_ib_operation(
             lambda: ib.reqHistoricalData(
                 qualified_contract,
                 endDateTime='',
@@ -393,10 +391,15 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y"):
             detail=f"Failed to get historical data: {str(e)}"
         )
 
-# Real-time data endpoint
-@app.get("/market-data/realtime", response_model=RealTimeQuote)
-async def get_realtime_data(symbol: str):
-    """Get real-time market data"""
+# Helper function to run IB operations in executor
+async def run_ib_operation(operation):
+    """Run IB operation in a separate thread to avoid event loop conflicts"""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, operation)
+
+def get_realtime_data_sync(symbol: str):
+    """Synchronous function to get real-time data"""
     try:
         # Get connection
         ib = get_ib_connection()
@@ -416,9 +419,8 @@ async def get_realtime_data(symbol: str):
         # Get ticker data
         ticker = ib.reqMktData(qualified_contract, '', False, False)
         
-        # Wait for data using asyncio instead of ib.sleep
-        import asyncio
-        await asyncio.sleep(2)
+        # Wait for data using ib.sleep (synchronous)
+        ib.sleep(2)
         
         # Process quote
         quote = RealTimeQuote(
@@ -433,6 +435,22 @@ async def get_realtime_data(symbol: str):
         # Cancel market data subscription
         ib.cancelMktData(qualified_contract)
         
+        return quote
+        
+    except Exception as e:
+        logger.error(f"Error getting real-time data: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get real-time data: {str(e)}"
+        )
+
+# Real-time data endpoint
+@app.get("/market-data/realtime", response_model=RealTimeQuote)
+async def get_realtime_data(symbol: str):
+    """Get real-time market data"""
+    try:
+        # Run the synchronous operation in a separate thread
+        quote = await run_ib_operation(lambda: get_realtime_data_sync(symbol))
         return quote
         
     except HTTPException:
