@@ -359,14 +359,20 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y"):
         ib_timeframe = convert_timeframe(request.timeframe)
         
         logger.info(f"Requesting historical data for {request.symbol}")
-        bars = ib.reqHistoricalData(
-            qualified_contract,
-            endDateTime='',
-            durationStr=request.period,
-            barSizeSetting=ib_timeframe,
-            whatToShow='TRADES',
-            useRTH=True,
-            formatDate=1
+        
+        # Use asyncio to handle the request properly
+        import asyncio
+        bars = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: ib.reqHistoricalData(
+                qualified_contract,
+                endDateTime='',
+                durationStr=request.period,
+                barSizeSetting=ib_timeframe,
+                whatToShow='TRADES',
+                useRTH=True,
+                formatDate=1
+            )
         )
         
         if not bars:
@@ -410,8 +416,9 @@ async def get_realtime_data(symbol: str):
         # Get ticker data
         ticker = ib.reqMktData(qualified_contract, '', False, False)
         
-        # Wait for data
-        ib.sleep(2)
+        # Wait for data using asyncio instead of ib.sleep
+        import asyncio
+        await asyncio.sleep(2)
         
         # Process quote
         quote = RealTimeQuote(
