@@ -94,10 +94,19 @@ export default function MSFTRealtimeChart() {
         headers: {
           'Content-Type': 'application/json',
         },
+        // Reduce timeout to 10 seconds for better UX
+        signal: AbortSignal.timeout(10000)
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        // Handle specific HTTP errors
+        if (response.status === 504) {
+          throw new Error('Gateway timeout - IB service busy, will retry');
+        } else if (response.status === 503) {
+          throw new Error('Service temporarily unavailable, will retry');
+        } else {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
       }
 
       const data: RealtimeData = await response.json();
@@ -126,13 +135,23 @@ export default function MSFTRealtimeChart() {
           return trimmed;
         });
         
-        setError(null);
+        setError(null); // Clear any previous errors on success
       } else {
         throw new Error('Invalid data received from API');
       }
     } catch (err) {
       console.error('Error fetching real-time data:', err);
-      setError(err instanceof Error ? err.message : 'Failed to fetch data');
+      
+      // Don't show error immediately for timeouts - they're temporary
+      if (err instanceof Error && (err.message.includes('timeout') || err.message.includes('busy'))) {
+        console.log('Temporary timeout, will retry automatically...');
+        // Only show error if we haven't had successful data recently
+        if (!currentData || (new Date().getTime() - (lastUpdate?.getTime() || 0)) > 30000) {
+          setError('Connection temporarily slow, retrying...');
+        }
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to fetch data');
+      }
     } finally {
       setIsLoading(false);
     }
