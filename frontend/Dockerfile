@@ -5,17 +5,23 @@ FROM node:20-alpine
 ARG NEXT_PUBLIC_API_URL=http://localhost:4000
 ARG NODE_ENV=production
 
-# Set environment variables for build
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-ENV NODE_ENV=$NODE_ENV
-
 WORKDIR /app
 COPY package*.json ./
+
+# Install ALL dependencies (including devDependencies) for build
+# Don't set NODE_ENV=production yet so devDependencies are installed
 RUN npm install
+
 COPY . .
+
+# Set environment variables for build (but not NODE_ENV yet)
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 
 # Build with environment variables available
 RUN npm run build
+
+# Now set NODE_ENV for runtime
+ENV NODE_ENV=$NODE_ENV
 
 EXPOSE 3000
 CMD ["node", ".next/standalone/server.js"] 
