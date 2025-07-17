@@ -94,8 +94,8 @@ export default function MSFTRealtimeChart() {
         headers: {
           'Content-Type': 'application/json',
         },
-        // Reduce timeout to 10 seconds for better UX
-        signal: AbortSignal.timeout(10000)
+        // Increase timeout to 15 seconds to align with optimized backend
+        signal: AbortSignal.timeout(15000)
       });
 
       if (!response.ok) {
@@ -104,6 +104,20 @@ export default function MSFTRealtimeChart() {
           throw new Error('Gateway timeout - IB service busy, will retry');
         } else if (response.status === 503) {
           throw new Error('Service temporarily unavailable, will retry');
+        } else if (response.status === 500) {
+          // Try to get the specific error message from the response
+          try {
+            const errorData = await response.json();
+            if (errorData.detail && errorData.detail.includes('subscription')) {
+              throw new Error('Using delayed market data - real-time subscription not available');
+            } else if (errorData.detail && errorData.detail.includes('timeout')) {
+              throw new Error('IB Gateway timeout - will retry');
+            } else {
+              throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+            }
+          } catch (jsonError) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
         } else {
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }

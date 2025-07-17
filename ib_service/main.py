@@ -29,7 +29,7 @@ if not IB_HOST:
 
 IB_PORT = int(os.getenv('IB_PORT', '4002'))
 IB_CLIENT_ID = int(os.getenv('IB_CLIENT_ID', '1'))
-IB_TIMEOUT = int(os.getenv('IB_TIMEOUT', '30'))
+IB_TIMEOUT = int(os.getenv('IB_TIMEOUT', '15'))
 CORS_ORIGINS = os.getenv('IB_CORS_ORIGINS', '').split(',') if os.getenv('IB_CORS_ORIGINS') else []
 
 # Global IB connection
@@ -79,8 +79,8 @@ class ConnectionInfo(BaseModel):
     last_error: Optional[str] = None
     connection_count: int
 
-async def get_ib_connection():
-    """Get or create IB connection using proper event loop handling"""
+def get_ib_connection():
+    """Get or create IB connection"""
     global ib_client, connection_status
     
     try:
@@ -88,37 +88,29 @@ async def get_ib_connection():
         if ib_client and ib_client.isConnected():
             return ib_client
         
-        # Create new connection using separate event loop to avoid conflicts
+        # Create new connection
         logger.info(f"Connecting to IB Gateway at {IB_HOST}:{IB_PORT} (Client ID: {IB_CLIENT_ID})")
+        ib_client = IB()
         
-        def connect_operation():
-            """Connection operation to run in separate thread/event loop"""
-            global ib_client
-            ib_client = IB()
-            
-            # Connect with better error handling
-            try:
-                ib_client.connect(
-                    host=IB_HOST,
-                    port=IB_PORT,
-                    clientId=IB_CLIENT_ID,
-                    timeout=IB_TIMEOUT
-                )
-                return ib_client
-            except TimeoutError:
-                raise Exception(f"Connection timeout - IB Gateway at {IB_HOST}:{IB_PORT} is not responding. Check if IB Gateway is running and API is enabled.")
-            except ConnectionRefusedError:
-                raise Exception(f"Connection refused - IB Gateway at {IB_HOST}:{IB_PORT} is not accepting connections. Check if port {IB_PORT} is correct and API is enabled.")
-            except OSError as e:
-                if "No route to host" in str(e):
-                    raise Exception(f"Network unreachable - Cannot reach {IB_HOST}. Check IP address and network connectivity.")
-                else:
-                    raise Exception(f"Network error: {str(e)}")
+        # Connect synchronously with better error handling
+        try:
+            ib_client.connect(
+                host=IB_HOST,
+                port=IB_PORT,
+                clientId=IB_CLIENT_ID,
+                timeout=IB_TIMEOUT
+            )
+        except TimeoutError:
+            raise Exception(f"Connection timeout - IB Gateway at {IB_HOST}:{IB_PORT} is not responding. Check if IB Gateway is running and API is enabled.")
+        except ConnectionRefusedError:
+            raise Exception(f"Connection refused - IB Gateway at {IB_HOST}:{IB_PORT} is not accepting connections. Check if port {IB_PORT} is correct and API is enabled.")
+        except OSError as e:
+            if "No route to host" in str(e):
+                raise Exception(f"Network unreachable - Cannot reach {IB_HOST}. Check IP address and network connectivity.")
+            else:
+                raise Exception(f"Network error: {str(e)}")
         
-        # Run connection in separate event loop
-        ib_client = await run_ib_operation(connect_operation)
-        
-        if ib_client and ib_client.isConnected():
+        if ib_client.isConnected():
             connection_status.update({
                 'connected': True,
                 'last_connected': datetime.now().isoformat(),
@@ -237,7 +229,7 @@ async def lifespan(app: FastAPI):
     
     # Test connection on startup
     try:
-        await get_ib_connection()
+        get_ib_connection()
         logger.info("Initial connection test successful")
     except Exception as e:
         logger.warning(f"Initial connection test failed: {e}")
@@ -319,7 +311,7 @@ async def get_connection_status():
 async def connect():
     """Manually connect to IB Gateway"""
     try:
-        ib = await get_ib_connection()
+        ib = get_ib_connection()
         return {
             "status": "connected",
             "message": "Successfully connected to IB Gateway",
@@ -357,7 +349,7 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y"):
         request = MarketDataRequest(symbol=symbol, timeframe=timeframe, period=period)
         
         # Get connection
-        ib = await get_ib_connection()
+        ib = get_ib_connection()
         
         # Create and qualify contract
         contract = create_contract(request.symbol.upper())
@@ -430,27 +422,19 @@ async def run_ib_operation(operation):
     return await loop.run_in_executor(None, run_with_event_loop)
 
 def get_realtime_data_sync(symbol: str):
-    """Synchronous function to get real-time data with dedicated connection"""
-    ib_local = None
+    """Optimized function to get real-time data using shared connection"""
     try:
         logger.info(f"Starting real-time data request for symbol: {symbol}")
         
-        # Create a dedicated connection for this request to avoid thread conflicts
-        logger.info(f"Creating dedicated IB connection for {symbol}")
-        ib_local = IB()
-        ib_local.connect(
-            host=IB_HOST,
-            port=IB_PORT,
-            clientId=IB_CLIENT_ID + 1,  # Use different client ID to avoid conflicts
-            timeout=IB_TIMEOUT
-        )
-        logger.info(f"Dedicated connection established, connected: {ib_local.isConnected()}")
+        # Use the shared connection instead of creating a new one
+        ib = get_ib_connection()
+        logger.info(f"Using shared IB connection, connected: {ib.isConnected()}")
         
         # Create and qualify contract
         contract = create_contract(symbol.upper())
         logger.info(f"Created contract for {symbol}: {contract}")
         
-        qualified_contracts = ib_local.qualifyContracts(contract)
+        qualified_contracts = ib.qualifyContracts(contract)
         logger.info(f"Qualified contracts count: {len(qualified_contracts)}")
         
         if not qualified_contracts:
@@ -460,42 +444,44 @@ def get_realtime_data_sync(symbol: str):
         qualified_contract = qualified_contracts[0]
         logger.info(f"Using qualified contract: {qualified_contract}")
         
-        # Get ticker data with proper subscription
-        logger.info(f"Requesting market data for {qualified_contract.symbol}")
-        ticker = ib_local.reqMktData(qualified_contract, '', False, False)
+        # Request delayed market data (since subscription is required for live data)
+        logger.info(f"Requesting delayed market data for {qualified_contract.symbol}")
+        ib.reqMarketDataType(3)  # Request delayed-frozen market data
+        logger.info("Note: Using delayed market data. Real-time data requires additional IB subscription.")
+        
+        # Get ticker data - use snapshot for efficiency
+        ticker = ib.reqMktData(qualified_contract, '', True, False)  # Snapshot request
         logger.info(f"Market data requested, ticker: {ticker}")
         
-        # Wait longer for market data to populate
-        logger.info("Waiting 5 seconds for market data to populate...")
-        ib_local.sleep(5)
-        
-        # Force an update to get latest data
-        ib_local.reqMarketDataType(3)  # Request delayed-frozen data if live is not available
-        ib_local.sleep(2)
+        # Reduced wait time for better performance
+        logger.info("Waiting 2 seconds for market data to populate...")
+        ib.sleep(2)
         
         logger.info(f"Ticker data after wait - bid: {ticker.bid}, ask: {ticker.ask}, last: {ticker.last}, volume: {ticker.volume}")
         
-        # If still no data, try to get snapshot data
-        if not ticker.last or util.isNan(ticker.last):
-            logger.info("No live data received, requesting snapshot...")
-            ticker = ib_local.reqMktData(qualified_contract, '', True, False)  # Request snapshot
-            ib_local.sleep(3)
-            logger.info(f"Snapshot data - bid: {ticker.bid}, ask: {ticker.ask}, last: {ticker.last}, volume: {ticker.volume}")
+        # If no last price, try to get it from bid/ask
+        last_price = None
+        if ticker.last and not util.isNan(ticker.last):
+            last_price = float(ticker.last)
+        elif ticker.bid and ticker.ask and not util.isNan(ticker.bid) and not util.isNan(ticker.ask):
+            # Use midpoint if no last price available
+            last_price = (float(ticker.bid) + float(ticker.ask)) / 2
+            logger.info(f"Using midpoint price: {last_price}")
         
-        # Process quote
+        # Process quote with better data handling
         quote = RealTimeQuote(
             symbol=symbol.upper(),
             bid=float(ticker.bid) if ticker.bid and not util.isNan(ticker.bid) else None,
             ask=float(ticker.ask) if ticker.ask and not util.isNan(ticker.ask) else None,
-            last=float(ticker.last) if ticker.last and not util.isNan(ticker.last) else None,
+            last=last_price,
             volume=int(ticker.volume) if ticker.volume and not util.isNan(ticker.volume) else None,
             timestamp=datetime.now().isoformat()
         )
         
         logger.info(f"Processed quote: {quote}")
         
-        # Cancel market data subscription
-        ib_local.cancelMktData(qualified_contract)
+        # Cancel market data subscription to clean up
+        ib.cancelMktData(qualified_contract)
         logger.info("Market data subscription cancelled")
         
         return quote
@@ -506,44 +492,42 @@ def get_realtime_data_sync(symbol: str):
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise Exception(f"Failed to get real-time data for {symbol}: {type(e).__name__}: {str(e)}")
-    
-    finally:
-        # Always clean up the dedicated connection
-        if ib_local and ib_local.isConnected():
-            try:
-                logger.info("Cleaning up dedicated IB connection")
-                ib_local.disconnect()
-            except Exception as cleanup_error:
-                logger.warning(f"Error during connection cleanup: {cleanup_error}")
 
 # Real-time data endpoint
 @app.get("/market-data/realtime", response_model=RealTimeQuote)
 async def get_realtime_data(symbol: str):
-    """Get real-time market data"""
+    """Get real-time market data (may be delayed if subscription not available)"""
     try:
         logger.info(f"Real-time data endpoint called for symbol: {symbol}")
         
         # Run the synchronous operation in a separate thread
         quote = await run_ib_operation(lambda: get_realtime_data_sync(symbol))
         
-        logger.info(f"Successfully retrieved real-time data for {symbol}")
+        logger.info(f"Successfully retrieved market data for {symbol}")
         return quote
         
     except HTTPException as he:
         logger.error(f"HTTP Exception in endpoint: {he.detail}")
         raise he
     except Exception as e:
-        logger.error(f"Unexpected error in real-time data endpoint: {type(e).__name__}: {str(e)}")
-        logger.error(f"Exception details: {repr(e)}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        error_str = str(e)
+        logger.error(f"Unexpected error in real-time data endpoint: {type(e).__name__}: {error_str}")
         
-        # Create a proper error message
-        error_message = str(e) if str(e) else f"{type(e).__name__} occurred"
+        # Handle specific IB Gateway subscription errors
+        if "subscription" in error_str.lower() or "market data farm" in error_str.lower():
+            error_message = f"Market data subscription issue for {symbol}. Using delayed data if available. Check IB Gateway market data subscriptions."
+        elif "timeout" in error_str.lower():
+            error_message = f"Timeout retrieving market data for {symbol}. IB Gateway may be busy or unresponsive."
+        elif "not found" in error_str.lower() or "qualify" in error_str.lower():
+            error_message = f"Symbol {symbol} not found or cannot be qualified by IB Gateway."
+        else:
+            error_message = f"Failed to get market data for {symbol}: {error_str}"
+        
+        logger.error(f"Error details: {error_message}")
         
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get real-time data for {symbol}: {error_message}"
+            detail=error_message
         )
 
 # Contract search endpoint
@@ -557,7 +541,7 @@ async def search_contracts(
     """Search for contracts"""
     try:
         # Get connection
-        ib = await get_ib_connection()
+        ib = get_ib_connection()
         
         # Create contract
         contract = create_contract(symbol.upper(), secType, exchange, currency)

@@ -205,7 +205,7 @@ router.get('/history', async (req: Request, res: Response) => {
         timeframe,
         period
       },
-      timeout: 30000 // 30 second timeout for historical data
+      timeout: 20000 // Reduced to 20 seconds for better consistency
     });
 
     if (response.data.error) {
@@ -260,7 +260,7 @@ router.get('/realtime', async (req: Request, res: Response) => {
 
     const response = await axios.get(`${IB_SERVICE_URL}/market-data/realtime`, {
       params: { symbol: (symbol as string).toUpperCase() },
-      timeout: 30000, // Increased to 30 seconds
+      timeout: 15000, // Reduced to 15 seconds to align with frontend
       headers: {
         'Connection': 'close'
       }
