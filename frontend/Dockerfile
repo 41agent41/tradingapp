@@ -8,13 +8,13 @@ ARG NODE_ENV=production
 WORKDIR /app
 COPY package*.json ./
 
-# Install ALL dependencies (including devDependencies) for build
-# Don't set NODE_ENV=production yet so devDependencies are installed
-RUN npm install
+# Force install ALL dependencies including devDependencies
+# Use --include=dev to ensure devDependencies are installed regardless of NODE_ENV
+RUN npm install --include=dev
 
 COPY . .
 
-# Set environment variables for build (but not NODE_ENV yet)
+# Set environment variables for build
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 
 # Build with environment variables available
