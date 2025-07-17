@@ -20,8 +20,13 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 # Build with environment variables available
 RUN npm run build
 
+# Copy static assets for standalone mode
+RUN cp -r .next/static .next/standalone/.next/
+RUN mkdir -p .next/standalone/public && cp -r public/* .next/standalone/public/ || true
+
 # Now set NODE_ENV for runtime
 ENV NODE_ENV=$NODE_ENV
 
 EXPOSE 3000
-CMD ["node", ".next/standalone/server.js"] 
+WORKDIR /app/.next/standalone
+CMD ["node", "server.js"] 
