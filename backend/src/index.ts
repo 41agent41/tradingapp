@@ -3,6 +3,7 @@ import cors from 'cors';
 import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import marketDataRoutes from './routes/marketData.js';
+import accountRoutes from './routes/account.js';
 import settingsRoutes from './routes/settings.js';
 import axios from 'axios';
 
@@ -65,6 +66,7 @@ app.get('/api/health', async (req, res) => {
 
 // Routes
 app.use('/api/market-data', marketDataRoutes);
+app.use('/api/account', accountRoutes);
 app.use('/api/settings', settingsRoutes);
 
 // Root endpoint

@@ -5,6 +5,7 @@ Simplified IB Service - Synchronous architecture for reliable IB Gateway connect
 import os
 import time
 import logging
+import asyncio
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -69,6 +70,42 @@ class RealTimeQuote(BaseModel):
     last: Optional[float] = None
     volume: Optional[int] = None
     timestamp: str
+
+# Account-related models
+class AccountSummary(BaseModel):
+    account_id: str
+    net_liquidation: Optional[float] = None
+    total_cash_value: Optional[float] = None
+    buying_power: Optional[float] = None
+    maintenance_margin: Optional[float] = None
+    currency: str = "USD"
+    last_updated: str
+
+class Position(BaseModel):
+    symbol: str
+    position: float
+    market_price: Optional[float] = None
+    market_value: Optional[float] = None
+    average_cost: Optional[float] = None
+    unrealized_pnl: Optional[float] = None
+    currency: str = "USD"
+
+class Order(BaseModel):
+    order_id: int
+    symbol: str
+    action: str  # BUY/SELL
+    quantity: float
+    order_type: str
+    status: str
+    filled_quantity: Optional[float] = None
+    remaining_quantity: Optional[float] = None
+    avg_fill_price: Optional[float] = None
+
+class AccountData(BaseModel):
+    account: AccountSummary
+    positions: List[Position]
+    orders: List[Order]
+    last_updated: str
 
 class ConnectionInfo(BaseModel):
     connected: bool
@@ -402,7 +439,6 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y"):
 # Helper function to run IB operations in executor with proper event loop
 async def run_ib_operation(operation):
     """Run IB operation in a separate thread with its own event loop"""
-    import asyncio
     
     def run_with_event_loop():
         """Create a new event loop for the thread and run the operation"""
@@ -584,6 +620,212 @@ async def search_contracts(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to search contracts: {str(e)}"
+        )
+
+# Account service functions
+def get_account_summary_sync():
+    """Get account summary information"""
+    try:
+        ib = get_ib_connection()
+        
+        # Request account summary
+        account_tags = [
+            'NetLiquidation', 'TotalCashValue', 'BuyingPower', 
+            'MaintMarginReq', 'AccountCode', 'Currency'
+        ]
+        
+        summaries = ib.reqAccountSummary('All', ','.join(account_tags))
+        ib.sleep(2)  # Wait for data
+        
+        # Process account summary
+        account_data = {}
+        account_id = "Unknown"
+        currency = "USD"
+        
+        for summary in summaries:
+            tag = summary.tag
+            value = summary.value
+            
+            if tag == 'AccountCode':
+                account_id = value
+            elif tag == 'Currency':
+                currency = value
+            elif tag == 'NetLiquidation':
+                account_data['net_liquidation'] = float(value) if value else None
+            elif tag == 'TotalCashValue':
+                account_data['total_cash_value'] = float(value) if value else None
+            elif tag == 'BuyingPower':
+                account_data['buying_power'] = float(value) if value else None
+            elif tag == 'MaintMarginReq':
+                account_data['maintenance_margin'] = float(value) if value else None
+        
+        return AccountSummary(
+            account_id=account_id,
+            currency=currency,
+            last_updated=datetime.now().isoformat(),
+            **account_data
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting account summary: {e}")
+        raise Exception(f"Failed to get account summary: {str(e)}")
+
+def get_positions_sync():
+    """Get current positions"""
+    try:
+        ib = get_ib_connection()
+        
+        # Request positions
+        positions = ib.reqPositions()
+        ib.sleep(2)  # Wait for data
+        
+        position_list = []
+        for pos in positions:
+            if pos.position != 0:  # Only include non-zero positions
+                position_list.append(Position(
+                    symbol=pos.contract.symbol,
+                    position=pos.position,
+                    market_price=pos.marketPrice if pos.marketPrice and not util.isNan(pos.marketPrice) else None,
+                    market_value=pos.marketValue if pos.marketValue and not util.isNan(pos.marketValue) else None,
+                    average_cost=pos.avgCost if pos.avgCost and not util.isNan(pos.avgCost) else None,
+                    unrealized_pnl=pos.unrealizedPNL if pos.unrealizedPNL and not util.isNan(pos.unrealizedPNL) else None,
+                    currency=pos.contract.currency
+                ))
+        
+        ib.cancelPositions()  # Clean up subscription
+        return position_list
+        
+    except Exception as e:
+        logger.error(f"Error getting positions: {e}")
+        raise Exception(f"Failed to get positions: {str(e)}")
+
+def get_orders_sync():
+    """Get current orders"""
+    try:
+        ib = get_ib_connection()
+        
+        # Request all orders
+        orders = ib.reqAllOpenOrders()
+        ib.sleep(2)  # Wait for data
+        
+        order_list = []
+        for order in orders:
+            order_list.append(Order(
+                order_id=order.orderId,
+                symbol=order.contract.symbol,
+                action=order.order.action,
+                quantity=order.order.totalQuantity,
+                order_type=order.order.orderType,
+                status=order.orderStatus.status,
+                filled_quantity=order.orderStatus.filled if order.orderStatus.filled else None,
+                remaining_quantity=order.orderStatus.remaining if order.orderStatus.remaining else None,
+                avg_fill_price=order.orderStatus.avgFillPrice if order.orderStatus.avgFillPrice and order.orderStatus.avgFillPrice > 0 else None
+            ))
+        
+        return order_list
+        
+    except Exception as e:
+        logger.error(f"Error getting orders: {e}")
+        raise Exception(f"Failed to get orders: {str(e)}")
+
+# Account endpoints
+@app.get("/account/summary", response_model=AccountSummary)
+async def get_account_summary():
+    """Get account summary information"""
+    try:
+        logger.info("Account summary endpoint called")
+        summary = await run_ib_operation(get_account_summary_sync)
+        logger.info(f"Successfully retrieved account summary for account: {summary.account_id}")
+        return summary
+        
+    except HTTPException as he:
+        logger.error(f"HTTP Exception in account summary: {he.detail}")
+        raise he
+    except Exception as e:
+        error_str = str(e)
+        logger.error(f"Error in account summary endpoint: {error_str}")
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get account summary: {error_str}"
+        )
+
+@app.get("/account/positions", response_model=List[Position])
+async def get_account_positions():
+    """Get current account positions"""
+    try:
+        logger.info("Account positions endpoint called")
+        positions = await run_ib_operation(get_positions_sync)
+        logger.info(f"Successfully retrieved {len(positions)} positions")
+        return positions
+        
+    except HTTPException as he:
+        logger.error(f"HTTP Exception in account positions: {he.detail}")
+        raise he
+    except Exception as e:
+        error_str = str(e)
+        logger.error(f"Error in account positions endpoint: {error_str}")
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get account positions: {error_str}"
+        )
+
+@app.get("/account/orders", response_model=List[Order])
+async def get_account_orders():
+    """Get current account orders"""
+    try:
+        logger.info("Account orders endpoint called")
+        orders = await run_ib_operation(get_orders_sync)
+        logger.info(f"Successfully retrieved {len(orders)} orders")
+        return orders
+        
+    except HTTPException as he:
+        logger.error(f"HTTP Exception in account orders: {he.detail}")
+        raise he
+    except Exception as e:
+        error_str = str(e)
+        logger.error(f"Error in account orders endpoint: {error_str}")
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get account orders: {error_str}"
+        )
+
+@app.get("/account/all", response_model=AccountData)
+async def get_all_account_data():
+    """Get all account data (summary, positions, orders) in one call"""
+    try:
+        logger.info("All account data endpoint called")
+        
+        # Run all account operations concurrently
+        summary_task = run_ib_operation(get_account_summary_sync)
+        positions_task = run_ib_operation(get_positions_sync)
+        orders_task = run_ib_operation(get_orders_sync)
+        
+        # Wait for all tasks to complete
+        summary, positions, orders = await asyncio.gather(summary_task, positions_task, orders_task)
+        
+        account_data = AccountData(
+            account=summary,
+            positions=positions,
+            orders=orders,
+            last_updated=datetime.now().isoformat()
+        )
+        
+        logger.info(f"Successfully retrieved all account data for account: {summary.account_id}")
+        return account_data
+        
+    except HTTPException as he:
+        logger.error(f"HTTP Exception in all account data: {he.detail}")
+        raise he
+    except Exception as e:
+        error_str = str(e)
+        logger.error(f"Error in all account data endpoint: {error_str}")
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get all account data: {error_str}"
         )
 
 if __name__ == "__main__":
