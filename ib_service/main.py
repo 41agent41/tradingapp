@@ -6,6 +6,7 @@ import os
 import time
 import logging
 import asyncio
+import random
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -29,7 +30,9 @@ if not IB_HOST:
     raise ValueError("IB_HOST environment variable is required")
 
 IB_PORT = int(os.getenv('IB_PORT', '4002'))
-IB_CLIENT_ID = int(os.getenv('IB_CLIENT_ID', '1'))
+# Use a random client ID to avoid conflicts, fallback to env var + random offset
+base_client_id = int(os.getenv('IB_CLIENT_ID', '1'))
+IB_CLIENT_ID = base_client_id + random.randint(0, 99)  # Random ID between base and base+99
 IB_TIMEOUT = int(os.getenv('IB_TIMEOUT', '15'))
 CORS_ORIGINS = os.getenv('IB_CORS_ORIGINS', '').split(',') if os.getenv('IB_CORS_ORIGINS') else []
 
@@ -118,17 +121,18 @@ class ConnectionInfo(BaseModel):
     last_error: Optional[str] = None
     connection_count: int
 
-def get_ib_connection():
-    """Get or create IB connection"""
-    global ib_client, connection_status
+def get_ib_connection(retry_count=0, max_retries=3):
+    """Get or create IB connection with client ID conflict resolution"""
+    global ib_client, connection_status, IB_CLIENT_ID
     
     try:
         # Check if we have a valid connection
         if ib_client and ib_client.isConnected():
             return ib_client
         
-        # Create new connection
-        logger.info(f"Connecting to IB Gateway at {IB_HOST}:{IB_PORT} (Client ID: {IB_CLIENT_ID})")
+        # Calculate client ID for this attempt (avoid conflicts)
+        current_client_id = IB_CLIENT_ID + retry_count
+        logger.info(f"Connecting to IB Gateway at {IB_HOST}:{IB_PORT} (Client ID: {current_client_id})")
         ib_client = IB()
         
         # Connect synchronously with better error handling
@@ -136,7 +140,7 @@ def get_ib_connection():
             ib_client.connect(
                 host=IB_HOST,
                 port=IB_PORT,
-                clientId=IB_CLIENT_ID,
+                clientId=current_client_id,
                 timeout=IB_TIMEOUT
             )
         except TimeoutError:
@@ -148,23 +152,50 @@ def get_ib_connection():
                 raise Exception(f"Network unreachable - Cannot reach {IB_HOST}. Check IP address and network connectivity.")
             else:
                 raise Exception(f"Network error: {str(e)}")
+        except Exception as e:
+            # Check for client ID conflict
+            if "already in use" in str(e) or "clientId" in str(e).lower():
+                raise Exception(f"Client ID {current_client_id} already in use - will retry with different ID")
+            else:
+                raise e
         
         if ib_client.isConnected():
+            # Update global client ID to the successful one
+            IB_CLIENT_ID = current_client_id
             connection_status.update({
                 'connected': True,
                 'last_connected': datetime.now().isoformat(),
                 'last_error': None,
                 'connection_count': connection_status['connection_count'] + 1
             })
-            logger.info(f"Successfully connected to IB Gateway at {IB_HOST}:{IB_PORT}")
+            logger.info(f"Successfully connected to IB Gateway at {IB_HOST}:{IB_PORT} (Client ID: {current_client_id})")
             return ib_client
         else:
             raise Exception("Connection established but client reports not connected")
             
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"IB Gateway connection failed: {error_msg}")
+        logger.error(f"IB Gateway connection attempt {retry_count + 1} failed: {error_msg}")
         
+        # Check if it's a client ID conflict and we can retry
+        if ("already in use" in error_msg or "clientId" in error_msg.lower()) and retry_count < max_retries:
+            logger.info(f"Client ID conflict detected, retrying with different client ID (attempt {retry_count + 2})")
+            
+            # Clean up failed connection
+            if ib_client:
+                try:
+                    ib_client.disconnect()
+                except:
+                    pass
+                ib_client = None
+            
+            # Wait a moment before retry
+            time.sleep(1)
+            
+            # Retry with different client ID
+            return get_ib_connection(retry_count + 1, max_retries)
+        
+        # Final failure after retries or non-client-ID error
         # Provide helpful error message based on error type
         if "timeout" in error_msg.lower():
             helpful_msg = f"IB Gateway connection timeout. Please check: 1) IB Gateway is running on {IB_HOST}, 2) API is enabled in IB Gateway settings, 3) Port {IB_PORT} is correct"
@@ -172,6 +203,8 @@ def get_ib_connection():
             helpful_msg = f"IB Gateway refused connection. Please check: 1) IB Gateway API settings are enabled, 2) Port {IB_PORT} is correct, 3) Trusted IPs include this server"
         elif "unreachable" in error_msg.lower():
             helpful_msg = f"Cannot reach {IB_HOST}. Please check: 1) IP address is correct, 2) Network connectivity, 3) Firewall settings"
+        elif "already in use" in error_msg:
+            helpful_msg = f"Failed to connect after {retry_count + 1} attempts: All client IDs {IB_CLIENT_ID}-{IB_CLIENT_ID + retry_count} are in use. Please check for other connections or restart IB Gateway."
         else:
             helpful_msg = error_msg
         
