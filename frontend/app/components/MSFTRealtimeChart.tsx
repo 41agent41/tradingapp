@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
+import DataSwitch from './DataSwitch';
 
 interface RealtimeData {
   symbol: string;
@@ -60,6 +61,28 @@ export default function MSFTRealtimeChart() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [lastHistoricalUpdate, setLastHistoricalUpdate] = useState<Date | null>(null);
+  
+  // Data switch states
+  const [dataQueryEnabled, setDataQueryEnabled] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('msft-chart-data-enabled');
+      return saved !== null ? JSON.parse(saved) : true;
+    }
+    return true;
+  });
+
+  // Handle data switch toggle with persistence
+  const handleDataSwitchToggle = (enabled: boolean) => {
+    setDataQueryEnabled(enabled);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('msft-chart-data-enabled', JSON.stringify(enabled));
+    }
+    
+    // Clear any errors when disabling
+    if (!enabled) {
+      setError(null);
+    }
+  };
 
   // Initialize chart with candlestick display
   useEffect(() => {
@@ -138,6 +161,12 @@ export default function MSFTRealtimeChart() {
 
   // Fetch historical OHLC data
   const fetchHistoricalData = async () => {
+    if (!dataQueryEnabled) {
+      console.log('Historical data fetching is disabled');
+      setIsLoadingHistorical(false);
+      return;
+    }
+    
     setIsLoadingHistorical(true);
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL;
@@ -199,6 +228,12 @@ export default function MSFTRealtimeChart() {
 
   // Fetch real-time data for current price display
   const fetchRealtimeData = async () => {
+    if (!dataQueryEnabled) {
+      console.log('Real-time data fetching is disabled');
+      setIsLoading(false);
+      return;
+    }
+    
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL;
       if (!apiUrl) {
@@ -321,6 +356,17 @@ export default function MSFTRealtimeChart() {
 
       {/* Controls */}
       <div className="p-4 border-b border-gray-200">
+        {/* Data Switch */}
+        <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+          <DataSwitch
+            enabled={dataQueryEnabled}
+            onToggle={handleDataSwitchToggle}
+            label="IB Gateway Data Query"
+            description="Enable or disable real-time and historical data fetching from IB Gateway"
+            size="medium"
+          />
+        </div>
+        
         <div className="flex flex-wrap gap-4 items-center justify-between">
           <div className="flex items-center gap-4">
             <div>
@@ -329,7 +375,7 @@ export default function MSFTRealtimeChart() {
                 value={currentTimeframe}
                 onChange={(e) => handleTimeframeChange(e.target.value)}
                 className="border border-gray-300 rounded px-3 py-1 text-sm"
-                disabled={isLoadingHistorical}
+                disabled={isLoadingHistorical || !dataQueryEnabled}
               >
                 {timeframes.map((tf) => (
                   <option key={tf.value} value={tf.value}>{tf.label}</option>
@@ -343,7 +389,7 @@ export default function MSFTRealtimeChart() {
                 value={currentPeriod}
                 onChange={(e) => handlePeriodChange(e.target.value)}
                 className="border border-gray-300 rounded px-3 py-1 text-sm"
-                disabled={isLoadingHistorical}
+                disabled={isLoadingHistorical || !dataQueryEnabled}
               >
                 {periods.map((period) => (
                   <option key={period.value} value={period.value}>{period.label}</option>
@@ -353,11 +399,17 @@ export default function MSFTRealtimeChart() {
             
             <button
               onClick={fetchHistoricalData}
-              disabled={isLoadingHistorical}
+              disabled={isLoadingHistorical || !dataQueryEnabled}
               className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:bg-gray-400"
             >
               {isLoadingHistorical ? 'Loading...' : 'Refresh Chart'}
             </button>
+            
+            {!dataQueryEnabled && (
+              <div className="px-3 py-1 bg-amber-100 text-amber-800 text-sm rounded border border-amber-200">
+                Data querying disabled
+              </div>
+            )}
           </div>
 
           {lastHistoricalUpdate && (

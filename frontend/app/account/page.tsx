@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import DataSwitch from '../components/DataSwitch';
 
 interface ConnectionStatus {
   connected: boolean;
@@ -60,6 +61,28 @@ export default function AccountPage() {
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [nextAutoRefresh, setNextAutoRefresh] = useState<Date | null>(null);
+  
+  // Data switch state
+  const [dataQueryEnabled, setDataQueryEnabled] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('account-data-enabled');
+      return saved !== null ? JSON.parse(saved) : true;
+    }
+    return true;
+  });
+
+  // Handle data switch toggle with persistence
+  const handleDataSwitchToggle = (enabled: boolean) => {
+    setDataQueryEnabled(enabled);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('account-data-enabled', JSON.stringify(enabled));
+    }
+    
+    // Clear any errors when disabling
+    if (!enabled) {
+      setError(null);
+    }
+  };
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL;
   if (!apiUrl) {
@@ -89,6 +112,13 @@ export default function AccountPage() {
 
   // Fetch all account data (separate from connection check)
   const fetchAccountData = useCallback(async (isManualRefresh = false) => {
+    if (!dataQueryEnabled) {
+      console.log('Account data fetching is disabled');
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+    
     if (isManualRefresh) {
       setRefreshing(true);
     } else {
@@ -127,11 +157,13 @@ export default function AccountPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [apiUrl]);
+  }, [apiUrl, dataQueryEnabled]);
 
   // Manual refresh function
   const handleManualRefresh = () => {
-    fetchAccountData(true);
+    if (dataQueryEnabled) {
+      fetchAccountData(true);
+    }
   };
 
   // Initial load
@@ -176,14 +208,25 @@ export default function AccountPage() {
 
   const renderAccountTab = () => (
     <div className="space-y-6">
+      {/* Data Switch */}
+      <div className="bg-white p-6 rounded-lg shadow mb-6">
+        <DataSwitch
+          enabled={dataQueryEnabled}
+          onToggle={handleDataSwitchToggle}
+          label="IB Gateway Account Data Query"
+          description="Enable or disable account data fetching from IB Gateway (account, positions, orders)"
+          size="medium"
+        />
+      </div>
+
       {/* Account Summary Header */}
       <div className="bg-white p-6 rounded-lg shadow">
         <div className="flex justify-between items-center mb-4">
-          <h3 className="text-lg font-semibold">Account Summary</h3>
+          <h3 className="text-lg font-semibold">Account Summary (Basic)</h3>
           <div className="flex items-center gap-4">
             <button
               onClick={handleManualRefresh}
-              disabled={refreshing || loading}
+              disabled={refreshing || loading || !dataQueryEnabled}
               className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400 flex items-center gap-2"
             >
               {refreshing ? (
@@ -198,27 +241,35 @@ export default function AccountPage() {
                 </>
               )}
             </button>
+            
+            {!dataQueryEnabled && (
+              <div className="px-3 py-1 bg-amber-100 text-amber-800 text-sm rounded border border-amber-200">
+                Data querying disabled
+              </div>
+            )}
           </div>
         </div>
 
         {/* Refresh Status */}
-        <div className="mb-4 text-sm text-gray-600 space-y-1">
+        <div className="text-sm text-gray-600 mb-4">
           {lastRefresh && (
-            <div>Last updated: <span className="font-medium">{formatTime(lastRefresh)}</span></div>
+            <div>Last updated: {formatTime(lastRefresh)}</div>
           )}
           {nextAutoRefresh && (
-            <div>Next auto-refresh: <span className="font-medium">{formatTime(nextAutoRefresh)}</span></div>
+            <div>Next auto-refresh: {formatTime(nextAutoRefresh)}</div>
           )}
         </div>
-        
-        {!connectionStatus?.connected ? (
-          <div className="text-amber-600 bg-amber-50 p-4 rounded border border-amber-200">
-            ⚠️ Not connected to IB Gateway. Please check connection in the Connection tab.
+
+        {/* Account Summary Content - Basic Required Fields Only */}
+        {!dataQueryEnabled ? (
+          <div className="text-center py-8">
+            <div className="text-gray-600 mb-2">⚠️ Data querying is disabled</div>
+            <p className="text-sm text-gray-500">Enable data querying above to fetch account information from IB Gateway</p>
           </div>
         ) : loading ? (
           <div className="flex items-center justify-center py-8">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-            <span className="ml-3">Loading account data...</span>
+            <span className="ml-3 text-gray-600">Loading account data...</span>
           </div>
         ) : error ? (
           <div className="text-red-600 bg-red-50 p-4 rounded border border-red-200">
@@ -234,37 +285,24 @@ export default function AccountPage() {
             </button>
           </div>
         ) : accountData ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <div className="bg-gray-50 p-4 rounded">
-              <span className="text-sm text-gray-600">Account ID</span>
-              <div className="text-lg font-semibold">{accountData.account.account_id}</div>
+          <div>
+            <div className="mb-4 text-sm text-gray-600">
+              ℹ️ Showing basic required fields only for optimal performance
             </div>
-            <div className="bg-gray-50 p-4 rounded">
-              <span className="text-sm text-gray-600">Currency</span>
-              <div className="text-lg font-semibold">{accountData.account.currency}</div>
-            </div>
-            <div className="bg-blue-50 p-4 rounded">
-              <span className="text-sm text-blue-600">Net Liquidation</span>
-              <div className="text-xl font-bold text-blue-700">
-                {formatCurrency(accountData.account.net_liquidation, accountData.account.currency)}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="bg-gray-50 p-4 rounded">
+                <span className="text-sm text-gray-600">Account ID</span>
+                <div className="text-lg font-semibold">{accountData.account.account_id}</div>
               </div>
-            </div>
-            <div className="bg-green-50 p-4 rounded">
-              <span className="text-sm text-green-600">Cash Value</span>
-              <div className="text-lg font-semibold text-green-700">
-                {formatCurrency(accountData.account.total_cash_value, accountData.account.currency)}
+              <div className="bg-gray-50 p-4 rounded">
+                <span className="text-sm text-gray-600">Currency</span>
+                <div className="text-lg font-semibold">{accountData.account.currency}</div>
               </div>
-            </div>
-            <div className="bg-purple-50 p-4 rounded">
-              <span className="text-sm text-purple-600">Buying Power</span>
-              <div className="text-lg font-semibold text-purple-700">
-                {formatCurrency(accountData.account.buying_power, accountData.account.currency)}
-              </div>
-            </div>
-            <div className="bg-orange-50 p-4 rounded">
-              <span className="text-sm text-orange-600">Maintenance Margin</span>
-              <div className="text-lg font-semibold text-orange-700">
-                {formatCurrency(accountData.account.maintenance_margin, accountData.account.currency)}
+              <div className="bg-blue-50 p-4 rounded">
+                <span className="text-sm text-blue-600">Net Liquidation</span>
+                <div className="text-xl font-bold text-blue-700">
+                  {formatCurrency(accountData.account.net_liquidation, accountData.account.currency)}
+                </div>
               </div>
             </div>
           </div>
@@ -285,7 +323,12 @@ export default function AccountPage() {
           </div>
         </div>
         
-        {!connectionStatus?.connected ? (
+        {!dataQueryEnabled ? (
+          <div className="text-center py-8">
+            <div className="text-gray-600 mb-2">⚠️ Data querying is disabled</div>
+            <p className="text-sm text-gray-500">Enable data querying to fetch positions from IB Gateway</p>
+          </div>
+        ) : !connectionStatus?.connected ? (
           <div className="text-amber-600">Please connect to IB Gateway to view positions</div>
         ) : !accountData?.positions || accountData.positions.length === 0 ? (
           <div className="text-gray-600">No positions found</div>
@@ -343,7 +386,12 @@ export default function AccountPage() {
           </div>
         </div>
         
-        {!connectionStatus?.connected ? (
+        {!dataQueryEnabled ? (
+          <div className="text-center py-8">
+            <div className="text-gray-600 mb-2">⚠️ Data querying is disabled</div>
+            <p className="text-sm text-gray-500">Enable data querying to fetch orders from IB Gateway</p>
+          </div>
+        ) : !connectionStatus?.connected ? (
           <div className="text-amber-600">Please connect to IB Gateway to view orders</div>
         ) : !accountData?.orders || accountData.orders.length === 0 ? (
           <div className="text-gray-600">No active orders found</div>

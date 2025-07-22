@@ -5,15 +5,17 @@ import axios from 'axios';
 const router = express.Router();
 const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
 
-// Interface for account data
+// Interface for account data - basic required fields only for optimal performance
 interface AccountSummary {
   account_id: string;
-  net_liquidation?: number;
+  net_liquidation?: number;  // Basic required field
+  currency: string;          // Basic required field  
+  last_updated: string;
+  
+  // Optional fields (not requested in basic mode)
   total_cash_value?: number;
   buying_power?: number;
   maintenance_margin?: number;
-  currency: string;
-  last_updated: string;
 }
 
 interface Position {

@@ -74,12 +74,14 @@ class RealTimeQuote(BaseModel):
 # Account-related models
 class AccountSummary(BaseModel):
     account_id: str
-    net_liquidation: Optional[float] = None
+    net_liquidation: Optional[float] = None  # Basic required field
+    currency: str = "USD"                    # Basic required field
+    last_updated: str
+    
+    # Optional fields (not requested in basic mode for performance)
     total_cash_value: Optional[float] = None
     buying_power: Optional[float] = None
     maintenance_margin: Optional[float] = None
-    currency: str = "USD"
-    last_updated: str
 
 class Position(BaseModel):
     symbol: str
@@ -624,14 +626,15 @@ async def search_contracts(
 
 # Account service functions
 def get_account_summary_sync():
-    """Get account summary information"""
+    """Get account summary information - restricted to basic required fields only"""
     try:
         ib = get_ib_connection()
         
-        # Request account summary
+        # Request only basic required account summary fields
         account_tags = [
-            'NetLiquidation', 'TotalCashValue', 'BuyingPower', 
-            'MaintMarginReq', 'AccountCode', 'Currency'
+            'NetLiquidation',  # Total account value - most essential field
+            'AccountCode',     # Account identifier - required for identification  
+            'Currency'         # Base currency - essential for understanding values
         ]
         
         summaries = ib.reqAccountSummary('All', ','.join(account_tags))
@@ -652,12 +655,6 @@ def get_account_summary_sync():
                 currency = value
             elif tag == 'NetLiquidation':
                 account_data['net_liquidation'] = float(value) if value else None
-            elif tag == 'TotalCashValue':
-                account_data['total_cash_value'] = float(value) if value else None
-            elif tag == 'BuyingPower':
-                account_data['buying_power'] = float(value) if value else None
-            elif tag == 'MaintMarginReq':
-                account_data['maintenance_margin'] = float(value) if value else None
         
         return AccountSummary(
             account_id=account_id,
