@@ -168,19 +168,24 @@ export default function AccountPage() {
 
   // Initial load
   useEffect(() => {
-    fetchConnectionStatus();
-    fetchAccountData();
+    fetchConnectionStatus(); // Always check connection status (independent of data switch)
+    fetchAccountData(); // Respects data switch setting
   }, [fetchConnectionStatus, fetchAccountData]);
 
-  // Set up hourly auto-refresh
+  // Set up hourly auto-refresh - only when data query is enabled
   useEffect(() => {
+    if (!dataQueryEnabled) {
+      console.log('Auto-refresh disabled - data querying is off');
+      return;
+    }
+
     const interval = setInterval(() => {
       console.log('Auto-refreshing account data (hourly)');
       fetchAccountData();
     }, 60 * 60 * 1000); // 1 hour in milliseconds
 
     return () => clearInterval(interval);
-  }, [fetchAccountData]);
+  }, [fetchAccountData, dataQueryEnabled]);
 
   // Helper functions
   const formatTime = (date: Date) => {

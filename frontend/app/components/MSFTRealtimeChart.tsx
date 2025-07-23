@@ -296,17 +296,24 @@ export default function MSFTRealtimeChart() {
     }
   };
 
-  // Fetch historical data when timeframe or period changes
+  // Fetch historical data when timeframe or period changes - only when data query is enabled
   useEffect(() => {
-    fetchHistoricalData();
-  }, [currentTimeframe, currentPeriod]);
+    if (dataQueryEnabled) {
+      fetchHistoricalData();
+    }
+  }, [currentTimeframe, currentPeriod, dataQueryEnabled]);
 
-  // Set up polling for real-time data
+  // Set up polling for real-time data - only when data query is enabled
   useEffect(() => {
+    if (!dataQueryEnabled) {
+      console.log('Real-time polling disabled - data querying is off');
+      return;
+    }
+
     fetchRealtimeData();
     const interval = setInterval(fetchRealtimeData, 5000); // Every 5 seconds for current price
     return () => clearInterval(interval);
-  }, []);
+  }, [dataQueryEnabled]);
 
   // Helper functions
   const formatTime = (date: Date) => {
