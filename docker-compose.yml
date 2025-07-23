@@ -59,6 +59,7 @@ services:
       - IB_CLIENT_ID=${IB_CLIENT_ID:-1}
       - IB_TIMEOUT=${IB_TIMEOUT:-30}
       - IB_CORS_ORIGINS=${IB_CORS_ORIGINS:-http://localhost:3000}
+      - DATA_QUERY_ENABLED=${DATA_QUERY_ENABLED:-false}
     ports:
       - "${IB_SERVICE_PORT:-8000}:8000"
     networks:
