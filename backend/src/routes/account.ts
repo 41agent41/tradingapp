@@ -50,7 +50,13 @@ interface AccountData {
 // Helper function to check if data query is enabled via headers
 function isDataQueryEnabled(req: Request): boolean {
   const enabled = req.headers['x-data-query-enabled'];
-  return enabled === 'true' || enabled === true;
+  if (typeof enabled === 'string') {
+    return enabled.toLowerCase() === 'true';
+  }
+  if (Array.isArray(enabled)) {
+    return enabled[0]?.toLowerCase() === 'true';
+  }
+  return false;
 }
 
 // Helper function to handle disabled data query response
