@@ -31,6 +31,21 @@ interface CandlestickBar {
   volume: number;
 }
 
+// Helper function to check if data query is enabled via headers
+function isDataQueryEnabled(req: Request): boolean {
+  const enabled = req.headers['x-data-query-enabled'];
+  return enabled === 'true' || enabled === true;
+}
+
+// Helper function to handle disabled data query response
+function handleDisabledDataQuery(res: Response, message: string) {
+  return res.status(200).json({
+    disabled: true,
+    message: message,
+    timestamp: new Date().toISOString()
+  });
+}
+
 // Contract search endpoint
 router.post('/search', async (req: Request, res: Response) => {
   try {
@@ -167,6 +182,11 @@ router.post('/search', async (req: Request, res: Response) => {
 // Get historical market data
 router.get('/history', async (req: Request, res: Response) => {
   try {
+    // Check if data querying is enabled
+    if (!isDataQueryEnabled(req)) {
+      return handleDisabledDataQuery(res, 'Historical market data querying is disabled');
+    }
+
     const { symbol, timeframe, period } = req.query as Partial<MarketDataQuery>;
 
     // Validate required parameters
@@ -253,6 +273,11 @@ router.get('/realtime', async (req: Request, res: Response) => {
     return res.status(400).json({
       error: 'Symbol parameter is required'
     });
+  }
+
+  // Check if data querying is enabled
+  if (!isDataQueryEnabled(req)) {
+    return handleDisabledDataQuery(res, 'Real-time market data querying is disabled');
   }
 
   try {

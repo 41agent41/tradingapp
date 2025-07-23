@@ -23,9 +23,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global data query control - can be disabled to prevent any account queries
-DATA_QUERY_ENABLED = os.getenv('DATA_QUERY_ENABLED', 'true').lower() == 'true'
-
 # Configuration from environment
 IB_HOST = os.getenv('IB_HOST')
 if not IB_HOST:
@@ -308,7 +305,6 @@ async def health_check():
         "service": "IB Service",
         "version": "3.0.0",
         "timestamp": datetime.now().isoformat(),
-        "data_query_enabled": DATA_QUERY_ENABLED,
         "connection": {
             "ib_gateway": {
                 "connected": connection_status.get('connected', False),
@@ -733,13 +729,6 @@ def get_orders_sync():
 @app.get("/account/summary", response_model=AccountSummary)
 async def get_account_summary():
     """Get account summary information"""
-    if not DATA_QUERY_ENABLED:
-        logger.info("Account summary endpoint called but DATA_QUERY_ENABLED=false")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Account data queries are globally disabled. Set DATA_QUERY_ENABLED=true to enable."
-        )
-    
     try:
         logger.info("Account summary endpoint called")
         summary = await run_ib_operation(get_account_summary_sync)
@@ -761,13 +750,6 @@ async def get_account_summary():
 @app.get("/account/positions", response_model=List[Position])
 async def get_account_positions():
     """Get current account positions"""
-    if not DATA_QUERY_ENABLED:
-        logger.info("Account positions endpoint called but DATA_QUERY_ENABLED=false")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Account data queries are globally disabled. Set DATA_QUERY_ENABLED=true to enable."
-        )
-    
     try:
         logger.info("Account positions endpoint called")
         positions = await run_ib_operation(get_positions_sync)
@@ -789,13 +771,6 @@ async def get_account_positions():
 @app.get("/account/orders", response_model=List[Order])
 async def get_account_orders():
     """Get current account orders"""
-    if not DATA_QUERY_ENABLED:
-        logger.info("Account orders endpoint called but DATA_QUERY_ENABLED=false")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Account data queries are globally disabled. Set DATA_QUERY_ENABLED=true to enable."
-        )
-    
     try:
         logger.info("Account orders endpoint called")
         orders = await run_ib_operation(get_orders_sync)
@@ -817,13 +792,6 @@ async def get_account_orders():
 @app.get("/account/all", response_model=AccountData)
 async def get_all_account_data():
     """Get all account data (summary, positions, orders) in one call"""
-    if not DATA_QUERY_ENABLED:
-        logger.info("All account data endpoint called but DATA_QUERY_ENABLED=false")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Account data queries are globally disabled. Set DATA_QUERY_ENABLED=true to enable."
-        )
-    
     try:
         logger.info("All account data endpoint called")
         
@@ -856,16 +824,6 @@ async def get_all_account_data():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get all account data: {error_str}"
         )
-
-# Data query control endpoints
-@app.get("/data-query-status")
-async def get_data_query_status():
-    """Get current data query status"""
-    return {
-        "data_query_enabled": DATA_QUERY_ENABLED,
-        "message": "Account data queries are " + ("enabled" if DATA_QUERY_ENABLED else "disabled"),
-        "note": "This is a read-only status. To change, update DATA_QUERY_ENABLED environment variable and restart service."
-    }
 
 if __name__ == "__main__":
     logger.info("Starting IB Service...")

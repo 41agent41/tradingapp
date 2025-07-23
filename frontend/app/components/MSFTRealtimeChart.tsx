@@ -175,7 +175,12 @@ export default function MSFTRealtimeChart() {
       }
 
       const response = await fetch(
-        `${apiUrl}/api/market-data/history?symbol=MSFT&timeframe=${currentTimeframe}&period=${currentPeriod}`
+        `${apiUrl}/api/market-data/history?symbol=MSFT&timeframe=${currentTimeframe}&period=${currentPeriod}`,
+        {
+          headers: {
+            'X-Data-Query-Enabled': dataQueryEnabled.toString()
+          }
+        }
       );
 
       if (!response.ok) {
@@ -244,6 +249,7 @@ export default function MSFTRealtimeChart() {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
+          'X-Data-Query-Enabled': dataQueryEnabled.toString()
         },
         signal: AbortSignal.timeout(15000)
       });

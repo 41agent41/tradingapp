@@ -131,7 +131,10 @@ export default function AccountPage() {
       
       const accountRes = await fetch(`${apiUrl}/api/account/all`, {
         method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-Data-Query-Enabled': dataQueryEnabled.toString()
+        },
         signal: AbortSignal.timeout(30000) // 30 second timeout
       });
 

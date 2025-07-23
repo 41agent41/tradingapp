@@ -47,9 +47,29 @@ interface AccountData {
   last_updated: string;
 }
 
+// Helper function to check if data query is enabled via headers
+function isDataQueryEnabled(req: Request): boolean {
+  const enabled = req.headers['x-data-query-enabled'];
+  return enabled === 'true' || enabled === true;
+}
+
+// Helper function to handle disabled data query response
+function handleDisabledDataQuery(res: Response, message: string) {
+  return res.status(200).json({
+    disabled: true,
+    message: message,
+    timestamp: new Date().toISOString()
+  });
+}
+
 // Get account summary
 router.get('/summary', async (req: Request, res: Response) => {
   try {
+    // Check if data querying is enabled
+    if (!isDataQueryEnabled(req)) {
+      return handleDisabledDataQuery(res, 'Account summary data querying is disabled');
+    }
+
     console.log('Fetching account summary from IB service');
 
     const response = await axios.get(`${IB_SERVICE_URL}/account/summary`, {
@@ -94,6 +114,11 @@ router.get('/summary', async (req: Request, res: Response) => {
 // Get account positions
 router.get('/positions', async (req: Request, res: Response) => {
   try {
+    // Check if data querying is enabled
+    if (!isDataQueryEnabled(req)) {
+      return handleDisabledDataQuery(res, 'Account positions data querying is disabled');
+    }
+
     console.log('Fetching account positions from IB service');
 
     const response = await axios.get(`${IB_SERVICE_URL}/account/positions`, {
@@ -142,6 +167,11 @@ router.get('/positions', async (req: Request, res: Response) => {
 // Get account orders
 router.get('/orders', async (req: Request, res: Response) => {
   try {
+    // Check if data querying is enabled
+    if (!isDataQueryEnabled(req)) {
+      return handleDisabledDataQuery(res, 'Account orders data querying is disabled');
+    }
+
     console.log('Fetching account orders from IB service');
 
     const response = await axios.get(`${IB_SERVICE_URL}/account/orders`, {
@@ -190,6 +220,11 @@ router.get('/orders', async (req: Request, res: Response) => {
 // Get all account data in one call
 router.get('/all', async (req: Request, res: Response) => {
   try {
+    // Check if data querying is enabled
+    if (!isDataQueryEnabled(req)) {
+      return handleDisabledDataQuery(res, 'All account data querying is disabled');
+    }
+
     console.log('Fetching all account data from IB service');
 
     const response = await axios.get(`${IB_SERVICE_URL}/account/all`, {
