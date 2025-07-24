@@ -737,7 +737,7 @@ async def search_contracts(
 
 # Account service functions
 def get_account_summary_sync():
-    """Get account summary information - restricted to basic required fields only"""
+    """Get account summary information using alternative approach"""
     try:
         ib = get_ib_connection()
         
@@ -745,42 +745,47 @@ def get_account_summary_sync():
         if not verify_connection_health(ib):
             raise Exception("IB connection is not healthy - reconnection required")
         
-        # Request only basic required account summary fields
-        account_tags = [
-            'NetLiquidation',  # Total account value - most essential field
-            'AccountCode',     # Account identifier - required for identification  
-            'Currency'         # Base currency - essential for understanding values
-        ]
+        logger.info("Getting account summary using managedAccounts approach")
         
-        # Use correct ib_insync syntax for reqAccountSummary
-        logger.info(f"Requesting account summary with tags: {account_tags}")
+        # Get managed accounts first
+        managed_accounts = ib.managedAccounts()
+        if not managed_accounts:
+            raise Exception("No managed accounts found")
         
-        # The correct ib_insync API is: reqAccountSummary(group, tags) 
-        # But we need to call it without the group parameter in newer versions
-        summaries = ib.reqAccountSummary(','.join(account_tags))
-        ib.sleep(2)  # Wait for data (increased back to 2 seconds for account summary)
+        # Use the first managed account
+        account_id = managed_accounts[0]
+        logger.info(f"Using account: {account_id}")
         
-        # Process account summary
-        account_data = {}
-        account_id = "Unknown"
+        # Request account updates for this account
+        ib.reqAccountUpdates(True, account_id)
+        ib.sleep(3)  # Wait for account data to arrive
+        
+        # Get account values
+        account_values = ib.accountValues(account_id)
+        logger.info(f"Retrieved {len(account_values)} account values")
+        
+        # Process account values to find NetLiquidation
+        net_liquidation = None
         currency = "USD"
         
-        for summary in summaries:
-            tag = summary.tag
-            value = summary.value
-            
-            if tag == 'AccountCode':
-                account_id = value
-            elif tag == 'Currency':
-                currency = value
-            elif tag == 'NetLiquidation':
-                account_data['net_liquidation'] = float(value) if value else None
+        for value in account_values:
+            if value.tag == 'NetLiquidation':
+                try:
+                    net_liquidation = float(value.value)
+                    currency = value.currency if value.currency else "USD"
+                    logger.info(f"Found NetLiquidation: {net_liquidation} {currency}")
+                    break
+                except (ValueError, TypeError):
+                    logger.warning(f"Could not parse NetLiquidation value: {value.value}")
+        
+        # Stop account updates to clean up
+        ib.reqAccountUpdates(False, account_id)
         
         return AccountSummary(
             account_id=account_id,
             currency=currency,
-            last_updated=datetime.now().isoformat(),
-            **account_data
+            net_liquidation=net_liquidation,
+            last_updated=datetime.now().isoformat()
         )
         
     except Exception as e:
