@@ -157,6 +157,10 @@ def get_ib_connection():
                 'connection_count': connection_status['connection_count'] + 1
             })
             logger.info(f"Successfully connected to IB Gateway at {IB_HOST}:{IB_PORT}")
+            
+            # Disable automatic account updates to prevent unwanted data queries
+            # Account data will only be requested when explicitly called via endpoints
+            logger.info("Connection established without automatic subscriptions")
             return ib_client
         else:
             raise Exception("Connection established but client reports not connected")
@@ -266,12 +270,9 @@ async def lifespan(app: FastAPI):
     logger.info("Starting IB Service...")
     logger.info(f"Configuration: {IB_HOST}:{IB_PORT}, Client ID: {IB_CLIENT_ID}")
     
-    # Test connection on startup
-    try:
-        get_ib_connection()
-        logger.info("Initial connection test successful")
-    except Exception as e:
-        logger.warning(f"Initial connection test failed: {e}")
+    # Skip automatic connection test on startup to avoid unwanted data queries
+    # Connection will be established when first endpoint is called
+    logger.info("IB Service ready - connection will be established on first API call")
     
     yield
     
@@ -296,23 +297,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Health check endpoint
+# Health check endpoint - no IB connection test
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint - service status only, no IB Gateway connection test"""
     return {
         "status": "healthy",
         "service": "IB Service",
         "version": "3.0.0",
         "timestamp": datetime.now().isoformat(),
-        "connection": {
-            "ib_gateway": {
-                "connected": connection_status.get('connected', False),
-                "last_connected": connection_status.get('last_connected'),
-                "last_error": connection_status.get('last_error'),
-                "connection_count": connection_status.get('connection_count', 0)
-            }
-        }
+        "note": "Service is running - IB Gateway connection tested only when endpoints are called"
     }
 
 # Root endpoint

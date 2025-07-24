@@ -90,7 +90,7 @@ export default function AccountPage() {
     return <div>Configuration error: API URL not set</div>;
   }
 
-  // Fetch connection status (independent of account data)
+  // Fetch connection status (independent of account data) - only when needed
   const fetchConnectionStatus = useCallback(async () => {
     try {
       const connectionRes = await fetch(`${apiUrl}/api/account/connection`, {
@@ -109,6 +109,11 @@ export default function AccountPage() {
       setConnectionStatus(null);
     }
   }, [apiUrl]);
+
+  // Manual connection status check function
+  const handleConnectionCheck = () => {
+    fetchConnectionStatus();
+  };
 
   // Fetch all account data (separate from connection check)
   const fetchAccountData = useCallback(async (isManualRefresh = false) => {
@@ -169,11 +174,12 @@ export default function AccountPage() {
     }
   };
 
-  // Initial load
+  // Initial load - no automatic connection status check
   useEffect(() => {
-    fetchConnectionStatus(); // Always check connection status (independent of data switch)
+    // Only fetch account data, which respects data switch setting
+    // Connection status will be checked manually when needed
     fetchAccountData(); // Respects data switch setting
-  }, [fetchConnectionStatus, fetchAccountData]);
+  }, [fetchAccountData]);
 
   // Set up hourly auto-refresh - only when data query is enabled
   useEffect(() => {
@@ -502,12 +508,17 @@ export default function AccountPage() {
           </div>
         )}
 
-        <button
-          onClick={fetchConnectionStatus}
-          className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-        >
-          Check Connection
-        </button>
+        <div className="mt-4 space-y-3">
+          <button
+            onClick={handleConnectionCheck}
+            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            Check Connection Status
+          </button>
+          <div className="text-sm text-gray-600">
+            💡 Connection status is now checked manually to prevent automatic IB Gateway queries
+          </div>
+        </div>
       </div>
     </div>
   );

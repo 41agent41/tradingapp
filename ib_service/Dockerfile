@@ -51,9 +51,9 @@ RUN python -c "import fastapi; print('FastAPI version:', fastapi.__version__)" |
 # Switch to non-root user
 USER ibservice
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://0.0.0.0:8000/health || exit 1
+# Health check - using simple endpoint that doesn't trigger IB connections
+HEALTHCHECK --interval=60s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://0.0.0.0:8000/ || exit 1
 
 # Expose port
 EXPOSE 8000
