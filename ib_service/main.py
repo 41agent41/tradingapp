@@ -137,7 +137,12 @@ def get_ib_connection():
             ib_client = None
         
         # Try multiple client IDs if the primary one is in use
-        client_ids_to_try = [IB_CLIENT_ID, IB_CLIENT_ID + 1, IB_CLIENT_ID + 2, IB_CLIENT_ID + 3]
+        # Start with a randomized range to avoid conflicts
+        import random
+        base_id = IB_CLIENT_ID
+        client_ids_to_try = [base_id, base_id + 1, base_id + 2, base_id + 3, base_id + 4, base_id + 5]
+        # Shuffle to avoid all instances trying the same sequence
+        random.shuffle(client_ids_to_try[1:])  # Keep base_id as first, shuffle others
         last_error = None
         
         for client_id in client_ids_to_try:
@@ -153,27 +158,52 @@ def get_ib_connection():
                     timeout=IB_TIMEOUT
                 )
                 
-                if ib_client.isConnected():
-                    connection_status.update({
-                        'connected': True,
-                        'last_connected': datetime.now().isoformat(),
-                        'last_error': None,
-                        'connection_count': connection_status['connection_count'] + 1
-                    })
-                    logger.info(f"✅ Successfully connected to IB Gateway at {IB_HOST}:{IB_PORT} (Client ID: {client_id})")
-                    
-                    # Disable automatic account updates to prevent unwanted data queries
-                    # Account data will only be requested when explicitly called via endpoints
-                    logger.info("Connection established without automatic subscriptions")
-                    return ib_client
+                # Give IB Gateway time to fully establish the connection
+                # IB Gateway connections need a moment to properly initialize
+                logger.info("Waiting for connection to stabilize...")
+                time.sleep(3)
+                
+                # Verify connection multiple times with retries
+                connection_verified = False
+                for verify_attempt in range(3):
+                    if ib_client.isConnected():
+                        connection_verified = True
+                        break
+                    else:
+                        logger.warning(f"Connection verification attempt {verify_attempt + 1}/3 - not yet connected, waiting...")
+                        time.sleep(2)
+                
+                if connection_verified:
+                    # Test the connection with a simple operation
+                    try:
+                        # Try to get connection time to verify it's working
+                        connection_time = ib_client.reqCurrentTime()
+                        logger.info(f"Connection test successful - IB Gateway time: {connection_time}")
+                        
+                        connection_status.update({
+                            'connected': True,
+                            'last_connected': datetime.now().isoformat(),
+                            'last_error': None,
+                            'connection_count': connection_status['connection_count'] + 1
+                        })
+                        logger.info(f"✅ Successfully connected and verified IB Gateway at {IB_HOST}:{IB_PORT} (Client ID: {client_id})")
+                        
+                        # Disable automatic account updates to prevent unwanted data queries
+                        # Account data will only be requested when explicitly called via endpoints
+                        logger.info("Connection established without automatic subscriptions")
+                        return ib_client
+                        
+                    except Exception as test_error:
+                        logger.error(f"Connection test failed: {test_error}")
+                        raise Exception(f"Connection established but failed connection test: {test_error}")
                 else:
-                    raise Exception("Connection established but client reports not connected")
+                    raise Exception("Connection call succeeded but connection verification failed after retries")
                     
             except Exception as e:
                 error_msg = str(e)
                 last_error = error_msg
                 
-                # Check if it's a client ID conflict
+                # Check if it's a client ID conflict or connection issue
                 if "client id is already in use" in error_msg.lower() or "326" in error_msg:
                     logger.warning(f"⚠️  Client ID {client_id} is already in use, trying next ID...")
                     if ib_client:
@@ -182,6 +212,17 @@ def get_ib_connection():
                         except:
                             pass
                         ib_client = None
+                    continue  # Try next client ID
+                elif "peer closed" in error_msg.lower() or "connection established but" in error_msg.lower():
+                    logger.warning(f"⚠️  Connection issue with Client ID {client_id}: {error_msg}. Trying next ID...")
+                    if ib_client:
+                        try:
+                            ib_client.disconnect()
+                        except:
+                            pass
+                        ib_client = None
+                    # Add a delay before trying the next client ID
+                    time.sleep(2)
                     continue  # Try next client ID
                 else:
                     # Other errors - break and handle below
@@ -205,7 +246,7 @@ def get_ib_connection():
         elif "unreachable" in str(last_error).lower() or "no route to host" in str(last_error).lower():
             helpful_msg = f"Cannot reach {IB_HOST}. Please check: 1) IP address {IB_HOST} is correct, 2) Network connectivity, 3) Firewall settings"
         elif "client id is already in use" in str(last_error).lower():
-            helpful_msg = f"All client IDs (1-4) are in use. Please: 1) Close other trading applications, 2) Restart IB Gateway, 3) Wait a few minutes for connections to timeout"
+            helpful_msg = f"All client IDs ({base_id}-{base_id+5}) are in use. Please: 1) Close other trading applications, 2) Restart IB Gateway, 3) Wait a few minutes for connections to timeout, 4) Check if multiple trading services are running"
         else:
             helpful_msg = f"IB Gateway connection failed: {last_error}"
         
@@ -243,6 +284,25 @@ def get_ib_connection():
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=error_msg
         )
+
+def verify_connection_health(ib_client):
+    """Verify that an IB connection is healthy and responsive"""
+    try:
+        if not ib_client or not ib_client.isConnected():
+            return False
+        
+        # Test with a simple request that should always work
+        current_time = ib_client.reqCurrentTime()
+        if current_time:
+            logger.debug(f"Connection health check passed - IB time: {current_time}")
+            return True
+        else:
+            logger.warning("Connection health check failed - no time response")
+            return False
+            
+    except Exception as e:
+        logger.warning(f"Connection health check failed: {e}")
+        return False
 
 def disconnect_ib():
     """Disconnect from IB Gateway with improved cleanup"""
@@ -518,6 +578,10 @@ def get_realtime_data_sync(symbol: str):
         ib = get_ib_connection()
         logger.info(f"Using shared IB connection, connected: {ib.isConnected()}")
         
+        # Verify connection health before making requests
+        if not verify_connection_health(ib):
+            raise Exception("IB connection is not healthy - reconnection required")
+        
         # Create and qualify contract
         contract = create_contract(symbol.upper())
         logger.info(f"Created contract for {symbol}: {contract}")
@@ -680,6 +744,10 @@ def get_account_summary_sync():
     try:
         ib = get_ib_connection()
         
+        # Verify connection health before making requests
+        if not verify_connection_health(ib):
+            raise Exception("IB connection is not healthy - reconnection required")
+        
         # Request only basic required account summary fields
         account_tags = [
             'NetLiquidation',  # Total account value - most essential field
@@ -722,6 +790,10 @@ def get_positions_sync():
     try:
         ib = get_ib_connection()
         
+        # Verify connection health before making requests
+        if not verify_connection_health(ib):
+            raise Exception("IB connection is not healthy - reconnection required")
+        
         # Request positions
         positions = ib.reqPositions()
         ib.sleep(2)  # Wait for data
@@ -750,6 +822,10 @@ def get_orders_sync():
     """Get current orders"""
     try:
         ib = get_ib_connection()
+        
+        # Verify connection health before making requests
+        if not verify_connection_health(ib):
+            raise Exception("IB connection is not healthy - reconnection required")
         
         # Request all orders
         orders = ib.reqAllOpenOrders()
