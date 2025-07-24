@@ -752,8 +752,13 @@ def get_account_summary_sync():
             'Currency'         # Base currency - essential for understanding values
         ]
         
-        summaries = ib.reqAccountSummary('All', ','.join(account_tags))
-        ib.sleep(1)  # Reduced wait time from 2 to 1 second
+        # Use correct ib_insync syntax for reqAccountSummary
+        logger.info(f"Requesting account summary with tags: {account_tags}")
+        
+        # The correct ib_insync API is: reqAccountSummary(group, tags) 
+        # But we need to call it without the group parameter in newer versions
+        summaries = ib.reqAccountSummary(','.join(account_tags))
+        ib.sleep(2)  # Wait for data (increased back to 2 seconds for account summary)
         
         # Process account summary
         account_data = {}
