@@ -46,7 +46,7 @@ RUN chown -R ibservice:ibservice /app /home/ibservice/.local
 
 # Verify that fastapi is installed
 RUN python -c "import fastapi; print('FastAPI version:', fastapi.__version__)" || \
-    pip install fastapi uvicorn ib_insync --no-cache-dir
+    pip install fastapi uvicorn ib_async --no-cache-dir
 
 # Switch to non-root user
 USER ibservice
