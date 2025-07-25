@@ -1,5 +1,5 @@
 """
-Simplified IB Service - Synchronous architecture for reliable IB Gateway connections
+Simplified IB Service - Using ib_async for reliable IB Gateway connections
 """
 
 import os
@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from ib_insync import IB, Stock, Contract, util
+from ib_async import IB, Stock, Contract, util
 import uvicorn
 
 # Configure logging
@@ -737,7 +737,7 @@ async def search_contracts(
 
 # Account service functions
 def get_account_summary_sync():
-    """Get basic account information using minimal API calls"""
+    """Get account summary information using ib_async"""
     try:
         ib = get_ib_connection()
         
@@ -745,29 +745,43 @@ def get_account_summary_sync():
         if not verify_connection_health(ib):
             raise Exception("IB connection is not healthy - reconnection required")
         
-        logger.info("Getting account summary using minimal API approach")
+        logger.info("Getting account summary using ib_async")
         
-        # Get managed accounts - this is a simple call that should work
-        try:
-            managed_accounts = ib.managedAccounts()
-            if not managed_accounts:
-                raise Exception("No managed accounts found")
-            
-            account_id = managed_accounts[0]
-            logger.info(f"Successfully retrieved account: {account_id}")
-            
-        except Exception as e:
-            logger.warning(f"Could not get managed accounts: {e}")
-            # Fallback to a generic account ID
-            account_id = "IB_ACCOUNT"
+        # Get managed accounts
+        managed_accounts = ib.managedAccounts()
+        if not managed_accounts:
+            raise Exception("No managed accounts found")
         
-        # For now, return basic account info without complex API calls
-        # This avoids all the API signature issues while maintaining functionality
+        account_id = managed_accounts[0]
+        logger.info(f"Using account: {account_id}")
+        
+        # Request account summary using ib_async proper syntax
+        account_tags = ['NetLiquidation', 'AccountCode', 'Currency']
+        summaries = ib.reqAccountSummary('All', ','.join(account_tags))
+        ib.sleep(2)  # Wait for data
+        
+        # Process account summary
+        account_data = {}
+        currency = "USD"
+        
+        for summary in summaries:
+            tag = summary.tag
+            value = summary.value
+            
+            if tag == 'AccountCode':
+                account_id = value
+            elif tag == 'Currency':
+                currency = value
+            elif tag == 'NetLiquidation':
+                account_data['net_liquidation'] = float(value) if value else None
+        
+        logger.info(f"Retrieved account summary: {account_data}")
+        
         return AccountSummary(
             account_id=account_id,
-            currency="USD",
-            net_liquidation=None,  # Will show as "Not available" in UI
-            last_updated=datetime.now().isoformat()
+            currency=currency,
+            last_updated=datetime.now().isoformat(),
+            **account_data
         )
         
     except Exception as e:
@@ -775,7 +789,7 @@ def get_account_summary_sync():
         raise Exception(f"Failed to get account summary: {str(e)}")
 
 def get_positions_sync():
-    """Get current positions - simplified approach to avoid API issues"""
+    """Get current positions using ib_async"""
     try:
         ib = get_ib_connection()
         
@@ -783,18 +797,35 @@ def get_positions_sync():
         if not verify_connection_health(ib):
             raise Exception("IB connection is not healthy - reconnection required")
         
-        logger.info("Skipping positions request to avoid API compatibility issues")
+        logger.info("Requesting positions using ib_async")
         
-        # Return empty positions list for now to avoid API signature issues
-        # This maintains functionality while avoiding problematic API calls
-        return []
+        # Request positions
+        positions = ib.reqPositions()
+        ib.sleep(2)  # Wait for data
+        
+        position_list = []
+        for pos in positions:
+            if pos.position != 0:  # Only include non-zero positions
+                position_list.append(Position(
+                    symbol=pos.contract.symbol,
+                    position=pos.position,
+                    market_price=pos.marketPrice if pos.marketPrice and not util.isNan(pos.marketPrice) else None,
+                    market_value=pos.marketValue if pos.marketValue and not util.isNan(pos.marketValue) else None,
+                    average_cost=pos.avgCost if pos.avgCost and not util.isNan(pos.avgCost) else None,
+                    unrealized_pnl=pos.unrealizedPNL if pos.unrealizedPNL and not util.isNan(pos.unrealizedPNL) else None,
+                    currency=pos.contract.currency
+                ))
+        
+        ib.cancelPositions()  # Clean up subscription
+        logger.info(f"Retrieved {len(position_list)} positions")
+        return position_list
         
     except Exception as e:
         logger.error(f"Error getting positions: {e}")
         raise Exception(f"Failed to get positions: {str(e)}")
 
 def get_orders_sync():
-    """Get current orders - simplified approach to avoid API issues"""
+    """Get current orders using ib_async"""
     try:
         ib = get_ib_connection()
         
@@ -802,11 +833,28 @@ def get_orders_sync():
         if not verify_connection_health(ib):
             raise Exception("IB connection is not healthy - reconnection required")
         
-        logger.info("Skipping orders request to avoid API compatibility issues")
+        logger.info("Requesting orders using ib_async")
         
-        # Return empty orders list for now to avoid API signature issues
-        # This maintains functionality while avoiding problematic API calls
-        return []
+        # Request all open orders
+        orders = ib.reqAllOpenOrders()
+        ib.sleep(2)  # Wait for data
+        
+        order_list = []
+        for order in orders:
+            order_list.append(Order(
+                order_id=order.orderId,
+                symbol=order.contract.symbol,
+                action=order.order.action,
+                quantity=order.order.totalQuantity,
+                order_type=order.order.orderType,
+                status=order.orderStatus.status,
+                filled_quantity=order.orderStatus.filled if order.orderStatus.filled else None,
+                remaining_quantity=order.orderStatus.remaining if order.orderStatus.remaining else None,
+                avg_fill_price=order.orderStatus.avgFillPrice if order.orderStatus.avgFillPrice and order.orderStatus.avgFillPrice > 0 else None
+            ))
+        
+        logger.info(f"Retrieved {len(order_list)} orders")
+        return order_list
         
     except Exception as e:
         logger.error(f"Error getting orders: {e}")
