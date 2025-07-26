@@ -46,17 +46,17 @@ show_usage() {
     echo "  logs        - View service logs"
     echo ""
     echo "Troubleshooting:"
-    echo "  test        - Test all connections"
-    echo "  diagnose    - Run comprehensive diagnostics"
-    echo "  fix         - Auto-fix common issues"
-    echo "  ib-help     - IB Gateway setup instructions"
-    echo "  clean       - Clean up and reset"
+echo "  test        - Test all connections"
+echo "  diagnose    - Run comprehensive diagnostics"
+echo "  fix         - Auto-fix common issues"
+echo "  ib-help     - IB Gateway setup instructions"
+echo "  clean       - Clean up and reset"
     echo ""
     echo "Examples:"
-    echo "  $0 setup     # First time setup"
-    echo "  $0 deploy    # Deploy application"
-    echo "  $0 test      # Test connections"
-    echo "  $0 fix       # Fix connection issues"
+echo "  $0 setup     # First time setup"
+echo "  $0 deploy    # Deploy application"
+echo "  $0 test      # Test connections"
+echo "  $0 fix       # Fix connection issues"
 }
 
 check_requirements() {
@@ -217,6 +217,16 @@ deploy_application() {
     # Wait for services to be ready
     print_info "Waiting for services to start..."
     sleep 10
+    
+    # Verify TWS API installation
+    print_info "Verifying TWS API installation..."
+    if docker-compose exec -T ib_service python -c "import ibapi; print('TWS API installed successfully')" 2>/dev/null; then
+        print_status "TWS API (ibapi) is properly installed"
+    else
+        print_error "TWS API installation verification failed"
+        print_info "This may indicate a Docker cache issue. Try: $0 clean && $0 deploy"
+        return 1
+    fi
     
     # Test deployment
     test_deployment
@@ -448,7 +458,16 @@ case "${1:-}" in
     "redeploy")
         print_info "Clean redeployment (recommended for changes)..."
         docker-compose down --remove-orphans
+        
+        # Remove project images to ensure fresh build
+        docker rmi $(docker images -q tradingapp_ib_service) 2>/dev/null || echo "No ib_service images to remove"
+        docker rmi $(docker images -q tradingapp_backend) 2>/dev/null || echo "No backend images to remove"
+        docker rmi $(docker images -q tradingapp_frontend) 2>/dev/null || echo "No frontend images to remove"
+        
+        # Clear build cache
         docker system prune -f
+        docker builder prune -f
+        
         deploy_application
         ;;
     "config")
@@ -489,15 +508,28 @@ case "${1:-}" in
         show_ib_help
         ;;
     "clean")
-        print_warning "This will remove all containers and data. Continue? (y/N)"
+        print_warning "This will remove all containers, images, and data. Continue? (y/N)"
         read -r response
         if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+            print_info "Performing complete cleanup..."
+            
+            # Stop and remove containers
             docker-compose down --remove-orphans
-            docker system prune -f
+            
+            # Remove all project images
+            docker rmi $(docker images -q tradingapp_ib_service) 2>/dev/null || echo "No ib_service images to remove"
+            docker rmi $(docker images -q tradingapp_backend) 2>/dev/null || echo "No backend images to remove"
+            docker rmi $(docker images -q tradingapp_frontend) 2>/dev/null || echo "No frontend images to remove"
+            
+            # Clear all Docker cache and unused resources
+            docker system prune -af
             docker volume prune -f
-            print_status "Cleanup completed"
+            docker builder prune -f
+            
+            print_status "Complete cleanup finished. Run '$0 deploy' to rebuild from scratch."
         fi
         ;;
+
     "help"|"--help"|"-h")
         show_usage
         ;;

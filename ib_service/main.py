@@ -1,11 +1,13 @@
 """
-Simplified IB Service - Using ib_async for reliable IB Gateway connections
+TWS API Service - Using official Interactive Brokers TWS API for reliable IB Gateway connections
 """
 
 import os
 import time
 import logging
 import asyncio
+import math
+import threading
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -13,7 +15,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from ib_async import IB, Stock, Contract, util
+from ibapi.client import EClient
+from ibapi.wrapper import EWrapper
+from ibapi.contract import Contract
+from ibapi.order import Order
+from ibapi.common import *
+from ibapi.ticktype import *
 import uvicorn
 
 # Configure logging
@@ -41,6 +48,13 @@ connection_status = {
     'last_error': None,
     'connection_count': 0
 }
+
+# Data storage for async operations
+historical_data = {}
+real_time_data = {}
+account_data = {}
+positions_data = []
+orders_data = []
 
 class MarketDataRequest(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=10)
@@ -74,11 +88,11 @@ class RealTimeQuote(BaseModel):
 # Account-related models
 class AccountSummary(BaseModel):
     account_id: str
-    net_liquidation: Optional[float] = None  # Basic required field
-    currency: str = "USD"                    # Basic required field
+    net_liquidation: Optional[float] = None
+    currency: str = "USD"
     last_updated: str
     
-    # Optional fields (not requested in basic mode for performance)
+    # Optional fields
     total_cash_value: Optional[float] = None
     buying_power: Optional[float] = None
     maintenance_margin: Optional[float] = None
@@ -118,6 +132,112 @@ class ConnectionInfo(BaseModel):
     last_error: Optional[str] = None
     connection_count: int
 
+class IBApp(EWrapper, EClient):
+    """TWS API Application class"""
+    
+    def __init__(self):
+        EClient.__init__(self, self)
+        self.data = {}
+        self.contracts = []
+        self.historical_data = []
+        self.account_summary = {}
+        self.positions = []
+        self.orders = []
+        self.managed_accounts = []
+        self.next_order_id = None
+        self.connection_ready = threading.Event()
+        
+    def error(self, reqId, errorCode, errorString):
+        """Handle TWS API errors"""
+        logger.error(f"TWS API Error {errorCode}: {errorString} (reqId: {reqId})")
+        
+    def connectAck(self):
+        """Called when connection is acknowledged"""
+        logger.info("TWS API connection acknowledged")
+        
+    def nextValidId(self, orderId):
+        """Called when next valid order ID is received"""
+        self.next_order_id = orderId
+        logger.info(f"Next valid order ID: {orderId}")
+        
+    def managedAccounts(self, accountsList):
+        """Called when managed accounts are received"""
+        self.managed_accounts = accountsList.split(',')
+        logger.info(f"Managed accounts: {self.managed_accounts}")
+        
+    def contractDetails(self, reqId, contractDetails):
+        """Called when contract details are received"""
+        self.contracts.append(contractDetails.contract)
+        logger.info(f"Contract details received for reqId {reqId}: {contractDetails.contract.symbol}")
+        
+    def contractDetailsEnd(self, reqId):
+        """Called when contract details request is complete"""
+        logger.info(f"Contract details request completed for reqId {reqId}")
+        
+    def historicalData(self, reqId, bar):
+        """Called when historical data is received"""
+        self.historical_data.append(bar)
+        logger.debug(f"Historical data received for reqId {reqId}: {bar}")
+        
+    def historicalDataEnd(self, reqId, start, end):
+        """Called when historical data request is complete"""
+        logger.info(f"Historical data request completed for reqId {reqId}")
+        
+    def tickPrice(self, reqId, tickType, price, attrib):
+        """Called when tick price is received"""
+        if reqId not in self.data:
+            self.data[reqId] = {}
+        self.data[reqId]['price'] = price
+        self.data[reqId]['tickType'] = tickType
+        logger.debug(f"Tick price for reqId {reqId}: {tickType} = {price}")
+        
+    def tickSize(self, reqId, tickType, size):
+        """Called when tick size is received"""
+        if reqId not in self.data:
+            self.data[reqId] = {}
+        self.data[reqId]['size'] = size
+        self.data[reqId]['tickType'] = tickType
+        logger.debug(f"Tick size for reqId {reqId}: {tickType} = {size}")
+        
+    def accountSummary(self, reqId, account, tag, value, currency):
+        """Called when account summary is received"""
+        if account not in self.account_summary:
+            self.account_summary[account] = {}
+        self.account_summary[account][tag] = value
+        logger.debug(f"Account summary for {account}: {tag} = {value}")
+        
+    def accountSummaryEnd(self, reqId):
+        """Called when account summary request is complete"""
+        logger.info(f"Account summary request completed for reqId {reqId}")
+        
+    def position(self, account, contract, position, avgCost):
+        """Called when position is received"""
+        self.positions.append({
+            'account': account,
+            'contract': contract,
+            'position': position,
+            'avgCost': avgCost
+        })
+        logger.debug(f"Position received: {contract.symbol} = {position}")
+        
+    def positionEnd(self):
+        """Called when position request is complete"""
+        logger.info("Position request completed")
+        
+    def openOrder(self, orderId, contract, order, orderState):
+        """Called when open order is received"""
+        self.orders.append({
+            'orderId': orderId,
+            'contract': contract,
+            'order': order,
+            'orderState': orderState
+        })
+        logger.debug(f"Open order received: {orderId} - {contract.symbol}")
+        
+    def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice):
+        """Called when order status is updated"""
+        logger.debug(f"Order status: {orderId} - {status}")
+
 def get_ib_connection():
     """Get or create IB connection with intelligent client ID retry"""
     global ib_client, connection_status
@@ -137,66 +257,48 @@ def get_ib_connection():
             ib_client = None
         
         # Try multiple client IDs if the primary one is in use
-        # Start with a randomized range to avoid conflicts
         import random
         base_id = IB_CLIENT_ID
         client_ids_to_try = [base_id, base_id + 1, base_id + 2, base_id + 3, base_id + 4, base_id + 5]
-        # Shuffle to avoid all instances trying the same sequence
-        random.shuffle(client_ids_to_try[1:])  # Keep base_id as first, shuffle others
+        random.shuffle(client_ids_to_try[1:])
         last_error = None
         
         for client_id in client_ids_to_try:
             try:
                 logger.info(f"Attempting connection to IB Gateway at {IB_HOST}:{IB_PORT} (Client ID: {client_id})")
-                ib_client = IB()
+                ib_client = IBApp()
                 
-                # Connect synchronously with better error handling
-                ib_client.connect(
-                    host=IB_HOST,
-                    port=IB_PORT,
-                    clientId=client_id,
-                    timeout=IB_TIMEOUT
-                )
+                # Connect to TWS API
+                ib_client.connect(IB_HOST, IB_PORT, client_id)
                 
-                # Give IB Gateway time to fully establish the connection
-                # IB Gateway connections need a moment to properly initialize
+                # Start the message processing thread
+                api_thread = threading.Thread(target=ib_client.run, daemon=True)
+                api_thread.start()
+                
+                # Wait for connection to be established
                 logger.info("Waiting for connection to stabilize...")
-                time.sleep(5)  # Increased from 3 to 5 seconds
+                time.sleep(5)
                 
-                # Verify connection multiple times with longer retries
+                # Verify connection
                 connection_verified = False
-                for verify_attempt in range(5):  # Increased from 3 to 5 attempts
+                for verify_attempt in range(5):
                     if ib_client.isConnected():
                         connection_verified = True
                         logger.info(f"✅ Connection verified on attempt {verify_attempt + 1}")
                         break
                     else:
                         logger.warning(f"Connection verification attempt {verify_attempt + 1}/5 - not yet connected, waiting...")
-                        time.sleep(3)  # Increased wait time between attempts
+                        time.sleep(3)
                 
                 if connection_verified:
-                    # Test the connection with a simple operation
-                    try:
-                        # Skip the reqCurrentTime test as it might be causing issues
-                        # Just verify the basic connection state is stable
-                        logger.info("Connection verification passed - skipping time test for stability")
-                        
-                        connection_status.update({
-                            'connected': True,
-                            'last_connected': datetime.now().isoformat(),
-                            'last_error': None,
-                            'connection_count': connection_status['connection_count'] + 1
-                        })
-                        logger.info(f"✅ Successfully connected and verified IB Gateway at {IB_HOST}:{IB_PORT} (Client ID: {client_id})")
-                        
-                        # Disable automatic account updates to prevent unwanted data queries
-                        # Account data will only be requested when explicitly called via endpoints
-                        logger.info("Connection established without automatic subscriptions")
-                        return ib_client
-                        
-                    except Exception as test_error:
-                        logger.error(f"Connection test failed: {test_error}")
-                        raise Exception(f"Connection established but failed connection test: {test_error}")
+                    connection_status.update({
+                        'connected': True,
+                        'last_connected': datetime.now().isoformat(),
+                        'last_error': None,
+                        'connection_count': connection_status['connection_count'] + 1
+                    })
+                    logger.info(f"✅ Successfully connected and verified IB Gateway at {IB_HOST}:{IB_PORT} (Client ID: {client_id})")
+                    return ib_client
                 else:
                     raise Exception("Connection call succeeded but connection verification failed after retries")
                     
@@ -204,7 +306,6 @@ def get_ib_connection():
                 error_msg = str(e)
                 last_error = error_msg
                 
-                # Check if it's a client ID conflict or connection issue
                 if "client id is already in use" in error_msg.lower() or "326" in error_msg:
                     logger.warning(f"⚠️  Client ID {client_id} is already in use, trying next ID...")
                     if ib_client:
@@ -213,7 +314,7 @@ def get_ib_connection():
                         except:
                             pass
                         ib_client = None
-                    continue  # Try next client ID
+                    continue
                 elif "peer closed" in error_msg.lower() or "connection established but" in error_msg.lower():
                     logger.warning(f"⚠️  Connection issue with Client ID {client_id}: {error_msg}. Trying next ID...")
                     if ib_client:
@@ -222,11 +323,9 @@ def get_ib_connection():
                         except:
                             pass
                         ib_client = None
-                    # Add a delay before trying the next client ID
                     time.sleep(2)
-                    continue  # Try next client ID
+                    continue
                 else:
-                    # Other errors - break and handle below
                     logger.error(f"Connection error with Client ID {client_id}: {error_msg}")
                     if ib_client:
                         try:
@@ -262,10 +361,8 @@ def get_ib_connection():
         )
             
     except HTTPException:
-        # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        # Catch any other unexpected errors
         error_msg = f"Unexpected connection error: {str(e)}"
         logger.error(error_msg)
         
@@ -292,8 +389,6 @@ def verify_connection_health(ib_client):
         if not ib_client or not ib_client.isConnected():
             return False
         
-        # Simple health check - just verify the connection state
-        # Skip complex requests that might timeout or fail
         logger.debug("Connection health check passed - basic state verified")
         return True
             
@@ -324,16 +419,13 @@ def disconnect_ib():
             logger.info("Connection cleanup completed")
 
 def create_contract(symbol: str, sec_type: str = 'STK', exchange: str = 'SMART', currency: str = 'USD'):
-    """Create IB contract"""
-    if sec_type == 'STK':
-        return Stock(symbol, exchange, currency)
-    else:
-        contract = Contract()
-        contract.symbol = symbol
-        contract.secType = sec_type
-        contract.exchange = exchange
-        contract.currency = currency
-        return contract
+    """Create IB contract using TWS API"""
+    contract = Contract()
+    contract.symbol = symbol.upper()
+    contract.secType = sec_type
+    contract.exchange = exchange
+    contract.currency = currency
+    return contract
 
 def convert_timeframe(timeframe: str) -> str:
     """Convert timeframe to IB format"""
@@ -380,24 +472,22 @@ def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDa
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    logger.info("Starting IB Service...")
+    logger.info("Starting TWS API Service...")
     logger.info(f"Configuration: {IB_HOST}:{IB_PORT}, Client ID: {IB_CLIENT_ID}")
     
-    # Skip automatic connection test on startup to avoid unwanted data queries
-    # Connection will be established when first endpoint is called
-    logger.info("IB Service ready - connection will be established on first API call")
+    logger.info("TWS API Service ready - connection will be established on first API call")
     
     yield
     
     # Cleanup on shutdown
-    logger.info("Shutting down IB Service...")
+    logger.info("Shutting down TWS API Service...")
     disconnect_ib()
 
 # FastAPI app
 app = FastAPI(
-    title="TradingApp IB Service",
-    description="Simplified Interactive Brokers service for TradingApp",
-    version="3.0.0",
+    title="TradingApp TWS API Service",
+    description="Interactive Brokers TWS API service for TradingApp",
+    version="4.0.0",
     lifespan=lifespan
 )
 
@@ -416,8 +506,8 @@ async def health_check():
     """Health check endpoint - service status only, no IB Gateway connection test"""
     return {
         "status": "healthy",
-        "service": "IB Service",
-        "version": "3.0.0",
+        "service": "TWS API Service",
+        "version": "4.0.0",
         "timestamp": datetime.now().isoformat(),
         "note": "Service is running - IB Gateway connection tested only when endpoints are called"
     }
@@ -427,8 +517,8 @@ async def health_check():
 async def root():
     """Service information"""
     return {
-        "service": "TradingApp IB Service",
-        "version": "3.0.0",
+        "service": "TradingApp TWS API Service",
+        "version": "4.0.0",
         "status": "running",
         "config": {
             "ib_host": IB_HOST,
@@ -486,6 +576,22 @@ async def disconnect():
         "message": "Disconnected from IB Gateway"
     }
 
+# Helper function to run TWS API operations in executor
+async def run_tws_operation(operation):
+    """Run TWS API operation in a separate thread"""
+    
+    def run_with_thread():
+        """Run the operation in a thread"""
+        try:
+            return operation()
+        except Exception as e:
+            logger.error(f"TWS API operation failed: {e}")
+            raise e
+    
+    # Run the operation in a thread
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, run_with_thread)
+
 # Historical data endpoint
 @app.get("/market-data/history", response_model=HistoricalDataResponse)
 async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y"):
@@ -497,44 +603,54 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y"):
         # Get connection
         ib = get_ib_connection()
         
-        # Create and qualify contract
+        # Create contract
         contract = create_contract(request.symbol.upper())
-        qualified_contracts = ib.qualifyContracts(contract)
         
-        if not qualified_contracts:
+        # Request contract details to qualify the contract
+        ib.reqContractDetails(1, contract)
+        time.sleep(2)  # Wait for contract details
+        
+        if not ib.contracts:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Symbol {request.symbol} not found"
             )
         
-        qualified_contract = qualified_contracts[0]
+        qualified_contract = ib.contracts[0]
         
         # Get historical data
         ib_timeframe = convert_timeframe(request.timeframe)
         
         logger.info(f"Requesting historical data for {request.symbol}")
         
-        # Run the historical data request in executor
-        bars = await run_ib_operation(
-            lambda: ib.reqHistoricalData(
-                qualified_contract,
-                endDateTime='',
-                durationStr=request.period,
-                barSizeSetting=ib_timeframe,
-                whatToShow='TRADES',
-                useRTH=True,
-                formatDate=1
-            )
+        # Clear previous historical data
+        ib.historical_data = []
+        
+        # Request historical data
+        ib.reqHistoricalData(
+            2,  # reqId
+            qualified_contract,
+            '',  # endDateTime
+            request.period,
+            ib_timeframe,
+            'TRADES',
+            1,  # useRTH
+            1,  # formatDate
+            False,  # keepUpToDate
+            []  # chartOptions
         )
         
-        if not bars:
+        # Wait for data
+        time.sleep(5)
+        
+        if not ib.historical_data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No historical data available for {request.symbol}"
             )
         
         # Process and return data
-        return process_bars(bars, request.symbol, request.timeframe, request.period)
+        return process_bars(ib.historical_data, request.symbol, request.timeframe, request.period)
         
     except HTTPException:
         raise
@@ -545,92 +661,71 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y"):
             detail=f"Failed to get historical data: {str(e)}"
         )
 
-# Helper function to run IB operations in executor with proper event loop
-async def run_ib_operation(operation):
-    """Run IB operation in a separate thread with its own event loop"""
-    
-    def run_with_event_loop():
-        """Create a new event loop for the thread and run the operation"""
-        # Create a new event loop for this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
-            # Run the operation in the new event loop
-            return operation()
-        finally:
-            # Clean up the event loop
-            loop.close()
-    
-    # Run the operation in a thread with its own event loop
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, run_with_event_loop)
-
 def get_realtime_data_sync(symbol: str):
-    """Optimized function to get real-time data using shared connection"""
+    """Get real-time market data using TWS API"""
     try:
         logger.info(f"Starting real-time data request for symbol: {symbol}")
         
-        # Use the shared connection instead of creating a new one
+        # Get connection
         ib = get_ib_connection()
-        logger.info(f"Using shared IB connection, connected: {ib.isConnected()}")
+        logger.info(f"Using shared TWS API connection, connected: {ib.isConnected()}")
         
         # Verify connection health before making requests
         if not verify_connection_health(ib):
-            raise Exception("IB connection is not healthy - reconnection required")
+            raise Exception("TWS API connection is not healthy - reconnection required")
         
-        # Create and qualify contract
+        # Create contract
         contract = create_contract(symbol.upper())
         logger.info(f"Created contract for {symbol}: {contract}")
         
-        qualified_contracts = ib.qualifyContracts(contract)
-        logger.info(f"Qualified contracts count: {len(qualified_contracts)}")
+        # Request contract details to qualify the contract
+        ib.reqContractDetails(3, contract)
+        time.sleep(2)
         
-        if not qualified_contracts:
+        if not ib.contracts:
             logger.error(f"No qualified contracts found for symbol: {symbol}")
             raise Exception(f"Symbol {symbol} not found or cannot be qualified")
         
-        qualified_contract = qualified_contracts[0]
+        qualified_contract = ib.contracts[0]
         logger.info(f"Using qualified contract: {qualified_contract}")
         
-        # Request delayed market data (since subscription is required for live data)
-        logger.info(f"Requesting delayed market data for {qualified_contract.symbol}")
-        ib.reqMarketDataType(3)  # Request delayed-frozen market data
-        logger.info("Note: Using delayed market data. Real-time data requires additional IB subscription.")
+        # Request market data
+        req_id = 4
+        ib.reqMktData(req_id, qualified_contract, '', False, False, [])
+        logger.info(f"Market data requested for {qualified_contract.symbol}")
         
-        # Get ticker data - use snapshot for efficiency
-        ticker = ib.reqMktData(qualified_contract, '', True, False)  # Snapshot request
-        logger.info(f"Market data requested, ticker: {ticker}")
+        # Wait for data
+        time.sleep(3)
         
-        # Reduced wait time for better performance
-        logger.info("Waiting 2 seconds for market data to populate...")
-        ib.sleep(2)
+        # Get data from the client
+        tick_data = ib.data.get(req_id, {})
+        logger.info(f"Tick data received: {tick_data}")
         
-        logger.info(f"Ticker data after wait - bid: {ticker.bid}, ask: {ticker.ask}, last: {ticker.last}, volume: {ticker.volume}")
+        # Process quote
+        bid = tick_data.get('bid') if tick_data.get('tickType') == TickTypeEnum.BID else None
+        ask = tick_data.get('ask') if tick_data.get('tickType') == TickTypeEnum.ASK else None
+        last = tick_data.get('last') if tick_data.get('tickType') == TickTypeEnum.LAST else None
+        volume = tick_data.get('volume') if tick_data.get('tickType') == TickTypeEnum.VOLUME else None
         
         # If no last price, try to get it from bid/ask
-        last_price = None
-        if ticker.last and not util.isNan(ticker.last):
-            last_price = float(ticker.last)
-        elif ticker.bid and ticker.ask and not util.isNan(ticker.bid) and not util.isNan(ticker.ask):
-            # Use midpoint if no last price available
-            last_price = (float(ticker.bid) + float(ticker.ask)) / 2
-            logger.info(f"Using midpoint price: {last_price}")
+        if not last and bid and ask:
+            last = (float(bid) + float(ask)) / 2
+            logger.info(f"Using midpoint price: {last}")
         
         # Process quote with better data handling
         quote = RealTimeQuote(
             symbol=symbol.upper(),
-            bid=float(ticker.bid) if ticker.bid and not util.isNan(ticker.bid) else None,
-            ask=float(ticker.ask) if ticker.ask and not util.isNan(ticker.ask) else None,
-            last=last_price,
-            volume=int(ticker.volume) if ticker.volume and not util.isNan(ticker.volume) else None,
+            bid=float(bid) if bid and not math.isnan(float(bid)) else None,
+            ask=float(ask) if ask and not math.isnan(float(ask)) else None,
+            last=float(last) if last and not math.isnan(float(last)) else None,
+            volume=int(volume) if volume and not math.isnan(float(volume)) else None,
             timestamp=datetime.now().isoformat()
         )
         
         logger.info(f"Processed quote: {quote}")
         
         # Cancel market data subscription to clean up
-        ib.cancelMktData(qualified_contract)
+        ib.cancelMktData(req_id)
         logger.info("Market data subscription cancelled")
         
         return quote
@@ -645,12 +740,12 @@ def get_realtime_data_sync(symbol: str):
 # Real-time data endpoint
 @app.get("/market-data/realtime", response_model=RealTimeQuote)
 async def get_realtime_data(symbol: str):
-    """Get real-time market data (may be delayed if subscription not available)"""
+    """Get real-time market data"""
     try:
         logger.info(f"Real-time data endpoint called for symbol: {symbol}")
         
         # Run the synchronous operation in a separate thread
-        quote = await run_ib_operation(lambda: get_realtime_data_sync(symbol))
+        quote = await run_tws_operation(lambda: get_realtime_data_sync(symbol))
         
         logger.info(f"Successfully retrieved market data for {symbol}")
         return quote
@@ -695,15 +790,19 @@ async def search_contracts(
         # Create contract
         contract = create_contract(symbol.upper(), secType, exchange, currency)
         
-        # Qualify contracts
-        qualified_contracts = ib.qualifyContracts(contract)
+        # Clear previous contracts
+        ib.contracts = []
         
-        if not qualified_contracts:
+        # Request contract details
+        ib.reqContractDetails(5, contract)
+        time.sleep(2)
+        
+        if not ib.contracts:
             return {"results": [], "count": 0}
         
         # Format results
         results = []
-        for contract in qualified_contracts:
+        for contract in ib.contracts:
             results.append({
                 "symbol": contract.symbol,
                 "secType": contract.secType,
@@ -737,43 +836,39 @@ async def search_contracts(
 
 # Account service functions
 def get_account_summary_sync():
-    """Get account summary information using ib_async"""
+    """Get account summary information using TWS API"""
     try:
         ib = get_ib_connection()
         
         # Verify connection health before making requests
         if not verify_connection_health(ib):
-            raise Exception("IB connection is not healthy - reconnection required")
+            raise Exception("TWS API connection is not healthy - reconnection required")
         
-        logger.info("Getting account summary using ib_async")
+        logger.info("Getting account summary using TWS API")
         
         # Get managed accounts
-        managed_accounts = ib.managedAccounts()
-        if not managed_accounts:
+        if not ib.managed_accounts:
+            # Request managed accounts
+            ib.reqManagedAccts()
+            time.sleep(2)
+        
+        if not ib.managed_accounts:
             raise Exception("No managed accounts found")
         
-        account_id = managed_accounts[0]
+        account_id = ib.managed_accounts[0]
         logger.info(f"Using account: {account_id}")
         
-        # Request account summary using ib_async proper syntax
+        # Clear previous account data
+        ib.account_summary = {}
+        
+        # Request account summary
         account_tags = ['NetLiquidation', 'AccountCode', 'Currency']
-        summaries = ib.reqAccountSummary('All', ','.join(account_tags))
-        ib.sleep(2)  # Wait for data
+        ib.reqAccountSummary(6, 'All', ','.join(account_tags))
+        time.sleep(3)
         
         # Process account summary
-        account_data = {}
-        currency = "USD"
-        
-        for summary in summaries:
-            tag = summary.tag
-            value = summary.value
-            
-            if tag == 'AccountCode':
-                account_id = value
-            elif tag == 'Currency':
-                currency = value
-            elif tag == 'NetLiquidation':
-                account_data['net_liquidation'] = float(value) if value else None
+        account_data = ib.account_summary.get(account_id, {})
+        currency = account_data.get('Currency', 'USD')
         
         logger.info(f"Retrieved account summary: {account_data}")
         
@@ -781,7 +876,7 @@ def get_account_summary_sync():
             account_id=account_id,
             currency=currency,
             last_updated=datetime.now().isoformat(),
-            **account_data
+            net_liquidation=float(account_data.get('NetLiquidation', 0)) if account_data.get('NetLiquidation') else None
         )
         
     except Exception as e:
@@ -789,34 +884,36 @@ def get_account_summary_sync():
         raise Exception(f"Failed to get account summary: {str(e)}")
 
 def get_positions_sync():
-    """Get current positions using ib_async"""
+    """Get current positions using TWS API"""
     try:
         ib = get_ib_connection()
         
         # Verify connection health before making requests
         if not verify_connection_health(ib):
-            raise Exception("IB connection is not healthy - reconnection required")
+            raise Exception("TWS API connection is not healthy - reconnection required")
         
-        logger.info("Requesting positions using ib_async")
+        logger.info("Requesting positions using TWS API")
+        
+        # Clear previous positions
+        ib.positions = []
         
         # Request positions
-        positions = ib.reqPositions()
-        ib.sleep(2)  # Wait for data
+        ib.reqPositions()
+        time.sleep(3)
         
         position_list = []
-        for pos in positions:
-            if pos.position != 0:  # Only include non-zero positions
+        for pos in ib.positions:
+            if pos['position'] != 0:  # Only include non-zero positions
                 position_list.append(Position(
-                    symbol=pos.contract.symbol,
-                    position=pos.position,
-                    market_price=pos.marketPrice if pos.marketPrice and not util.isNan(pos.marketPrice) else None,
-                    market_value=pos.marketValue if pos.marketValue and not util.isNan(pos.marketValue) else None,
-                    average_cost=pos.avgCost if pos.avgCost and not util.isNan(pos.avgCost) else None,
-                    unrealized_pnl=pos.unrealizedPNL if pos.unrealizedPNL and not util.isNan(pos.unrealizedPNL) else None,
-                    currency=pos.contract.currency
+                    symbol=pos['contract'].symbol,
+                    position=pos['position'],
+                    market_price=None,  # TWS API doesn't provide this in position data
+                    market_value=None,  # TWS API doesn't provide this in position data
+                    average_cost=float(pos['avgCost']) if pos['avgCost'] and not math.isnan(float(pos['avgCost'])) else None,
+                    unrealized_pnl=None,  # TWS API doesn't provide this in position data
+                    currency=pos['contract'].currency
                 ))
         
-        ib.cancelPositions()  # Clean up subscription
         logger.info(f"Retrieved {len(position_list)} positions")
         return position_list
         
@@ -825,32 +922,35 @@ def get_positions_sync():
         raise Exception(f"Failed to get positions: {str(e)}")
 
 def get_orders_sync():
-    """Get current orders using ib_async"""
+    """Get current orders using TWS API"""
     try:
         ib = get_ib_connection()
         
         # Verify connection health before making requests
         if not verify_connection_health(ib):
-            raise Exception("IB connection is not healthy - reconnection required")
+            raise Exception("TWS API connection is not healthy - reconnection required")
         
-        logger.info("Requesting orders using ib_async")
+        logger.info("Requesting orders using TWS API")
+        
+        # Clear previous orders
+        ib.orders = []
         
         # Request all open orders
-        orders = ib.reqAllOpenOrders()
-        ib.sleep(2)  # Wait for data
+        ib.reqAllOpenOrders()
+        time.sleep(3)
         
         order_list = []
-        for order in orders:
+        for order_data in ib.orders:
             order_list.append(Order(
-                order_id=order.orderId,
-                symbol=order.contract.symbol,
-                action=order.order.action,
-                quantity=order.order.totalQuantity,
-                order_type=order.order.orderType,
-                status=order.orderStatus.status,
-                filled_quantity=order.orderStatus.filled if order.orderStatus.filled else None,
-                remaining_quantity=order.orderStatus.remaining if order.orderStatus.remaining else None,
-                avg_fill_price=order.orderStatus.avgFillPrice if order.orderStatus.avgFillPrice and order.orderStatus.avgFillPrice > 0 else None
+                order_id=order_data['orderId'],
+                symbol=order_data['contract'].symbol,
+                action=order_data['order'].action,
+                quantity=order_data['order'].totalQuantity,
+                order_type=order_data['order'].orderType,
+                status=order_data['orderState'].status,
+                filled_quantity=None,  # TWS API doesn't provide this in open orders
+                remaining_quantity=None,  # TWS API doesn't provide this in open orders
+                avg_fill_price=None  # TWS API doesn't provide this in open orders
             ))
         
         logger.info(f"Retrieved {len(order_list)} orders")
@@ -866,7 +966,7 @@ async def get_account_summary():
     """Get account summary information"""
     try:
         logger.info("Account summary endpoint called")
-        summary = await run_ib_operation(get_account_summary_sync)
+        summary = await run_tws_operation(get_account_summary_sync)
         logger.info(f"Successfully retrieved account summary for account: {summary.account_id}")
         return summary
         
@@ -887,7 +987,7 @@ async def get_account_positions():
     """Get current account positions"""
     try:
         logger.info("Account positions endpoint called")
-        positions = await run_ib_operation(get_positions_sync)
+        positions = await run_tws_operation(get_positions_sync)
         logger.info(f"Successfully retrieved {len(positions)} positions")
         return positions
         
@@ -908,7 +1008,7 @@ async def get_account_orders():
     """Get current account orders"""
     try:
         logger.info("Account orders endpoint called")
-        orders = await run_ib_operation(get_orders_sync)
+        orders = await run_tws_operation(get_orders_sync)
         logger.info(f"Successfully retrieved {len(orders)} orders")
         return orders
         
@@ -932,7 +1032,7 @@ async def get_all_account_data():
         
         # Get account summary first (most important)
         try:
-            summary = await run_ib_operation(get_account_summary_sync)
+            summary = await run_tws_operation(get_account_summary_sync)
             logger.info(f"✅ Account summary retrieved for: {summary.account_id}")
         except Exception as e:
             logger.error(f"❌ Failed to get account summary: {e}")
@@ -944,7 +1044,7 @@ async def get_all_account_data():
         # Get positions (optional - continue if fails)
         positions = []
         try:
-            positions = await run_ib_operation(get_positions_sync)
+            positions = await run_tws_operation(get_positions_sync)
             logger.info(f"✅ Positions retrieved: {len(positions)} positions")
         except Exception as e:
             logger.warning(f"⚠️ Failed to get positions (continuing): {e}")
@@ -952,7 +1052,7 @@ async def get_all_account_data():
         # Get orders (optional - continue if fails)  
         orders = []
         try:
-            orders = await run_ib_operation(get_orders_sync)
+            orders = await run_tws_operation(get_orders_sync)
             logger.info(f"✅ Orders retrieved: {len(orders)} orders")
         except Exception as e:
             logger.warning(f"⚠️ Failed to get orders (continuing): {e}")
@@ -980,7 +1080,7 @@ async def get_all_account_data():
         )
 
 if __name__ == "__main__":
-    logger.info("Starting IB Service...")
+    logger.info("Starting TWS API Service...")
     uvicorn.run(
         app,
         host="0.0.0.0",

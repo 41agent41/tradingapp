@@ -195,7 +195,7 @@ grep -E '(POSTGRES|DATABASE)' .env
 **Issue: IB Service Won't Start**
 ```bash
 # Check Python dependencies
-docker-compose exec ib_service pip list | grep -E '(fastapi|ib_async)'
+docker-compose exec ib_service pip list | grep -E '(fastapi|ibapi)'
 
 # Rebuild IB service
 docker-compose build --no-cache ib_service
