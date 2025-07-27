@@ -1,7 +1,7 @@
 # TWS API Service Dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-ibapi==9.81.1.5
+ibapi==9.81.1.post1
 pydantic==2.5.2
 python-multipart==0.0.6
 
