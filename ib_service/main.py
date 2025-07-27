@@ -88,6 +88,27 @@ class RealTimeQuote(BaseModel):
     volume: Optional[int] = None
     timestamp: str
 
+class SearchRequest(BaseModel):
+    symbol: str
+    secType: str = "STK"
+    exchange: str = "SMART"
+    currency: str = "USD"
+    name: bool = False
+    account_mode: str = "paper"
+
+class AdvancedSearchRequest(BaseModel):
+    symbol: str = ""
+    secType: str = "STK"
+    exchange: str = "SMART"
+    currency: str = "USD"
+    expiry: str = ""
+    strike: float = 0
+    right: str = ""
+    multiplier: str = ""
+    includeExpired: bool = False
+    name: bool = False
+    account_mode: str = "paper"
+
 # Account-related models
 class AccountSummary(BaseModel):
     account_id: str
@@ -813,25 +834,18 @@ async def get_realtime_data(symbol: str, account_mode: str = "paper"):
 
 # Contract search endpoint
 @app.post("/contract/search")
-async def search_contracts(
-    symbol: str,
-    secType: str = "STK",
-    exchange: str = "SMART",
-    currency: str = "USD",
-    name: bool = False,
-    account_mode: str = "paper"
-):
+async def search_contracts(request: SearchRequest):
     """Enhanced search for contracts with better filtering and results"""
     try:
         # Log the account mode being used
-        data_type = get_data_type_for_account_mode(account_mode)
-        logger.info(f"Searching contracts for {symbol} ({secType}) in {account_mode} mode - {data_type} data")
+        data_type = get_data_type_for_account_mode(request.account_mode)
+        logger.info(f"Searching contracts for {request.symbol} ({request.secType}) in {request.account_mode} mode - {data_type} data")
         
         # Get connection
         ib = get_ib_connection()
         
         # Create contract with enhanced parameters
-        contract = create_contract(symbol.upper(), secType, exchange, currency)
+        contract = create_contract(request.symbol.upper(), request.secType, request.exchange, request.currency)
         
         # Clear previous contracts
         ib.contracts = []
@@ -967,42 +981,30 @@ async def search_contracts(
         )
 
 @app.post("/contract/advanced-search")
-async def advanced_search_contracts(
-    symbol: str = "",
-    secType: str = "STK",
-    exchange: str = "SMART",
-    currency: str = "USD",
-    expiry: str = "",
-    strike: float = 0,
-    right: str = "",
-    multiplier: str = "",
-    includeExpired: bool = False,
-    name: bool = False,
-    account_mode: str = "paper"
-):
+async def advanced_search_contracts(request: AdvancedSearchRequest):
     """Advanced search for contracts with additional filters"""
     try:
         # Log the account mode being used
-        data_type = get_data_type_for_account_mode(account_mode)
-        logger.info(f"Advanced search for {symbol or 'ALL'} ({secType}) in {account_mode} mode - {data_type} data")
+        data_type = get_data_type_for_account_mode(request.account_mode)
+        logger.info(f"Advanced search for {request.symbol or 'ALL'} ({request.secType}) in {request.account_mode} mode - {data_type} data")
         
         # Get connection
         ib = get_ib_connection()
         
         # Create contract with advanced parameters
-        contract = create_contract(symbol.upper() if symbol else "", secType, exchange, currency)
+        contract = create_contract(request.symbol.upper() if request.symbol else "", request.secType, request.exchange, request.currency)
         
         # Apply advanced filters
-        if expiry:
-            contract.expiry = expiry
-        if strike > 0:
-            contract.strike = strike
-        if right:
-            contract.right = right
-        if multiplier:
-            contract.multiplier = multiplier
-        if includeExpired:
-            contract.includeExpired = includeExpired
+        if request.expiry:
+            contract.expiry = request.expiry
+        if request.strike > 0:
+            contract.strike = request.strike
+        if request.right:
+            contract.right = request.right
+        if request.multiplier:
+            contract.multiplier = request.multiplier
+        if request.includeExpired:
+            contract.includeExpired = request.includeExpired
         
         # Clear previous contracts
         ib.contracts = []
@@ -1018,13 +1020,13 @@ async def advanced_search_contracts(
         results = []
         for contract in ib.contracts:
             # Apply additional client-side filtering
-            if expiry and hasattr(contract, 'expiry') and contract.expiry != expiry:
+            if request.expiry and hasattr(contract, 'expiry') and contract.expiry != request.expiry:
                 continue
-            if strike > 0 and hasattr(contract, 'strike') and contract.strike != strike:
+            if request.strike > 0 and hasattr(contract, 'strike') and contract.strike != request.strike:
                 continue
-            if right and hasattr(contract, 'right') and contract.right != right:
+            if request.right and hasattr(contract, 'right') and contract.right != request.right:
                 continue
-            if multiplier and hasattr(contract, 'multiplier') and contract.multiplier != multiplier:
+            if request.multiplier and hasattr(contract, 'multiplier') and contract.multiplier != request.multiplier:
                 continue
             
             # Extract company name
