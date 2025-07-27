@@ -170,12 +170,16 @@ export default function AccountPage() {
   // Manual refresh function
   const handleManualRefresh = () => {
     if (dataQueryEnabled) {
+      console.log('🔄 Manual refresh triggered by user');
       fetchAccountData(true);
+    } else {
+      console.log('Manual refresh blocked - data querying is disabled');
     }
   };
 
-  // Initial load - no automatic connection status check
+  // Initial load - only fetch account data once, no automatic polling
   useEffect(() => {
+    console.log('📊 Initial account data load (one-time only)');
     // Only fetch account data, which respects data switch setting
     // Connection status will be checked manually when needed
     fetchAccountData(); // Respects data switch setting
@@ -188,12 +192,16 @@ export default function AccountPage() {
       return;
     }
 
+    console.log('Setting up hourly auto-refresh for account data (60 minutes)');
     const interval = setInterval(() => {
-      console.log('Auto-refreshing account data (hourly)');
+      console.log('🕐 Auto-refreshing account data (hourly interval)');
       fetchAccountData();
-    }, 60 * 60 * 1000); // 1 hour in milliseconds
+    }, 60 * 60 * 1000); // 1 hour in milliseconds (60 minutes)
 
-    return () => clearInterval(interval);
+    return () => {
+      console.log('Clearing hourly auto-refresh interval');
+      clearInterval(interval);
+    };
   }, [fetchAccountData, dataQueryEnabled]);
 
   // Helper functions
@@ -269,8 +277,11 @@ export default function AccountPage() {
           {lastRefresh && (
             <div>Last updated: {formatTime(lastRefresh)}</div>
           )}
-          {nextAutoRefresh && (
-            <div>Next auto-refresh: {formatTime(nextAutoRefresh)}</div>
+          {nextAutoRefresh && dataQueryEnabled && (
+            <div>Next auto-refresh: {formatTime(nextAutoRefresh)} (60 minutes)</div>
+          )}
+          {!dataQueryEnabled && (
+            <div className="text-amber-600">Auto-refresh disabled - data querying is off</div>
           )}
         </div>
 
@@ -529,8 +540,12 @@ export default function AccountPage() {
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900">Account Dashboard</h1>
           <p className="text-gray-600 mt-2">
-            Monitor your IB Gateway account information with automatic hourly updates
+            Monitor your IB Gateway account information with automatic hourly updates (60 minutes)
           </p>
+          <div className="mt-2 text-sm text-blue-600 bg-blue-50 p-3 rounded border border-blue-200">
+            💡 <strong>Refresh Schedule:</strong> Data refreshes automatically every 60 minutes or manually via "Refresh Now" button. 
+            No frequent polling to minimize IB Gateway API calls.
+          </div>
         </div>
 
         {/* Tab Navigation */}
