@@ -804,10 +804,15 @@ async def search_contracts(
     secType: str = "STK",
     exchange: str = "SMART",
     currency: str = "USD",
-    name: bool = False
+    name: bool = False,
+    account_mode: str = "paper"
 ):
     """Enhanced search for contracts with better filtering and results"""
     try:
+        # Log the account mode being used
+        data_type = get_data_type_for_account_mode(account_mode)
+        logger.info(f"Searching contracts for {symbol} ({secType}) in {account_mode} mode - {data_type} data")
+        
         # Get connection
         ib = get_ib_connection()
         

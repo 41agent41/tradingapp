@@ -68,26 +68,26 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Market Data Search Section */}
-        <div className="mb-8">
-          <h2 className="text-lg font-medium text-gray-900 mb-2">
-            Market Data Search & Filter
-          </h2>
-          <p className="text-gray-600 mb-4">
-            Search for stocks, options, futures, and other financial instruments using Interactive Brokers data.
-          </p>
-          
-          {/* Market Data Filter Component */}
-          <MarketDataFilter />
-        </div>
+                            {/* Trading Account Mode Section */}
+                    <div className="mb-8">
+                      <TradingAccountSwitch
+                        isLiveTrading={isLiveTrading}
+                        onToggle={setIsLiveTrading}
+                      />
+                    </div>
 
-        {/* Trading Account Mode Section */}
-        <div className="mb-8">
-          <TradingAccountSwitch
-            isLiveTrading={isLiveTrading}
-            onToggle={setIsLiveTrading}
-          />
-        </div>
+                    {/* Market Data Search Section */}
+                    <div className="mb-8">
+                      <h2 className="text-lg font-medium text-gray-900 mb-2">
+                        Market Data Search & Filter
+                      </h2>
+                      <p className="text-gray-600 mb-4">
+                        Search for stocks, options, futures, and other financial instruments using Interactive Brokers data.
+                      </p>
+
+                      {/* Market Data Filter Component */}
+                      <MarketDataFilter />
+                    </div>
       </main>
     </div>
   );

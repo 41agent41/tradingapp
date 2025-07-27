@@ -19,6 +19,7 @@ interface SearchQuery {
   exchange?: string;
   currency?: string;
   searchByName?: boolean;
+  account_mode?: string;
 }
 
 // Interface for advanced search request parameters
@@ -69,7 +70,7 @@ function handleDisabledDataQuery(res: Response, message: string) {
 // Contract search endpoint
 router.post('/search', async (req: Request, res: Response) => {
   try {
-    const { symbol, secType, exchange, currency, searchByName } = req.body as SearchQuery;
+    const { symbol, secType, exchange, currency, searchByName, account_mode } = req.body as SearchQuery;
 
     // Validate required parameters
     if (!symbol || !secType) {
@@ -104,7 +105,8 @@ router.post('/search', async (req: Request, res: Response) => {
     const searchPayload = {
       symbol: symbol.trim().toUpperCase(),
       secType: secType,
-      name: searchByName || false
+      name: searchByName || false,
+      account_mode: account_mode || 'paper' // Default to paper trading
     };
 
     const response = await axios.post(`${IB_SERVICE_URL}/contract/search`, searchPayload, {

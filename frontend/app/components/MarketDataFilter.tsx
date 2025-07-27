@@ -170,10 +170,21 @@ export default function MarketDataFilter() {
   
   // Search history
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
+  
+  // Track if search should be auto-triggered
+  const [autoSearchTrigger, setAutoSearchTrigger] = useState<string | null>(null);
 
   useEffect(() => {
     checkConnection();
   }, []);
+
+  // Auto-trigger search when autoSearchTrigger changes
+  useEffect(() => {
+    if (autoSearchTrigger && symbol === autoSearchTrigger) {
+      handleSearch();
+      setAutoSearchTrigger(null); // Reset after triggering
+    }
+  }, [autoSearchTrigger, symbol]);
 
   const checkConnection = async () => {
     try {
@@ -305,15 +316,23 @@ export default function MarketDataFilter() {
   };
 
   const handleQuickSearch = async (quickSymbol: string) => {
+    // Clear any previous errors
+    setError(null);
+    
+    // Clear previous results
+    setSearchResults([]);
+    setSelectedContract(null);
+    setMarketData(null);
+    setShowChart(false);
+    
+    // Update state
     setSymbol(quickSymbol);
     setSecurityType('STK');
     setExchange('SMART');
     setCurrency('USD');
     
-    // Trigger search after state updates
-    setTimeout(() => {
-      handleSearch();
-    }, 100);
+    // Set the auto-search trigger
+    setAutoSearchTrigger(quickSymbol);
   };
 
   return (
