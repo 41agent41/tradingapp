@@ -780,39 +780,127 @@ async def search_contracts(
     symbol: str,
     secType: str = "STK",
     exchange: str = "SMART",
-    currency: str = "USD"
+    currency: str = "USD",
+    name: bool = False
 ):
-    """Search for contracts"""
+    """Enhanced search for contracts with better filtering and results"""
     try:
         # Get connection
         ib = get_ib_connection()
         
-        # Create contract
+        # Create contract with enhanced parameters
         contract = create_contract(symbol.upper(), secType, exchange, currency)
         
         # Clear previous contracts
         ib.contracts = []
         
-        # Request contract details
+        # Request contract details with longer timeout for better results
         ib.reqContractDetails(5, contract)
-        time.sleep(2)
+        time.sleep(3)  # Increased wait time for more comprehensive results
         
         if not ib.contracts:
             return {"results": [], "count": 0}
         
-        # Format results
+        # Enhanced results formatting with more details
         results = []
         for contract in ib.contracts:
-            results.append({
+            # Extract company name from description or symbol
+            company_name = getattr(contract, 'longName', '') or contract.symbol
+            
+            # Create enhanced result object
+            result = {
+                "conid": str(contract.conId),
                 "symbol": contract.symbol,
+                "companyName": company_name,
+                "description": f"{contract.symbol} - {company_name}",
                 "secType": contract.secType,
                 "exchange": contract.exchange,
                 "currency": contract.currency,
                 "primaryExchange": getattr(contract, 'primaryExchange', ''),
-                "conId": contract.conId,
                 "localSymbol": getattr(contract, 'localSymbol', ''),
-                "tradingClass": getattr(contract, 'tradingClass', '')
-            })
+                "tradingClass": getattr(contract, 'tradingClass', ''),
+                "multiplier": getattr(contract, 'multiplier', ''),
+                "strike": getattr(contract, 'strike', ''),
+                "right": getattr(contract, 'right', ''),
+                "expiry": getattr(contract, 'expiry', ''),
+                "includeExpired": getattr(contract, 'includeExpired', False),
+                "comboLegsDescrip": getattr(contract, 'comboLegsDescrip', ''),
+                "contractMonth": getattr(contract, 'contractMonth', ''),
+                "industry": getattr(contract, 'industry', ''),
+                "category": getattr(contract, 'category', ''),
+                "subcategory": getattr(contract, 'subcategory', ''),
+                "timeZoneId": getattr(contract, 'timeZoneId', ''),
+                "tradingHours": getattr(contract, 'tradingHours', ''),
+                "liquidHours": getattr(contract, 'liquidHours', ''),
+                "evRule": getattr(contract, 'evRule', ''),
+                "evMultiplier": getattr(contract, 'evMultiplier', ''),
+                "secIdList": getattr(contract, 'secIdList', []),
+                "aggGroup": getattr(contract, 'aggGroup', ''),
+                "underSymbol": getattr(contract, 'underSymbol', ''),
+                "underSecType": getattr(contract, 'underSecType', ''),
+                "marketRuleIds": getattr(contract, 'marketRuleIds', ''),
+                "realExpirationDate": getattr(contract, 'realExpirationDate', ''),
+                "lastTradingDay": getattr(contract, 'lastTradingDay', ''),
+                "stockType": getattr(contract, 'stockType', ''),
+                "minSize": getattr(contract, 'minSize', ''),
+                "sizeIncrement": getattr(contract, 'sizeIncrement', ''),
+                "suggestedSizeIncrement": getattr(contract, 'suggestedSizeIncrement', ''),
+                "sections": []
+            }
+            
+            # Add sections for multi-exchange contracts
+            if hasattr(contract, 'sections') and contract.sections:
+                for section in contract.sections:
+                    result["sections"].append({
+                        "exchange": section.exchange,
+                        "secType": section.secType,
+                        "expiry": section.expiry,
+                        "strike": section.strike,
+                        "right": section.right,
+                        "multiplier": section.multiplier,
+                        "tradingClass": section.tradingClass,
+                        "localSymbol": section.localSymbol,
+                        "includeExpired": section.includeExpired,
+                        "comboLegsDescrip": section.comboLegsDescrip,
+                        "contractMonth": section.contractMonth,
+                        "industry": section.industry,
+                        "category": section.category,
+                        "subcategory": section.subcategory,
+                        "timeZoneId": section.timeZoneId,
+                        "tradingHours": section.tradingHours,
+                        "liquidHours": section.liquidHours,
+                        "evRule": section.evRule,
+                        "evMultiplier": section.evMultiplier,
+                        "secIdList": section.secIdList,
+                        "aggGroup": section.aggGroup,
+                        "underSymbol": section.underSymbol,
+                        "underSecType": section.underSecType,
+                        "marketRuleIds": section.marketRuleIds,
+                        "realExpirationDate": section.realExpirationDate,
+                        "lastTradingDay": section.lastTradingDay,
+                        "stockType": section.stockType,
+                        "minSize": section.minSize,
+                        "sizeIncrement": section.sizeIncrement,
+                        "suggestedSizeIncrement": section.suggestedSizeIncrement
+                    })
+            
+            results.append(result)
+        
+        # Sort results by relevance (stocks first, then by exchange preference)
+        def sort_key(result):
+            # Priority: SMART exchange first, then primary exchanges
+            exchange_priority = {
+                'SMART': 0,
+                'NYSE': 1,
+                'NASDAQ': 2,
+                'AMEX': 3
+            }
+            return (
+                exchange_priority.get(result['exchange'], 999),
+                result['symbol']
+            )
+        
+        results.sort(key=sort_key)
         
         return {
             "results": results,
@@ -821,8 +909,10 @@ async def search_contracts(
                 "symbol": symbol,
                 "secType": secType,
                 "exchange": exchange,
-                "currency": currency
-            }
+                "currency": currency,
+                "searchByName": name
+            },
+            "timestamp": datetime.now().isoformat()
         }
         
     except HTTPException:
@@ -832,6 +922,185 @@ async def search_contracts(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to search contracts: {str(e)}"
+        )
+
+@app.post("/contract/advanced-search")
+async def advanced_search_contracts(
+    symbol: str = "",
+    secType: str = "STK",
+    exchange: str = "SMART",
+    currency: str = "USD",
+    expiry: str = "",
+    strike: float = 0,
+    right: str = "",
+    multiplier: str = "",
+    includeExpired: bool = False,
+    name: bool = False
+):
+    """Advanced search for contracts with additional filters"""
+    try:
+        # Get connection
+        ib = get_ib_connection()
+        
+        # Create contract with advanced parameters
+        contract = create_contract(symbol.upper() if symbol else "", secType, exchange, currency)
+        
+        # Apply advanced filters
+        if expiry:
+            contract.expiry = expiry
+        if strike > 0:
+            contract.strike = strike
+        if right:
+            contract.right = right
+        if multiplier:
+            contract.multiplier = multiplier
+        if includeExpired:
+            contract.includeExpired = includeExpired
+        
+        # Clear previous contracts
+        ib.contracts = []
+        
+        # Request contract details
+        ib.reqContractDetails(6, contract)
+        time.sleep(3)
+        
+        if not ib.contracts:
+            return {"results": [], "count": 0}
+        
+        # Filter and format results
+        results = []
+        for contract in ib.contracts:
+            # Apply additional client-side filtering
+            if expiry and hasattr(contract, 'expiry') and contract.expiry != expiry:
+                continue
+            if strike > 0 and hasattr(contract, 'strike') and contract.strike != strike:
+                continue
+            if right and hasattr(contract, 'right') and contract.right != right:
+                continue
+            if multiplier and hasattr(contract, 'multiplier') and contract.multiplier != multiplier:
+                continue
+            
+            # Extract company name
+            company_name = getattr(contract, 'longName', '') or contract.symbol
+            
+            result = {
+                "conid": str(contract.conId),
+                "symbol": contract.symbol,
+                "companyName": company_name,
+                "description": f"{contract.symbol} - {company_name}",
+                "secType": contract.secType,
+                "exchange": contract.exchange,
+                "currency": contract.currency,
+                "primaryExchange": getattr(contract, 'primaryExchange', ''),
+                "localSymbol": getattr(contract, 'localSymbol', ''),
+                "tradingClass": getattr(contract, 'tradingClass', ''),
+                "multiplier": getattr(contract, 'multiplier', ''),
+                "strike": getattr(contract, 'strike', ''),
+                "right": getattr(contract, 'right', ''),
+                "expiry": getattr(contract, 'expiry', ''),
+                "includeExpired": getattr(contract, 'includeExpired', False),
+                "comboLegsDescrip": getattr(contract, 'comboLegsDescrip', ''),
+                "contractMonth": getattr(contract, 'contractMonth', ''),
+                "industry": getattr(contract, 'industry', ''),
+                "category": getattr(contract, 'category', ''),
+                "subcategory": getattr(contract, 'subcategory', ''),
+                "timeZoneId": getattr(contract, 'timeZoneId', ''),
+                "tradingHours": getattr(contract, 'tradingHours', ''),
+                "liquidHours": getattr(contract, 'liquidHours', ''),
+                "evRule": getattr(contract, 'evRule', ''),
+                "evMultiplier": getattr(contract, 'evMultiplier', ''),
+                "secIdList": getattr(contract, 'secIdList', []),
+                "aggGroup": getattr(contract, 'aggGroup', ''),
+                "underSymbol": getattr(contract, 'underSymbol', ''),
+                "underSecType": getattr(contract, 'underSecType', ''),
+                "marketRuleIds": getattr(contract, 'marketRuleIds', ''),
+                "realExpirationDate": getattr(contract, 'realExpirationDate', ''),
+                "lastTradingDay": getattr(contract, 'lastTradingDay', ''),
+                "stockType": getattr(contract, 'stockType', ''),
+                "minSize": getattr(contract, 'minSize', ''),
+                "sizeIncrement": getattr(contract, 'sizeIncrement', ''),
+                "suggestedSizeIncrement": getattr(contract, 'suggestedSizeIncrement', ''),
+                "sections": []
+            }
+            
+            # Add sections for multi-exchange contracts
+            if hasattr(contract, 'sections') and contract.sections:
+                for section in contract.sections:
+                    result["sections"].append({
+                        "exchange": section.exchange,
+                        "secType": section.secType,
+                        "expiry": section.expiry,
+                        "strike": section.strike,
+                        "right": section.right,
+                        "multiplier": section.multiplier,
+                        "tradingClass": section.tradingClass,
+                        "localSymbol": section.localSymbol,
+                        "includeExpired": section.includeExpired,
+                        "comboLegsDescrip": section.comboLegsDescrip,
+                        "contractMonth": section.contractMonth,
+                        "industry": section.industry,
+                        "category": section.category,
+                        "subcategory": section.subcategory,
+                        "timeZoneId": section.timeZoneId,
+                        "tradingHours": section.tradingHours,
+                        "liquidHours": section.liquidHours,
+                        "evRule": section.evRule,
+                        "evMultiplier": section.evMultiplier,
+                        "secIdList": section.secIdList,
+                        "aggGroup": section.aggGroup,
+                        "underSymbol": section.underSymbol,
+                        "underSecType": section.underSecType,
+                        "marketRuleIds": section.marketRuleIds,
+                        "realExpirationDate": section.realExpirationDate,
+                        "lastTradingDay": section.lastTradingDay,
+                        "stockType": section.stockType,
+                        "minSize": section.minSize,
+                        "sizeIncrement": section.sizeIncrement,
+                        "suggestedSizeIncrement": section.suggestedSizeIncrement
+                    })
+            
+            results.append(result)
+        
+        # Sort results
+        def sort_key(result):
+            exchange_priority = {
+                'SMART': 0,
+                'NYSE': 1,
+                'NASDAQ': 2,
+                'AMEX': 3
+            }
+            return (
+                exchange_priority.get(result['exchange'], 999),
+                result['symbol']
+            )
+        
+        results.sort(key=sort_key)
+        
+        return {
+            "results": results,
+            "count": len(results),
+            "search_params": {
+                "symbol": symbol,
+                "secType": secType,
+                "exchange": exchange,
+                "currency": currency,
+                "expiry": expiry,
+                "strike": strike,
+                "right": right,
+                "multiplier": multiplier,
+                "includeExpired": includeExpired,
+                "searchByName": name
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in advanced contract search: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to perform advanced contract search: {str(e)}"
         )
 
 # Account service functions
