@@ -457,6 +457,18 @@ def convert_timeframe(timeframe: str) -> str:
     }
     return timeframe_map.get(timeframe, '1 hour')
 
+def convert_period(period: str) -> str:
+    """Convert period to IB format (integer{SPACE}unit)"""
+    period_map = {
+        '1D': '1 D',
+        '1W': '1 W', 
+        '1M': '1 M',
+        '3M': '3 M',
+        '6M': '6 M',
+        '1Y': '1 Y'
+    }
+    return period_map.get(period, '1 Y')
+
 def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDataResponse:
     """Process IB bars into candlestick data"""
     candlesticks = []
@@ -637,11 +649,13 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y", a
         
         # Get historical data
         ib_timeframe = convert_timeframe(request.timeframe)
+        ib_period = convert_period(request.period)
         
         data_type = get_data_type_for_account_mode(account_mode)
         data_source = get_market_data_source(account_mode)
         
         logger.info(f"Requesting historical data for {request.symbol} - {data_type} ({account_mode} mode)")
+        logger.info(f"Period: {request.period} -> {ib_period}, Timeframe: {request.timeframe} -> {ib_timeframe}")
         
         # Clear previous historical data
         ib.historical_data = []
@@ -651,7 +665,7 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y", a
             2,  # reqId
             qualified_contract,
             '',  # endDateTime
-            request.period,
+            ib_period,  # Use converted period format
             ib_timeframe,
             'TRADES',
             1,  # useRTH
@@ -681,7 +695,7 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y", a
             detail=f"Failed to get historical data: {str(e)}"
         )
 
-def get_realtime_data_sync(symbol: str):
+def get_realtime_data_sync(symbol: str, account_mode: str = "paper"):
     """Get real-time market data using TWS API"""
     try:
         data_type = get_data_type_for_account_mode(account_mode)
@@ -768,7 +782,7 @@ async def get_realtime_data(symbol: str, account_mode: str = "paper"):
         logger.info(f"Real-time data endpoint called for symbol: {symbol}")
         
         # Run the synchronous operation in a separate thread
-        quote = await run_tws_operation(lambda: get_realtime_data_sync(symbol))
+        quote = await run_tws_operation(lambda: get_realtime_data_sync(symbol, account_mode))
         
         logger.info(f"Successfully retrieved market data for {symbol}")
         return quote
@@ -963,10 +977,15 @@ async def advanced_search_contracts(
     right: str = "",
     multiplier: str = "",
     includeExpired: bool = False,
-    name: bool = False
+    name: bool = False,
+    account_mode: str = "paper"
 ):
     """Advanced search for contracts with additional filters"""
     try:
+        # Log the account mode being used
+        data_type = get_data_type_for_account_mode(account_mode)
+        logger.info(f"Advanced search for {symbol or 'ALL'} ({secType}) in {account_mode} mode - {data_type} data")
+        
         # Get connection
         ib = get_ib_connection()
         

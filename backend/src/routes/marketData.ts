@@ -34,6 +34,7 @@ interface AdvancedSearchQuery {
   multiplier?: string;
   includeExpired?: boolean;
   searchByName?: boolean;
+  account_mode?: string;
 }
 
 // Interface for candlestick data
@@ -214,7 +215,8 @@ router.post('/advanced-search', async (req: Request, res: Response) => {
       right, 
       multiplier, 
       includeExpired, 
-      searchByName 
+      searchByName,
+      account_mode
     } = req.body as AdvancedSearchQuery;
 
     // Validate required parameters
@@ -249,7 +251,8 @@ router.post('/advanced-search', async (req: Request, res: Response) => {
       right: right || '',
       multiplier: multiplier || '',
       includeExpired: includeExpired || false,
-      name: searchByName || false
+      name: searchByName || false,
+      account_mode: account_mode || 'paper'
     };
 
     const response = await axios.post(`${IB_SERVICE_URL}/contract/advanced-search`, searchPayload, {
