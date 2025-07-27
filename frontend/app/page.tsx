@@ -2,8 +2,12 @@
 
 import React from 'react';
 import MarketDataFilter from './components/MarketDataFilter';
+import TradingAccountSwitch from './components/TradingAccountSwitch';
+import { useTradingAccount } from './contexts/TradingAccountContext';
 
 export default function HomePage() {
+  const { isLiveTrading, setIsLiveTrading } = useTradingAccount();
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -75,6 +79,14 @@ export default function HomePage() {
           
           {/* Market Data Filter Component */}
           <MarketDataFilter />
+        </div>
+
+        {/* Trading Account Mode Section */}
+        <div className="mb-8">
+          <TradingAccountSwitch
+            isLiveTrading={isLiveTrading}
+            onToggle={setIsLiveTrading}
+          />
         </div>
       </main>
     </div>

@@ -1,5 +1,6 @@
 import './globals.css'
 import type { Metadata } from 'next'
+import { TradingAccountProvider } from './contexts/TradingAccountContext'
 
 export const metadata: Metadata = {
   title: 'TradingApp',
@@ -13,7 +14,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <TradingAccountProvider>
+          {children}
+        </TradingAccountProvider>
+      </body>
     </html>
   )
 } 

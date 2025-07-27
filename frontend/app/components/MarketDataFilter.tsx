@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import EnhancedTradingChart from './EnhancedTradingChart';
+import { useTradingAccount } from '../contexts/TradingAccountContext';
 
 interface SecurityType {
   value: string;
@@ -138,6 +139,8 @@ const POPULAR_SYMBOLS = [
 ];
 
 export default function MarketDataFilter() {
+  const { accountMode, dataType } = useTradingAccount();
+  
   // Basic filter state
   const [symbol, setSymbol] = useState('');
   const [securityType, setSecurityType] = useState('STK');
@@ -222,13 +225,15 @@ export default function MarketDataFilter() {
         right: right,
         multiplier: multiplier,
         includeExpired: includeExpired,
-        searchByName: searchByName
+        searchByName: searchByName,
+        account_mode: accountMode
       } : {
         symbol: symbol.trim().toUpperCase(),
         secType: securityType,
         exchange: exchange,
         currency: currency,
-        searchByName: searchByName
+        searchByName: searchByName,
+        account_mode: accountMode
       };
 
       const response = await fetch(`${backendUrl}${endpoint}`, {
@@ -275,7 +280,7 @@ export default function MarketDataFilter() {
         throw new Error('NEXT_PUBLIC_API_URL is not configured');
       }
       const response = await fetch(
-        `${backendUrl}/api/market-data/realtime?symbol=${contract.symbol}&conid=${contract.conid}`
+        `${backendUrl}/api/market-data/realtime?symbol=${contract.symbol}&conid=${contract.conid}&account_mode=${accountMode}`
       );
 
       if (response.ok) {
@@ -316,12 +321,22 @@ export default function MarketDataFilter() {
       {/* Connection Status */}
       <div className="bg-white rounded-lg shadow-sm border p-4">
         <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <div className={`w-3 h-3 rounded-full ${
-              connectionStatus === 'Connected' ? 'bg-green-500' : 
-              connectionStatus === 'Checking...' ? 'bg-yellow-500' : 'bg-red-500'
-            }`}></div>
-            <span className="text-sm font-medium">{connectionStatus}</span>
+          <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-2">
+              <div className={`w-3 h-3 rounded-full ${
+                connectionStatus === 'Connected' ? 'bg-green-500' : 
+                connectionStatus === 'Checking...' ? 'bg-yellow-500' : 'bg-red-500'
+              }`}></div>
+              <span className="text-sm font-medium">{connectionStatus}</span>
+            </div>
+            <div className="flex items-center space-x-2">
+              <div className={`w-3 h-3 rounded-full ${
+                accountMode === 'live' ? 'bg-red-500' : 'bg-green-500'
+              }`}></div>
+              <span className="text-sm font-medium">
+                {accountMode.toUpperCase()} Mode • {dataType === 'real-time' ? 'Live Data' : 'Delayed Data'}
+              </span>
+            </div>
           </div>
           <button
             onClick={checkConnection}

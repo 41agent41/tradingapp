@@ -40,6 +40,9 @@ IB_CLIENT_ID = int(os.getenv('IB_CLIENT_ID', '1'))
 IB_TIMEOUT = int(os.getenv('IB_TIMEOUT', '15'))
 CORS_ORIGINS = os.getenv('IB_CORS_ORIGINS', '').split(',') if os.getenv('IB_CORS_ORIGINS') else []
 
+# Trading account configuration
+DEFAULT_ACCOUNT_MODE = os.getenv('DEFAULT_ACCOUNT_MODE', 'paper')  # 'paper' or 'live'
+
 # Global IB connection
 ib_client = None
 connection_status = {
@@ -427,6 +430,20 @@ def create_contract(symbol: str, sec_type: str = 'STK', exchange: str = 'SMART',
     contract.currency = currency
     return contract
 
+def get_data_type_for_account_mode(account_mode: str = 'paper') -> str:
+    """Determine data type based on account mode"""
+    if account_mode.lower() == 'live':
+        return 'real-time'
+    else:
+        return 'delayed'  # Default to delayed for paper trading
+
+def get_market_data_source(account_mode: str = 'paper') -> str:
+    """Get market data source description based on account mode"""
+    if account_mode.lower() == 'live':
+        return 'Live Market Data (Real-time)'
+    else:
+        return 'Paper Trading Data (Delayed 15-20 min)'
+
 def convert_timeframe(timeframe: str) -> str:
     """Convert timeframe to IB format"""
     timeframe_map = {
@@ -594,7 +611,7 @@ async def run_tws_operation(operation):
 
 # Historical data endpoint
 @app.get("/market-data/history", response_model=HistoricalDataResponse)
-async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y"):
+async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y", account_mode: str = "paper"):
     """Get historical market data"""
     try:
         # Validate request
@@ -621,7 +638,10 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y"):
         # Get historical data
         ib_timeframe = convert_timeframe(request.timeframe)
         
-        logger.info(f"Requesting historical data for {request.symbol}")
+        data_type = get_data_type_for_account_mode(account_mode)
+        data_source = get_market_data_source(account_mode)
+        
+        logger.info(f"Requesting historical data for {request.symbol} - {data_type} ({account_mode} mode)")
         
         # Clear previous historical data
         ib.historical_data = []
@@ -664,7 +684,10 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y"):
 def get_realtime_data_sync(symbol: str):
     """Get real-time market data using TWS API"""
     try:
-        logger.info(f"Starting real-time data request for symbol: {symbol}")
+        data_type = get_data_type_for_account_mode(account_mode)
+        data_source = get_market_data_source(account_mode)
+        
+        logger.info(f"Starting {data_type} data request for symbol: {symbol} ({account_mode} mode)")
         
         # Get connection
         ib = get_ib_connection()
@@ -739,7 +762,7 @@ def get_realtime_data_sync(symbol: str):
 
 # Real-time data endpoint
 @app.get("/market-data/realtime", response_model=RealTimeQuote)
-async def get_realtime_data(symbol: str):
+async def get_realtime_data(symbol: str, account_mode: str = "paper"):
     """Get real-time market data"""
     try:
         logger.info(f"Real-time data endpoint called for symbol: {symbol}")

@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
 import DataSwitch from './DataSwitch';
+import { useTradingAccount } from '../contexts/TradingAccountContext';
 
 interface RealtimeData {
   symbol: string;
@@ -47,6 +48,8 @@ const periods = [
 ];
 
 export default function MSFTRealtimeChart() {
+  const { accountMode, dataType } = useTradingAccount();
+  
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const candlestickSeries = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -175,7 +178,7 @@ export default function MSFTRealtimeChart() {
       }
 
       const response = await fetch(
-        `${apiUrl}/api/market-data/history?symbol=MSFT&timeframe=${currentTimeframe}&period=${currentPeriod}`,
+        `${apiUrl}/api/market-data/history?symbol=MSFT&timeframe=${currentTimeframe}&period=${currentPeriod}&account_mode=${accountMode}`,
         {
           headers: {
             'X-Data-Query-Enabled': dataQueryEnabled.toString()
@@ -245,7 +248,7 @@ export default function MSFTRealtimeChart() {
         throw new Error('NEXT_PUBLIC_API_URL not configured');
       }
 
-      const response = await fetch(`${apiUrl}/api/market-data/realtime?symbol=MSFT`, {
+      const response = await fetch(`${apiUrl}/api/market-data/realtime?symbol=MSFT&account_mode=${accountMode}`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -362,7 +365,7 @@ export default function MSFTRealtimeChart() {
         <div className="flex justify-between items-center">
           <h2 className="text-xl font-bold">MSFT - Microsoft Corporation</h2>
           <div className="text-sm opacity-90">
-            NASDAQ • Real-time (Delayed)
+            NASDAQ • {dataType === 'real-time' ? 'Live Data' : 'Delayed Data (15-20 min)'} • {accountMode.toUpperCase()} Mode
           </div>
         </div>
       </div>

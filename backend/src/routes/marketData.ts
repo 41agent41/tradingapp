@@ -355,7 +355,7 @@ router.get('/history', async (req: Request, res: Response) => {
       return handleDisabledDataQuery(res, 'Historical market data querying is disabled');
     }
 
-    const { symbol, timeframe, period } = req.query as Partial<MarketDataQuery>;
+    const { symbol, timeframe, period, account_mode } = req.query as Partial<MarketDataQuery & { account_mode?: string }>;
 
     // Validate required parameters
     if (!symbol || !timeframe || !period) {
@@ -384,14 +384,16 @@ router.get('/history', async (req: Request, res: Response) => {
       });
     }
 
-    console.log(`Fetching historical data for ${symbol} - ${timeframe} - ${period}`);
+    const accountMode = account_mode || 'paper'; // Default to paper trading
+    console.log(`Fetching historical data for ${symbol} - ${timeframe} - ${period} (${accountMode} mode)`);
 
     // Request historical data from IB service
     const response = await axios.get(`${IB_SERVICE_URL}/market-data/history`, {
       params: {
         symbol: symbol.toUpperCase(),
         timeframe,
-        period
+        period,
+        account_mode: accountMode
       },
       timeout: 20000 // Reduced to 20 seconds for better consistency
     });
@@ -435,7 +437,7 @@ router.get('/history', async (req: Request, res: Response) => {
 
 // Get real-time market data (current price)
 router.get('/realtime', async (req: Request, res: Response) => {
-  const { symbol } = req.query;
+  const { symbol, account_mode } = req.query;
 
   if (!symbol) {
     return res.status(400).json({
@@ -449,10 +451,14 @@ router.get('/realtime', async (req: Request, res: Response) => {
   }
 
   try {
-    console.log(`Fetching real-time data for ${symbol} from ${IB_SERVICE_URL}`);
+    const accountMode = account_mode || 'paper'; // Default to paper trading
+    console.log(`Fetching ${accountMode} data for ${symbol} from ${IB_SERVICE_URL}`);
 
     const response = await axios.get(`${IB_SERVICE_URL}/market-data/realtime`, {
-      params: { symbol: (symbol as string).toUpperCase() },
+      params: { 
+        symbol: (symbol as string).toUpperCase(),
+        account_mode: accountMode
+      },
       timeout: 15000, // Reduced to 15 seconds to align with frontend
       headers: {
         'Connection': 'close'
