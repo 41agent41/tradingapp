@@ -962,11 +962,11 @@ async def search_contracts(request: SearchRequest):
             "results": results,
             "count": len(results),
             "search_params": {
-                "symbol": symbol,
-                "secType": secType,
-                "exchange": exchange,
-                "currency": currency,
-                "searchByName": name
+                "symbol": request.symbol,
+                "secType": request.secType,
+                "exchange": request.exchange,
+                "currency": request.currency,
+                "searchByName": request.name
             },
             "timestamp": datetime.now().isoformat()
         }
@@ -1129,16 +1129,16 @@ async def advanced_search_contracts(request: AdvancedSearchRequest):
             "results": results,
             "count": len(results),
             "search_params": {
-                "symbol": symbol,
-                "secType": secType,
-                "exchange": exchange,
-                "currency": currency,
-                "expiry": expiry,
-                "strike": strike,
-                "right": right,
-                "multiplier": multiplier,
-                "includeExpired": includeExpired,
-                "searchByName": name
+                "symbol": request.symbol,
+                "secType": request.secType,
+                "exchange": request.exchange,
+                "currency": request.currency,
+                "expiry": request.expiry,
+                "strike": request.strike,
+                "right": request.right,
+                "multiplier": request.multiplier,
+                "includeExpired": request.includeExpired,
+                "searchByName": request.name
             },
             "timestamp": datetime.now().isoformat()
         }

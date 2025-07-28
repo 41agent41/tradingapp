@@ -106,6 +106,8 @@ router.post('/search', async (req: Request, res: Response) => {
     const searchPayload = {
       symbol: symbol.trim().toUpperCase(),
       secType: secType,
+      exchange: exchange || 'SMART',
+      currency: currency || 'USD',
       name: searchByName || false,
       account_mode: account_mode || 'paper' // Default to paper trading
     };
