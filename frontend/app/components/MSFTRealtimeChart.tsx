@@ -23,11 +23,6 @@ interface CandlestickData {
   volume?: number;
 }
 
-interface PricePoint {
-  time: Time;
-  value: number;
-}
-
 const timeframes = [
   { label: '5m', value: '5min', minutes: 5 },
   { label: '15m', value: '15min', minutes: 15 },
@@ -41,7 +36,7 @@ const timeframes = [
 export default function MSFTRealtimeChart() {
   const { accountMode, dataType } = useTradingAccount();
   
-  // Define periods array inside component to avoid caching issues
+  // Simple periods array - always fresh
   const periods = [
     { label: '1 Day', value: '1D' },
     { label: '5 Days', value: '5D' },
@@ -81,7 +76,7 @@ export default function MSFTRealtimeChart() {
     return false;
   });
 
-  // Initialize default date range (last 3 months)
+  // Simple date initialization
   useEffect(() => {
     const now = new Date();
     const threeMonthsAgo = new Date();
@@ -90,22 +85,15 @@ export default function MSFTRealtimeChart() {
     setEndDate(now.toISOString().split('T')[0]);
     setStartDate(threeMonthsAgo.toISOString().split('T')[0]);
     
-    console.log('MSFT Chart: Date range initialized with', periods.length, 'period options');
+    console.log('MSFT Chart v3.0: Initialized with', periods.length, 'periods');
   }, []);
 
-  // Debug effect to track period changes
-  useEffect(() => {
-    console.log('MSFT Chart: Period changed to', currentPeriod, 'Custom range:', useCustomDateRange);
-  }, [currentPeriod, useCustomDateRange]);
-
-  // Handle data switch toggle with persistence
+  // Handle data switch toggle
   const handleDataSwitchToggle = (enabled: boolean) => {
     setDataQueryEnabled(enabled);
     if (typeof window !== 'undefined') {
       localStorage.setItem('msft-chart-data-enabled', JSON.stringify(enabled));
     }
-    
-    // Clear any errors when disabling
     if (!enabled) {
       setError(null);
     }
@@ -186,10 +174,10 @@ export default function MSFTRealtimeChart() {
     };
   }, []);
 
-  // Fetch historical OHLC data
+  // Simplified historical data fetch
   const fetchHistoricalData = async () => {
     if (!dataQueryEnabled) {
-      console.log('Historical data fetching is disabled');
+      console.log('Data querying disabled');
       setIsLoadingHistorical(false);
       return;
     }
@@ -200,116 +188,80 @@ export default function MSFTRealtimeChart() {
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL;
       if (!apiUrl) {
-        throw new Error('NEXT_PUBLIC_API_URL not configured');
+        throw new Error('API URL not configured');
       }
 
-      // Build query parameters
-      let queryParams = `symbol=MSFT&timeframe=${currentTimeframe}&account_mode=${accountMode}`;
+      // Simple query building
+      let url = `${apiUrl}/api/market-data/history?symbol=MSFT&timeframe=${currentTimeframe}&account_mode=${accountMode}`;
       
       if (useCustomDateRange && startDate && endDate) {
-        // Use custom date range
-        queryParams += `&start_date=${startDate}&end_date=${endDate}`;
-        console.log(`Fetching historical data with custom date range: ${startDate} to ${endDate}`);
+        url += `&start_date=${startDate}&end_date=${endDate}`;
+        console.log('Fetching custom date range:', startDate, 'to', endDate);
       } else {
-        // Use period-based query
-        queryParams += `&period=${currentPeriod}`;
-        console.log(`Fetching historical data with period: ${currentPeriod}`);
+        url += `&period=${currentPeriod}`;
+        console.log('Fetching period:', currentPeriod);
       }
 
-      console.log(`Full API URL: ${apiUrl}/api/market-data/history?${queryParams}`);
+      console.log('API Request:', url);
+      
+      const response = await fetch(url, {
+        headers: { 'X-Data-Query-Enabled': 'true' }
+      });
 
-      const response = await fetch(
-        `${apiUrl}/api/market-data/history?${queryParams}`,
-        {
-          headers: {
-            'X-Data-Query-Enabled': dataQueryEnabled.toString()
-          }
-        }
-      );
-
-      console.log(`API Response Status: ${response.status} ${response.statusText}`);
+      console.log('Response status:', response.status);
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error(`API Error Response: ${errorText}`);
-        throw new Error(`Failed to fetch historical data: ${response.status} ${response.statusText}`);
+        console.error('API Error:', errorText);
+        throw new Error(`API Error: ${response.status}`);
       }
 
       const data = await response.json();
-      console.log('API Response Data:', data);
+      console.log('Response data:', data);
       
-      if (data.error) {
-        console.error('API returned error:', data.error);
-        throw new Error(data.error);
-      }
-
       if (!data.bars || !Array.isArray(data.bars)) {
-        console.error('Invalid data structure:', data);
-        throw new Error('Invalid response format: missing or invalid bars array');
+        throw new Error('No bars data received');
       }
 
-      console.log(`Received ${data.bars.length} bars from API`);
+      console.log('Processing', data.bars.length, 'bars');
 
-      // Convert data to TradingView format
-      const formattedData: CandlestickData[] = data.bars.map((bar: any, index: number) => {
-        try {
-          const candlestick = {
-            time: bar.timestamp as Time,
-            open: parseFloat(bar.open),
-            high: parseFloat(bar.high),
-            low: parseFloat(bar.low),
-            close: parseFloat(bar.close),
-            volume: parseInt(bar.volume),
-          };
-          
-          // Validate the candlestick data
-          if (isNaN(candlestick.open) || isNaN(candlestick.high) || isNaN(candlestick.low) || isNaN(candlestick.close)) {
-            console.warn(`Invalid candlestick data at index ${index}:`, bar);
-            return null;
-          }
-          
-          return candlestick;
-        } catch (err) {
-          console.error(`Error processing bar at index ${index}:`, bar, err);
-          return null;
-        }
-      }).filter(Boolean) as CandlestickData[];
+      // Simple data conversion
+      const formattedData: CandlestickData[] = data.bars.map((bar: any) => ({
+        time: bar.timestamp as Time,
+        open: Number(bar.open),
+        high: Number(bar.high),
+        low: Number(bar.low),
+        close: Number(bar.close),
+        volume: Number(bar.volume),
+      })).filter(bar => 
+        !isNaN(bar.open) && !isNaN(bar.high) && !isNaN(bar.low) && !isNaN(bar.close)
+      );
 
-      console.log(`Successfully formatted ${formattedData.length} candlesticks`);
-
-      if (formattedData.length === 0) {
-        throw new Error('No valid candlestick data after processing');
-      }
+      console.log('Formatted', formattedData.length, 'valid bars');
 
       setChartData(formattedData);
       setLastHistoricalUpdate(new Date());
 
-      // Update chart series
-      if (candlestickSeries.current && volumeSeries.current && formattedData.length > 0) {
-        console.log('Updating chart with formatted data...');
-        
+      // Update chart
+      if (candlestickSeries.current && formattedData.length > 0) {
         candlestickSeries.current.setData(formattedData);
         
-        // Volume data with color coding based on price movement
-        const volumeData = formattedData.map(bar => ({
-          time: bar.time,
-          value: bar.volume || 0,
-          color: bar.close >= bar.open ? '#22c55e' : '#ef4444' // Green for up, red for down
-        }));
+        if (volumeSeries.current) {
+          const volumeData = formattedData.map(bar => ({
+            time: bar.time,
+            value: bar.volume || 0,
+            color: bar.close >= bar.open ? '#22c55e' : '#ef4444'
+          }));
+          volumeSeries.current.setData(volumeData);
+        }
         
-        volumeSeries.current.setData(volumeData);
-        
-        // Fit content to show all data
         chart.current?.timeScale().fitContent();
-        
         console.log('Chart updated successfully');
-      } else {
-        console.error('Chart series not initialized or no data to display');
       }
 
     } catch (err) {
-      console.error('Error fetching historical data:', err);
-      setError(err instanceof Error ? err.message : 'Failed to fetch historical data');
+      console.error('Fetch error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to fetch data');
     } finally {
       setIsLoadingHistorical(false);
     }
@@ -400,10 +352,15 @@ export default function MSFTRealtimeChart() {
       return;
     }
 
+    if (useCustomDateRange) {
+      console.log('Custom date range active, stopping real-time polling.');
+      return;
+    }
+
     fetchRealtimeData();
     const interval = setInterval(fetchRealtimeData, 5000); // Every 5 seconds for current price
     return () => clearInterval(interval);
-  }, [dataQueryEnabled]);
+  }, [dataQueryEnabled, useCustomDateRange]);
 
   // Helper functions
   const formatTime = (date: Date) => {
@@ -473,9 +430,8 @@ export default function MSFTRealtimeChart() {
           <h2 className="text-xl font-bold">MSFT - Microsoft Corporation</h2>
           <div className="text-sm opacity-90">
             NASDAQ • {dataType === 'real-time' ? 'Live Data' : 'Delayed Data (15-20 min)'} • {accountMode.toUpperCase()} Mode
-            {/* Debug indicator for date range functionality */}
             <span className="ml-2 px-2 py-1 bg-green-500 text-white text-xs rounded">
-              Date Range v2.1 {periods.length} periods
+              v3.0 {periods.length} periods
             </span>
           </div>
         </div>
@@ -500,7 +456,10 @@ export default function MSFTRealtimeChart() {
               <label className="text-sm font-medium text-gray-700 mr-2">Timeframe:</label>
               <select
                 value={currentTimeframe}
-                onChange={(e) => handleTimeframeChange(e.target.value)}
+                onChange={(e) => {
+                  setCurrentTimeframe(e.target.value);
+                  console.log('Timeframe changed to:', e.target.value);
+                }}
                 className="border border-gray-300 rounded px-3 py-1 text-sm"
                 disabled={isLoadingHistorical || !dataQueryEnabled}
               >
@@ -514,7 +473,12 @@ export default function MSFTRealtimeChart() {
               <label className="text-sm font-medium text-gray-700 mr-2">Period:</label>
               <select
                 value={currentPeriod}
-                onChange={(e) => handlePeriodChange(e.target.value)}
+                onChange={(e) => {
+                  const newPeriod = e.target.value;
+                  setCurrentPeriod(newPeriod);
+                  setUseCustomDateRange(newPeriod === 'CUSTOM');
+                  console.log('Period changed to:', newPeriod, 'Custom range:', newPeriod === 'CUSTOM');
+                }}
                 className="border border-gray-300 rounded px-3 py-1 text-sm"
                 disabled={isLoadingHistorical || !dataQueryEnabled}
               >
@@ -532,10 +496,9 @@ export default function MSFTRealtimeChart() {
                   <input
                     type="date"
                     value={startDate}
-                    onChange={(e) => handleDateRangeChange(e.target.value, endDate)}
+                    onChange={(e) => setStartDate(e.target.value)}
                     className="border border-gray-300 rounded px-3 py-1 text-sm"
                     disabled={isLoadingHistorical || !dataQueryEnabled}
-                    max={endDate || undefined}
                   />
                 </div>
                 <div>
@@ -543,19 +506,20 @@ export default function MSFTRealtimeChart() {
                   <input
                     type="date"
                     value={endDate}
-                    onChange={(e) => handleDateRangeChange(startDate, e.target.value)}
+                    onChange={(e) => setEndDate(e.target.value)}
                     className="border border-gray-300 rounded px-3 py-1 text-sm"
                     disabled={isLoadingHistorical || !dataQueryEnabled}
-                    min={startDate || undefined}
-                    max={new Date().toISOString().split('T')[0]}
                   />
                 </div>
               </>
             )}
             
             <button
-              onClick={fetchHistoricalData}
-              disabled={isLoadingHistorical || !dataQueryEnabled || (useCustomDateRange && (!startDate || !endDate))}
+              onClick={() => {
+                console.log('Refresh button clicked');
+                fetchHistoricalData();
+              }}
+              disabled={isLoadingHistorical || !dataQueryEnabled}
               className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:bg-gray-400"
             >
               {isLoadingHistorical ? 'Loading...' : 'Refresh Chart'}
@@ -570,7 +534,7 @@ export default function MSFTRealtimeChart() {
 
           {lastHistoricalUpdate && (
             <div className="text-sm text-gray-500">
-              Chart updated: {formatTime(lastHistoricalUpdate)}
+              Chart updated: {lastHistoricalUpdate.toLocaleTimeString()}
             </div>
           )}
         </div>
