@@ -94,7 +94,9 @@ export default function MSFTRealtimeChart() {
       startDate: threeMonthsAgo.toISOString().split('T')[0],
       endDate: now.toISOString().split('T')[0],
       useCustomDateRange,
-      periodsLength: periods.length
+      periodsLength: periods.length,
+      periodsArray: periods,
+      hasCustomOption: periods.find(p => p.value === 'CUSTOM')
     });
   }, []);
 
@@ -103,7 +105,8 @@ export default function MSFTRealtimeChart() {
     console.log('MSFT Chart: Period changed', {
       currentPeriod,
       useCustomDateRange,
-      hasCustomOption: periods.some(p => p.value === 'CUSTOM')
+      hasCustomOption: periods.some(p => p.value === 'CUSTOM'),
+      allPeriods: periods.map(p => `${p.label}:${p.value}`)
     });
   }, [currentPeriod, useCustomDateRange]);
 
@@ -483,9 +486,13 @@ export default function MSFTRealtimeChart() {
                 className="border border-gray-300 rounded px-3 py-1 text-sm"
                 disabled={isLoadingHistorical || !dataQueryEnabled}
               >
-                {periods.map((period) => (
-                  <option key={period.value} value={period.value}>{period.label}</option>
-                ))}
+                {periods.map((period) => {
+                  // Debug log each period being rendered
+                  console.log(`Rendering period option: ${period.label} (${period.value})`);
+                  return (
+                    <option key={period.value} value={period.value}>{period.label}</option>
+                  );
+                })}
               </select>
             </div>
             
