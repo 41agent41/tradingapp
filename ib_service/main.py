@@ -518,6 +518,56 @@ def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDa
         last_updated=datetime.now().isoformat()
     )
 
+def process_bars_with_date_range(bars, symbol: str, timeframe: str, start_date_str: str, end_date_str: str) -> HistoricalDataResponse:
+    """Process IB bars into candlestick data for a specific date range"""
+    candlesticks = []
+    
+    start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
+    # Add one day to end_dt to include the entire end date
+    end_dt = end_dt.replace(hour=23, minute=59, second=59)
+    
+    for bar in bars:
+        try:
+            # Handle different date formats from IB
+            if isinstance(bar.date, str):
+                # String format like "20240101 09:30:00"
+                if ' ' in bar.date:
+                    bar_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
+                else:
+                    # Date only format like "20240101"
+                    bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
+            elif isinstance(bar.date, (int, float)):
+                # Unix timestamp
+                bar_datetime = datetime.fromtimestamp(bar.date)
+            else:
+                # Assume it's already a datetime object
+                bar_datetime = bar.date
+            
+            # Check if bar is within our date range
+            if start_dt <= bar_datetime <= end_dt:
+                candlestick = CandlestickBar(
+                    timestamp=int(bar_datetime.timestamp()),
+                    open=float(bar.open),
+                    high=float(bar.high),
+                    low=float(bar.low),
+                    close=float(bar.close),
+                    volume=int(bar.volume)
+                )
+                candlesticks.append(candlestick)
+        except Exception as e:
+            logger.warning(f"Error processing bar for date range: {e}, bar.date={bar.date}")
+            continue
+    
+    return HistoricalDataResponse(
+        symbol=symbol,
+        timeframe=timeframe,
+        period="CUSTOM",  # Indicate it's a custom date range
+        bars=candlesticks,
+        count=len(candlesticks),
+        last_updated=datetime.now().isoformat()
+    )
+
 # Startup and shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -644,17 +694,73 @@ async def run_tws_operation(operation):
 
 # Historical data endpoint
 @app.get("/market-data/history", response_model=HistoricalDataResponse)
-async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y", account_mode: str = "paper"):
-    """Get historical market data"""
+async def get_historical_data(
+    symbol: str, 
+    timeframe: str, 
+    period: str = "1Y", 
+    account_mode: str = "paper",
+    start_date: str = None,
+    end_date: str = None
+):
+    """Get historical market data with support for date ranges"""
     try:
-        # Validate request
-        request = MarketDataRequest(symbol=symbol, timeframe=timeframe, period=period)
+        # Validate that we have either period OR date range, but not both
+        has_date_range = start_date and end_date
+        has_period = period and period != "CUSTOM"
+        
+        if not has_date_range and not has_period:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Must provide either period OR date range (start_date and end_date)"
+            )
+        
+        if has_date_range and has_period:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot specify both period and date range. Use period OR start_date/end_date"
+            )
+        
+        # Validate date range if provided
+        if has_date_range:
+            try:
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+                
+                if start_dt >= end_dt:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Start date must be before end date"
+                    )
+                
+                if end_dt > datetime.now():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="End date cannot be in the future"
+                    )
+                    
+                # Calculate duration for IB request
+                duration_days = (end_dt - start_dt).days
+                if duration_days > 365:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Date range cannot exceed 365 days"
+                    )
+                    
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid date format. Use YYYY-MM-DD format"
+                )
+        
+        # Validate basic request (for period-based requests)
+        if has_period:
+            request = MarketDataRequest(symbol=symbol, timeframe=timeframe, period=period)
         
         # Get connection
         ib = get_ib_connection()
         
         # Create contract
-        contract = create_contract(request.symbol.upper())
+        contract = create_contract(symbol.upper())
         
         # Request contract details to qualify the contract
         ib.reqContractDetails(1, contract)
@@ -663,20 +769,32 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y", a
         if not ib.contracts:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Symbol {request.symbol} not found"
+                detail=f"Symbol {symbol} not found"
             )
         
         qualified_contract = ib.contracts[0]
         
-        # Get historical data
-        ib_timeframe = convert_timeframe(request.timeframe)
-        ib_period = convert_period(request.period)
-        
+        # Prepare data for IB request
+        ib_timeframe = convert_timeframe(timeframe)
         data_type = get_data_type_for_account_mode(account_mode)
         data_source = get_market_data_source(account_mode)
         
-        logger.info(f"Requesting historical data for {request.symbol} - {data_type} ({account_mode} mode)")
-        logger.info(f"Period: {request.period} -> {ib_period}, Timeframe: {request.timeframe} -> {ib_timeframe}")
+        # Determine duration and end date for IB request
+        if has_date_range:
+            # For date range requests
+            duration_days = (end_dt - start_dt).days
+            ib_duration = f"{duration_days} D"
+            end_date_str = end_dt.strftime("%Y%m%d %H:%M:%S")
+            
+            logger.info(f"Requesting historical data for {symbol} - {data_type} ({account_mode} mode)")
+            logger.info(f"Date Range: {start_date} to {end_date} ({duration_days} days), Timeframe: {timeframe} -> {ib_timeframe}")
+        else:
+            # For period-based requests
+            ib_duration = convert_period(period)
+            end_date_str = ''  # Empty string means "now"
+            
+            logger.info(f"Requesting historical data for {symbol} - {data_type} ({account_mode} mode)")
+            logger.info(f"Period: {period} -> {ib_duration}, Timeframe: {timeframe} -> {ib_timeframe}")
         
         # Set market data type based on account mode
         if account_mode.lower() == 'live':
@@ -698,8 +816,8 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y", a
         ib.reqHistoricalData(
             2,  # reqId
             qualified_contract,
-            '',  # endDateTime
-            ib_period,  # Use converted period format
+            end_date_str,  # endDateTime (empty string for "now", or specific date)
+            ib_duration,  # duration
             ib_timeframe,
             'TRADES',
             1,  # useRTH
@@ -714,11 +832,14 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y", a
         if not ib.historical_data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No historical data available for {request.symbol}"
+                detail=f"No historical data available for {symbol}"
             )
         
         # Process and return data
-        return process_bars(ib.historical_data, request.symbol, request.timeframe, request.period)
+        if has_date_range:
+            return process_bars_with_date_range(ib.historical_data, symbol, timeframe, start_date, end_date)
+        else:
+            return process_bars(ib.historical_data, symbol, timeframe, period)
         
     except HTTPException:
         raise

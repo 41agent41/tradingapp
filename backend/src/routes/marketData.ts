@@ -362,15 +362,69 @@ router.get('/history', async (req: Request, res: Response) => {
       return handleDisabledDataQuery(res, 'Historical market data querying is disabled');
     }
 
-    const { symbol, timeframe, period, account_mode } = req.query as Partial<MarketDataQuery & { account_mode?: string }>;
+    const { symbol, timeframe, period, account_mode, start_date, end_date } = req.query as Partial<MarketDataQuery & { 
+      account_mode?: string;
+      start_date?: string;
+      end_date?: string;
+    }>;
 
     // Validate required parameters
-    if (!symbol || !timeframe || !period) {
+    if (!symbol || !timeframe) {
       return res.status(400).json({
         error: 'Missing required parameters',
-        required: ['symbol', 'timeframe', 'period'],
-        received: { symbol, timeframe, period }
+        required: ['symbol', 'timeframe'],
+        optional: ['period', 'start_date', 'end_date'],
+        received: { symbol, timeframe, period, start_date, end_date }
       });
+    }
+
+    // Validate that we have either period OR date range, but not both
+    const hasDateRange = start_date && end_date;
+    const hasPeriod = period && period !== 'CUSTOM';
+    
+    if (!hasDateRange && !hasPeriod) {
+      return res.status(400).json({
+        error: 'Must provide either period OR date range (start_date and end_date)',
+        received: { period, start_date, end_date }
+      });
+    }
+
+    if (hasDateRange && hasPeriod) {
+      return res.status(400).json({
+        error: 'Cannot specify both period and date range. Use period OR start_date/end_date',
+        received: { period, start_date, end_date }
+      });
+    }
+
+    // Validate date range if provided
+    if (hasDateRange) {
+      const startDateTime = new Date(start_date!);
+      const endDateTime = new Date(end_date!);
+      const now = new Date();
+      
+      if (isNaN(startDateTime.getTime()) || isNaN(endDateTime.getTime())) {
+        return res.status(400).json({
+          error: 'Invalid date format. Use YYYY-MM-DD format',
+          start_date,
+          end_date
+        });
+      }
+      
+      if (startDateTime >= endDateTime) {
+        return res.status(400).json({
+          error: 'Start date must be before end date',
+          start_date,
+          end_date
+        });
+      }
+      
+      if (endDateTime > now) {
+        return res.status(400).json({
+          error: 'End date cannot be in the future',
+          end_date,
+          current_date: now.toISOString().split('T')[0]
+        });
+      }
     }
 
     // Validate symbol - basic validation
@@ -392,17 +446,33 @@ router.get('/history', async (req: Request, res: Response) => {
     }
 
     const accountMode = account_mode || 'paper'; // Default to paper trading
-    console.log(`Fetching historical data for ${symbol} - ${timeframe} - ${period} (${accountMode} mode)`);
+    
+    // Log the request details
+    if (hasDateRange) {
+      console.log(`Fetching historical data for ${symbol} - ${timeframe} - ${start_date} to ${end_date} (${accountMode} mode)`);
+    } else {
+      console.log(`Fetching historical data for ${symbol} - ${timeframe} - ${period} (${accountMode} mode)`);
+    }
+
+    // Build request parameters for IB service
+    const ibServiceParams: any = {
+      symbol: symbol.toUpperCase(),
+      timeframe,
+      account_mode: accountMode
+    };
+
+    // Add either period or date range parameters
+    if (hasDateRange) {
+      ibServiceParams.start_date = start_date;
+      ibServiceParams.end_date = end_date;
+    } else {
+      ibServiceParams.period = period;
+    }
 
     // Request historical data from IB service
     const response = await axios.get(`${IB_SERVICE_URL}/market-data/history`, {
-      params: {
-        symbol: symbol.toUpperCase(),
-        timeframe,
-        period,
-        account_mode: accountMode
-      },
-      timeout: 20000 // Reduced to 20 seconds for better consistency
+      params: ibServiceParams,
+      timeout: 20000 // 20 seconds timeout
     });
 
     if (response.data.error) {
@@ -414,30 +484,53 @@ router.get('/history', async (req: Request, res: Response) => {
     }
 
     // Return the data in TradingView format
-    res.json({
+    const responseData: any = {
       symbol: symbol.toUpperCase(),
       timeframe,
-      period,
+      account_mode: accountMode,
       bars: response.data.bars || [],
-      count: response.data.bars?.length || 0,
-      source: 'Interactive Brokers',
-      last_updated: new Date().toISOString()
-    });
+      count: response.data.count || 0,
+      last_updated: response.data.last_updated || new Date().toISOString(),
+      source: 'Interactive Brokers'
+    };
+
+    // Add period or date range info to response
+    if (hasDateRange) {
+      responseData.start_date = start_date;
+      responseData.end_date = end_date;
+      responseData.date_range = true;
+    } else {
+      responseData.period = period;
+      responseData.date_range = false;
+    }
+
+    res.json(responseData);
 
   } catch (error: any) {
-    console.error('Error fetching historical market data:', error);
+    console.error('Error fetching historical data:', error);
     
-    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
-    const statusCode = error.response?.status || 500;
+    let errorMessage = 'Unknown error';
+    let statusCode = 500;
+    
+    if (error.code === 'ECONNREFUSED') {
+      errorMessage = 'IB Service connection refused - service may be starting up';
+      statusCode = 503;
+    } else if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) {
+      errorMessage = 'IB Service timeout - service may be busy with other requests';
+      statusCode = 504;
+    } else if (error.response) {
+      errorMessage = error.response.data?.detail || error.response.statusText || 'IB Service error';
+      statusCode = error.response.status;
+    } else {
+      errorMessage = error.message || 'Failed to connect to IB Service';
+    }
     
     res.status(statusCode).json({
       error: 'Failed to fetch historical market data',
       detail: errorMessage,
       ib_service_status: statusCode,
       ib_service_url: `${IB_SERVICE_URL}/market-data/history`,
-      symbol: req.query.symbol,
-      timeframe: req.query.timeframe,
-      period: req.query.period
+      timestamp: new Date().toISOString()
     });
   }
 });

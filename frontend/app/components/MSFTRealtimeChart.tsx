@@ -44,7 +44,8 @@ const periods = [
   { label: '1 Month', value: '1M' },
   { label: '3 Months', value: '3M' },
   { label: '6 Months', value: '6M' },
-  { label: '1 Year', value: '1Y' }
+  { label: '1 Year', value: '1Y' },
+  { label: 'Custom Range', value: 'CUSTOM' }
 ];
 
 export default function MSFTRealtimeChart() {
@@ -65,6 +66,11 @@ export default function MSFTRealtimeChart() {
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [lastHistoricalUpdate, setLastHistoricalUpdate] = useState<Date | null>(null);
   
+  // Date range states
+  const [useCustomDateRange, setUseCustomDateRange] = useState(false);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  
   // Data switch states
   const [dataQueryEnabled, setDataQueryEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -73,6 +79,16 @@ export default function MSFTRealtimeChart() {
     }
     return false;
   });
+
+  // Initialize default date range (last 3 months)
+  useEffect(() => {
+    const now = new Date();
+    const threeMonthsAgo = new Date();
+    threeMonthsAgo.setMonth(now.getMonth() - 3);
+    
+    setEndDate(now.toISOString().split('T')[0]);
+    setStartDate(threeMonthsAgo.toISOString().split('T')[0]);
+  }, []);
 
   // Handle data switch toggle with persistence
   const handleDataSwitchToggle = (enabled: boolean) => {
@@ -177,8 +193,21 @@ export default function MSFTRealtimeChart() {
         throw new Error('NEXT_PUBLIC_API_URL not configured');
       }
 
+      // Build query parameters
+      let queryParams = `symbol=MSFT&timeframe=${currentTimeframe}&account_mode=${accountMode}`;
+      
+      if (useCustomDateRange && startDate && endDate) {
+        // Use custom date range
+        queryParams += `&start_date=${startDate}&end_date=${endDate}`;
+        console.log(`Fetching historical data with custom date range: ${startDate} to ${endDate}`);
+      } else {
+        // Use period-based query
+        queryParams += `&period=${currentPeriod}`;
+        console.log(`Fetching historical data with period: ${currentPeriod}`);
+      }
+
       const response = await fetch(
-        `${apiUrl}/api/market-data/history?symbol=MSFT&timeframe=${currentTimeframe}&period=${currentPeriod}&account_mode=${accountMode}`,
+        `${apiUrl}/api/market-data/history?${queryParams}`,
         {
           headers: {
             'X-Data-Query-Enabled': dataQueryEnabled.toString()
@@ -356,6 +385,32 @@ export default function MSFTRealtimeChart() {
 
   const handlePeriodChange = (period: string) => {
     setCurrentPeriod(period);
+    
+    // Toggle custom date range mode
+    if (period === 'CUSTOM') {
+      setUseCustomDateRange(true);
+    } else {
+      setUseCustomDateRange(false);
+    }
+  };
+
+  const handleDateRangeChange = (start: string, end: string) => {
+    setStartDate(start);
+    setEndDate(end);
+    
+    // Validate date range
+    if (start && end) {
+      const startDateTime = new Date(start);
+      const endDateTime = new Date(end);
+      
+      if (startDateTime >= endDateTime) {
+        setError('Start date must be before end date');
+        return;
+      }
+      
+      // Clear any previous errors
+      setError(null);
+    }
   };
 
   return (
@@ -413,9 +468,38 @@ export default function MSFTRealtimeChart() {
               </select>
             </div>
             
+            {/* Custom Date Range Controls */}
+            {useCustomDateRange && (
+              <>
+                <div>
+                  <label className="text-sm font-medium text-gray-700 mr-2">Start Date:</label>
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => handleDateRangeChange(e.target.value, endDate)}
+                    className="border border-gray-300 rounded px-3 py-1 text-sm"
+                    disabled={isLoadingHistorical || !dataQueryEnabled}
+                    max={endDate || undefined}
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-gray-700 mr-2">End Date:</label>
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => handleDateRangeChange(startDate, e.target.value)}
+                    className="border border-gray-300 rounded px-3 py-1 text-sm"
+                    disabled={isLoadingHistorical || !dataQueryEnabled}
+                    min={startDate || undefined}
+                    max={new Date().toISOString().split('T')[0]}
+                  />
+                </div>
+              </>
+            )}
+            
             <button
               onClick={fetchHistoricalData}
-              disabled={isLoadingHistorical || !dataQueryEnabled}
+              disabled={isLoadingHistorical || !dataQueryEnabled || (useCustomDateRange && (!startDate || !endDate))}
               className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:bg-gray-400"
             >
               {isLoadingHistorical ? 'Loading...' : 'Refresh Chart'}
