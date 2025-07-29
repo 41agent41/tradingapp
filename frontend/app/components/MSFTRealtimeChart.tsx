@@ -38,18 +38,19 @@ const timeframes = [
   { label: '1d', value: '1day', minutes: 1440 }
 ];
 
-const periods = [
-  { label: '1 Day', value: '1D' },
-  { label: '5 Days', value: '5D' },
-  { label: '1 Month', value: '1M' },
-  { label: '3 Months', value: '3M' },
-  { label: '6 Months', value: '6M' },
-  { label: '1 Year', value: '1Y' },
-  { label: 'Custom Range', value: 'CUSTOM' }
-];
-
 export default function MSFTRealtimeChart() {
   const { accountMode, dataType } = useTradingAccount();
+  
+  // Define periods array inside component to avoid caching issues
+  const periods = [
+    { label: '1 Day', value: '1D' },
+    { label: '5 Days', value: '5D' },
+    { label: '1 Month', value: '1M' },
+    { label: '3 Months', value: '3M' },
+    { label: '6 Months', value: '6M' },
+    { label: '1 Year', value: '1Y' },
+    { label: 'Custom Range', value: 'CUSTOM' }
+  ];
   
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
@@ -89,25 +90,12 @@ export default function MSFTRealtimeChart() {
     setEndDate(now.toISOString().split('T')[0]);
     setStartDate(threeMonthsAgo.toISOString().split('T')[0]);
     
-    // Debug log to verify new code is running
-    console.log('MSFT Chart: Date range functionality initialized', {
-      startDate: threeMonthsAgo.toISOString().split('T')[0],
-      endDate: now.toISOString().split('T')[0],
-      useCustomDateRange,
-      periodsLength: periods.length,
-      periodsArray: periods,
-      hasCustomOption: periods.find(p => p.value === 'CUSTOM')
-    });
+    console.log('MSFT Chart: Date range initialized with', periods.length, 'period options');
   }, []);
 
   // Debug effect to track period changes
   useEffect(() => {
-    console.log('MSFT Chart: Period changed', {
-      currentPeriod,
-      useCustomDateRange,
-      hasCustomOption: periods.some(p => p.value === 'CUSTOM'),
-      allPeriods: periods.map(p => `${p.label}:${p.value}`)
-    });
+    console.log('MSFT Chart: Period changed to', currentPeriod, 'Custom range:', useCustomDateRange);
   }, [currentPeriod, useCustomDateRange]);
 
   // Handle data switch toggle with persistence
@@ -207,6 +195,8 @@ export default function MSFTRealtimeChart() {
     }
     
     setIsLoadingHistorical(true);
+    setError(null);
+    
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL;
       if (!apiUrl) {
@@ -226,6 +216,8 @@ export default function MSFTRealtimeChart() {
         console.log(`Fetching historical data with period: ${currentPeriod}`);
       }
 
+      console.log(`Full API URL: ${apiUrl}/api/market-data/history?${queryParams}`);
+
       const response = await fetch(
         `${apiUrl}/api/market-data/history?${queryParams}`,
         {
@@ -235,31 +227,67 @@ export default function MSFTRealtimeChart() {
         }
       );
 
+      console.log(`API Response Status: ${response.status} ${response.statusText}`);
+
       if (!response.ok) {
-        throw new Error(`Failed to fetch historical data: ${response.statusText}`);
+        const errorText = await response.text();
+        console.error(`API Error Response: ${errorText}`);
+        throw new Error(`Failed to fetch historical data: ${response.status} ${response.statusText}`);
       }
 
       const data = await response.json();
+      console.log('API Response Data:', data);
       
       if (data.error) {
+        console.error('API returned error:', data.error);
         throw new Error(data.error);
       }
 
+      if (!data.bars || !Array.isArray(data.bars)) {
+        console.error('Invalid data structure:', data);
+        throw new Error('Invalid response format: missing or invalid bars array');
+      }
+
+      console.log(`Received ${data.bars.length} bars from API`);
+
       // Convert data to TradingView format
-      const formattedData: CandlestickData[] = data.bars?.map((bar: any) => ({
-        time: bar.timestamp as Time,
-        open: bar.open,
-        high: bar.high,
-        low: bar.low,
-        close: bar.close,
-        volume: bar.volume,
-      })) || [];
+      const formattedData: CandlestickData[] = data.bars.map((bar: any, index: number) => {
+        try {
+          const candlestick = {
+            time: bar.timestamp as Time,
+            open: parseFloat(bar.open),
+            high: parseFloat(bar.high),
+            low: parseFloat(bar.low),
+            close: parseFloat(bar.close),
+            volume: parseInt(bar.volume),
+          };
+          
+          // Validate the candlestick data
+          if (isNaN(candlestick.open) || isNaN(candlestick.high) || isNaN(candlestick.low) || isNaN(candlestick.close)) {
+            console.warn(`Invalid candlestick data at index ${index}:`, bar);
+            return null;
+          }
+          
+          return candlestick;
+        } catch (err) {
+          console.error(`Error processing bar at index ${index}:`, bar, err);
+          return null;
+        }
+      }).filter(Boolean) as CandlestickData[];
+
+      console.log(`Successfully formatted ${formattedData.length} candlesticks`);
+
+      if (formattedData.length === 0) {
+        throw new Error('No valid candlestick data after processing');
+      }
 
       setChartData(formattedData);
       setLastHistoricalUpdate(new Date());
 
       // Update chart series
       if (candlestickSeries.current && volumeSeries.current && formattedData.length > 0) {
+        console.log('Updating chart with formatted data...');
+        
         candlestickSeries.current.setData(formattedData);
         
         // Volume data with color coding based on price movement
@@ -273,6 +301,10 @@ export default function MSFTRealtimeChart() {
         
         // Fit content to show all data
         chart.current?.timeScale().fitContent();
+        
+        console.log('Chart updated successfully');
+      } else {
+        console.error('Chart series not initialized or no data to display');
       }
 
     } catch (err) {
@@ -443,7 +475,7 @@ export default function MSFTRealtimeChart() {
             NASDAQ • {dataType === 'real-time' ? 'Live Data' : 'Delayed Data (15-20 min)'} • {accountMode.toUpperCase()} Mode
             {/* Debug indicator for date range functionality */}
             <span className="ml-2 px-2 py-1 bg-green-500 text-white text-xs rounded">
-              Date Range v2.0 {periods.length} periods
+              Date Range v2.1 {periods.length} periods
             </span>
           </div>
         </div>
@@ -486,13 +518,9 @@ export default function MSFTRealtimeChart() {
                 className="border border-gray-300 rounded px-3 py-1 text-sm"
                 disabled={isLoadingHistorical || !dataQueryEnabled}
               >
-                {periods.map((period) => {
-                  // Debug log each period being rendered
-                  console.log(`Rendering period option: ${period.label} (${period.value})`);
-                  return (
-                    <option key={period.value} value={period.value}>{period.label}</option>
-                  );
-                })}
+                {periods.map((period) => (
+                  <option key={period.value} value={period.value}>{period.label}</option>
+                ))}
               </select>
             </div>
             
