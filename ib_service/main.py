@@ -678,6 +678,19 @@ async def get_historical_data(symbol: str, timeframe: str, period: str = "1Y", a
         logger.info(f"Requesting historical data for {request.symbol} - {data_type} ({account_mode} mode)")
         logger.info(f"Period: {request.period} -> {ib_period}, Timeframe: {request.timeframe} -> {ib_timeframe}")
         
+        # Set market data type based on account mode
+        if account_mode.lower() == 'live':
+            # Request live/real-time data (type 1)
+            ib.reqMarketDataType(1)
+            logger.info("Set market data type to live (type 1) for historical data")
+        else:
+            # Request delayed data (type 3) for paper trading
+            ib.reqMarketDataType(3)
+            logger.info("Set market data type to delayed (type 3) for historical data")
+        
+        # Small delay to allow market data type to be set
+        time.sleep(1)
+        
         # Clear previous historical data
         ib.historical_data = []
         
@@ -732,6 +745,19 @@ def get_realtime_data_sync(symbol: str, account_mode: str = "paper"):
         if not verify_connection_health(ib):
             raise Exception("TWS API connection is not healthy - reconnection required")
         
+        # Set market data type based on account mode
+        if account_mode.lower() == 'live':
+            # Request live/real-time data (type 1)
+            ib.reqMarketDataType(1)
+            logger.info("Requesting live market data (type 1)")
+        else:
+            # Request delayed data (type 3) for paper trading
+            ib.reqMarketDataType(3)
+            logger.info("Requesting delayed market data (type 3)")
+        
+        # Small delay to allow market data type to be set
+        time.sleep(1)
+        
         # Create contract
         contract = create_contract(symbol.upper())
         logger.info(f"Created contract for {symbol}: {contract}")
@@ -750,7 +776,7 @@ def get_realtime_data_sync(symbol: str, account_mode: str = "paper"):
         # Request market data
         req_id = 4
         ib.reqMktData(req_id, qualified_contract, '', False, False, [])
-        logger.info(f"Market data requested for {qualified_contract.symbol}")
+        logger.info(f"Market data requested for {qualified_contract.symbol} with data type: {data_type}")
         
         # Wait for data
         time.sleep(3)

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import DataSwitch from '../components/DataSwitch';
 
 interface ConnectionStatus {
@@ -70,6 +70,9 @@ export default function AccountPage() {
     }
     return false;
   });
+
+  // Create a ref to store the latest fetchAccountData function
+  const fetchAccountDataRef = useRef<((isManualRefresh?: boolean) => Promise<void>) | null>(null);
 
   // Handle data switch toggle with persistence
   const handleDataSwitchToggle = (enabled: boolean) => {
@@ -167,6 +170,11 @@ export default function AccountPage() {
     }
   }, [apiUrl, dataQueryEnabled]);
 
+  // Keep the ref updated with the latest function
+  useEffect(() => {
+    fetchAccountDataRef.current = fetchAccountData;
+  }, [fetchAccountData]);
+
   // Manual refresh function
   const handleManualRefresh = () => {
     if (dataQueryEnabled) {
@@ -193,16 +201,22 @@ export default function AccountPage() {
     }
 
     console.log('Setting up hourly auto-refresh for account data (60 minutes)');
-    const interval = setInterval(() => {
+    
+    // Create a stable function that uses the ref to call the latest function
+    const intervalFunction = () => {
       console.log('🕐 Auto-refreshing account data (hourly interval)');
-      fetchAccountData();
-    }, 60 * 60 * 1000); // 1 hour in milliseconds (60 minutes)
+      if (fetchAccountDataRef.current) {
+        fetchAccountDataRef.current();
+      }
+    };
+    
+    const interval = setInterval(intervalFunction, 60 * 60 * 1000); // 1 hour in milliseconds (60 minutes)
 
     return () => {
       console.log('Clearing hourly auto-refresh interval');
       clearInterval(interval);
     };
-  }, [fetchAccountData, dataQueryEnabled]);
+  }, [dataQueryEnabled]); // Only depend on dataQueryEnabled, not fetchAccountData
 
   // Helper functions
   const formatTime = (date: Date) => {
