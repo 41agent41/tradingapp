@@ -88,7 +88,24 @@ export default function MSFTRealtimeChart() {
     
     setEndDate(now.toISOString().split('T')[0]);
     setStartDate(threeMonthsAgo.toISOString().split('T')[0]);
+    
+    // Debug log to verify new code is running
+    console.log('MSFT Chart: Date range functionality initialized', {
+      startDate: threeMonthsAgo.toISOString().split('T')[0],
+      endDate: now.toISOString().split('T')[0],
+      useCustomDateRange,
+      periodsLength: periods.length
+    });
   }, []);
+
+  // Debug effect to track period changes
+  useEffect(() => {
+    console.log('MSFT Chart: Period changed', {
+      currentPeriod,
+      useCustomDateRange,
+      hasCustomOption: periods.some(p => p.value === 'CUSTOM')
+    });
+  }, [currentPeriod, useCustomDateRange]);
 
   // Handle data switch toggle with persistence
   const handleDataSwitchToggle = (enabled: boolean) => {
@@ -421,6 +438,10 @@ export default function MSFTRealtimeChart() {
           <h2 className="text-xl font-bold">MSFT - Microsoft Corporation</h2>
           <div className="text-sm opacity-90">
             NASDAQ • {dataType === 'real-time' ? 'Live Data' : 'Delayed Data (15-20 min)'} • {accountMode.toUpperCase()} Mode
+            {/* Debug indicator for date range functionality */}
+            <span className="ml-2 px-2 py-1 bg-green-500 text-white text-xs rounded">
+              Date Range v2.0 {periods.length} periods
+            </span>
           </div>
         </div>
       </div>
