@@ -2,12 +2,22 @@
 
 import React, { useState, useEffect } from 'react';
 import { useTradingAccount } from '../contexts/TradingAccountContext';
+import DataSwitch from '../components/DataSwitch';
 
 export default function HistoricalChartPage() {
-  const { isLiveTrading } = useTradingAccount();
+  const { isLiveTrading, accountMode, dataType } = useTradingAccount();
   const [selectedSymbol, setSelectedSymbol] = useState('MSFT');
   const [timeframe, setTimeframe] = useState('1D');
   const [isLoading, setIsLoading] = useState(false);
+  
+  // Data query switch state
+  const [dataQueryEnabled, setDataQueryEnabled] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('historical-chart-data-enabled');
+      return saved !== null ? JSON.parse(saved) : false;
+    }
+    return false;
+  });
 
   const timeframes = [
     { value: '1m', label: '1 Minute' },
@@ -21,6 +31,14 @@ export default function HistoricalChartPage() {
   ];
 
   const popularSymbols = ['MSFT', 'AAPL', 'GOOGL', 'TSLA', 'AMZN', 'NVDA', 'META', 'NFLX'];
+
+  // Handle data switch toggle
+  const handleDataSwitchToggle = (enabled: boolean) => {
+    setDataQueryEnabled(enabled);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('historical-chart-data-enabled', JSON.stringify(enabled));
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -43,6 +61,17 @@ export default function HistoricalChartPage() {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Data Query Switch */}
+        <div className="mb-6 bg-white rounded-lg shadow-sm border p-4">
+          <DataSwitch
+            enabled={dataQueryEnabled}
+            onToggle={handleDataSwitchToggle}
+            label="IB Gateway Data Query"
+            description="Enable or disable historical data fetching from IB Gateway"
+            size="medium"
+          />
+        </div>
+
         {/* Controls */}
         <div className="mb-8 bg-white rounded-lg shadow-sm border p-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -57,17 +86,19 @@ export default function HistoricalChartPage() {
                 onChange={(e) => setSelectedSymbol(e.target.value.toUpperCase())}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 placeholder="Enter symbol..."
+                disabled={!dataQueryEnabled}
               />
               <div className="mt-2 flex flex-wrap gap-1">
                 {popularSymbols.map((symbol) => (
                   <button
                     key={symbol}
                     onClick={() => setSelectedSymbol(symbol)}
+                    disabled={!dataQueryEnabled}
                     className={`px-2 py-1 text-xs rounded ${
                       selectedSymbol === symbol
                         ? 'bg-blue-500 text-white'
                         : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                    }`}
+                    } ${!dataQueryEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
                   >
                     {symbol}
                   </button>
@@ -84,6 +115,7 @@ export default function HistoricalChartPage() {
                 value={timeframe}
                 onChange={(e) => setTimeframe(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                disabled={!dataQueryEnabled}
               >
                 {timeframes.map((tf) => (
                   <option key={tf.value} value={tf.value}>
@@ -97,7 +129,7 @@ export default function HistoricalChartPage() {
             <div className="flex items-end">
               <button
                 onClick={() => setIsLoading(true)}
-                disabled={isLoading}
+                disabled={isLoading || !dataQueryEnabled}
                 className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isLoading ? 'Loading...' : 'Load Historical Data'}
@@ -123,8 +155,18 @@ export default function HistoricalChartPage() {
               <div className="text-4xl mb-4">📊</div>
               <p className="text-gray-600">Historical chart will be displayed here</p>
               <p className="text-sm text-gray-500 mt-2">
-                Select a symbol and timeframe, then click "Load Historical Data"
+                {dataQueryEnabled 
+                  ? `Select a symbol and timeframe, then click "Load Historical Data" to fetch data from IB Gateway`
+                  : 'Enable data querying to load historical data from IB Gateway'
+                }
               </p>
+              {!dataQueryEnabled && (
+                <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-md">
+                  <p className="text-sm text-amber-800">
+                    Data querying is currently disabled. Enable the switch above to connect to IB Gateway.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </div>
