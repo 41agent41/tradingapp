@@ -45,7 +45,7 @@ export default function HomePage() {
           </a>
           
           <a 
-            href="/msft" 
+            href="/historical" 
             className="block p-6 bg-white rounded-lg shadow-sm border hover:shadow-md transition-shadow"
           >
             <div className="flex items-center">
