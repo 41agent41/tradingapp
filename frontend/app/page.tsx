@@ -64,7 +64,7 @@ export default function HomePage() {
             <div className="flex items-center">
               <div className="text-2xl mr-3">📈</div>
               <div>
-                <h3 className="text-lg font-medium text-gray-900">MSFT Page</h3>
+                <h3 className="text-lg font-medium text-gray-900">MSFT Real-time Chart</h3>
                 <p className="text-sm text-gray-600">Live Microsoft stock data with TradingView charts</p>
               </div>
             </div>
