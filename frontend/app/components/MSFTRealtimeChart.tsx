@@ -298,8 +298,7 @@ export default function MSFTRealtimeChart() {
               borderVisible: false,
               ticksVisible: false,
               entireTextOnly: false,
-              visible: true,
-              drawTicks: false
+              visible: true
             });
           } else if (config.priceScale === 'macd') {
             series.priceScale().applyOptions({
@@ -310,8 +309,7 @@ export default function MSFTRealtimeChart() {
               borderVisible: false,
               ticksVisible: false,
               entireTextOnly: false,
-              visible: true,
-              drawTicks: false
+              visible: true
             });
           }
         } else {
