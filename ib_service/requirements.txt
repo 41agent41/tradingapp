@@ -8,7 +8,6 @@ python-multipart==0.0.6
 # Data Analysis & Technical Indicators
 pandas>=2.0.0
 numpy>=1.24.0
-ta-lib>=0.4.25
 
 # Basic utilities
 python-dateutil==2.8.2

@@ -11,7 +11,6 @@ Version: 1.0.0
 
 import pandas as pd
 import numpy as np
-import talib
 from typing import Dict, List, Optional, Tuple, Union
 from datetime import datetime
 import logging
