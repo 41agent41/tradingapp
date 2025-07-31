@@ -108,6 +108,14 @@ export default function MSFTRealtimeChart() {
   // Chart series for indicators
   const indicatorSeries = useRef<Map<string, ISeriesApi<any>>>(new Map());
 
+  // Interface for indicator configuration
+  interface IndicatorConfig {
+    color: string;
+    title: string;
+    type: string;
+    priceScale?: string;
+  }
+
   // Simple date initialization
   useEffect(() => {
     const now = new Date();
@@ -240,7 +248,7 @@ export default function MSFTRealtimeChart() {
     indicatorSeries.current.clear();
 
     // Define indicator configurations
-    const indicatorConfigs = {
+    const indicatorConfigs: Record<string, IndicatorConfig> = {
       sma_20: { color: '#2563eb', title: 'SMA 20', type: 'line' },
       sma_50: { color: '#dc2626', title: 'SMA 50', type: 'line' },
       ema_12: { color: '#059669', title: 'EMA 12', type: 'line' },
@@ -276,7 +284,7 @@ export default function MSFTRealtimeChart() {
             color: config.color,
             lineWidth: 2,
             title: config.title,
-            priceScaleId: config.priceScale || 'right',
+            priceScaleId: config.priceScale ?? 'right',
             visible: true
           });
 
