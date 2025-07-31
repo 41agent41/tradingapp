@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
 import { io, Socket } from 'socket.io-client';
+import IndicatorSelector from './IndicatorSelector';
 
 interface CandlestickData {
   time: Time;
@@ -11,6 +12,25 @@ interface CandlestickData {
   low: number;
   close: number;
   volume?: number;
+  
+  // Technical Indicators
+  sma_20?: number;
+  sma_50?: number;
+  ema_12?: number;
+  ema_26?: number;
+  rsi?: number;
+  macd?: number;
+  macd_signal?: number;
+  macd_histogram?: number;
+  bb_upper?: number;
+  bb_middle?: number;
+  bb_lower?: number;
+  stoch_k?: number;
+  stoch_d?: number;
+  atr?: number;
+  obv?: number;
+  vwap?: number;
+  volume_sma?: number;
 }
 
 interface TradingChartProps {
@@ -44,6 +64,10 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
   const [realTimePrice, setRealTimePrice] = useState<number | null>(null);
   const [connectionStatus, setConnectionStatus] = useState('Disconnected');
   const [isSubscribed, setIsSubscribed] = useState(false);
+  
+  // Indicator states
+  const [selectedIndicators, setSelectedIndicators] = useState<string[]>([]);
+  const indicatorSeries = useRef<Map<string, ISeriesApi<any>>>(new Map());
 
   useEffect(() => {
     if (!chartContainerRef.current) return;

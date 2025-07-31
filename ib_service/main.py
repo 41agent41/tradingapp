@@ -23,6 +23,14 @@ from ibapi.common import *
 from ibapi.ticktype import *
 import uvicorn
 
+# Technical indicators support
+import pandas as pd
+import numpy as np
+from indicators import calculator as indicator_calculator
+
+# Backtesting support
+from backtesting import backtest_engine, AVAILABLE_STRATEGIES
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -71,6 +79,25 @@ class CandlestickBar(BaseModel):
     low: float
     close: float
     volume: int
+    
+    # Technical Indicators (optional fields)
+    sma_20: Optional[float] = None
+    sma_50: Optional[float] = None
+    ema_12: Optional[float] = None
+    ema_26: Optional[float] = None
+    rsi: Optional[float] = None
+    macd: Optional[float] = None
+    macd_signal: Optional[float] = None
+    macd_histogram: Optional[float] = None
+    bb_upper: Optional[float] = None
+    bb_middle: Optional[float] = None
+    bb_lower: Optional[float] = None
+    stoch_k: Optional[float] = None
+    stoch_d: Optional[float] = None
+    atr: Optional[float] = None
+    obv: Optional[float] = None
+    vwap: Optional[float] = None
+    volume_sma: Optional[float] = None
 
 class HistoricalDataResponse(BaseModel):
     symbol: str
@@ -568,6 +595,189 @@ def process_bars_with_date_range(bars, symbol: str, timeframe: str, start_date_s
         last_updated=datetime.now().isoformat()
     )
 
+def process_bars_with_indicators(bars, symbol: str, timeframe: str, period: str, indicators: List[str] = None) -> HistoricalDataResponse:
+    """Process IB bars into candlestick data with technical indicators"""
+    try:
+        # Convert bars to DataFrame for indicator calculations
+        bars_data = []
+        for bar in bars:
+            try:
+                bars_data.append({
+                    'timestamp': bar.date.timestamp(),
+                    'open': float(bar.open),
+                    'high': float(bar.high),
+                    'low': float(bar.low),
+                    'close': float(bar.close),
+                    'volume': int(bar.volume)
+                })
+            except Exception as e:
+                logger.warning(f"Error processing bar: {e}")
+                continue
+        
+        if not bars_data:
+            return HistoricalDataResponse(
+                symbol=symbol,
+                timeframe=timeframe,
+                period=period,
+                bars=[],
+                count=0,
+                last_updated=datetime.now().isoformat()
+            )
+        
+        # Calculate indicators if requested
+        if indicators and len(indicators) > 0:
+            # Convert to DataFrame for indicator calculations
+            df = pd.DataFrame(bars_data)
+            
+            # Calculate indicators
+            df_with_indicators = indicator_calculator.calculate_indicators(df, indicators)
+            
+            # Convert back to CandlestickBar objects
+            candlesticks = []
+            for _, row in df_with_indicators.iterrows():
+                # Create base candlestick data
+                candlestick_data = {
+                    'timestamp': float(row['timestamp']),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': int(row['volume'])
+                }
+                
+                # Add indicator values if they exist and are not NaN
+                indicator_fields = [
+                    'sma_20', 'sma_50', 'ema_12', 'ema_26', 'rsi', 
+                    'macd', 'macd_signal', 'macd_histogram',
+                    'bb_upper', 'bb_middle', 'bb_lower',
+                    'stoch_k', 'stoch_d', 'atr', 'obv', 'vwap', 'volume_sma'
+                ]
+                
+                for field in indicator_fields:
+                    if field in row and pd.notna(row[field]):
+                        candlestick_data[field] = float(row[field])
+                
+                candlestick = CandlestickBar(**candlestick_data)
+                candlesticks.append(candlestick)
+        else:
+            # No indicators requested, use standard processing
+            candlesticks = []
+            for bar_data in bars_data:
+                candlestick = CandlestickBar(**bar_data)
+                candlesticks.append(candlestick)
+        
+        return HistoricalDataResponse(
+            symbol=symbol,
+            timeframe=timeframe,
+            period=period,
+            bars=candlesticks,
+            count=len(candlesticks),
+            last_updated=datetime.now().isoformat()
+        )
+        
+    except Exception as e:
+        logger.error(f"Error processing bars with indicators: {e}")
+        # Fallback to standard processing
+        return process_bars(bars, symbol, timeframe, period)
+
+def process_bars_with_date_range_and_indicators(bars, symbol: str, timeframe: str, start_date_str: str, end_date_str: str, indicators: List[str] = None) -> HistoricalDataResponse:
+    """Process IB bars with date range filtering and technical indicators"""
+    try:
+        start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
+        end_dt = end_dt.replace(hour=23, minute=59, second=59)
+        
+        # Filter bars by date range and convert to DataFrame format
+        bars_data = []
+        for bar in bars:
+            try:
+                # Handle different date formats from IB
+                if isinstance(bar.date, str):
+                    if ' ' in bar.date:
+                        bar_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
+                    else:
+                        bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
+                elif isinstance(bar.date, (int, float)):
+                    bar_datetime = datetime.fromtimestamp(bar.date)
+                else:
+                    bar_datetime = bar.date
+                
+                # Check if bar is within our date range
+                if start_dt <= bar_datetime <= end_dt:
+                    bars_data.append({
+                        'timestamp': int(bar_datetime.timestamp()),
+                        'open': float(bar.open),
+                        'high': float(bar.high),
+                        'low': float(bar.low),
+                        'close': float(bar.close),
+                        'volume': int(bar.volume)
+                    })
+            except Exception as e:
+                logger.warning(f"Error processing bar for date range: {e}, bar.date={bar.date}")
+                continue
+        
+        if not bars_data:
+            return HistoricalDataResponse(
+                symbol=symbol,
+                timeframe=timeframe,
+                period="CUSTOM",
+                bars=[],
+                count=0,
+                last_updated=datetime.now().isoformat()
+            )
+        
+        # Calculate indicators if requested
+        if indicators and len(indicators) > 0:
+            df = pd.DataFrame(bars_data)
+            df_with_indicators = indicator_calculator.calculate_indicators(df, indicators)
+            
+            # Convert back to CandlestickBar objects
+            candlesticks = []
+            for _, row in df_with_indicators.iterrows():
+                candlestick_data = {
+                    'timestamp': float(row['timestamp']),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': int(row['volume'])
+                }
+                
+                # Add indicator values if they exist and are not NaN
+                indicator_fields = [
+                    'sma_20', 'sma_50', 'ema_12', 'ema_26', 'rsi', 
+                    'macd', 'macd_signal', 'macd_histogram',
+                    'bb_upper', 'bb_middle', 'bb_lower',
+                    'stoch_k', 'stoch_d', 'atr', 'obv', 'vwap', 'volume_sma'
+                ]
+                
+                for field in indicator_fields:
+                    if field in row and pd.notna(row[field]):
+                        candlestick_data[field] = float(row[field])
+                
+                candlestick = CandlestickBar(**candlestick_data)
+                candlesticks.append(candlestick)
+        else:
+            # No indicators requested
+            candlesticks = []
+            for bar_data in bars_data:
+                candlestick = CandlestickBar(**bar_data)
+                candlesticks.append(candlestick)
+        
+        return HistoricalDataResponse(
+            symbol=symbol,
+            timeframe=timeframe,
+            period="CUSTOM",
+            bars=candlesticks,
+            count=len(candlesticks),
+            last_updated=datetime.now().isoformat()
+        )
+        
+    except Exception as e:
+        logger.error(f"Error processing bars with date range and indicators: {e}")
+        # Fallback to standard date range processing
+        return process_bars_with_date_range(bars, symbol, timeframe, start_date_str, end_date_str)
+
 # Startup and shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -700,10 +910,16 @@ async def get_historical_data(
     period: str = "1Y", 
     account_mode: str = "paper",
     start_date: str = None,
-    end_date: str = None
+    end_date: str = None,
+    indicators: str = None
 ):
-    """Get historical market data with support for date ranges"""
+    """Get historical market data with support for date ranges and technical indicators"""
     try:
+        # Parse indicators parameter (comma-separated list)
+        indicator_list = []
+        if indicators:
+            indicator_list = [indicator.strip() for indicator in indicators.split(',') if indicator.strip()]
+        
         # Validate that we have either period OR date range, but not both
         has_date_range = start_date and end_date
         has_period = period and period != "CUSTOM"
@@ -835,11 +1051,11 @@ async def get_historical_data(
                 detail=f"No historical data available for {symbol}"
             )
         
-        # Process and return data
+        # Process and return data with indicators
         if has_date_range:
-            return process_bars_with_date_range(ib.historical_data, symbol, timeframe, start_date, end_date)
+            return process_bars_with_date_range_and_indicators(ib.historical_data, symbol, timeframe, start_date, end_date, indicator_list)
         else:
-            return process_bars(ib.historical_data, symbol, timeframe, period)
+            return process_bars_with_indicators(ib.historical_data, symbol, timeframe, period, indicator_list)
         
     except HTTPException:
         raise
@@ -848,6 +1064,203 @@ async def get_historical_data(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get historical data: {str(e)}"
+        )
+
+# Available indicators endpoint
+@app.get("/indicators/available")
+async def get_available_indicators():
+    """Get list of all available technical indicators"""
+    try:
+        return {
+            "indicators": indicator_calculator.get_available_indicators(),
+            "usage": "Add indicators as comma-separated list in 'indicators' parameter, e.g., indicators=sma_20,rsi,bollinger"
+        }
+    except Exception as e:
+        logger.error(f"Error getting available indicators: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get available indicators: {str(e)}"
+        )
+
+# Backtesting endpoints
+@app.get("/backtesting/strategies")
+async def get_available_strategies():
+    """Get list of available backtesting strategies"""
+    try:
+        strategies_info = {}
+        for key, strategy_class in AVAILABLE_STRATEGIES.items():
+            # Create temporary instance to get info
+            temp_strategy = strategy_class()
+            strategies_info[key] = {
+                "name": temp_strategy.name,
+                "indicators": temp_strategy.indicators,
+                "description": strategy_class.__doc__ or "No description available"
+            }
+        
+        return {
+            "strategies": strategies_info,
+            "usage": "Use strategy key in backtest requests"
+        }
+    except Exception as e:
+        logger.error(f"Error getting available strategies: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get available strategies: {str(e)}"
+        )
+
+@app.post("/backtesting/run")
+async def run_backtest(
+    symbol: str,
+    strategy: str,
+    timeframe: str = "1hour",
+    period: str = "1Y",
+    initial_capital: float = 100000,
+    commission: float = 0.001,
+    start_date: str = None,
+    end_date: str = None
+):
+    """Run backtest on historical data"""
+    try:
+        # Validate strategy
+        if strategy not in AVAILABLE_STRATEGIES:
+            available = list(AVAILABLE_STRATEGIES.keys())
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unknown strategy '{strategy}'. Available strategies: {available}"
+            )
+        
+        # Get historical data first
+        logger.info(f"Getting historical data for backtesting: {symbol}, {timeframe}, {period}")
+        
+        # Create a temporary IB connection to get data
+        ib = get_ib_connection()
+        
+        if not verify_connection_health(ib):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="IB Gateway connection is not available"
+            )
+        
+        # Create contract
+        qualified_contract = create_contract(symbol, 'STK', 'SMART', 'USD')
+        
+        # Determine date range
+        has_date_range = start_date and end_date
+        if has_date_range:
+            # Validate date range
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            
+            if start_dt >= end_dt:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Start date must be before end date"
+                )
+            
+            duration_days = (end_dt - start_dt).days
+            if duration_days > 365:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Date range cannot exceed 365 days for backtesting"
+                )
+                
+            end_date_str = end_dt.strftime("%Y%m%d %H:%M:%S")
+            ib_duration = f"{duration_days} D"
+        else:
+            end_date_str = ""
+            ib_duration = convert_period(period)
+        
+        # Convert timeframe
+        timeframe_map = {
+            '5min': '5 mins',
+            '15min': '15 mins', 
+            '30min': '30 mins',
+            '1hour': '1 hour',
+            '4hour': '4 hours',
+            '8hour': '8 hours',
+            '1day': '1 day'
+        }
+        ib_timeframe = timeframe_map.get(timeframe, '1 hour')
+        
+        # Clear previous data
+        ib.historical_data = []
+        
+        # Request historical data
+        ib.reqHistoricalData(
+            3,  # reqId for backtest
+            qualified_contract,
+            end_date_str,
+            ib_duration,
+            ib_timeframe,
+            'TRADES',
+            1,  # useRTH
+            1,  # formatDate
+            False,  # keepUpToDate
+            []  # chartOptions
+        )
+        
+        # Wait for data
+        time.sleep(8)  # Longer wait for more data
+        
+        if not ib.historical_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No historical data available for {symbol} backtesting"
+            )
+        
+        logger.info(f"Retrieved {len(ib.historical_data)} bars for backtesting")
+        
+        # Convert to DataFrame
+        bars_data = []
+        for bar in ib.historical_data:
+            try:
+                bars_data.append({
+                    'timestamp': bar.date.timestamp(),
+                    'open': float(bar.open),
+                    'high': float(bar.high),
+                    'low': float(bar.low),
+                    'close': float(bar.close),
+                    'volume': int(bar.volume)
+                })
+            except Exception as e:
+                logger.warning(f"Error processing bar for backtesting: {e}")
+                continue
+        
+        if len(bars_data) < 50:  # Minimum data for meaningful backtest
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Insufficient data for backtesting. Got {len(bars_data)} bars, need at least 50"
+            )
+        
+        df = pd.DataFrame(bars_data)
+        df.index = pd.to_datetime(df['timestamp'], unit='s')
+        
+        # Create strategy instance
+        strategy_class = AVAILABLE_STRATEGIES[strategy]
+        strategy_instance = strategy_class()
+        
+        # Create backtest engine with specified parameters
+        engine = backtest_engine.__class__(initial_capital=initial_capital, commission=commission)
+        
+        # Run backtest
+        results = engine.run_backtest(df, strategy_instance, symbol)
+        
+        # Return results
+        return {
+            "success": True,
+            "results": results.to_dict(),
+            "data_points": len(df),
+            "timeframe": timeframe,
+            "period": period if not has_date_range else "CUSTOM"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error running backtest: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to run backtest: {str(e)}"
         )
 
 def get_realtime_data_sync(symbol: str, account_mode: str = "paper"):
