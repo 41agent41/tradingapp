@@ -231,9 +231,11 @@ export default function MSFTRealtimeChart() {
   const updateIndicatorSeries = (data: CandlestickData[]) => {
     if (!chart.current) return;
 
+    const chartInstance = chart.current; // Store reference for TypeScript
+
     // Clear existing indicator series first
     indicatorSeries.current.forEach((series) => {
-      chart.current?.removeSeries(series);
+      chartInstance.removeSeries(series);
     });
     indicatorSeries.current.clear();
 
@@ -270,7 +272,7 @@ export default function MSFTRealtimeChart() {
         let series: ISeriesApi<any>;
 
         if (config.type === 'line') {
-          series = chart.current.addLineSeries({
+          series = chartInstance.addLineSeries({
             color: config.color,
             lineWidth: 2,
             title: config.title,
@@ -306,7 +308,7 @@ export default function MSFTRealtimeChart() {
           }
         } else {
           // Default to line series
-          series = chart.current.addLineSeries({
+          series = chartInstance.addLineSeries({
             color: config.color,
             lineWidth: 2,
             title: config.title
