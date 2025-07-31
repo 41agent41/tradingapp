@@ -184,32 +184,35 @@ const IndicatorSelector: React.FC<IndicatorSelectorProps> = ({
               </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                {Object.entries(indicators).map(([indicatorKey, metadata]) => (
-                  <label
-                    key={indicatorKey}
-                    className={`flex items-start space-x-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                      selectedIndicators.includes(indicatorKey)
-                        ? categoryColors[categoryKey as keyof typeof categoryColors]
-                        : 'border-gray-200 hover:bg-gray-50'
-                    } ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedIndicators.includes(indicatorKey)}
-                      onChange={() => handleIndicatorToggle(indicatorKey)}
-                      disabled={isLoading}
-                      className="mt-1 w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-gray-900">
-                        {metadata.name}
+                {Object.entries(indicators).map(([indicatorKey, metadata]) => {
+                  const indicatorMeta = metadata as IndicatorMetadata;
+                  return (
+                    <label
+                      key={indicatorKey}
+                      className={`flex items-start space-x-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                        selectedIndicators.includes(indicatorKey)
+                          ? categoryColors[categoryKey as keyof typeof categoryColors]
+                          : 'border-gray-200 hover:bg-gray-50'
+                      } ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedIndicators.includes(indicatorKey)}
+                        onChange={() => handleIndicatorToggle(indicatorKey)}
+                        disabled={isLoading}
+                        className="mt-1 w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium text-gray-900">
+                          {indicatorMeta.name}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-1">
+                          {indicatorMeta.description}
+                        </div>
                       </div>
-                      <div className="text-xs text-gray-500 mt-1">
-                        {metadata.description}
-                      </div>
-                    </div>
-                  </label>
-                ))}
+                    </label>
+                  );
+                })}
               </div>
             </div>
           ))}
