@@ -14,6 +14,15 @@ interface HistoricalData {
   source: string;
 }
 
+interface ProcessedBar {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
 export default function HistoricalChartPage() {
   const { isLiveTrading, accountMode, dataType } = useTradingAccount();
   const [selectedSymbol, setSelectedSymbol] = useState('MSFT');
@@ -21,6 +30,7 @@ export default function HistoricalChartPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [chartData, setChartData] = useState<HistoricalData | null>(null);
+  const [processedBars, setProcessedBars] = useState<ProcessedBar[]>([]);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   
   // Data query switch state
@@ -54,7 +64,34 @@ export default function HistoricalChartPage() {
     if (!enabled) {
       setError(null);
       setChartData(null);
+      setProcessedBars([]);
     }
+  };
+
+  // Process bars data from API response
+  const processBarsData = (bars: any[]): ProcessedBar[] => {
+    if (!bars || !Array.isArray(bars)) {
+      return [];
+    }
+
+    return bars.map((bar: any) => {
+      // Convert timestamp to milliseconds if it's in seconds
+      let timestamp = bar.timestamp;
+      if (timestamp < 1000000000000) { // If timestamp is in seconds, convert to milliseconds
+        timestamp = timestamp * 1000;
+      }
+
+      return {
+        time: timestamp,
+        open: Number(bar.open),
+        high: Number(bar.high),
+        low: Number(bar.low),
+        close: Number(bar.close),
+        volume: Number(bar.volume)
+      };
+    }).filter((bar: ProcessedBar) => 
+      !isNaN(bar.open) && !isNaN(bar.high) && !isNaN(bar.low) && !isNaN(bar.close) && !isNaN(bar.volume)
+    );
   };
 
   // Fetch historical data
@@ -131,7 +168,12 @@ export default function HistoricalChartPage() {
 
       console.log('Processing', data.bars.length, 'bars');
 
+      // Process the bars data
+      const processed = processBarsData(data.bars);
+      console.log('Processed', processed.length, 'valid bars');
+
       setChartData(data);
+      setProcessedBars(processed);
       setLastUpdate(new Date());
       console.log('Historical data loaded successfully');
 
@@ -299,13 +341,13 @@ export default function HistoricalChartPage() {
           </div>
           
           {/* Chart Display */}
-          {chartData ? (
+          {chartData && processedBars.length > 0 ? (
             <div className="h-96 bg-gray-100 rounded-lg flex items-center justify-center">
               <div className="text-center">
                 <div className="text-4xl mb-4">📊</div>
                 <p className="text-gray-600">Historical data loaded successfully!</p>
                 <p className="text-sm text-gray-500 mt-2">
-                  {chartData.bars.length} data points for {chartData.symbol} 
+                  {processedBars.length} data points for {chartData.symbol} 
                   ({chartData.timeframe} timeframe)
                 </p>
                 <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-md">
@@ -314,6 +356,24 @@ export default function HistoricalChartPage() {
                   </p>
                   <p className="text-sm text-green-700 mt-1">
                     Last updated: {new Date(chartData.last_updated).toLocaleString()}
+                  </p>
+                  <p className="text-sm text-green-700 mt-1">
+                    Date range: {new Date(processedBars[0].time).toLocaleDateString()} to {new Date(processedBars[processedBars.length - 1].time).toLocaleDateString()}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : chartData && processedBars.length === 0 ? (
+            <div className="h-96 bg-gray-100 rounded-lg flex items-center justify-center">
+              <div className="text-center">
+                <div className="text-4xl mb-4">⚠️</div>
+                <p className="text-gray-600">Data received but no valid bars found</p>
+                <p className="text-sm text-gray-500 mt-2">
+                  Raw data count: {chartData.bars.length} | Processed: {processedBars.length}
+                </p>
+                <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-md">
+                  <p className="text-sm text-yellow-800">
+                    The API returned data but it couldn't be processed into valid chart bars.
                   </p>
                 </div>
               </div>
