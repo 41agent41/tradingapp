@@ -470,10 +470,15 @@ router.get('/history', async (req: Request, res: Response) => {
     }
 
     // Request historical data from IB service
+    console.log(`Making request to IB service: ${IB_SERVICE_URL}/market-data/history with params:`, ibServiceParams);
+    
     const response = await axios.get(`${IB_SERVICE_URL}/market-data/history`, {
       params: ibServiceParams,
       timeout: 20000 // 20 seconds timeout
     });
+
+    console.log(`IB service response status: ${response.status}`);
+    console.log(`IB service response data:`, response.data);
 
     if (response.data.error) {
       return res.status(500).json({
