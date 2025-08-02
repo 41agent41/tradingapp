@@ -982,12 +982,26 @@ async def get_historical_data(
         # Get connection
         ib = get_ib_connection()
         
+        # Verify connection is healthy
+        if not ib.isConnected():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="IB Gateway connection is not available"
+            )
+        
+        logger.info(f"IB connection verified - connected: {ib.isConnected()}")
+        
         # Create contract
         contract = create_contract(symbol.upper())
+        
+        # Clear previous contract details
+        ib.contracts = []
         
         # Request contract details to qualify the contract
         ib.reqContractDetails(1, contract)
         time.sleep(2)  # Wait for contract details
+        
+        logger.info(f"Contract details request completed. Found {len(ib.contracts)} contracts")
         
         if not ib.contracts:
             raise HTTPException(
@@ -1049,17 +1063,26 @@ async def get_historical_data(
             []  # chartOptions
         )
         
-        # Wait for data
-        time.sleep(5)
+        # Wait for data with longer timeout and retry logic
+        max_wait_time = 15  # seconds
+        wait_interval = 1  # seconds
+        total_wait_time = 0
         
-        logger.info(f"Historical data request completed. Received {len(ib.historical_data)} bars")
+        while len(ib.historical_data) == 0 and total_wait_time < max_wait_time:
+            time.sleep(wait_interval)
+            total_wait_time += wait_interval
+            logger.info(f"Waiting for historical data... ({total_wait_time}/{max_wait_time}s) - bars received: {len(ib.historical_data)}")
+        
+        logger.info(f"Historical data request completed. Received {len(ib.historical_data)} bars after {total_wait_time}s")
         if len(ib.historical_data) > 0:
             logger.info(f"Sample bar: {ib.historical_data[0]}")
+        else:
+            logger.warning("No historical data received from IB Gateway")
         
         if not ib.historical_data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No historical data available for {symbol}"
+                detail=f"No historical data available for {symbol} after {total_wait_time}s timeout"
             )
         
         # Process and return data with indicators
