@@ -598,10 +598,15 @@ def process_bars_with_date_range(bars, symbol: str, timeframe: str, start_date_s
 def process_bars_with_indicators(bars, symbol: str, timeframe: str, period: str, indicators: List[str] = None) -> HistoricalDataResponse:
     """Process IB bars into candlestick data with technical indicators"""
     try:
+        logger.info(f"process_bars_with_indicators called with {len(bars)} bars, indicators: {indicators}")
+        
         # Convert bars to DataFrame for indicator calculations
         bars_data = []
-        for bar in bars:
+        for i, bar in enumerate(bars):
             try:
+                if i == 0:  # Log first bar details for debugging
+                    logger.info(f"Processing first bar: date={bar.date}, open={bar.open}, high={bar.high}, low={bar.low}, close={bar.close}, volume={bar.volume}")
+                
                 bars_data.append({
                     'timestamp': bar.date.timestamp(),
                     'open': float(bar.open),
@@ -611,8 +616,10 @@ def process_bars_with_indicators(bars, symbol: str, timeframe: str, period: str,
                     'volume': int(bar.volume)
                 })
             except Exception as e:
-                logger.warning(f"Error processing bar: {e}")
+                logger.warning(f"Error processing bar {i}: {e}, bar={bar}")
                 continue
+        
+        logger.info(f"Successfully processed {len(bars_data)} bars from {len(bars)} raw bars")
         
         if not bars_data:
             return HistoricalDataResponse(
@@ -1045,6 +1052,10 @@ async def get_historical_data(
         # Wait for data
         time.sleep(5)
         
+        logger.info(f"Historical data request completed. Received {len(ib.historical_data)} bars")
+        if len(ib.historical_data) > 0:
+            logger.info(f"Sample bar: {ib.historical_data[0]}")
+        
         if not ib.historical_data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1052,10 +1063,14 @@ async def get_historical_data(
             )
         
         # Process and return data with indicators
+        logger.info(f"Processing bars with indicators: {indicator_list}")
         if has_date_range:
-            return process_bars_with_date_range_and_indicators(ib.historical_data, symbol, timeframe, start_date, end_date, indicator_list)
+            result = process_bars_with_date_range_and_indicators(ib.historical_data, symbol, timeframe, start_date, end_date, indicator_list)
         else:
-            return process_bars_with_indicators(ib.historical_data, symbol, timeframe, period, indicator_list)
+            result = process_bars_with_indicators(ib.historical_data, symbol, timeframe, period, indicator_list)
+        
+        logger.info(f"Processed result: {result.count} bars returned")
+        return result
         
     except HTTPException:
         raise
