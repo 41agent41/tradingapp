@@ -4,11 +4,24 @@ import React, { useState, useEffect } from 'react';
 import { useTradingAccount } from '../contexts/TradingAccountContext';
 import DataSwitch from '../components/DataSwitch';
 
+interface HistoricalData {
+  symbol: string;
+  timeframe: string;
+  account_mode: string;
+  bars: any[];
+  count: number;
+  last_updated: string;
+  source: string;
+}
+
 export default function HistoricalChartPage() {
   const { isLiveTrading, accountMode, dataType } = useTradingAccount();
   const [selectedSymbol, setSelectedSymbol] = useState('MSFT');
   const [timeframe, setTimeframe] = useState('1D');
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [chartData, setChartData] = useState<HistoricalData | null>(null);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   
   // Data query switch state
   const [dataQueryEnabled, setDataQueryEnabled] = useState(() => {
@@ -38,6 +51,121 @@ export default function HistoricalChartPage() {
     if (typeof window !== 'undefined') {
       localStorage.setItem('historical-chart-data-enabled', JSON.stringify(enabled));
     }
+    if (!enabled) {
+      setError(null);
+      setChartData(null);
+    }
+  };
+
+  // Fetch historical data
+  const fetchHistoricalData = async () => {
+    if (!dataQueryEnabled) {
+      console.log('Data querying disabled');
+      setIsLoading(false);
+      return;
+    }
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+      if (!apiUrl) {
+        throw new Error('API URL not configured');
+      }
+
+      // Build query parameters
+      const params = new URLSearchParams({
+        symbol: selectedSymbol,
+        timeframe: timeframe,
+        period: '3M', // Default to 3 months for historical data
+        account_mode: accountMode
+      });
+
+      const url = `${apiUrl}/api/market-data/history?${params.toString()}`;
+      
+      console.log('Fetching historical data:', url);
+      
+      const response = await fetch(url, {
+        headers: { 
+          'X-Data-Query-Enabled': 'true',
+          'Content-Type': 'application/json'
+        },
+        signal: AbortSignal.timeout(30000) // 30 second timeout
+      });
+
+      console.log('Response status:', response.status);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('API Error:', errorText);
+        
+        if (response.status === 504) {
+          throw new Error('Gateway timeout - IB service busy, please try again');
+        } else if (response.status === 503) {
+          throw new Error('Service temporarily unavailable, please try again');
+        } else if (response.status === 500) {
+          try {
+            const errorData = JSON.parse(errorText);
+            if (errorData.detail && errorData.detail.includes('subscription')) {
+              throw new Error('Using delayed market data - real-time subscription not available');
+            } else if (errorData.detail && errorData.detail.includes('timeout')) {
+              throw new Error('IB Gateway timeout - please try again');
+            } else {
+              throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+            }
+          } catch (jsonError) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+        } else {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+      }
+
+      const data: HistoricalData = await response.json();
+      console.log('Historical data received:', data);
+      
+      if (!data.bars || !Array.isArray(data.bars)) {
+        throw new Error('No bars data received from API');
+      }
+
+      console.log('Processing', data.bars.length, 'bars');
+
+      setChartData(data);
+      setLastUpdate(new Date());
+      console.log('Historical data loaded successfully');
+
+    } catch (err) {
+      console.error('Error fetching historical data:', err);
+      setError(err instanceof Error ? err.message : 'Failed to fetch historical data');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Handle load button click
+  const handleLoadData = () => {
+    if (!dataQueryEnabled) {
+      setError('Data querying is disabled. Please enable the switch above.');
+      return;
+    }
+    
+    if (!selectedSymbol.trim()) {
+      setError('Please enter a valid symbol');
+      return;
+    }
+    
+    fetchHistoricalData();
+  };
+
+  // Helper function to format time
+  const formatTime = (date: Date) => {
+    return date.toLocaleTimeString('en-US', { 
+      hour12: true, 
+      hour: 'numeric', 
+      minute: '2-digit', 
+      second: '2-digit' 
+    });
   };
 
   return (
@@ -128,7 +256,7 @@ export default function HistoricalChartPage() {
             {/* Action Button */}
             <div className="flex items-end">
               <button
-                onClick={() => setIsLoading(true)}
+                onClick={handleLoadData}
                 disabled={isLoading || !dataQueryEnabled}
                 className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -138,6 +266,22 @@ export default function HistoricalChartPage() {
           </div>
         </div>
 
+        {/* Error Display */}
+        {error && (
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-md">
+            <div className="flex items-center">
+              <span className="text-red-600 mr-2">⚠️</span>
+              <p className="text-sm text-red-800">{error}</p>
+            </div>
+            <button
+              onClick={fetchHistoricalData}
+              className="mt-2 px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
         {/* Chart Area */}
         <div className="bg-white rounded-lg shadow-sm border p-6">
           <div className="flex items-center justify-between mb-4">
@@ -146,29 +290,55 @@ export default function HistoricalChartPage() {
             </h2>
             <div className="text-sm text-gray-500">
               Timeframe: {timeframes.find(tf => tf.value === timeframe)?.label}
-            </div>
-          </div>
-          
-          {/* Placeholder for chart */}
-          <div className="h-96 bg-gray-100 rounded-lg flex items-center justify-center">
-            <div className="text-center">
-              <div className="text-4xl mb-4">📊</div>
-              <p className="text-gray-600">Historical chart will be displayed here</p>
-              <p className="text-sm text-gray-500 mt-2">
-                {dataQueryEnabled 
-                  ? `Select a symbol and timeframe, then click "Load Historical Data" to fetch data from IB Gateway`
-                  : 'Enable data querying to load historical data from IB Gateway'
-                }
-              </p>
-              {!dataQueryEnabled && (
-                <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-md">
-                  <p className="text-sm text-amber-800">
-                    Data querying is currently disabled. Enable the switch above to connect to IB Gateway.
-                  </p>
-                </div>
+              {lastUpdate && (
+                <span className="ml-4">
+                  Last update: {formatTime(lastUpdate)}
+                </span>
               )}
             </div>
           </div>
+          
+          {/* Chart Display */}
+          {chartData ? (
+            <div className="h-96 bg-gray-100 rounded-lg flex items-center justify-center">
+              <div className="text-center">
+                <div className="text-4xl mb-4">📊</div>
+                <p className="text-gray-600">Historical data loaded successfully!</p>
+                <p className="text-sm text-gray-500 mt-2">
+                  {chartData.bars.length} data points for {chartData.symbol} 
+                  ({chartData.timeframe} timeframe)
+                </p>
+                <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-md">
+                  <p className="text-sm text-green-800">
+                    Data source: {chartData.source} | Account mode: {chartData.account_mode}
+                  </p>
+                  <p className="text-sm text-green-700 mt-1">
+                    Last updated: {new Date(chartData.last_updated).toLocaleString()}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="h-96 bg-gray-100 rounded-lg flex items-center justify-center">
+              <div className="text-center">
+                <div className="text-4xl mb-4">📊</div>
+                <p className="text-gray-600">Historical chart will be displayed here</p>
+                <p className="text-sm text-gray-500 mt-2">
+                  {dataQueryEnabled 
+                    ? `Select a symbol and timeframe, then click "Load Historical Data" to fetch data from IB Gateway`
+                    : 'Enable data querying to load historical data from IB Gateway'
+                  }
+                </p>
+                {!dataQueryEnabled && (
+                  <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-md">
+                    <p className="text-sm text-amber-800">
+                      Data querying is currently disabled. Enable the switch above to connect to IB Gateway.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Back to Home */}
