@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { useTradingAccount } from '../contexts/TradingAccountContext';
 import DataSwitch from '../components/DataSwitch';
+import HistoricalChart from '../components/HistoricalChart';
 
 interface HistoricalData {
   symbol: string;
@@ -342,25 +343,27 @@ export default function HistoricalChartPage() {
           
           {/* Chart Display */}
           {chartData && processedBars.length > 0 ? (
-            <div className="h-96 bg-gray-100 rounded-lg flex items-center justify-center">
-              <div className="text-center">
-                <div className="text-4xl mb-4">📊</div>
-                <p className="text-gray-600">Historical data loaded successfully!</p>
-                <p className="text-sm text-gray-500 mt-2">
-                  {processedBars.length} data points for {chartData.symbol} 
-                  ({chartData.timeframe} timeframe)
+            <div>
+              {/* Data Summary */}
+              <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-md">
+                <p className="text-sm text-green-800">
+                  Data source: {chartData.source} | Account mode: {chartData.account_mode}
                 </p>
-                <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-md">
-                  <p className="text-sm text-green-800">
-                    Data source: {chartData.source} | Account mode: {chartData.account_mode}
-                  </p>
-                  <p className="text-sm text-green-700 mt-1">
-                    Last updated: {new Date(chartData.last_updated).toLocaleString()}
-                  </p>
-                  <p className="text-sm text-green-700 mt-1">
-                    Date range: {new Date(processedBars[0].time).toLocaleDateString()} to {new Date(processedBars[processedBars.length - 1].time).toLocaleDateString()}
-                  </p>
-                </div>
+                <p className="text-sm text-green-700 mt-1">
+                  Last updated: {new Date(chartData.last_updated).toLocaleString()}
+                </p>
+                <p className="text-sm text-green-700 mt-1">
+                  Date range: {new Date(processedBars[0].time).toLocaleDateString()} to {new Date(processedBars[processedBars.length - 1].time).toLocaleDateString()}
+                </p>
+              </div>
+              
+              {/* TradingView Chart */}
+              <div className="h-96 border border-gray-200 rounded">
+                <HistoricalChart 
+                  data={processedBars}
+                  symbol={chartData.symbol}
+                  timeframe={chartData.timeframe}
+                />
               </div>
             </div>
           ) : chartData && processedBars.length === 0 ? (
