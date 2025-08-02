@@ -523,8 +523,23 @@ def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDa
     
     for bar in bars:
         try:
+            # Handle different date formats from IB
+            if isinstance(bar.date, str):
+                # String format like "20250725 23:30:00"
+                if ' ' in bar.date:
+                    bar_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
+                else:
+                    # Date only format like "20250725"
+                    bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
+            elif isinstance(bar.date, (int, float)):
+                # Unix timestamp
+                bar_datetime = datetime.fromtimestamp(bar.date)
+            else:
+                # Assume it's already a datetime object
+                bar_datetime = bar.date
+            
             candlestick = CandlestickBar(
-                timestamp=bar.date.timestamp(),
+                timestamp=int(bar_datetime.timestamp()),
                 open=float(bar.open),
                 high=float(bar.high),
                 low=float(bar.low),
@@ -533,7 +548,7 @@ def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDa
             )
             candlesticks.append(candlestick)
         except Exception as e:
-            logger.warning(f"Error processing bar: {e}")
+            logger.warning(f"Error processing bar: {e}, bar.date={bar.date}")
             continue
     
     return HistoricalDataResponse(
@@ -607,8 +622,23 @@ def process_bars_with_indicators(bars, symbol: str, timeframe: str, period: str,
                 if i == 0:  # Log first bar details for debugging
                     logger.info(f"Processing first bar: date={bar.date}, open={bar.open}, high={bar.high}, low={bar.low}, close={bar.close}, volume={bar.volume}")
                 
+                # Handle different date formats from IB
+                if isinstance(bar.date, str):
+                    # String format like "20250725 23:30:00"
+                    if ' ' in bar.date:
+                        bar_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
+                    else:
+                        # Date only format like "20250725"
+                        bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
+                elif isinstance(bar.date, (int, float)):
+                    # Unix timestamp
+                    bar_datetime = datetime.fromtimestamp(bar.date)
+                else:
+                    # Assume it's already a datetime object
+                    bar_datetime = bar.date
+                
                 bars_data.append({
-                    'timestamp': bar.date.timestamp(),
+                    'timestamp': int(bar_datetime.timestamp()),
                     'open': float(bar.open),
                     'high': float(bar.high),
                     'low': float(bar.low),
@@ -1252,8 +1282,23 @@ async def run_backtest(
         bars_data = []
         for bar in ib.historical_data:
             try:
+                # Handle different date formats from IB
+                if isinstance(bar.date, str):
+                    # String format like "20250725 23:30:00"
+                    if ' ' in bar.date:
+                        bar_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
+                    else:
+                        # Date only format like "20250725"
+                        bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
+                elif isinstance(bar.date, (int, float)):
+                    # Unix timestamp
+                    bar_datetime = datetime.fromtimestamp(bar.date)
+                else:
+                    # Assume it's already a datetime object
+                    bar_datetime = bar.date
+                
                 bars_data.append({
-                    'timestamp': bar.date.timestamp(),
+                    'timestamp': int(bar_datetime.timestamp()),
                     'open': float(bar.open),
                     'high': float(bar.high),
                     'low': float(bar.low),
@@ -1261,7 +1306,7 @@ async def run_backtest(
                     'volume': int(bar.volume)
                 })
             except Exception as e:
-                logger.warning(f"Error processing bar for backtesting: {e}")
+                logger.warning(f"Error processing bar for backtesting: {e}, bar.date={bar.date}")
                 continue
         
         if len(bars_data) < 50:  # Minimum data for meaningful backtest
