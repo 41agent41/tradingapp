@@ -357,7 +357,7 @@ export default function HistoricalChartPage() {
                   Last updated: {new Date(chartData.last_updated).toLocaleString()}
                 </p>
                 <p className="text-sm text-green-700 mt-1">
-                  Date range: {new Date(processedBars[0].time).toLocaleDateString()} to {new Date(processedBars[processedBars.length - 1].time).toLocaleDateString()}
+                  Date range: {new Date(processedBars[0].time * 1000).toLocaleDateString()} to {new Date(processedBars[processedBars.length - 1].time * 1000).toLocaleDateString()}
                 </p>
               </div>
               

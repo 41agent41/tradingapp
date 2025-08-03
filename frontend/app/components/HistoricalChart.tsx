@@ -162,7 +162,7 @@ export default function HistoricalChart({ data, symbol, timeframe }: HistoricalC
         <div className="mt-6">
           <DataframeViewer
             data={data.map(bar => ({
-              time: new Date(bar.time).toLocaleString(),
+              time: new Date(bar.time * 1000).toLocaleString(),
               open: bar.open,
               high: bar.high,
               low: bar.low,

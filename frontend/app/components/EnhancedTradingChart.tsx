@@ -339,7 +339,9 @@ export default function EnhancedTradingChart({
         <div className="mt-6 p-4 border-t border-gray-200">
           <DataframeViewer
             data={chartData.map(bar => ({
-              time: new Date(bar.time).toLocaleString(),
+              time: typeof bar.time === 'number' 
+                ? new Date(bar.time * 1000).toLocaleString() 
+                : new Date(bar.time.year, bar.time.month - 1, bar.time.day).toLocaleString(),
               open: bar.open,
               high: bar.high,
               low: bar.low,
