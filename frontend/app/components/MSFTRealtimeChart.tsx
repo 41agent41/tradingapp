@@ -842,9 +842,17 @@ export default function MSFTRealtimeChart() {
         <div className="mt-6">
           <DataframeViewer
             data={chartData.map(bar => ({
-              time: typeof bar.time === 'number' 
-                ? new Date(bar.time * 1000).toLocaleString() 
-                : new Date(bar.time.year, bar.time.month - 1, bar.time.day).toLocaleString(),
+              time: (() => {
+                if (typeof bar.time === 'number') {
+                  return new Date(bar.time * 1000).toLocaleString();
+                } else if (typeof bar.time === 'string') {
+                  return new Date(bar.time).toLocaleString();
+                } else if (bar.time && typeof bar.time === 'object' && 'year' in bar.time) {
+                  return new Date(bar.time.year, bar.time.month - 1, bar.time.day).toLocaleString();
+                } else {
+                  return String(bar.time);
+                }
+              })(),
               open: bar.open,
               high: bar.high,
               low: bar.low,
