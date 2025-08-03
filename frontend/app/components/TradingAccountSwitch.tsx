@@ -22,18 +22,18 @@ export default function TradingAccountSwitch({
   };
 
   return (
-    <div className={`bg-white rounded-lg shadow-sm border p-6 ${className}`}>
-      <div className="flex items-center justify-between">
-        <div className="flex-1">
-          <h3 className="text-lg font-medium text-gray-900 mb-2">
+    <div className={`bg-white rounded-lg shadow-sm border p-4 sm:p-6 ${className}`}>
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between space-y-4 lg:space-y-0">
+        <div className="flex-1 min-w-0">
+          <h3 className="text-base sm:text-lg font-medium text-gray-900 mb-2">
             Trading Account Mode
           </h3>
-          <p className="text-sm text-gray-600 mb-4">
+          <p className="text-xs sm:text-sm text-gray-600 mb-4">
             Switch between live trading and paper trading modes. This affects all market data requests throughout the application.
           </p>
           
           {/* Account Mode Display */}
-          <div className="flex items-center space-x-4">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center space-y-2 sm:space-y-0 sm:space-x-4">
             <div className={`flex items-center space-x-2 px-4 py-2 rounded-lg border-2 ${
               isLiveTrading 
                 ? 'border-red-200 bg-red-50 text-red-800' 
@@ -68,7 +68,7 @@ export default function TradingAccountSwitch({
           </div>
         </div>
         
-        <div className="ml-6">
+        <div className="lg:ml-6 flex justify-center lg:justify-end">
           <button
             type="button"
             className={`

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
+import DataframeViewer from './DataframeViewer';
 
 interface CandlestickData {
   time: Time;
@@ -330,6 +331,28 @@ export default function EnhancedTradingChart({
               Period: {currentPeriod} • Timeframe: {currentTimeframe}
             </div>
           </div>
+        </div>
+      )}
+      
+      {/* Dataframe Display */}
+      {chartData.length > 0 && !isLoading && (
+        <div className="mt-6 p-4 border-t border-gray-200">
+          <DataframeViewer
+            data={chartData.map(bar => ({
+              time: new Date(bar.time).toLocaleString(),
+              open: bar.open,
+              high: bar.high,
+              low: bar.low,
+              close: bar.close,
+              volume: bar.volume || 0
+            }))}
+            title={`${contract.symbol} Historical Data`}
+            description={`${chartData.length} data points for ${currentTimeframe} timeframe`}
+            maxHeight="400px"
+            showExport={true}
+            showPagination={true}
+            itemsPerPage={25}
+          />
         </div>
       )}
     </div>

@@ -339,27 +339,27 @@ export default function MarketDataFilter() {
     <div className="space-y-6">
       {/* Connection Status */}
       <div className="bg-white rounded-lg shadow-sm border p-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between space-y-2 sm:space-y-0">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center space-y-2 sm:space-y-0 sm:space-x-4">
             <div className="flex items-center space-x-2">
               <div className={`w-3 h-3 rounded-full ${
                 connectionStatus === 'Connected' ? 'bg-green-500' : 
                 connectionStatus === 'Checking...' ? 'bg-yellow-500' : 'bg-red-500'
               }`}></div>
-              <span className="text-sm font-medium">{connectionStatus}</span>
+              <span className="text-xs sm:text-sm font-medium">{connectionStatus}</span>
             </div>
             <div className="flex items-center space-x-2">
               <div className={`w-3 h-3 rounded-full ${
                 accountMode === 'live' ? 'bg-red-500' : 'bg-green-500'
               }`}></div>
-              <span className="text-sm font-medium">
+              <span className="text-xs sm:text-sm font-medium">
                 {accountMode.toUpperCase()} Mode • {dataType === 'real-time' ? 'Live Data' : 'Delayed Data'}
               </span>
             </div>
           </div>
           <button
             onClick={checkConnection}
-            className="text-gray-400 hover:text-gray-600 text-sm"
+            className="text-gray-400 hover:text-gray-600 text-xs sm:text-sm self-start sm:self-auto"
           >
             ↻ Refresh
           </button>
@@ -367,19 +367,19 @@ export default function MarketDataFilter() {
       </div>
 
       {/* Quick Search */}
-      <div className="bg-white rounded-lg shadow-sm border p-6 mb-6">
+      <div className="bg-white rounded-lg shadow-sm border p-4 sm:p-6 mb-6">
         <div className="flex items-center space-x-2 mb-4">
-          <span className="text-lg">⚡</span>
-          <h3 className="text-lg font-medium text-gray-900">Quick Search</h3>
+          <span className="text-base sm:text-lg">⚡</span>
+          <h3 className="text-base sm:text-lg font-medium text-gray-900">Quick Search</h3>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
           {POPULAR_SYMBOLS.map((item) => (
             <button
               key={item.symbol}
               onClick={() => handleQuickSearch(item.symbol)}
-              className="p-2 text-sm bg-gray-100 hover:bg-blue-100 text-gray-700 hover:text-blue-700 rounded-md transition-colors"
+              className="p-2 text-xs sm:text-sm bg-gray-100 hover:bg-blue-100 text-gray-700 hover:text-blue-700 rounded-md transition-colors"
             >
-              <div className="font-medium">{item.symbol}</div>
+              <div className="font-medium truncate">{item.symbol}</div>
               <div className="text-xs text-gray-500 truncate">{item.name}</div>
             </button>
           ))}
@@ -387,16 +387,16 @@ export default function MarketDataFilter() {
       </div>
 
       {/* Search Filters */}
-      <div className="bg-white rounded-lg shadow-sm border p-6">
+      <div className="bg-white rounded-lg shadow-sm border p-4 sm:p-6">
         <div className="flex items-center space-x-2 mb-4">
-          <span className="text-lg">🔍</span>
-          <h3 className="text-lg font-medium text-gray-900">Search Filters</h3>
+          <span className="text-base sm:text-lg">🔍</span>
+          <h3 className="text-base sm:text-lg font-medium text-gray-900">Search Filters</h3>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 mb-6">
           {/* Symbol Search */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
               Symbol / Company Name
             </label>
             <div className="relative">
@@ -406,12 +406,12 @@ export default function MarketDataFilter() {
                 onChange={(e) => setSymbol(e.target.value)}
                 onKeyPress={handleKeyPress}
                 placeholder="e.g., AAPL, Microsoft"
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full pl-8 sm:pl-10 pr-3 sm:pr-4 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
-              <span className="absolute left-3 top-2.5 text-gray-400">🔍</span>
+              <span className="absolute left-2 sm:left-3 top-2.5 text-gray-400 text-xs sm:text-sm">🔍</span>
             </div>
             <div className="mt-1">
-              <label className="flex items-center text-sm text-gray-600">
+              <label className="flex items-center text-xs sm:text-sm text-gray-600">
                 <input
                   type="checkbox"
                   checked={searchByName}
@@ -443,13 +443,13 @@ export default function MarketDataFilter() {
 
           {/* Security Type */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
               Security Type
             </label>
             <select
               value={securityType}
               onChange={(e) => setSecurityType(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               {SECURITY_TYPES.map((type) => (
                 <option key={type.value} value={type.value}>
@@ -461,13 +461,13 @@ export default function MarketDataFilter() {
 
           {/* Exchange */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
               Exchange
             </label>
             <select
               value={exchange}
               onChange={(e) => setExchange(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               {EXCHANGES.map((ex) => (
                 <option key={ex.value} value={ex.value}>
@@ -479,13 +479,13 @@ export default function MarketDataFilter() {
 
           {/* Currency */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
               Currency
             </label>
             <select
               value={currency}
               onChange={(e) => setCurrency(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               {CURRENCIES.map((curr) => (
                 <option key={curr.value} value={curr.value}>
@@ -497,13 +497,13 @@ export default function MarketDataFilter() {
 
           {/* Timeframe */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
               Timeframe
             </label>
             <select
               value={timeframe}
               onChange={(e) => setTimeframe(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               {TIMEFRAMES.map((tf) => (
                 <option key={tf.value} value={tf.value}>
@@ -518,7 +518,7 @@ export default function MarketDataFilter() {
         <div className="flex justify-between items-center mb-4">
           <button
             onClick={() => setShowAdvancedSearch(!showAdvancedSearch)}
-            className="text-sm text-blue-600 hover:text-blue-800 flex items-center space-x-1"
+            className="text-xs sm:text-sm text-blue-600 hover:text-blue-800 flex items-center space-x-1"
           >
             <span>{showAdvancedSearch ? '▼' : '▶'}</span>
             <span>Advanced Search Options</span>
@@ -527,10 +527,10 @@ export default function MarketDataFilter() {
 
         {/* Advanced Search Fields */}
         {showAdvancedSearch && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6 p-4 bg-gray-50 rounded-md">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 mb-6 p-3 sm:p-4 bg-gray-50 rounded-md">
             {/* Expiry Date */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
                 Expiry Date
               </label>
               <input
@@ -538,13 +538,13 @@ export default function MarketDataFilter() {
                 value={expiry}
                 onChange={(e) => setExpiry(e.target.value)}
                 placeholder="YYYYMMDD or YYYYMM"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
             </div>
 
             {/* Strike Price */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
                 Strike Price
               </label>
               <input

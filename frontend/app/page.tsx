@@ -13,13 +13,13 @@ export default function HomePage() {
       {/* Header */}
       <header className="bg-white shadow-sm border-b">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center py-6">
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">Trading App</h1>
-              <p className="text-sm text-gray-600">Interactive Brokers Market Data & TradingView Charts</p>
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center py-4 sm:py-6 space-y-4 sm:space-y-0">
+            <div className="flex-1 min-w-0">
+              <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">Trading App</h1>
+              <p className="text-xs sm:text-sm text-gray-600 mt-1">Interactive Brokers Market Data & TradingView Charts</p>
             </div>
-            <div className="flex items-center space-x-4">
-              <div className="text-sm text-gray-500">
+            <div className="flex items-center space-x-2 sm:space-x-4">
+              <div className="text-xs sm:text-sm text-gray-500">
                 Connected to IB Gateway
               </div>
             </div>
@@ -28,44 +28,44 @@ export default function HomePage() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8">
         {/* Quick Access Links */}
-        <div className="mb-8 grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="mb-6 sm:mb-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
           <a 
             href="/account" 
-            className="block p-6 bg-white rounded-lg shadow-sm border hover:shadow-md transition-shadow"
+            className="block p-4 sm:p-6 bg-white rounded-lg shadow-sm border hover:shadow-md transition-shadow"
           >
             <div className="flex items-center">
-              <div className="text-2xl mr-3">👤</div>
-              <div>
-                <h3 className="text-lg font-medium text-gray-900">Account Dashboard</h3>
-                <p className="text-sm text-gray-600">View your trading account and portfolio</p>
+              <div className="text-xl sm:text-2xl mr-2 sm:mr-3 flex-shrink-0">👤</div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-base sm:text-lg font-medium text-gray-900 truncate">Account Dashboard</h3>
+                <p className="text-xs sm:text-sm text-gray-600 mt-1 line-clamp-2">View your trading account and portfolio</p>
               </div>
             </div>
           </a>
           
           <a 
             href="/historical" 
-            className="block p-6 bg-white rounded-lg shadow-sm border hover:shadow-md transition-shadow"
+            className="block p-4 sm:p-6 bg-white rounded-lg shadow-sm border hover:shadow-md transition-shadow"
           >
             <div className="flex items-center">
-              <div className="text-2xl mr-3">📊</div>
-              <div>
-                <h3 className="text-lg font-medium text-gray-900">Historical Chart</h3>
-                <p className="text-sm text-gray-600">MSFT historical data with multiple timeframes</p>
+              <div className="text-xl sm:text-2xl mr-2 sm:mr-3 flex-shrink-0">📊</div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-base sm:text-lg font-medium text-gray-900 truncate">Historical Chart</h3>
+                <p className="text-xs sm:text-sm text-gray-600 mt-1 line-clamp-2">MSFT historical data with multiple timeframes</p>
               </div>
             </div>
           </a>
           
           <a 
             href="/msft" 
-            className="block p-6 bg-white rounded-lg shadow-sm border hover:shadow-md transition-shadow"
+            className="block p-4 sm:p-6 bg-white rounded-lg shadow-sm border hover:shadow-md transition-shadow"
           >
             <div className="flex items-center">
-              <div className="text-2xl mr-3">📈</div>
-              <div>
-                <h3 className="text-lg font-medium text-gray-900">MSFT Real-time Chart</h3>
-                <p className="text-sm text-gray-600">Live Microsoft stock data with TradingView charts</p>
+              <div className="text-xl sm:text-2xl mr-2 sm:mr-3 flex-shrink-0">📈</div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-base sm:text-lg font-medium text-gray-900 truncate">MSFT Real-time Chart</h3>
+                <p className="text-xs sm:text-sm text-gray-600 mt-1 line-clamp-2">Live Microsoft stock data with TradingView charts</p>
               </div>
             </div>
           </a>

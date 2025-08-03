@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { useTradingAccount } from '../contexts/TradingAccountContext';
 import DataSwitch from '../components/DataSwitch';
 import HistoricalChart from '../components/HistoricalChart';
+import BackToHome from '../components/BackToHome';
 
 interface HistoricalData {
   symbol: string;
@@ -216,13 +217,16 @@ export default function HistoricalChartPage() {
       {/* Header */}
       <header className="bg-white shadow-sm border-b">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center py-6">
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">Historical Chart</h1>
-              <p className="text-sm text-gray-600">Interactive historical data visualization</p>
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center py-4 sm:py-6 space-y-4 sm:space-y-0">
+            <div className="flex items-center space-x-2 sm:space-x-4">
+              <BackToHome />
+              <div className="min-w-0 flex-1">
+                <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">Historical Chart</h1>
+                <p className="text-xs sm:text-sm text-gray-600 mt-1">Interactive historical data visualization</p>
+              </div>
             </div>
-            <div className="flex items-center space-x-4">
-              <div className="text-sm text-gray-500">
+            <div className="flex items-center space-x-2 sm:space-x-4">
+              <div className="text-xs sm:text-sm text-gray-500">
                 {isLiveTrading ? 'Live Trading Mode' : 'Paper Trading Mode'}
               </div>
             </div>
@@ -231,9 +235,9 @@ export default function HistoricalChartPage() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8">
         {/* Data Query Switch */}
-        <div className="mb-6 bg-white rounded-lg shadow-sm border p-4">
+        <div className="mb-4 sm:mb-6 bg-white rounded-lg shadow-sm border p-3 sm:p-4">
           <DataSwitch
             enabled={dataQueryEnabled}
             onToggle={handleDataSwitchToggle}
@@ -244,18 +248,18 @@ export default function HistoricalChartPage() {
         </div>
 
         {/* Controls */}
-        <div className="mb-8 bg-white rounded-lg shadow-sm border p-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="mb-6 sm:mb-8 bg-white rounded-lg shadow-sm border p-4 sm:p-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
             {/* Symbol Selection */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
                 Symbol
               </label>
               <input
                 type="text"
                 value={selectedSymbol}
                 onChange={(e) => setSelectedSymbol(e.target.value.toUpperCase())}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 placeholder="Enter symbol..."
                 disabled={!dataQueryEnabled}
               />
@@ -279,13 +283,13 @@ export default function HistoricalChartPage() {
 
             {/* Timeframe Selection */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
                 Timeframe
               </label>
               <select
                 value={timeframe}
                 onChange={(e) => setTimeframe(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 disabled={!dataQueryEnabled}
               >
                 {timeframes.map((tf) => (
@@ -301,7 +305,7 @@ export default function HistoricalChartPage() {
               <button
                 onClick={handleLoadData}
                 disabled={isLoading || !dataQueryEnabled}
-                className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full px-3 sm:px-4 py-2 text-xs sm:text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isLoading ? 'Loading...' : 'Load Historical Data'}
               </button>
@@ -404,15 +408,6 @@ export default function HistoricalChartPage() {
           )}
         </div>
 
-        {/* Back to Home */}
-        <div className="mt-8">
-          <a
-            href="/"
-            className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
-          >
-            ← Back to Home
-          </a>
-        </div>
       </main>
     </div>
   );

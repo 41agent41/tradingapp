@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
 import DataSwitch from './DataSwitch';
 import IndicatorSelector from './IndicatorSelector';
+import DataframeViewer from './DataframeViewer';
 import { useTradingAccount } from '../contexts/TradingAccountContext';
 
 interface RealtimeData {
@@ -609,10 +610,10 @@ export default function MSFTRealtimeChart() {
   return (
     <div className="bg-white rounded-lg shadow-lg overflow-hidden">
       {/* Header */}
-      <div className="bg-gradient-to-r from-blue-600 to-purple-600 text-white p-4">
-        <div className="flex justify-between items-center">
-          <h2 className="text-xl font-bold">MSFT - Microsoft Corporation</h2>
-          <div className="text-sm opacity-90">
+      <div className="bg-gradient-to-r from-blue-600 to-purple-600 text-white p-3 sm:p-4">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-2 sm:space-y-0">
+          <h2 className="text-lg sm:text-xl font-bold">MSFT - Microsoft Corporation</h2>
+          <div className="text-xs sm:text-sm opacity-90">
             NASDAQ • {dataType === 'real-time' ? 'Live Data' : 'Delayed Data (15-20 min)'} • {accountMode.toUpperCase()} Mode
             <span className="ml-2 px-2 py-1 bg-green-500 text-white text-xs rounded">
               v3.0 {periods.length} periods
@@ -622,7 +623,7 @@ export default function MSFTRealtimeChart() {
       </div>
 
       {/* Controls */}
-      <div className="p-4 border-b border-gray-200">
+      <div className="p-3 sm:p-4 border-b border-gray-200">
         {/* Data Switch */}
         <div className="mb-4 p-3 bg-gray-50 rounded-lg">
           <DataSwitch
@@ -645,17 +646,17 @@ export default function MSFTRealtimeChart() {
           </div>
         )}
         
-        <div className="flex flex-wrap gap-4 items-center justify-between">
-          <div className="flex items-center gap-4">
+        <div className="flex flex-col sm:flex-row flex-wrap gap-3 sm:gap-4 items-start sm:items-center justify-between">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4">
             <div>
-              <label className="text-sm font-medium text-gray-700 mr-2">Timeframe:</label>
+              <label className="text-xs sm:text-sm font-medium text-gray-700 mr-2">Timeframe:</label>
               <select
                 value={currentTimeframe}
                 onChange={(e) => {
                   setCurrentTimeframe(e.target.value);
                   console.log('Timeframe changed to:', e.target.value);
                 }}
-                className="border border-gray-300 rounded px-3 py-1 text-sm"
+                className="border border-gray-300 rounded px-2 sm:px-3 py-1 text-xs sm:text-sm"
                 disabled={isLoadingHistorical || !dataQueryEnabled}
               >
                 {timeframes.map((tf) => (
@@ -665,7 +666,7 @@ export default function MSFTRealtimeChart() {
             </div>
             
             <div>
-              <label className="text-sm font-medium text-gray-700 mr-2">Period:</label>
+              <label className="text-xs sm:text-sm font-medium text-gray-700 mr-2">Period:</label>
               <select
                 value={currentPeriod}
                 onChange={(e) => {
@@ -674,7 +675,7 @@ export default function MSFTRealtimeChart() {
                   setUseCustomDateRange(newPeriod === 'CUSTOM');
                   console.log('Period changed to:', newPeriod, 'Custom range:', newPeriod === 'CUSTOM');
                 }}
-                className="border border-gray-300 rounded px-3 py-1 text-sm"
+                className="border border-gray-300 rounded px-2 sm:px-3 py-1 text-xs sm:text-sm"
                 disabled={isLoadingHistorical || !dataQueryEnabled}
               >
                 {periods.map((period) => (
@@ -750,14 +751,14 @@ export default function MSFTRealtimeChart() {
         </div>
 
         {currentData && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-            <div className="bg-gray-50 p-3 rounded">
-              <p className="text-sm text-gray-600">Last Price</p>
-              <p className={`text-xl font-bold ${getPriceChangeColor()}`}>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4 mb-4">
+            <div className="bg-gray-50 p-2 sm:p-3 rounded">
+              <p className="text-xs sm:text-sm text-gray-600">Last Price</p>
+              <p className={`text-lg sm:text-xl font-bold ${getPriceChangeColor()}`}>
                 ${currentData.last.toFixed(2)}
               </p>
               {getPriceChange() && (
-                <p className={`text-sm ${getPriceChangeColor()}`}>
+                <p className={`text-xs sm:text-sm ${getPriceChangeColor()}`}>
                   {getPriceChange()!.change > 0 ? '+' : ''}
                   {getPriceChange()!.change.toFixed(2)} 
                   ({getPriceChange()!.changePercent > 0 ? '+' : ''}
@@ -766,19 +767,19 @@ export default function MSFTRealtimeChart() {
               )}
             </div>
             
-            <div className="bg-gray-50 p-3 rounded">
-              <p className="text-sm text-gray-600">Bid</p>
-              <p className="text-lg font-semibold text-gray-900">${currentData.bid.toFixed(2)}</p>
+            <div className="bg-gray-50 p-2 sm:p-3 rounded">
+              <p className="text-xs sm:text-sm text-gray-600">Bid</p>
+              <p className="text-base sm:text-lg font-semibold text-gray-900">${currentData.bid.toFixed(2)}</p>
             </div>
             
-            <div className="bg-gray-50 p-3 rounded">
-              <p className="text-sm text-gray-600">Ask</p>
-              <p className="text-lg font-semibold text-gray-900">${currentData.ask.toFixed(2)}</p>
+            <div className="bg-gray-50 p-2 sm:p-3 rounded">
+              <p className="text-xs sm:text-sm text-gray-600">Ask</p>
+              <p className="text-base sm:text-lg font-semibold text-gray-900">${currentData.ask.toFixed(2)}</p>
             </div>
             
-            <div className="bg-gray-50 p-3 rounded">
-              <p className="text-sm text-gray-600">Volume</p>
-              <p className="text-lg font-semibold text-gray-900">{currentData.volume.toLocaleString()}</p>
+            <div className="bg-gray-50 p-2 sm:p-3 rounded">
+              <p className="text-xs sm:text-sm text-gray-600">Volume</p>
+              <p className="text-base sm:text-lg font-semibold text-gray-900">{currentData.volume.toLocaleString()}</p>
             </div>
           </div>
         )}
@@ -801,14 +802,14 @@ export default function MSFTRealtimeChart() {
       </div>
 
       {/* OHLC Candlestick Chart */}
-      <div className="p-4">
-        <div className="mb-2 flex items-center justify-between">
-          <h4 className="text-sm font-medium text-gray-700">
+      <div className="p-3 sm:p-4">
+        <div className="mb-2 flex flex-col sm:flex-row items-start sm:items-center justify-between space-y-2 sm:space-y-0">
+          <h4 className="text-xs sm:text-sm font-medium text-gray-700">
             OHLC Candlestick Chart - {currentTimeframe} / {currentPeriod}
           </h4>
           {isLoadingHistorical && (
-            <div className="flex items-center gap-2 text-sm text-gray-600">
-              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+            <div className="flex items-center gap-2 text-xs sm:text-sm text-gray-600">
+              <div className="animate-spin rounded-full h-3 w-3 sm:h-4 sm:w-4 border-b-2 border-blue-600"></div>
               Loading chart data...
             </div>
           )}
@@ -822,19 +823,58 @@ export default function MSFTRealtimeChart() {
         {chartData.length > 0 && (
           <div className="mt-2 text-xs text-gray-500 space-y-1">
             <div>Data points: {chartData.length} | Timeframe: {currentTimeframe}</div>
-            <div className="flex items-center gap-4">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4">
               <span className="flex items-center gap-1">
-                <div className="w-3 h-3 bg-green-500 rounded"></div>
+                <div className="w-2 h-2 sm:w-3 sm:h-3 bg-green-500 rounded"></div>
                 Bull Bars (Green)
               </span>
               <span className="flex items-center gap-1">
-                <div className="w-3 h-3 bg-red-500 rounded"></div>
+                <div className="w-2 h-2 sm:w-3 sm:h-3 bg-red-500 rounded"></div>
                 Bear Bars (Red)
               </span>
             </div>
           </div>
         )}
       </div>
+
+      {/* Dataframe Display */}
+      {chartData.length > 0 && (
+        <div className="mt-6">
+          <DataframeViewer
+            data={chartData.map(bar => ({
+              time: new Date(bar.time).toLocaleString(),
+              open: bar.open,
+              high: bar.high,
+              low: bar.low,
+              close: bar.close,
+              volume: bar.volume,
+              ...(bar.sma_20 && { sma_20: bar.sma_20 }),
+              ...(bar.sma_50 && { sma_50: bar.sma_50 }),
+              ...(bar.ema_12 && { ema_12: bar.ema_12 }),
+              ...(bar.ema_26 && { ema_26: bar.ema_26 }),
+              ...(bar.rsi && { rsi: bar.rsi }),
+              ...(bar.macd && { macd: bar.macd }),
+              ...(bar.macd_signal && { macd_signal: bar.macd_signal }),
+              ...(bar.macd_histogram && { macd_histogram: bar.macd_histogram }),
+              ...(bar.bb_upper && { bb_upper: bar.bb_upper }),
+              ...(bar.bb_middle && { bb_middle: bar.bb_middle }),
+              ...(bar.bb_lower && { bb_lower: bar.bb_lower }),
+              ...(bar.stoch_k && { stoch_k: bar.stoch_k }),
+              ...(bar.stoch_d && { stoch_d: bar.stoch_d }),
+              ...(bar.atr && { atr: bar.atr }),
+              ...(bar.obv && { obv: bar.obv }),
+              ...(bar.vwap && { vwap: bar.vwap }),
+              ...(bar.volume_sma && { volume_sma: bar.volume_sma })
+            }))}
+            title="MSFT Historical Data"
+            description={`${chartData.length} data points for ${currentTimeframe} timeframe`}
+            maxHeight="400px"
+            showExport={true}
+            showPagination={true}
+            itemsPerPage={25}
+          />
+        </div>
+      )}
     </div>
   );
 } 

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import { createChart, IChartApi, ISeriesApi, CandlestickData, Time } from 'lightweight-charts';
+import DataframeViewer from './DataframeViewer';
 
 interface ProcessedBar {
   time: number;
@@ -153,6 +154,28 @@ export default function HistoricalChart({ data, symbol, timeframe }: HistoricalC
               Bear Bars (Red)
             </span>
           </div>
+        </div>
+      )}
+      
+      {/* Dataframe Display */}
+      {data.length > 0 && (
+        <div className="mt-6">
+          <DataframeViewer
+            data={data.map(bar => ({
+              time: new Date(bar.time).toLocaleString(),
+              open: bar.open,
+              high: bar.high,
+              low: bar.low,
+              close: bar.close,
+              volume: bar.volume
+            }))}
+            title={`${symbol} Historical Data`}
+            description={`${data.length} data points for ${timeframe} timeframe`}
+            maxHeight="400px"
+            showExport={true}
+            showPagination={true}
+            itemsPerPage={25}
+          />
         </div>
       )}
     </div>

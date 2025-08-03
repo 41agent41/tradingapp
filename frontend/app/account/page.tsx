@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import DataSwitch from '../components/DataSwitch';
+import BackToHome from '../components/BackToHome';
+import DataframeViewer from '../components/DataframeViewer';
 
 interface ConnectionStatus {
   connected: boolean;
@@ -372,44 +374,67 @@ export default function AccountPage() {
         ) : !accountData?.positions || accountData.positions.length === 0 ? (
           <div className="text-gray-600">No positions found</div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b bg-gray-50">
-                  <th className="text-left p-3">Symbol</th>
-                  <th className="text-right p-3">Position</th>
-                  <th className="text-right p-3">Market Price</th>
-                  <th className="text-right p-3">Market Value</th>
-                  <th className="text-right p-3">Avg Cost</th>
-                  <th className="text-right p-3">Unrealized P&L</th>
-                  <th className="text-center p-3">Currency</th>
-                </tr>
-              </thead>
-              <tbody>
-                {accountData.positions.map((position, index) => (
-                  <tr key={index} className="border-b hover:bg-gray-50">
-                    <td className="p-3 font-semibold">{position.symbol}</td>
-                    <td className="p-3 text-right">{position.position}</td>
-                    <td className="p-3 text-right">
-                      {position.market_price ? formatCurrency(position.market_price, position.currency) : 'N/A'}
-                    </td>
-                    <td className="p-3 text-right">
-                      {position.market_value ? formatCurrency(position.market_value, position.currency) : 'N/A'}
-                    </td>
-                    <td className="p-3 text-right">
-                      {position.average_cost ? formatCurrency(position.average_cost, position.currency) : 'N/A'}
-                    </td>
-                    <td className={`p-3 text-right font-semibold ${
-                      (position.unrealized_pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
-                    }`}>
-                      {position.unrealized_pnl ? formatCurrency(position.unrealized_pnl, position.currency) : 'N/A'}
-                    </td>
-                    <td className="p-3 text-center">{position.currency}</td>
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-gray-50">
+                    <th className="text-left p-3">Symbol</th>
+                    <th className="text-right p-3">Position</th>
+                    <th className="text-right p-3">Market Price</th>
+                    <th className="text-right p-3">Market Value</th>
+                    <th className="text-right p-3">Avg Cost</th>
+                    <th className="text-right p-3">Unrealized P&L</th>
+                    <th className="text-center p-3">Currency</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {accountData.positions.map((position, index) => (
+                    <tr key={index} className="border-b hover:bg-gray-50">
+                      <td className="p-3 font-semibold">{position.symbol}</td>
+                      <td className="p-3 text-right">{position.position}</td>
+                      <td className="p-3 text-right">
+                        {position.market_price ? formatCurrency(position.market_price, position.currency) : 'N/A'}
+                      </td>
+                      <td className="p-3 text-right">
+                        {position.market_value ? formatCurrency(position.market_value, position.currency) : 'N/A'}
+                      </td>
+                      <td className="p-3 text-right">
+                        {position.average_cost ? formatCurrency(position.average_cost, position.currency) : 'N/A'}
+                      </td>
+                      <td className={`p-3 text-right font-semibold ${
+                        (position.unrealized_pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
+                      }`}>
+                        {position.unrealized_pnl ? formatCurrency(position.unrealized_pnl, position.currency) : 'N/A'}
+                      </td>
+                      <td className="p-3 text-center">{position.currency}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            
+            {/* Dataframe Display */}
+            <div className="mt-6">
+              <DataframeViewer
+                data={accountData.positions.map(position => ({
+                  symbol: position.symbol,
+                  position: position.position,
+                  market_price: position.market_price,
+                  market_value: position.market_value,
+                  average_cost: position.average_cost,
+                  unrealized_pnl: position.unrealized_pnl,
+                  currency: position.currency
+                }))}
+                title="Positions Data"
+                description={`${accountData.positions.length} positions from IB Gateway`}
+                maxHeight="300px"
+                showExport={true}
+                showPagination={true}
+                itemsPerPage={20}
+              />
+            </div>
+          </>
         )}
       </div>
     </div>
@@ -435,50 +460,75 @@ export default function AccountPage() {
         ) : !accountData?.orders || accountData.orders.length === 0 ? (
           <div className="text-gray-600">No active orders found</div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b bg-gray-50">
-                  <th className="text-left p-3">Order ID</th>
-                  <th className="text-left p-3">Symbol</th>
-                  <th className="text-center p-3">Action</th>
-                  <th className="text-right p-3">Quantity</th>
-                  <th className="text-center p-3">Type</th>
-                  <th className="text-center p-3">Status</th>
-                  <th className="text-right p-3">Filled</th>
-                  <th className="text-right p-3">Avg Fill Price</th>
-                </tr>
-              </thead>
-              <tbody>
-                {accountData.orders.map((order, index) => (
-                  <tr key={index} className="border-b hover:bg-gray-50">
-                    <td className="p-3 font-mono">{order.order_id}</td>
-                    <td className="p-3 font-semibold">{order.symbol}</td>
-                    <td className={`p-3 text-center font-semibold ${
-                      order.action === 'BUY' ? 'text-green-600' : 'text-red-600'
-                    }`}>
-                      {order.action}
-                    </td>
-                    <td className="p-3 text-right">{order.quantity}</td>
-                    <td className="p-3 text-center">{order.order_type}</td>
-                    <td className="p-3 text-center">
-                      <span className={`px-2 py-1 rounded text-xs ${
-                        order.status === 'Filled' ? 'bg-green-100 text-green-800' :
-                        order.status === 'Cancelled' ? 'bg-red-100 text-red-800' :
-                        'bg-yellow-100 text-yellow-800'
-                      }`}>
-                        {order.status}
-                      </span>
-                    </td>
-                    <td className="p-3 text-right">{order.filled_quantity || 0}</td>
-                    <td className="p-3 text-right">
-                      {order.avg_fill_price ? `$${order.avg_fill_price.toFixed(2)}` : 'N/A'}
-                    </td>
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-gray-50">
+                    <th className="text-left p-3">Order ID</th>
+                    <th className="text-left p-3">Symbol</th>
+                    <th className="text-center p-3">Action</th>
+                    <th className="text-right p-3">Quantity</th>
+                    <th className="text-center p-3">Type</th>
+                    <th className="text-center p-3">Status</th>
+                    <th className="text-right p-3">Filled</th>
+                    <th className="text-right p-3">Avg Fill Price</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {accountData.orders.map((order, index) => (
+                    <tr key={index} className="border-b hover:bg-gray-50">
+                      <td className="p-3 font-mono">{order.order_id}</td>
+                      <td className="p-3 font-semibold">{order.symbol}</td>
+                      <td className={`p-3 text-center font-semibold ${
+                        order.action === 'BUY' ? 'text-green-600' : 'text-red-600'
+                      }`}>
+                        {order.action}
+                      </td>
+                      <td className="p-3 text-right">{order.quantity}</td>
+                      <td className="p-3 text-center">{order.order_type}</td>
+                      <td className="p-3 text-center">
+                        <span className={`px-2 py-1 rounded text-xs ${
+                          order.status === 'Filled' ? 'bg-green-100 text-green-800' :
+                          order.status === 'Cancelled' ? 'bg-red-100 text-red-800' :
+                          'bg-yellow-100 text-yellow-800'
+                        }`}>
+                          {order.status}
+                        </span>
+                      </td>
+                      <td className="p-3 text-right">{order.filled_quantity || 0}</td>
+                      <td className="p-3 text-right">
+                        {order.avg_fill_price ? `$${order.avg_fill_price.toFixed(2)}` : 'N/A'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            
+            {/* Dataframe Display */}
+            <div className="mt-6">
+              <DataframeViewer
+                data={accountData.orders.map(order => ({
+                  order_id: order.order_id,
+                  symbol: order.symbol,
+                  action: order.action,
+                  quantity: order.quantity,
+                  order_type: order.order_type,
+                  status: order.status,
+                  filled_quantity: order.filled_quantity || 0,
+                  remaining_quantity: order.remaining_quantity || 0,
+                  avg_fill_price: order.avg_fill_price
+                }))}
+                title="Orders Data"
+                description={`${accountData.orders.length} orders from IB Gateway`}
+                maxHeight="300px"
+                showExport={true}
+                showPagination={true}
+                itemsPerPage={20}
+              />
+            </div>
+          </>
         )}
       </div>
     </div>
@@ -550,21 +600,38 @@ export default function AccountPage() {
 
   return (
     <div className="min-h-screen bg-gray-100">
-      <div className="container mx-auto px-4 py-8">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">Account Dashboard</h1>
-          <p className="text-gray-600 mt-2">
-            Monitor your IB Gateway account information with automatic hourly updates (60 minutes)
-          </p>
-          <div className="mt-2 text-sm text-blue-600 bg-blue-50 p-3 rounded border border-blue-200">
+      {/* Header */}
+      <header className="bg-white shadow-sm border-b">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center py-4 sm:py-6 space-y-4 sm:space-y-0">
+            <div className="flex items-center space-x-2 sm:space-x-4">
+              <BackToHome />
+              <div className="min-w-0 flex-1">
+                <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">Account Dashboard</h1>
+                <p className="text-xs sm:text-sm text-gray-600 mt-1">Monitor your IB Gateway account information</p>
+              </div>
+            </div>
+            <div className="flex items-center space-x-2 sm:space-x-4">
+              <div className="text-xs sm:text-sm text-gray-500">
+                Connected to IB Gateway
+              </div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8">
+        <div className="mb-6 sm:mb-8">
+          <div className="text-xs sm:text-sm text-blue-600 bg-blue-50 p-3 rounded border border-blue-200">
             💡 <strong>Refresh Schedule:</strong> Data refreshes automatically every 60 minutes or manually via "Refresh Now" button. 
             No frequent polling to minimize IB Gateway API calls.
           </div>
         </div>
 
         {/* Tab Navigation */}
-        <div className="mb-6">
-          <nav className="flex space-x-1 bg-gray-200 rounded-lg p-1">
+        <div className="mb-4 sm:mb-6">
+          <nav className="flex flex-wrap sm:flex-nowrap space-x-1 bg-gray-200 rounded-lg p-1">
             {[
               { id: 'account', label: 'Account Summary', icon: '💰' },
               { id: 'positions', label: 'Positions', icon: '📊' },
@@ -574,14 +641,15 @@ export default function AccountPage() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-md font-medium transition-colors ${
+                className={`flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 rounded-md font-medium transition-colors text-xs sm:text-sm ${
                   activeTab === tab.id
                     ? 'bg-white text-blue-600 shadow-sm'
                     : 'text-gray-600 hover:text-gray-900'
                 }`}
               >
-                <span>{tab.icon}</span>
-                {tab.label}
+                <span className="text-sm sm:text-base">{tab.icon}</span>
+                <span className="hidden sm:inline">{tab.label}</span>
+                <span className="sm:hidden">{tab.label.split(' ')[0]}</span>
               </button>
             ))}
           </nav>
@@ -594,7 +662,7 @@ export default function AccountPage() {
           {activeTab === 'orders' && renderOrdersTab()}
           {activeTab === 'connection' && renderConnectionTab()}
         </div>
-      </div>
+      </main>
     </div>
   );
 } 
