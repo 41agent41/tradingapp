@@ -8,6 +8,7 @@ import logging
 import asyncio
 import math
 import threading
+import calendar
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
@@ -546,9 +547,9 @@ def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDa
                     # Date only format: "20250804"
                     bar_datetime = datetime.strptime(date_str, "%Y%m%d")
                 
-                # Explicitly set UTC timezone and convert to Unix timestamp
-                bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
-                timestamp = int(bar_datetime.timestamp())
+                # Convert to UTC timestamp using calendar.timegm for reliability
+                # This avoids timezone conversion issues with datetime.timestamp()
+                timestamp = calendar.timegm(bar_datetime.timetuple())
                 
             elif isinstance(bar.date, (int, float)):
                 # If it's already a Unix timestamp, use it directly
@@ -562,8 +563,7 @@ def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDa
                     # Fallback: try to parse as string
                     date_str = str(bar.date).strip()
                     bar_datetime = datetime.strptime(date_str, "%Y%m%d %H:%M:%S")
-                    bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
-                    timestamp = int(bar_datetime.timestamp())
+                    timestamp = calendar.timegm(bar_datetime.timetuple())
             
             # Enhanced logging for first few bars
             if len(candlesticks) < 5:
@@ -571,6 +571,8 @@ def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDa
                 logger.info(f"  Raw bar.date: '{bar.date}' (type: {type(bar.date)})")
                 logger.info(f"  Converted timestamp: {timestamp}")
                 logger.info(f"  Timestamp as UTC date: {datetime.fromtimestamp(timestamp, tz=timezone.utc)}")
+                logger.info(f"  Timestamp validation - Expected range: 1700000000-1800000000 (2023-2027)")
+                logger.info(f"  Timestamp validation - Current value: {timestamp} ({'VALID' if 1700000000 <= timestamp <= 1800000000 else 'INVALID - MAJOR ISSUE'})")
                 logger.info(f"  Bar values: O={bar.open}, H={bar.high}, L={bar.low}, C={bar.close}, V={bar.volume}")
             
             candlestick = CandlestickBar(
@@ -1250,6 +1252,16 @@ async def get_historical_data(
             result = process_bars_with_indicators(ib.historical_data, symbol, timeframe, period, indicator_list)
         
         logger.info(f"Processed result: {result.count} bars returned")
+        
+        # Debug: Check first few timestamps being returned to frontend
+        if result.bars and len(result.bars) > 0:
+            logger.info("=== TIMESTAMP DEBUG - Values being sent to frontend ===")
+            for i, bar in enumerate(result.bars[:3]):
+                timestamp_date = datetime.fromtimestamp(bar.timestamp, tz=timezone.utc)
+                logger.info(f"  Bar {i+1}: timestamp={bar.timestamp}, converts_to={timestamp_date}")
+                logger.info(f"    Validation: {'VALID' if 1700000000 <= bar.timestamp <= 1800000000 else 'INVALID - FRONTEND WILL SHOW WRONG DATES'}")
+            logger.info("=== END TIMESTAMP DEBUG ===")
+        
         return result
         
     except HTTPException:
