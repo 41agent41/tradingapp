@@ -523,21 +523,35 @@ def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDa
     
     for bar in bars:
         try:
-            # Simple approach: use bar.date directly if it's already a timestamp
+            # Robust timestamp parsing for IB Gateway string format
             if isinstance(bar.date, str):
-                # IB Gateway string format like "20250804  19:16:21"
-                if ' ' in bar.date:
-                    # Parse the date string directly - no timezone conversion
-                    bar_datetime = datetime.strptime(bar.date.strip(), "%Y%m%d %H:%M:%S")
-                else:
-                    # Date only format
-                    bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
+                # Clean and normalize the date string
+                date_str = bar.date.strip()
                 
-                # Convert to Unix timestamp directly (no timezone conversion)
+                # Handle various IB Gateway string formats
+                if ' ' in date_str:
+                    # Format: "20250804  19:16:21" or "20250804 19:16:21" (multiple spaces)
+                    # Clean up multiple spaces and normalize
+                    date_str = ' '.join(date_str.split())
+                    try:
+                        bar_datetime = datetime.strptime(date_str, "%Y%m%d %H:%M:%S")
+                    except ValueError:
+                        try:
+                            # Try alternative format with dashes
+                            bar_datetime = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            # Last resort: try with seconds
+                            bar_datetime = datetime.strptime(date_str, "%Y%m%d %H:%M:%S.%f")
+                else:
+                    # Date only format: "20250804"
+                    bar_datetime = datetime.strptime(date_str, "%Y%m%d")
+                
+                # Explicitly set UTC timezone and convert to Unix timestamp
+                bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
                 timestamp = int(bar_datetime.timestamp())
                 
             elif isinstance(bar.date, (int, float)):
-                # If it's already a number, use it directly
+                # If it's already a Unix timestamp, use it directly
                 timestamp = int(bar.date)
                 
             else:
@@ -546,13 +560,18 @@ def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDa
                     timestamp = int(bar.date.timestamp())
                 else:
                     # Fallback: try to parse as string
-                    timestamp = int(datetime.strptime(str(bar.date), "%Y%m%d %H:%M:%S").timestamp())
+                    date_str = str(bar.date).strip()
+                    bar_datetime = datetime.strptime(date_str, "%Y%m%d %H:%M:%S")
+                    bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
+                    timestamp = int(bar_datetime.timestamp())
             
-            # Log raw values for debugging
-            if len(candlesticks) < 3:
-                logger.info(f"Raw bar.date: {bar.date} (type: {type(bar.date)})")
-                logger.info(f"Converted timestamp: {timestamp}")
-                logger.info(f"Timestamp as date: {datetime.fromtimestamp(timestamp)}")
+            # Enhanced logging for first few bars
+            if len(candlesticks) < 5:
+                logger.info(f"Processing bar {len(candlesticks)+1}:")
+                logger.info(f"  Raw bar.date: '{bar.date}' (type: {type(bar.date)})")
+                logger.info(f"  Converted timestamp: {timestamp}")
+                logger.info(f"  Timestamp as UTC date: {datetime.fromtimestamp(timestamp, tz=timezone.utc)}")
+                logger.info(f"  Bar values: O={bar.open}, H={bar.high}, L={bar.low}, C={bar.close}, V={bar.volume}")
             
             candlestick = CandlestickBar(
                 timestamp=timestamp,
@@ -565,18 +584,21 @@ def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDa
             candlesticks.append(candlestick)
             
         except Exception as e:
-            logger.error(f"Error processing bar: {e}")
-            logger.error(f"Bar data: date={bar.date}, open={bar.open}, high={bar.high}, low={bar.low}, close={bar.close}, volume={bar.volume}")
+            logger.warning(f"Failed to process bar: {e}")
+            logger.warning(f"Bar data: date='{bar.date}' (type: {type(bar.date)}), open={bar.open}, high={bar.high}, low={bar.low}, close={bar.close}, volume={bar.volume}")
+            # Continue processing other bars instead of failing completely
             continue
     
     # Sort bars by timestamp in descending order (newest first)
     candlesticks.sort(key=lambda x: x.timestamp, reverse=True)
     
-    logger.info(f"Processed {len(candlesticks)} bars for {symbol} {timeframe} {period}")
+    logger.info(f"Successfully processed {len(candlesticks)} out of {len(bars)} bars for {symbol} {timeframe} {period}")
     if candlesticks:
-        logger.info(f"Date range: {datetime.fromtimestamp(candlesticks[-1].timestamp)} to {datetime.fromtimestamp(candlesticks[0].timestamp)}")
+        logger.info(f"Date range: {datetime.fromtimestamp(candlesticks[-1].timestamp, tz=timezone.utc)} to {datetime.fromtimestamp(candlesticks[0].timestamp, tz=timezone.utc)}")
         logger.info(f"Sample timestamps: {candlesticks[0].timestamp} (newest), {candlesticks[-1].timestamp} (oldest)")
-        logger.info(f"Sample dates: {datetime.fromtimestamp(candlesticks[0].timestamp).strftime('%Y-%m-%d %H:%M:%S')} (newest), {datetime.fromtimestamp(candlesticks[-1].timestamp).strftime('%Y-%m-%d %H:%M:%S')} (oldest)")
+        logger.info(f"Sample dates: {datetime.fromtimestamp(candlesticks[0].timestamp, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} (newest), {datetime.fromtimestamp(candlesticks[-1].timestamp, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} (oldest)")
+    else:
+        logger.error(f"No bars were successfully processed! Check timestamp format and IB Gateway configuration.")
     
     return HistoricalDataResponse(
         symbol=symbol,
@@ -1178,9 +1200,10 @@ async def get_historical_data(
         # Clear previous historical data
         ib.historical_data = []
         
-        # Request historical data with Unix timestamp format
+        # Use string format (formatDate=1) to avoid IB Gateway conversion issues
         # formatDate: 1 for YYYYMMDD HH:MM:SS format, 2 for Unix timestamp format
-        format_date = int(os.getenv('IB_FORMAT_DATE', '2'))  # Default to Unix timestamp
+        # Using format 1 to avoid "unconverted data remains" errors from IB Gateway
+        format_date = 1  # Force string format for compatibility
         
         ib.reqHistoricalData(
             2,  # reqId
@@ -1190,12 +1213,12 @@ async def get_historical_data(
             ib_timeframe,
             'TRADES',
             1,  # useRTH
-            format_date,  # formatDate: 2 for Unix timestamp format
+            format_date,  # formatDate: 1 for string format (more reliable)
             False,  # keepUpToDate
             []  # chartOptions
         )
         
-        logger.info(f"Requested historical data with formatDate={format_date} ({'Unix timestamp' if format_date == 2 else 'String format'})")
+        logger.info(f"Requested historical data with formatDate={format_date} (string format for compatibility)")
         
         # Wait for data with longer timeout and retry logic
         max_wait_time = 15  # seconds
