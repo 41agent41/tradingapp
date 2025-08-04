@@ -11,7 +11,6 @@ import threading
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-import pytz
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -519,43 +518,42 @@ def convert_period(period: str) -> str:
     return period_map.get(period, '1 Y')
 
 def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDataResponse:
-    """Process IB bars into candlestick data with proper timezone handling"""
+    """Process IB bars into candlestick data with simple UTC timezone handling"""
     candlesticks = []
-    
-    # IB Gateway timezone (AEST - Australian Eastern Standard Time)
-    ib_timezone = pytz.timezone('Australia/Brisbane')
     
     for bar in bars:
         try:
-            # Handle different date formats from IB
+            # Handle different date formats from IB - treat as UTC directly
             if isinstance(bar.date, str):
                 # String format like "20250725 23:30:00"
                 if ' ' in bar.date:
-                    # Parse as naive datetime first
-                    naive_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
-                    # Localize to IB Gateway timezone (AEST)
-                    bar_datetime = ib_timezone.localize(naive_datetime)
-                    # Convert to UTC for consistent storage
-                    bar_datetime = bar_datetime.astimezone(timezone.utc)
+                    # Parse as UTC datetime directly (IB Gateway times are effectively market times)
+                    bar_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
+                    bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
                 else:
                     # Date only format like "20250725"
-                    naive_datetime = datetime.strptime(bar.date, "%Y%m%d")
-                    # Localize to IB Gateway timezone
-                    bar_datetime = ib_timezone.localize(naive_datetime)
-                    # Convert to UTC
-                    bar_datetime = bar_datetime.astimezone(timezone.utc)
+                    bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
+                    bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
             elif isinstance(bar.date, (int, float)):
                 # Unix timestamp - assume UTC
                 bar_datetime = datetime.fromtimestamp(bar.date, timezone.utc)
             else:
                 # Assume it's already a datetime object
-                bar_datetime = bar.date
-                if bar_datetime.tzinfo is None:
-                    # If naive, assume it's in IB timezone
-                    bar_datetime = ib_timezone.localize(bar_datetime).astimezone(timezone.utc)
+                if hasattr(bar.date, 'replace') and bar.date.tzinfo is None:
+                    bar_datetime = bar.date.replace(tzinfo=timezone.utc)
+                else:
+                    bar_datetime = bar.date
+            
+            # Create Unix timestamp
+            timestamp = int(bar_datetime.timestamp())
+            
+            # Debug logging for first few bars
+            if len(candlesticks) < 3:
+                logger.info(f"Bar date: {bar.date} -> datetime: {bar_datetime} -> timestamp: {timestamp}")
+                logger.info(f"Timestamp verification: {datetime.fromtimestamp(timestamp)}")
             
             candlestick = CandlestickBar(
-                timestamp=int(bar_datetime.timestamp()),
+                timestamp=timestamp,
                 open=float(bar.open),
                 high=float(bar.high),
                 low=float(bar.low),
@@ -586,11 +584,8 @@ def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDa
     )
 
 def process_bars_with_date_range(bars, symbol: str, timeframe: str, start_date_str: str, end_date_str: str) -> HistoricalDataResponse:
-    """Process IB bars with date range filtering and proper timezone handling"""
+    """Process IB bars with date range filtering and simple UTC timezone handling"""
     candlesticks = []
-    
-    # IB Gateway timezone (AEST - Australian Eastern Standard Time)
-    ib_timezone = pytz.timezone('Australia/Brisbane')
     
     start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
@@ -599,26 +594,18 @@ def process_bars_with_date_range(bars, symbol: str, timeframe: str, start_date_s
     
     for bar in bars:
         try:
-            # Handle different date formats from IB with timezone awareness
+            # Handle different date formats from IB - treat as UTC directly
             if isinstance(bar.date, str):
                 # String format like "20240101 09:30:00"
                 if ' ' in bar.date:
-                    # Parse as naive datetime first
-                    naive_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
-                    # Localize to IB Gateway timezone (AEST)
-                    bar_datetime = ib_timezone.localize(naive_datetime)
-                    # Convert to UTC for consistent processing
-                    bar_datetime = bar_datetime.astimezone(timezone.utc)
-                    # Convert back to naive UTC for date range comparison
+                    # Parse as UTC datetime directly
+                    bar_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
+                    bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
                     bar_datetime_naive = bar_datetime.replace(tzinfo=None)
                 else:
                     # Date only format like "20240101"
-                    naive_datetime = datetime.strptime(bar.date, "%Y%m%d")
-                    # Localize to IB Gateway timezone
-                    bar_datetime = ib_timezone.localize(naive_datetime)
-                    # Convert to UTC
-                    bar_datetime = bar_datetime.astimezone(timezone.utc)
-                    # Convert back to naive UTC for date range comparison
+                    bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
+                    bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
                     bar_datetime_naive = bar_datetime.replace(tzinfo=None)
             elif isinstance(bar.date, (int, float)):
                 # Unix timestamp - assume UTC
@@ -626,16 +613,19 @@ def process_bars_with_date_range(bars, symbol: str, timeframe: str, start_date_s
                 bar_datetime_naive = bar_datetime.replace(tzinfo=None)
             else:
                 # Assume it's already a datetime object
-                bar_datetime = bar.date
-                if bar_datetime.tzinfo is None:
-                    # If naive, assume it's in IB timezone
-                    bar_datetime = ib_timezone.localize(bar_datetime).astimezone(timezone.utc)
-                bar_datetime_naive = bar_datetime.replace(tzinfo=None) if bar_datetime.tzinfo else bar_datetime
+                if hasattr(bar.date, 'replace') and bar.date.tzinfo is None:
+                    bar_datetime = bar.date.replace(tzinfo=timezone.utc)
+                    bar_datetime_naive = bar.date
+                else:
+                    bar_datetime = bar.date
+                    bar_datetime_naive = bar_datetime.replace(tzinfo=None) if bar_datetime.tzinfo else bar_datetime
             
             # Check if bar is within our date range
             if start_dt <= bar_datetime_naive <= end_dt:
+                timestamp = int(bar_datetime.timestamp())
+                
                 candlestick = CandlestickBar(
-                    timestamp=int(bar_datetime.timestamp()),
+                    timestamp=timestamp,
                     open=float(bar.open),
                     high=float(bar.high),
                     low=float(bar.low),
@@ -675,34 +665,26 @@ def process_bars_with_indicators(bars, symbol: str, timeframe: str, period: str,
                 if i == 0:  # Log first bar details for debugging
                     logger.info(f"Processing first bar: date={bar.date}, open={bar.open}, high={bar.high}, low={bar.low}, close={bar.close}, volume={bar.volume}")
                 
-                # Handle different date formats from IB with timezone awareness
-                ib_timezone = pytz.timezone('Australia/Brisbane')
-                
+                # Handle different date formats from IB - treat as UTC directly
                 if isinstance(bar.date, str):
                     # String format like "20250725 23:30:00"
                     if ' ' in bar.date:
-                        # Parse as naive datetime first
-                        naive_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
-                        # Localize to IB Gateway timezone (AEST)
-                        bar_datetime = ib_timezone.localize(naive_datetime)
-                        # Convert to UTC for consistent storage
-                        bar_datetime = bar_datetime.astimezone(timezone.utc)
+                        # Parse as UTC datetime directly
+                        bar_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
+                        bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
                     else:
                         # Date only format like "20250725"
-                        naive_datetime = datetime.strptime(bar.date, "%Y%m%d")
-                        # Localize to IB Gateway timezone
-                        bar_datetime = ib_timezone.localize(naive_datetime)
-                        # Convert to UTC
-                        bar_datetime = bar_datetime.astimezone(timezone.utc)
+                        bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
+                        bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
                 elif isinstance(bar.date, (int, float)):
                     # Unix timestamp - assume UTC
                     bar_datetime = datetime.fromtimestamp(bar.date, timezone.utc)
                 else:
                     # Assume it's already a datetime object
-                    bar_datetime = bar.date
-                    if bar_datetime.tzinfo is None:
-                        # If naive, assume it's in IB timezone
-                        bar_datetime = ib_timezone.localize(bar_datetime).astimezone(timezone.utc)
+                    if hasattr(bar.date, 'replace') and bar.date.tzinfo is None:
+                        bar_datetime = bar.date.replace(tzinfo=timezone.utc)
+                    else:
+                        bar_datetime = bar.date
                 
                 bars_data.append({
                     'timestamp': int(bar_datetime.timestamp()),
@@ -802,27 +784,17 @@ def process_bars_with_date_range_and_indicators(bars, symbol: str, timeframe: st
         bars_data = []
         for bar in bars:
             try:
-                # Handle different date formats from IB with timezone awareness
-                ib_timezone = pytz.timezone('Australia/Brisbane')
-                
+                # Handle different date formats from IB - treat as UTC directly
                 if isinstance(bar.date, str):
                     if ' ' in bar.date:
-                        # Parse as naive datetime first
-                        naive_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
-                        # Localize to IB Gateway timezone (AEST)
-                        bar_datetime = ib_timezone.localize(naive_datetime)
-                        # Convert to UTC for consistent processing
-                        bar_datetime = bar_datetime.astimezone(timezone.utc)
-                        # Convert back to naive UTC for date range comparison
+                        # Parse as UTC datetime directly
+                        bar_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
+                        bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
                         bar_datetime_naive = bar_datetime.replace(tzinfo=None)
                     else:
                         # Date only format like "20240101"
-                        naive_datetime = datetime.strptime(bar.date, "%Y%m%d")
-                        # Localize to IB Gateway timezone
-                        bar_datetime = ib_timezone.localize(naive_datetime)
-                        # Convert to UTC
-                        bar_datetime = bar_datetime.astimezone(timezone.utc)
-                        # Convert back to naive UTC for date range comparison
+                        bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
+                        bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
                         bar_datetime_naive = bar_datetime.replace(tzinfo=None)
                 elif isinstance(bar.date, (int, float)):
                     # Unix timestamp - assume UTC
@@ -830,11 +802,12 @@ def process_bars_with_date_range_and_indicators(bars, symbol: str, timeframe: st
                     bar_datetime_naive = bar_datetime.replace(tzinfo=None)
                 else:
                     # Assume it's already a datetime object
-                    bar_datetime = bar.date
-                    if bar_datetime.tzinfo is None:
-                        # If naive, assume it's in IB timezone
-                        bar_datetime = ib_timezone.localize(bar_datetime).astimezone(timezone.utc)
-                    bar_datetime_naive = bar_datetime.replace(tzinfo=None) if bar_datetime.tzinfo else bar_datetime
+                    if hasattr(bar.date, 'replace') and bar.date.tzinfo is None:
+                        bar_datetime = bar.date.replace(tzinfo=timezone.utc)
+                        bar_datetime_naive = bar.date
+                    else:
+                        bar_datetime = bar.date
+                        bar_datetime_naive = bar_datetime.replace(tzinfo=None) if bar_datetime.tzinfo else bar_datetime
                 
                 # Check if bar is within our date range
                 if start_dt <= bar_datetime_naive <= end_dt:

@@ -79,7 +79,7 @@ export default function HistoricalChartPage() {
     const processedBars: ProcessedBar[] = [];
     
     for (const bar of bars) {
-      // Validate and convert timestamp properly
+      // Validate timestamp
       let timestamp = bar.timestamp;
       
       // Validate timestamp is a valid number
@@ -88,15 +88,24 @@ export default function HistoricalChartPage() {
         continue;
       }
       
-      // Convert to milliseconds if it's in seconds (for display purposes)
-      if (timestamp < 1000000000000) {
-        timestamp = timestamp * 1000;
+      // Debug logging for first few bars
+      if (processedBars.length < 3) {
+        console.log('Processing bar:', bar);
+        console.log('Raw timestamp:', timestamp);
+        console.log('As Date (seconds):', new Date(timestamp * 1000));
+        console.log('As Date (milliseconds):', new Date(timestamp));
       }
       
-      // Validate timestamp is reasonable
+      // Backend sends Unix timestamp in seconds, convert to milliseconds for Date objects
+      const timestampMs = timestamp < 1000000000000 ? timestamp * 1000 : timestamp;
+      
+      // Validate timestamp is reasonable (within last 10 years to next year)
       const now = Date.now();
-      if (timestamp > now + 86400000 || timestamp < now - 31536000000 * 10) { // Within 1 day future or 10 years past
-        console.warn('Timestamp out of reasonable range:', timestamp, 'for bar:', bar);
+      const tenYearsAgo = now - (10 * 365 * 24 * 60 * 60 * 1000);
+      const oneYearFromNow = now + (365 * 24 * 60 * 60 * 1000);
+      
+      if (timestampMs < tenYearsAgo || timestampMs > oneYearFromNow) {
+        console.warn('Timestamp out of reasonable range:', timestamp, 'as date:', new Date(timestampMs));
         continue;
       }
 
@@ -113,7 +122,7 @@ export default function HistoricalChartPage() {
       }
 
       processedBars.push({
-        time: timestamp,
+        time: timestampMs, // Use milliseconds for Date compatibility
         open,
         high,
         low,
