@@ -68,9 +68,9 @@ export default function AccountPage() {
   const [dataQueryEnabled, setDataQueryEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('account-data-enabled');
-      return saved !== null ? JSON.parse(saved) : false;
+      return saved !== null ? JSON.parse(saved) : true; // Default to true (enabled)
     }
-    return false;
+    return true; // Default to true (enabled)
   });
 
   // Create a ref to store the latest fetchAccountData function

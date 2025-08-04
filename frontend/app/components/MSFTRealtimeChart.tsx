@@ -92,9 +92,9 @@ export default function MSFTRealtimeChart() {
   const [dataQueryEnabled, setDataQueryEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('msft-chart-data-enabled');
-      return saved !== null ? JSON.parse(saved) : false;
+      return saved !== null ? JSON.parse(saved) : true; // Default to true (enabled)
     }
-    return false;
+    return true; // Default to true (enabled)
   });
 
   // Indicator states

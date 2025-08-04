@@ -39,9 +39,9 @@ export default function HistoricalChartPage() {
   const [dataQueryEnabled, setDataQueryEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('historical-chart-data-enabled');
-      return saved !== null ? JSON.parse(saved) : false;
+      return saved !== null ? JSON.parse(saved) : true; // Default to true (enabled)
     }
-    return false;
+    return true; // Default to true (enabled)
   });
 
   // Updated timeframes to match backend API expectations
