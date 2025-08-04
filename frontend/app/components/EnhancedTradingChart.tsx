@@ -173,15 +173,40 @@ export default function EnhancedTradingChart({
         throw new Error(data.error);
       }
       
-      // Convert data to TradingView format
-      const formattedData: CandlestickData[] = data.bars?.map((bar: any) => ({
-        time: bar.time as Time,
-        open: bar.open,
-        high: bar.high,
-        low: bar.low,
-        close: bar.close,
-        volume: bar.volume,
-      })) || [];
+      // Convert data to TradingView format with proper timestamp handling and validation
+      const formattedData: CandlestickData[] = data.bars?.map((bar: any) => {
+        // Validate and convert timestamp to TradingView format (Unix timestamp in seconds)
+        let timestamp = bar.timestamp || bar.time;
+        
+        // Validate timestamp is a valid number
+        if (typeof timestamp !== 'number' || isNaN(timestamp)) {
+          console.warn('Invalid timestamp:', timestamp, 'for bar:', bar);
+          return null;
+        }
+        
+        // Convert to seconds if in milliseconds
+        if (timestamp > 1000000000000) {
+          timestamp = Math.floor(timestamp / 1000);
+        }
+        
+        // Validate timestamp is reasonable (not in the future or too far in the past)
+        const now = Math.floor(Date.now() / 1000);
+        if (timestamp > now + 86400 || timestamp < now - 31536000 * 10) { // Within 1 day future or 10 years past
+          console.warn('Timestamp out of reasonable range:', timestamp, 'for bar:', bar);
+          return null;
+        }
+        
+        return {
+          time: timestamp as Time,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          volume: bar.volume,
+        };
+      }).filter((bar: CandlestickData | null) => 
+        bar !== null && !isNaN(bar.open) && !isNaN(bar.high) && !isNaN(bar.low) && !isNaN(bar.close)
+      ) || [];
       
       setChartData(formattedData);
       

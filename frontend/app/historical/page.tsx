@@ -77,10 +77,25 @@ export default function HistoricalChartPage() {
     }
 
     return bars.map((bar: any) => {
-      // Convert timestamp to milliseconds if it's in seconds
+      // Validate and convert timestamp properly
       let timestamp = bar.timestamp;
-      if (timestamp < 1000000000000) { // If timestamp is in seconds, convert to milliseconds
+      
+      // Validate timestamp is a valid number
+      if (typeof timestamp !== 'number' || isNaN(timestamp)) {
+        console.warn('Invalid timestamp:', timestamp, 'for bar:', bar);
+        return null;
+      }
+      
+      // Convert to milliseconds if it's in seconds (for display purposes)
+      if (timestamp < 1000000000000) {
         timestamp = timestamp * 1000;
+      }
+      
+      // Validate timestamp is reasonable
+      const now = Date.now();
+      if (timestamp > now + 86400000 || timestamp < now - 31536000000 * 10) { // Within 1 day future or 10 years past
+        console.warn('Timestamp out of reasonable range:', timestamp, 'for bar:', bar);
+        return null;
       }
 
       return {
@@ -91,8 +106,8 @@ export default function HistoricalChartPage() {
         close: Number(bar.close),
         volume: Number(bar.volume)
       };
-    }).filter((bar: ProcessedBar) => 
-      !isNaN(bar.open) && !isNaN(bar.high) && !isNaN(bar.low) && !isNaN(bar.close) && !isNaN(bar.volume)
+    }).filter((bar: ProcessedBar | null) => 
+      bar !== null && !isNaN(bar.open) && !isNaN(bar.high) && !isNaN(bar.low) && !isNaN(bar.close) && !isNaN(bar.volume)
     );
   };
 

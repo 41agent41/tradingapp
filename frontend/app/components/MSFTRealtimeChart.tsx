@@ -389,10 +389,31 @@ export default function MSFTRealtimeChart() {
 
       console.log('Processing', data.bars.length, 'bars');
 
-      // Data conversion with indicators
+      // Data conversion with indicators and proper timestamp handling
       const formattedData: CandlestickData[] = data.bars.map((bar: any) => {
+        // Validate and convert timestamp to TradingView format (Unix timestamp in seconds)
+        let timestamp = bar.timestamp;
+        
+        // Validate timestamp is a valid number
+        if (typeof timestamp !== 'number' || isNaN(timestamp)) {
+          console.warn('Invalid timestamp:', timestamp, 'for bar:', bar);
+          return null;
+        }
+        
+        // Convert to seconds if in milliseconds
+        if (timestamp > 1000000000000) {
+          timestamp = Math.floor(timestamp / 1000);
+        }
+        
+        // Validate timestamp is reasonable (not in the future or too far in the past)
+        const now = Math.floor(Date.now() / 1000);
+        if (timestamp > now + 86400 || timestamp < now - 31536000 * 10) { // Within 1 day future or 10 years past
+          console.warn('Timestamp out of reasonable range:', timestamp, 'for bar:', bar);
+          return null;
+        }
+        
         const candlestick: CandlestickData = {
-          time: bar.timestamp as Time,
+          time: timestamp as Time,
           open: Number(bar.open),
           high: Number(bar.high),
           low: Number(bar.low),
@@ -415,8 +436,8 @@ export default function MSFTRealtimeChart() {
         });
         
         return candlestick;
-      }).filter((bar: CandlestickData) => 
-        !isNaN(bar.open) && !isNaN(bar.high) && !isNaN(bar.low) && !isNaN(bar.close)
+      }).filter((bar: CandlestickData | null) => 
+        bar !== null && !isNaN(bar.open) && !isNaN(bar.high) && !isNaN(bar.low) && !isNaN(bar.close)
       );
 
       console.log('Formatted', formattedData.length, 'valid bars');
