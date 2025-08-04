@@ -76,14 +76,16 @@ export default function HistoricalChartPage() {
       return [];
     }
 
-    return bars.map((bar: any) => {
+    const processedBars: ProcessedBar[] = [];
+    
+    for (const bar of bars) {
       // Validate and convert timestamp properly
       let timestamp = bar.timestamp;
       
       // Validate timestamp is a valid number
       if (typeof timestamp !== 'number' || isNaN(timestamp)) {
         console.warn('Invalid timestamp:', timestamp, 'for bar:', bar);
-        return null;
+        continue;
       }
       
       // Convert to milliseconds if it's in seconds (for display purposes)
@@ -95,20 +97,32 @@ export default function HistoricalChartPage() {
       const now = Date.now();
       if (timestamp > now + 86400000 || timestamp < now - 31536000000 * 10) { // Within 1 day future or 10 years past
         console.warn('Timestamp out of reasonable range:', timestamp, 'for bar:', bar);
-        return null;
+        continue;
       }
 
-      return {
+      // Validate all numeric fields
+      const open = Number(bar.open);
+      const high = Number(bar.high);
+      const low = Number(bar.low);
+      const close = Number(bar.close);
+      const volume = Number(bar.volume);
+
+      if (isNaN(open) || isNaN(high) || isNaN(low) || isNaN(close) || isNaN(volume)) {
+        console.warn('Invalid numeric values in bar:', bar);
+        continue;
+      }
+
+      processedBars.push({
         time: timestamp,
-        open: Number(bar.open),
-        high: Number(bar.high),
-        low: Number(bar.low),
-        close: Number(bar.close),
-        volume: Number(bar.volume)
-      };
-    }).filter((bar: ProcessedBar | null) => 
-      bar !== null && !isNaN(bar.open) && !isNaN(bar.high) && !isNaN(bar.low) && !isNaN(bar.close) && !isNaN(bar.volume)
-    );
+        open,
+        high,
+        low,
+        close,
+        volume
+      });
+    }
+    
+    return processedBars;
   };
 
   // Fetch historical data
