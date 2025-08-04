@@ -1,10 +1,12 @@
 #!/bin/bash
 # ==============================================
-# Timestamp Configuration Verification Script
-# Tests IB Gateway timezone and timestamp configuration
+# Trading App Timestamp Configuration Verification Script
+# Tests trading application APIs with remote IB Gateway
 # ==============================================
 
-echo "=== IB Gateway Timestamp Configuration Verification ==="
+echo "=== Trading App Timestamp Verification (Remote IB Gateway) ==="
+echo ""
+echo "📍 Architecture: IB Gateway (Remote: 10.7.3.21) → Trading App (This Server)"
 echo ""
 
 # Function to test timestamp format
@@ -66,43 +68,53 @@ test_timestamp_format() {
     echo ""
 }
 
-# Check environment variables
-echo "🔧 Environment Configuration:"
-echo "   TZ: ${TZ:-'Not set'}"
-echo "   IB_TIMEZONE: ${IB_TIMEZONE:-'Not set'}"
+# Check trading app environment configuration
+echo "🔧 Trading App Configuration:"
+echo "   TZ (App Timezone): ${TZ:-'Not set (should be UTC)'}"
+echo "   IB_HOST (Remote Gateway): ${IB_HOST:-'Not set (should be 10.7.3.21)'}"
+echo "   IB_FORMAT_DATE (Request Format): ${IB_FORMAT_DATE:-'Not set (should be 2 for Unix timestamps)'}"
 echo "   EXPECTED_TIMESTAMP_FORMAT: ${EXPECTED_TIMESTAMP_FORMAT:-'Not set'}"
-echo "   IB_FORMAT_DATE: ${IB_FORMAT_DATE:-'Not set'}"
 echo ""
 
-# Check system timezone
-echo "🌍 System Timezone Information:"
-if command -v timedatectl >/dev/null 2>&1; then
-    echo "   System timezone: $(timedatectl show --property=Timezone --value)"
-else
-    echo "   System timezone: $(date +%Z)"
-fi
+# Check trading app server timezone
+echo "🌍 Trading App Server Timezone:"
+echo "   App server timezone: $(date +%Z)"
 echo "   Current UTC time: $(date -u)"
-echo "   Current local time: $(date)"
+echo "   Note: IB Gateway timezone is configured on remote server (10.7.3.21)"
 echo ""
 
-# Test API endpoints
+# Test trading app API endpoints
 API_BASE="${NEXT_PUBLIC_API_URL:-http://localhost:4000}"
 IB_SERVICE_BASE="${IB_SERVICE_URL:-http://localhost:8000}"
 
-echo "📡 Testing API Endpoints:"
+echo "📡 Testing Trading App APIs (Remote IB Gateway Data):"
 echo ""
 
-# Test backend endpoint
-test_timestamp_format "$API_BASE/api/market-data/history?symbol=MSFT&timeframe=1hour&period=1D" "Backend Historical Data API"
+# Test main backend endpoint (frontend → backend → IB service → remote IB Gateway)
+test_timestamp_format "$API_BASE/api/market-data/history?symbol=MSFT&timeframe=1hour&period=1D" "Main Trading App API (Full Chain)"
 
-# Test IB service directly
+# Test IB service directly (IB service → remote IB Gateway)
 test_timestamp_format "$IB_SERVICE_BASE/market-data/history?symbol=MSFT&timeframe=1hour&period=1D" "IB Service Direct API"
 
-# Test with debug logging
+# Test timezone configuration endpoint
+echo "🔧 Testing Configuration Endpoint:"
+echo "📡 Endpoint: $IB_SERVICE_BASE/timezone-info"
+config_response=$(curl -s "$IB_SERVICE_BASE/timezone-info" 2>/dev/null)
+if [ $? -eq 0 ] && [ -n "$config_response" ]; then
+    echo "✅ Configuration endpoint accessible"
+    echo "📊 Configuration details:"
+    echo "$config_response" | grep -E '"(timezone_properly_set|ib_format_configured|timestamp_format_correct)"' 2>/dev/null || echo "   Check full response for details"
+else
+    echo "❌ Configuration endpoint not accessible"
+fi
+echo ""
+
+# Debug guidance for remote architecture
 echo "🔍 Debug Information:"
-echo "   Check browser console for detailed timestamp logs"
-echo "   Check IB service logs for timestamp processing details"
-echo "   Check IB Gateway logs for request format confirmation"
+echo "   Frontend: Check browser console for timestamp processing logs"
+echo "   Trading App: Check IB service logs: './tradingapp.sh logs ib_service'"
+echo "   Remote IB Gateway: Check logs on IB Gateway server (10.7.3.21)"
+echo "   Configuration: Use /timezone-info endpoint for environment verification"
 echo ""
 
 # Current timestamp for reference
@@ -115,13 +127,25 @@ echo ""
 
 echo "=== Verification Complete ==="
 echo ""
-echo "💡 Expected Results:"
-echo "   ✅ Timestamps should be Unix seconds (10 digits, ~1722000000 range for 2024)"
-echo "   ✅ Dates should show 2024-2025 years, not 57554"
+echo "💡 Expected Results (Remote IB Gateway → Trading App):"
+echo "   ✅ Timestamps should be Unix seconds (10 digits, ~1722000000 range for 2024-2025)"
+echo "   ✅ Dates should show 2024-2025 years, not 57554 or other incorrect years"
 echo "   ✅ All timestamps should be in UTC timezone"
+echo "   ✅ Both API endpoints should return consistent timestamp formats"
 echo ""
-echo "🚨 If timestamps are wrong:"
-echo "   1. Check IB Gateway timezone settings (should be UTC)"
-echo "   2. Verify IB_FORMAT_DATE=2 in environment"
-echo "   3. Restart IB Gateway and application containers"
-echo "   4. Check IB Gateway logs for format confirmation"
+echo "🚨 If timestamps are still wrong:"
+echo "   1. Trading App Side:"
+echo "      - Verify IB_FORMAT_DATE=2 in .env file"
+echo "      - Check TZ=UTC in docker containers"
+echo "      - Restart trading app: './tradingapp.sh restart'"
+echo "      - Check IB service logs: './tradingapp.sh logs ib_service'"
+echo ""
+echo "   2. Remote IB Gateway Side (10.7.3.21):"
+echo "      - Verify IB Gateway timezone is set to UTC (you configured this)"
+echo "      - Check IB Gateway API format settings"
+echo "      - Restart IB Gateway if needed (on remote server)"
+echo ""
+echo "   3. Test Individual Components:"
+echo "      - Test IB service: curl 'http://localhost:8000/timezone-info'"
+echo "      - Test backend: curl 'http://localhost:4000/api/market-data/history?symbol=MSFT&timeframe=1hour&period=1D'"
+echo "      - Check browser console logs for frontend timestamp processing"
