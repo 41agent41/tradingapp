@@ -79,37 +79,45 @@ export default function HistoricalChartPage() {
     const processedBars: ProcessedBar[] = [];
     
     for (const bar of bars) {
-      // Validate timestamp
+      // Simple validation and conversion
       let timestamp = bar.timestamp;
       
-      // Validate timestamp is a valid number
       if (typeof timestamp !== 'number' || isNaN(timestamp)) {
         console.warn('Invalid timestamp:', timestamp, 'for bar:', bar);
         continue;
       }
       
-      // Debug logging for first few bars
-      if (processedBars.length < 3) {
-        console.log('Processing bar:', bar);
+      // Debug logging for first few bars to understand the data format
+      if (processedBars.length < 5) {
+        console.log('=== Raw Bar Data ===');
+        console.log('Full bar:', bar);
         console.log('Raw timestamp:', timestamp);
-        console.log('As Date (seconds):', new Date(timestamp * 1000));
-        console.log('As Date (milliseconds):', new Date(timestamp));
+        console.log('As Date (assuming seconds):', new Date(timestamp * 1000));
+        console.log('As Date (assuming milliseconds):', new Date(timestamp));
+        console.log('Current year check - seconds format:', new Date(timestamp * 1000).getFullYear());
+        console.log('Current year check - milliseconds format:', new Date(timestamp).getFullYear());
       }
       
-      // Backend sends Unix timestamp in seconds, convert to milliseconds for Date objects
-      const timestampMs = timestamp < 1000000000000 ? timestamp * 1000 : timestamp;
+      // Try both interpretations and see which makes sense
+      const timestampSeconds = new Date(timestamp * 1000);
+      const timestampMilliseconds = new Date(timestamp);
       
-      // Validate timestamp is reasonable (within last 10 years to next year)
-      const now = Date.now();
-      const tenYearsAgo = now - (10 * 365 * 24 * 60 * 60 * 1000);
-      const oneYearFromNow = now + (365 * 24 * 60 * 60 * 1000);
-      
-      if (timestampMs < tenYearsAgo || timestampMs > oneYearFromNow) {
-        console.warn('Timestamp out of reasonable range:', timestamp, 'as date:', new Date(timestampMs));
+      // Use whichever gives us a reasonable year (between 2020-2030)
+      let finalTimestamp;
+      if (timestampSeconds.getFullYear() >= 2020 && timestampSeconds.getFullYear() <= 2030) {
+        finalTimestamp = timestamp * 1000; // Convert seconds to milliseconds
+      } else if (timestampMilliseconds.getFullYear() >= 2020 && timestampMilliseconds.getFullYear() <= 2030) {
+        finalTimestamp = timestamp; // Already in milliseconds
+      } else {
+        console.warn('Neither timestamp interpretation gives reasonable date:', {
+          seconds: timestampSeconds,
+          milliseconds: timestampMilliseconds,
+          raw: timestamp
+        });
         continue;
       }
 
-      // Validate all numeric fields
+      // Validate numeric fields
       const open = Number(bar.open);
       const high = Number(bar.high);
       const low = Number(bar.low);
@@ -122,7 +130,7 @@ export default function HistoricalChartPage() {
       }
 
       processedBars.push({
-        time: timestampMs, // Use milliseconds for Date compatibility
+        time: finalTimestamp,
         open,
         high,
         low,

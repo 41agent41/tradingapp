@@ -1,0 +1,10 @@
+[33m1357416[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m, [m[1;31morigin/master[m[33m, [m[1;31morigin/HEAD[m[33m)[m Fix timestamp conversion causing incorrect dates (years like 57554)
+[33m4cb6d11[m Fix indentation error in IB service logging
+[33m890fcaa[m Fix TypeScript compilation error in historical page
+[33m7e56ca6[m Fix timestamp and timezone issues for MSFT historical data
+[33m465d64c[m Improve responsive design for main page - enhanced spacing, typography, and layout for mobile/tablet/desktop
+[33ma6a3f2a[m Fix Time type handling for string values in chart components
+[33meebe06d[m Fix TypeScript compilation errors for Time type conversion in chart components
+[33m2449ce4[m Implement Phase 3: Dataframe Display with comprehensive UI improvements
+[33md0ecac9[m Add TradingView chart rendering to historical page - Create HistoricalChart component with candlestick and volume display - Replace success message with actual chart rendering - Add proper chart container and data visualization - Enable interactive candlestick chart with volume bars - Match MSFT page chart functionality for historical data
+[33m85dadb6[m Fix historical data processing - Handle string date format from IB Gateway - Add proper date parsing for 'YYYYMMDD HH:MM:SS' format - Fix timestamp conversion in all processing functions - Add error logging with bar date information - Resolve 'str object has no attribute timestamp' error - Enable successful processing of IB historical data

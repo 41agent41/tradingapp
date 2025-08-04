@@ -19,9 +19,14 @@ RUN pip install --upgrade pip setuptools wheel && \
 # Production stage
 FROM python:3.11-slim
 
-# Install runtime dependencies
+# Set timezone to UTC for consistent timestamp handling
+ENV TZ=UTC
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# Install runtime dependencies including timezone data
 RUN apt-get update && apt-get install -y \
     curl \
+    tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -61,6 +66,13 @@ EXPOSE 8000
 # Use environment variables for configuration
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+
+# Timezone configuration for consistent timestamp handling
+ENV TZ=UTC
+ENV IB_TIMEZONE=UTC
+ENV EXPECTED_TIMESTAMP_FORMAT=unix_seconds
+ENV DATA_TIMEZONE=UTC
+
 # IB configuration will come from docker-compose environment variables
 # ENV IB_HOST, IB_PORT, IB_CLIENT_ID set by docker-compose
 ENV IB_LOG_LEVEL=INFO

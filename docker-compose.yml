@@ -59,6 +59,14 @@ services:
       - IB_CLIENT_ID=${IB_CLIENT_ID:-1}
       - IB_TIMEOUT=${IB_TIMEOUT:-30}
       - IB_CORS_ORIGINS=${IB_CORS_ORIGINS:-http://localhost:3000}
+      # Timezone configuration for consistent timestamp handling
+      - TZ=UTC
+      - IB_TIMEZONE=${IB_TIMEZONE:-UTC}
+      - EXPECTED_TIMESTAMP_FORMAT=${EXPECTED_TIMESTAMP_FORMAT:-unix_seconds}
+      - DATA_TIMEZONE=${DATA_TIMEZONE:-UTC}
+      - IB_DATE_FORMAT=${IB_DATE_FORMAT:-YYYYMMDD}
+      - IB_TIME_FORMAT=${IB_TIME_FORMAT:-HHMMSS}
+      - IB_FORMAT_DATE=${IB_FORMAT_DATE:-2}
     ports:
       - "${IB_SERVICE_PORT:-8000}:8000"
     networks:

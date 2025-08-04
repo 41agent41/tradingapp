@@ -518,39 +518,41 @@ def convert_period(period: str) -> str:
     return period_map.get(period, '1 Y')
 
 def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDataResponse:
-    """Process IB bars into candlestick data with simple UTC timezone handling"""
+    """Process IB bars into candlestick data with simple timestamp handling"""
     candlesticks = []
     
     for bar in bars:
         try:
-            # Handle different date formats from IB - treat as UTC directly
+            # Simple approach: use bar.date directly if it's already a timestamp
             if isinstance(bar.date, str):
-                # String format like "20250725 23:30:00"
+                # IB Gateway string format like "20250804  19:16:21"
                 if ' ' in bar.date:
-                    # Parse as UTC datetime directly (IB Gateway times are effectively market times)
-                    bar_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
-                    bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
+                    # Parse the date string directly - no timezone conversion
+                    bar_datetime = datetime.strptime(bar.date.strip(), "%Y%m%d %H:%M:%S")
                 else:
-                    # Date only format like "20250725"
+                    # Date only format
                     bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
-                    bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
+                
+                # Convert to Unix timestamp directly (no timezone conversion)
+                timestamp = int(bar_datetime.timestamp())
+                
             elif isinstance(bar.date, (int, float)):
-                # Unix timestamp - assume UTC
-                bar_datetime = datetime.fromtimestamp(bar.date, timezone.utc)
+                # If it's already a number, use it directly
+                timestamp = int(bar.date)
+                
             else:
-                # Assume it's already a datetime object
-                if hasattr(bar.date, 'replace') and bar.date.tzinfo is None:
-                    bar_datetime = bar.date.replace(tzinfo=timezone.utc)
+                # If it's a datetime object, convert to timestamp
+                if hasattr(bar.date, 'timestamp'):
+                    timestamp = int(bar.date.timestamp())
                 else:
-                    bar_datetime = bar.date
+                    # Fallback: try to parse as string
+                    timestamp = int(datetime.strptime(str(bar.date), "%Y%m%d %H:%M:%S").timestamp())
             
-            # Create Unix timestamp
-            timestamp = int(bar_datetime.timestamp())
-            
-            # Debug logging for first few bars
+            # Log raw values for debugging
             if len(candlesticks) < 3:
-                logger.info(f"Bar date: {bar.date} -> datetime: {bar_datetime} -> timestamp: {timestamp}")
-                logger.info(f"Timestamp verification: {datetime.fromtimestamp(timestamp)}")
+                logger.info(f"Raw bar.date: {bar.date} (type: {type(bar.date)})")
+                logger.info(f"Converted timestamp: {timestamp}")
+                logger.info(f"Timestamp as date: {datetime.fromtimestamp(timestamp)}")
             
             candlestick = CandlestickBar(
                 timestamp=timestamp,
@@ -561,8 +563,10 @@ def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDa
                 volume=int(bar.volume)
             )
             candlesticks.append(candlestick)
+            
         except Exception as e:
-            logger.warning(f"Error processing bar: {e}, bar.date={bar.date}")
+            logger.error(f"Error processing bar: {e}")
+            logger.error(f"Bar data: date={bar.date}, open={bar.open}, high={bar.high}, low={bar.low}, close={bar.close}, volume={bar.volume}")
             continue
     
     # Sort bars by timestamp in descending order (newest first)
@@ -584,46 +588,37 @@ def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDa
     )
 
 def process_bars_with_date_range(bars, symbol: str, timeframe: str, start_date_str: str, end_date_str: str) -> HistoricalDataResponse:
-    """Process IB bars with date range filtering and simple UTC timezone handling"""
+    """Process IB bars with date range filtering - simple timestamp handling"""
     candlesticks = []
     
     start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
-    # Add one day to end_dt to include the entire end date
     end_dt = end_dt.replace(hour=23, minute=59, second=59)
     
     for bar in bars:
         try:
-            # Handle different date formats from IB - treat as UTC directly
+            # Simple approach: parse date without timezone conversion
             if isinstance(bar.date, str):
-                # String format like "20240101 09:30:00"
                 if ' ' in bar.date:
-                    # Parse as UTC datetime directly
-                    bar_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
-                    bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
-                    bar_datetime_naive = bar_datetime.replace(tzinfo=None)
+                    bar_datetime = datetime.strptime(bar.date.strip(), "%Y%m%d %H:%M:%S")
                 else:
-                    # Date only format like "20240101"
                     bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
-                    bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
-                    bar_datetime_naive = bar_datetime.replace(tzinfo=None)
-            elif isinstance(bar.date, (int, float)):
-                # Unix timestamp - assume UTC
-                bar_datetime = datetime.fromtimestamp(bar.date, timezone.utc)
-                bar_datetime_naive = bar_datetime.replace(tzinfo=None)
-            else:
-                # Assume it's already a datetime object
-                if hasattr(bar.date, 'replace') and bar.date.tzinfo is None:
-                    bar_datetime = bar.date.replace(tzinfo=timezone.utc)
-                    bar_datetime_naive = bar.date
-                else:
-                    bar_datetime = bar.date
-                    bar_datetime_naive = bar_datetime.replace(tzinfo=None) if bar_datetime.tzinfo else bar_datetime
-            
-            # Check if bar is within our date range
-            if start_dt <= bar_datetime_naive <= end_dt:
                 timestamp = int(bar_datetime.timestamp())
                 
+            elif isinstance(bar.date, (int, float)):
+                timestamp = int(bar.date)
+                bar_datetime = datetime.fromtimestamp(timestamp)
+                
+            else:
+                if hasattr(bar.date, 'timestamp'):
+                    timestamp = int(bar.date.timestamp())
+                    bar_datetime = bar.date
+                else:
+                    bar_datetime = datetime.strptime(str(bar.date), "%Y%m%d %H:%M:%S")
+                    timestamp = int(bar_datetime.timestamp())
+            
+            # Check if bar is within date range
+            if start_dt <= bar_datetime <= end_dt:
                 candlestick = CandlestickBar(
                     timestamp=timestamp,
                     open=float(bar.open),
@@ -633,8 +628,9 @@ def process_bars_with_date_range(bars, symbol: str, timeframe: str, start_date_s
                     volume=int(bar.volume)
                 )
                 candlesticks.append(candlestick)
+                
         except Exception as e:
-            logger.warning(f"Error processing bar for date range: {e}, bar.date={bar.date}")
+            logger.error(f"Error processing bar for date range: {e}, bar.date={bar.date}")
             continue
     
     # Sort bars by timestamp in descending order (newest first)
@@ -665,29 +661,26 @@ def process_bars_with_indicators(bars, symbol: str, timeframe: str, period: str,
                 if i == 0:  # Log first bar details for debugging
                     logger.info(f"Processing first bar: date={bar.date}, open={bar.open}, high={bar.high}, low={bar.low}, close={bar.close}, volume={bar.volume}")
                 
-                # Handle different date formats from IB - treat as UTC directly
+                # Simple timestamp handling - no timezone conversion
                 if isinstance(bar.date, str):
-                    # String format like "20250725 23:30:00"
                     if ' ' in bar.date:
-                        # Parse as UTC datetime directly
-                        bar_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
-                        bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
+                        bar_datetime = datetime.strptime(bar.date.strip(), "%Y%m%d %H:%M:%S")
                     else:
-                        # Date only format like "20250725"
                         bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
-                        bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
+                    timestamp = int(bar_datetime.timestamp())
+                    
                 elif isinstance(bar.date, (int, float)):
-                    # Unix timestamp - assume UTC
-                    bar_datetime = datetime.fromtimestamp(bar.date, timezone.utc)
+                    timestamp = int(bar.date)
+                    
                 else:
-                    # Assume it's already a datetime object
-                    if hasattr(bar.date, 'replace') and bar.date.tzinfo is None:
-                        bar_datetime = bar.date.replace(tzinfo=timezone.utc)
+                    if hasattr(bar.date, 'timestamp'):
+                        timestamp = int(bar.date.timestamp())
                     else:
-                        bar_datetime = bar.date
+                        bar_datetime = datetime.strptime(str(bar.date), "%Y%m%d %H:%M:%S")
+                        timestamp = int(bar_datetime.timestamp())
                 
                 bars_data.append({
-                    'timestamp': int(bar_datetime.timestamp()),
+                    'timestamp': timestamp,
                     'open': float(bar.open),
                     'high': float(bar.high),
                     'low': float(bar.low),
@@ -784,35 +777,30 @@ def process_bars_with_date_range_and_indicators(bars, symbol: str, timeframe: st
         bars_data = []
         for bar in bars:
             try:
-                # Handle different date formats from IB - treat as UTC directly
+                # Simple timestamp handling - no timezone conversion
                 if isinstance(bar.date, str):
                     if ' ' in bar.date:
-                        # Parse as UTC datetime directly
-                        bar_datetime = datetime.strptime(bar.date, "%Y%m%d %H:%M:%S")
-                        bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
-                        bar_datetime_naive = bar_datetime.replace(tzinfo=None)
+                        bar_datetime = datetime.strptime(bar.date.strip(), "%Y%m%d %H:%M:%S")
                     else:
-                        # Date only format like "20240101"
                         bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
-                        bar_datetime = bar_datetime.replace(tzinfo=timezone.utc)
-                        bar_datetime_naive = bar_datetime.replace(tzinfo=None)
+                    timestamp = int(bar_datetime.timestamp())
+                    
                 elif isinstance(bar.date, (int, float)):
-                    # Unix timestamp - assume UTC
-                    bar_datetime = datetime.fromtimestamp(bar.date, timezone.utc)
-                    bar_datetime_naive = bar_datetime.replace(tzinfo=None)
+                    timestamp = int(bar.date)
+                    bar_datetime = datetime.fromtimestamp(timestamp)
+                    
                 else:
-                    # Assume it's already a datetime object
-                    if hasattr(bar.date, 'replace') and bar.date.tzinfo is None:
-                        bar_datetime = bar.date.replace(tzinfo=timezone.utc)
-                        bar_datetime_naive = bar.date
-                    else:
+                    if hasattr(bar.date, 'timestamp'):
+                        timestamp = int(bar.date.timestamp())
                         bar_datetime = bar.date
-                        bar_datetime_naive = bar_datetime.replace(tzinfo=None) if bar_datetime.tzinfo else bar_datetime
+                    else:
+                        bar_datetime = datetime.strptime(str(bar.date), "%Y%m%d %H:%M:%S")
+                        timestamp = int(bar_datetime.timestamp())
                 
                 # Check if bar is within our date range
-                if start_dt <= bar_datetime_naive <= end_dt:
+                if start_dt <= bar_datetime <= end_dt:
                     bars_data.append({
-                        'timestamp': int(bar_datetime.timestamp()),
+                        'timestamp': timestamp,
                         'open': float(bar.open),
                         'high': float(bar.high),
                         'low': float(bar.low),
@@ -934,6 +922,40 @@ async def health_check():
         "version": "4.0.0",
         "timestamp": datetime.now().isoformat(),
         "note": "Service is running - IB Gateway connection tested only when endpoints are called"
+    }
+
+# Timezone configuration endpoint for debugging
+@app.get("/timezone-info")
+async def timezone_info():
+    """Get timezone and timestamp configuration information for debugging"""
+    import time
+    
+    current_time = datetime.now()
+    current_utc = datetime.utcnow()
+    
+    return {
+        "timezone_config": {
+            "system_timezone": os.getenv('TZ', 'Not set'),
+            "ib_timezone": os.getenv('IB_TIMEZONE', 'Not set'),
+            "expected_format": os.getenv('EXPECTED_TIMESTAMP_FORMAT', 'Not set'),
+            "data_timezone": os.getenv('DATA_TIMEZONE', 'Not set'),
+            "ib_format_date": os.getenv('IB_FORMAT_DATE', 'Not set'),
+        },
+        "current_timestamps": {
+            "local_time": current_time.isoformat(),
+            "utc_time": current_utc.isoformat(),
+            "unix_timestamp_seconds": int(current_time.timestamp()),
+            "unix_timestamp_milliseconds": int(current_time.timestamp() * 1000),
+        },
+        "test_timestamps": {
+            "seconds_interpretation": datetime.fromtimestamp(int(current_time.timestamp())).isoformat(),
+            "milliseconds_interpretation": datetime.fromtimestamp(int(current_time.timestamp() * 1000) / 1000).isoformat(),
+        },
+        "configuration_status": {
+            "timezone_properly_set": os.getenv('TZ') == 'UTC',
+            "ib_format_configured": os.getenv('IB_FORMAT_DATE') == '2',
+            "timestamp_format_correct": os.getenv('EXPECTED_TIMESTAMP_FORMAT') == 'unix_seconds',
+        }
     }
 
 # Root endpoint
@@ -1156,7 +1178,10 @@ async def get_historical_data(
         # Clear previous historical data
         ib.historical_data = []
         
-        # Request historical data
+        # Request historical data with Unix timestamp format
+        # formatDate: 1 for YYYYMMDD HH:MM:SS format, 2 for Unix timestamp format
+        format_date = int(os.getenv('IB_FORMAT_DATE', '2'))  # Default to Unix timestamp
+        
         ib.reqHistoricalData(
             2,  # reqId
             qualified_contract,
@@ -1165,10 +1190,12 @@ async def get_historical_data(
             ib_timeframe,
             'TRADES',
             1,  # useRTH
-            1,  # formatDate
+            format_date,  # formatDate: 2 for Unix timestamp format
             False,  # keepUpToDate
             []  # chartOptions
         )
+        
+        logger.info(f"Requested historical data with formatDate={format_date} ({'Unix timestamp' if format_date == 2 else 'String format'})")
         
         # Wait for data with longer timeout and retry logic
         max_wait_time = 15  # seconds
