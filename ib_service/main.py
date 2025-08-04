@@ -570,11 +570,11 @@ def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDa
     # Sort bars by timestamp in descending order (newest first)
     candlesticks.sort(key=lambda x: x.timestamp, reverse=True)
     
-            logger.info(f"Processed {len(candlesticks)} bars for {symbol} {timeframe} {period}")
-        if candlesticks:
-            logger.info(f"Date range: {datetime.fromtimestamp(candlesticks[-1].timestamp)} to {datetime.fromtimestamp(candlesticks[0].timestamp)}")
-            logger.info(f"Sample timestamps: {candlesticks[0].timestamp} (newest), {candlesticks[-1].timestamp} (oldest)")
-            logger.info(f"Sample dates: {datetime.fromtimestamp(candlesticks[0].timestamp).strftime('%Y-%m-%d %H:%M:%S')} (newest), {datetime.fromtimestamp(candlesticks[-1].timestamp).strftime('%Y-%m-%d %H:%M:%S')} (oldest)")
+    logger.info(f"Processed {len(candlesticks)} bars for {symbol} {timeframe} {period}")
+    if candlesticks:
+        logger.info(f"Date range: {datetime.fromtimestamp(candlesticks[-1].timestamp)} to {datetime.fromtimestamp(candlesticks[0].timestamp)}")
+        logger.info(f"Sample timestamps: {candlesticks[0].timestamp} (newest), {candlesticks[-1].timestamp} (oldest)")
+        logger.info(f"Sample dates: {datetime.fromtimestamp(candlesticks[0].timestamp).strftime('%Y-%m-%d %H:%M:%S')} (newest), {datetime.fromtimestamp(candlesticks[-1].timestamp).strftime('%Y-%m-%d %H:%M:%S')} (oldest)")
     
     return HistoricalDataResponse(
         symbol=symbol,
