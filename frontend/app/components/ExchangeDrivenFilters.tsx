@@ -60,7 +60,7 @@ const CURRENCIES = {
 };
 
 // Popular symbols by exchange and security type
-const POPULAR_SYMBOLS = {
+const POPULAR_SYMBOLS: Record<string, Record<string, string[]>> = {
   'NASDAQ': {
     'STK': ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX', 'ADBE', 'CRM'],
     'ETF': ['QQQ', 'TQQQ', 'SQQQ', 'XLK', 'XLF', 'XLE', 'XLV', 'XLI', 'XLU', 'XLY']
@@ -114,7 +114,9 @@ export default function ExchangeDrivenFilters({ onFiltersChange, disabled = fals
 
   // Get popular symbols for selected exchange and secType
   const getPopularSymbols = () => {
-    return POPULAR_SYMBOLS[filters.exchange]?.[filters.secType] || [];
+    const exchangeSymbols = POPULAR_SYMBOLS[filters.exchange];
+    if (!exchangeSymbols) return [];
+    return exchangeSymbols[filters.secType] || [];
   };
 
   // Update filters and notify parent
