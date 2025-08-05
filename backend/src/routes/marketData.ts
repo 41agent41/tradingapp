@@ -674,4 +674,55 @@ router.post('/unsubscribe', async (req: Request, res: Response) => {
   }
 });
 
+// Get available technical indicators
+router.get('/indicators/available', async (req: Request, res: Response) => {
+  try {
+    // Check if data querying is enabled
+    if (!isDataQueryEnabled(req)) {
+      return handleDisabledDataQuery(res, 'Technical indicators querying is disabled');
+    }
+
+    const response = await axios.get(`${IB_SERVICE_URL}/indicators/available`, {
+      timeout: 10000 // 10 second timeout
+    });
+
+    if (response.data.error) {
+      return res.status(500).json({
+        error: 'IB Service returned error',
+        detail: response.data.error,
+        ib_service_url: `${IB_SERVICE_URL}/indicators/available`
+      });
+    }
+
+    res.json(response.data);
+
+  } catch (error: any) {
+    console.error('Error fetching available indicators:', error);
+    
+    let errorMessage = 'Unknown error';
+    let statusCode = 500;
+    
+    if (error.code === 'ECONNREFUSED') {
+      errorMessage = 'IB Service connection refused - service may be starting up';
+      statusCode = 503;
+    } else if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) {
+      errorMessage = 'IB Service timeout - service may be busy';
+      statusCode = 504;
+    } else if (error.response) {
+      errorMessage = error.response.data?.detail || error.response.statusText || 'IB Service error';
+      statusCode = error.response.status;
+    } else {
+      errorMessage = error.message || 'Failed to connect to IB Service';
+    }
+    
+    res.status(statusCode).json({
+      error: 'Failed to fetch available technical indicators',
+      detail: errorMessage,
+      ib_service_status: statusCode,
+      ib_service_url: `${IB_SERVICE_URL}/indicators/available`,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 export default router; 

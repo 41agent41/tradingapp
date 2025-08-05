@@ -5,6 +5,9 @@ import { useTradingAccount } from '../contexts/TradingAccountContext';
 import DataSwitch from '../components/DataSwitch';
 import HistoricalChart from '../components/HistoricalChart';
 import BackToHome from '../components/BackToHome';
+import ExchangeDrivenFilters from '../components/ExchangeDrivenFilters';
+import PeriodDateFilters from '../components/PeriodDateFilters';
+import TechnicalIndicatorsFilter from '../components/TechnicalIndicatorsFilter';
 
 interface HistoricalData {
   symbol: string;
@@ -27,8 +30,26 @@ interface ProcessedBar {
 
 export default function HistoricalChartPage() {
   const { isLiveTrading, accountMode, dataType } = useTradingAccount();
-  const [selectedSymbol, setSelectedSymbol] = useState('MSFT');
-  const [timeframe, setTimeframe] = useState('1hour'); // Changed default to match backend
+  
+  // Enhanced filter state
+  const [exchangeFilters, setExchangeFilters] = useState({
+    region: 'US' as 'US' | 'AU',
+    exchange: 'SMART',
+    secType: 'STK',
+    symbol: 'MSFT',
+    currency: 'USD',
+    searchTerm: ''
+  });
+  
+  const [periodFilters, setPeriodFilters] = useState({
+    period: '3M',
+    startDate: '',
+    endDate: '',
+    useDateRange: false
+  });
+  
+  const [selectedIndicators, setSelectedIndicators] = useState<string[]>([]);
+  const [timeframe, setTimeframe] = useState('1hour');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [chartData, setChartData] = useState<HistoricalData | null>(null);
@@ -54,8 +75,6 @@ export default function HistoricalChartPage() {
     { label: '8 Hours', value: '8hour' },
     { label: '1 Day', value: '1day' }
   ];
-
-  const popularSymbols = ['MSFT', 'AAPL', 'GOOGL', 'TSLA', 'AMZN', 'NVDA', 'META', 'NFLX'];
 
   // Handle data switch toggle
   const handleDataSwitchToggle = (enabled: boolean) => {
@@ -167,11 +186,22 @@ export default function HistoricalChartPage() {
 
       // Build query parameters
       const params = new URLSearchParams({
-        symbol: selectedSymbol,
+        symbol: exchangeFilters.symbol,
         timeframe: timeframe,
-        period: '3M', // Default to 3 months for historical data
+        period: periodFilters.useDateRange ? 'CUSTOM' : periodFilters.period,
         account_mode: accountMode
       });
+
+      // Add date range if using custom dates
+      if (periodFilters.useDateRange && periodFilters.startDate && periodFilters.endDate) {
+        params.append('start_date', periodFilters.startDate);
+        params.append('end_date', periodFilters.endDate);
+      }
+
+      // Add indicators if selected
+      if (selectedIndicators.length > 0) {
+        params.append('indicators', selectedIndicators.join(','));
+      }
 
       const url = `${apiUrl}/api/market-data/history?${params.toString()}`;
       
@@ -246,8 +276,8 @@ export default function HistoricalChartPage() {
       return;
     }
     
-    if (!selectedSymbol.trim()) {
-      setError('Please enter a valid symbol');
+    if (!exchangeFilters.symbol.trim()) {
+      setError('Please select a valid symbol');
       return;
     }
     
@@ -299,68 +329,70 @@ export default function HistoricalChartPage() {
           />
         </div>
 
-        {/* Controls */}
+        {/* Enhanced Filters */}
         <div className="mb-6 sm:mb-8 bg-white rounded-lg shadow-sm border p-4 sm:p-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-            {/* Symbol Selection */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Exchange-Driven Filters */}
             <div>
-              <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
-                Symbol
-              </label>
-              <input
-                type="text"
-                value={selectedSymbol}
-                onChange={(e) => setSelectedSymbol(e.target.value.toUpperCase())}
-                className="w-full px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Enter symbol..."
+              <h3 className="text-sm font-medium text-gray-900 mb-4">Market & Symbol</h3>
+              <ExchangeDrivenFilters
+                onFiltersChange={setExchangeFilters}
                 disabled={!dataQueryEnabled}
               />
-              <div className="mt-2 flex flex-wrap gap-1">
-                {popularSymbols.map((symbol) => (
-                  <button
-                    key={symbol}
-                    onClick={() => setSelectedSymbol(symbol)}
-                    disabled={!dataQueryEnabled}
-                    className={`px-2 py-1 text-xs rounded ${
-                      selectedSymbol === symbol
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                    } ${!dataQueryEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  >
-                    {symbol}
-                  </button>
-                ))}
-              </div>
             </div>
 
-            {/* Timeframe Selection */}
+            {/* Period & Date Filters */}
             <div>
-              <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
-                Timeframe
-              </label>
-              <select
-                value={timeframe}
-                onChange={(e) => setTimeframe(e.target.value)}
-                className="w-full px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              <h3 className="text-sm font-medium text-gray-900 mb-4">Time Period</h3>
+              <PeriodDateFilters
+                onFiltersChange={setPeriodFilters}
                 disabled={!dataQueryEnabled}
-              >
-                {timeframes.map((tf) => (
-                  <option key={tf.value} value={tf.value}>
-                    {tf.label}
-                  </option>
-                ))}
-              </select>
+              />
             </div>
 
-            {/* Action Button */}
-            <div className="flex items-end">
-              <button
-                onClick={handleLoadData}
-                disabled={isLoading || !dataQueryEnabled}
-                className="w-full px-3 sm:px-4 py-2 text-xs sm:text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isLoading ? 'Loading...' : 'Load Historical Data'}
-              </button>
+            {/* Timeframe & Action */}
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-sm font-medium text-gray-900 mb-4">Chart Settings</h3>
+                
+                {/* Timeframe Selection */}
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Timeframe
+                  </label>
+                  <select
+                    value={timeframe}
+                    onChange={(e) => setTimeframe(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={!dataQueryEnabled}
+                  >
+                    {timeframes.map((tf) => (
+                      <option key={tf.value} value={tf.value}>
+                        {tf.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Technical Indicators */}
+                <div>
+                  <TechnicalIndicatorsFilter
+                    onIndicatorsChange={setSelectedIndicators}
+                    disabled={!dataQueryEnabled}
+                  />
+                </div>
+
+                {/* Action Button */}
+                <div className="mt-6">
+                  <button
+                    onClick={handleLoadData}
+                    disabled={isLoading || !dataQueryEnabled}
+                    className="w-full px-4 py-3 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                  >
+                    {isLoading ? 'Loading...' : 'Load Historical Data'}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -385,10 +417,10 @@ export default function HistoricalChartPage() {
         <div className="bg-white rounded-lg shadow-sm border p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-medium text-gray-900">
-              Historical Chart: {selectedSymbol}
+              Historical Chart: {exchangeFilters.symbol}
             </h2>
             <div className="text-sm text-gray-500">
-              Timeframe: {timeframes.find(tf => tf.value === timeframe)?.label}
+              {exchangeFilters.exchange} - {exchangeFilters.secType} | Timeframe: {timeframes.find(tf => tf.value === timeframe)?.label}
               {lastUpdate && (
                 <span className="ml-4">
                   Last update: {formatTime(lastUpdate)}
@@ -444,7 +476,7 @@ export default function HistoricalChartPage() {
                 <p className="text-gray-600">Historical chart will be displayed here</p>
                 <p className="text-sm text-gray-500 mt-2">
                   {dataQueryEnabled 
-                    ? `Select a symbol and timeframe, then click "Load Historical Data" to fetch data from IB Gateway`
+                    ? `Select market, symbol, and timeframe, then click "Load Historical Data" to fetch data from IB Gateway`
                     : 'Enable data querying to load historical data from IB Gateway'
                   }
                 </p>
