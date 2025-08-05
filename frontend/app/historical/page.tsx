@@ -136,6 +136,15 @@ export default function HistoricalChartPage() {
       });
     }
     
+    // Sort by timestamp in ascending order (oldest first) - required by TradingView
+    processedBars.sort((a, b) => a.time - b.time);
+    
+    console.log('Processed and sorted bars:', processedBars.length);
+    if (processedBars.length > 0) {
+      console.log('First bar (oldest):', new Date(processedBars[0].time * 1000));
+      console.log('Last bar (newest):', new Date(processedBars[processedBars.length - 1].time * 1000));
+    }
+    
     return processedBars;
   };
 

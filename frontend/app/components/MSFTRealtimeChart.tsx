@@ -442,6 +442,10 @@ export default function MSFTRealtimeChart() {
 
       console.log('Formatted', formattedData.length, 'valid bars');
 
+      // Sort by timestamp in ascending order (oldest first) - required by TradingView
+      formattedData.sort((a, b) => (a.time as number) - (b.time as number));
+      console.log('Sorted data for TradingView chart');
+
       setChartData(formattedData);
       setLastHistoricalUpdate(new Date());
 

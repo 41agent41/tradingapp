@@ -263,10 +263,13 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
           close: bar.close,
           volume: bar.volume,
         };
-      }).filter((bar: CandlestickData | null) => 
+            }).filter((bar: CandlestickData | null) =>
         bar !== null && !isNaN(bar.open) && !isNaN(bar.high) && !isNaN(bar.low) && !isNaN(bar.close)
       ) || [];
-      
+
+      // Sort by timestamp in ascending order (oldest first) - required by TradingView
+      formattedData.sort((a, b) => (a.time as number) - (b.time as number));
+
       setChartData(formattedData);
       
       // Update chart series
