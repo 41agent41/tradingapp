@@ -41,10 +41,15 @@ export default function HistoricalChartPage() {
     searchTerm: ''
   });
   
-  const [periodFilters, setPeriodFilters] = useState({
+  const [periodFilters, setPeriodFilters] = useState<{
+    period: string;
+    startDate?: string;
+    endDate?: string;
+    useDateRange: boolean;
+  }>({
     period: '3M',
-    startDate: '',
-    endDate: '',
+    startDate: undefined,
+    endDate: undefined,
     useDateRange: false
   });
   
