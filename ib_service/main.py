@@ -1071,7 +1071,10 @@ async def get_historical_data(
     account_mode: str = "paper",
     start_date: str = None,
     end_date: str = None,
-    indicators: str = None
+    indicators: str = None,
+    secType: str = "STK",
+    exchange: str = "SMART",
+    currency: str = "USD"
 ):
     """Get historical market data with support for date ranges and technical indicators"""
     try:
@@ -1145,7 +1148,8 @@ async def get_historical_data(
         logger.info(f"IB connection verified - connected: {ib.isConnected()}")
         
         # Create contract
-        contract = create_contract(symbol.upper())
+        contract = create_contract(symbol.upper(), secType, exchange, currency)
+        logger.info(f"Requesting historical data for contract: {symbol} ({secType}) on {exchange} in {currency}")
         
         # Clear previous contract details
         ib.contracts = []

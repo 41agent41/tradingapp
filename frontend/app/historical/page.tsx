@@ -194,7 +194,10 @@ export default function HistoricalChartPage() {
         symbol: exchangeFilters.symbol,
         timeframe: timeframe,
         period: periodFilters.useDateRange ? 'CUSTOM' : periodFilters.period,
-        account_mode: accountMode
+        account_mode: accountMode,
+        secType: exchangeFilters.secType,
+        exchange: exchangeFilters.exchange,
+        currency: exchangeFilters.currency
       });
 
       // Add date range if using custom dates

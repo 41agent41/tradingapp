@@ -362,10 +362,13 @@ router.get('/history', async (req: Request, res: Response) => {
       return handleDisabledDataQuery(res, 'Historical market data querying is disabled');
     }
 
-    const { symbol, timeframe, period, account_mode, start_date, end_date } = req.query as Partial<MarketDataQuery & { 
+    const { symbol, timeframe, period, account_mode, start_date, end_date, secType, exchange, currency } = req.query as Partial<MarketDataQuery & { 
       account_mode?: string;
       start_date?: string;
       end_date?: string;
+      secType?: string;
+      exchange?: string;
+      currency?: string;
     }>;
 
     // Validate required parameters
@@ -373,8 +376,8 @@ router.get('/history', async (req: Request, res: Response) => {
       return res.status(400).json({
         error: 'Missing required parameters',
         required: ['symbol', 'timeframe'],
-        optional: ['period', 'start_date', 'end_date'],
-        received: { symbol, timeframe, period, start_date, end_date }
+        optional: ['period', 'start_date', 'end_date', 'secType', 'exchange', 'currency'],
+        received: { symbol, timeframe, period, start_date, end_date, secType, exchange, currency }
       });
     }
 
@@ -460,6 +463,17 @@ router.get('/history', async (req: Request, res: Response) => {
       timeframe,
       account_mode: accountMode
     };
+
+    // Add optional contract details
+    if (secType) {
+      ibServiceParams.secType = secType;
+    }
+    if (exchange) {
+      ibServiceParams.exchange = exchange;
+    }
+    if (currency) {
+      ibServiceParams.currency = currency;
+    }
 
     // Add either period or date range parameters
     if (hasDateRange) {
