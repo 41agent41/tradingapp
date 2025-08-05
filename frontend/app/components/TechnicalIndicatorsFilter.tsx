@@ -57,7 +57,7 @@ export default function TechnicalIndicatorsFilter({ onIndicatorsChange, disabled
           return;
         }
 
-        const response = await fetch(`${apiUrl}/indicators/available`);
+        const response = await fetch(`${apiUrl}/api/market-data/indicators/available`);
         if (response.ok) {
           const data = await response.json();
           // Transform API response to match our structure
