@@ -9,12 +9,11 @@ interface TechnicalIndicatorsFilterProps {
 
 interface Indicator {
   name: string;
-  category: string;
   description: string;
   parameters?: string[];
 }
 
-const INDICATOR_CATEGORIES = {
+const INDICATOR_CATEGORIES: Record<string, Indicator[]> = {
   'Trend Indicators': [
     { name: 'sma_20', description: 'Simple Moving Average (20 periods)', parameters: ['20'] },
     { name: 'sma_50', description: 'Simple Moving Average (50 periods)', parameters: ['50'] },
