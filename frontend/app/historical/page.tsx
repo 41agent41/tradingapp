@@ -98,24 +98,21 @@ export default function HistoricalChartPage() {
         console.log('Current year check - milliseconds format:', new Date(timestamp).getFullYear());
       }
       
-      // Try both interpretations and see which makes sense
-      const timestampSeconds = new Date(timestamp * 1000);
-      const timestampMilliseconds = new Date(timestamp);
+      // Backend sends Unix timestamps in seconds, validate they're reasonable
+      const timestampAsDate = new Date(timestamp * 1000);
       
-      // Use whichever gives us a reasonable year (between 2020-2030)
-      let finalTimestamp;
-      if (timestampSeconds.getFullYear() >= 2020 && timestampSeconds.getFullYear() <= 2030) {
-        finalTimestamp = timestamp * 1000; // Convert seconds to milliseconds
-      } else if (timestampMilliseconds.getFullYear() >= 2020 && timestampMilliseconds.getFullYear() <= 2030) {
-        finalTimestamp = timestamp; // Already in milliseconds
-      } else {
-        console.warn('Neither timestamp interpretation gives reasonable date:', {
-          seconds: timestampSeconds,
-          milliseconds: timestampMilliseconds,
-          raw: timestamp
+      // Validate timestamp represents a date between 2020-2030
+      if (timestampAsDate.getFullYear() < 2020 || timestampAsDate.getFullYear() > 2030) {
+        console.warn('Timestamp out of reasonable range:', {
+          timestamp: timestamp,
+          interpretedDate: timestampAsDate,
+          year: timestampAsDate.getFullYear()
         });
         continue;
       }
+      
+      // Keep timestamp in seconds format (consistent with chart components)
+      const finalTimestamp = timestamp;
 
       // Validate numeric fields
       const open = Number(bar.open);
