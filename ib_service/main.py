@@ -2281,18 +2281,21 @@ async def discover_symbols(request: SymbolDiscoveryRequest):
             # Support wildcard pattern matching
             search_patterns = []
             if len(pattern) == 1:
-                # Single letter: try A*, AA*, AAA*
-                search_patterns = [f"{pattern}*", f"{pattern}{pattern}*"]
+                # Single letter: try exact first, then wildcards
+                search_patterns = [pattern, f"{pattern}*"]
             elif len(pattern) >= 2:
                 # Multiple letters: try exact and wildcard
                 search_patterns = [pattern, f"{pattern}*"]
             else:
                 search_patterns = [pattern]
             
+            # Collect all contracts from all search patterns
+            all_contracts = []
+            
             for search_pattern in search_patterns:
                 contract = create_contract(search_pattern, request.secType, request.exchange, request.currency)
                 
-                # Clear previous results
+                # Clear previous results for this specific search
                 ib.contracts = []
                 
                 # Request contract details
@@ -2301,36 +2304,46 @@ async def discover_symbols(request: SymbolDiscoveryRequest):
                 
                 logger.info(f"Found {len(ib.contracts)} contracts for pattern: {search_pattern}")
                 
+                # Collect all contracts from this search
                 if ib.contracts:
-                    for contract in ib.contracts:
-                        # Filter results to match the original pattern (case-insensitive)
-                        if pattern.lower() in contract.symbol.lower():
-                            # Extract company name (consistent with existing endpoint)
-                            company_name = getattr(contract, 'longName', '') or contract.symbol
-                            
-                            result = {
-                                "symbol": contract.symbol,
-                                "company_name": company_name,
-                                "description": f"{contract.symbol} - {company_name}",
-                                "secType": contract.secType,
-                                "exchange": contract.exchange,
-                                "currency": contract.currency,
-                                "conid": str(getattr(contract, 'conId', '')),
-                                "primary_exchange": getattr(contract, 'primaryExchange', ''),
-                                "local_symbol": getattr(contract, 'localSymbol', ''),
-                                "trading_class": getattr(contract, 'tradingClass', ''),
-                                "method": "reqContractDetails"
-                            }
-                            
-                            # Avoid duplicates
-                            if not any(r['symbol'] == result['symbol'] for r in results):
-                                results.append(result)
-                            
-                            logger.info(f"Found matching contract: {contract.symbol} ({contract.secType}) on {contract.exchange}")
+                    all_contracts.extend(ib.contracts)
                 
-                # Stop if we have enough results
-                if len(results) >= request.max_results:
+                # Stop early if we have lots of contracts already
+                if len(all_contracts) >= request.max_results * 2:  # Get extra to allow for filtering
+                    logger.info(f"Early stop: collected {len(all_contracts)} contracts")
                     break
+            
+            # Now process all collected contracts
+            logger.info(f"Processing {len(all_contracts)} total contracts from all search patterns")
+            
+            for contract in all_contracts:
+                # Filter results to match the original pattern (case-insensitive)
+                if pattern.lower() in contract.symbol.lower():
+                    # Extract company name (consistent with existing endpoint)
+                    company_name = getattr(contract, 'longName', '') or contract.symbol
+                    
+                    result = {
+                        "symbol": contract.symbol,
+                        "company_name": company_name,
+                        "description": f"{contract.symbol} - {company_name}",
+                        "secType": contract.secType,
+                        "exchange": contract.exchange,
+                        "currency": contract.currency,
+                        "conid": str(getattr(contract, 'conId', '')),
+                        "primary_exchange": getattr(contract, 'primaryExchange', ''),
+                        "local_symbol": getattr(contract, 'localSymbol', ''),
+                        "trading_class": getattr(contract, 'tradingClass', ''),
+                        "method": "reqContractDetails"
+                    }
+                    
+                    # Avoid duplicates by symbol
+                    if not any(r['symbol'] == result['symbol'] for r in results):
+                        results.append(result)
+                        logger.info(f"Added to results: {contract.symbol} ({contract.secType}) on {contract.exchange}")
+                    
+                    # Stop if we have enough results
+                    if len(results) >= request.max_results:
+                        break
             
             if results:
                 method_used = "reqContractDetails"
