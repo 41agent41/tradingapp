@@ -188,9 +188,9 @@ export default function ExchangeDrivenFilters({ onFiltersChange, disabled = fals
     onFiltersChange(newFilters);
   };
 
-  // Search for symbols
+  // Enhanced symbol search using the new discovery endpoint
   const searchSymbols = async (searchTerm: string) => {
-    if (!searchTerm || searchTerm.length < 2) {
+    if (!searchTerm || searchTerm.length < 1) {
       setSearchResults([]);
       return;
     }
@@ -202,29 +202,60 @@ export default function ExchangeDrivenFilters({ onFiltersChange, disabled = fals
         throw new Error('API URL not configured');
       }
 
-      const response = await fetch(`${apiUrl}/api/market-data/search`, {
+      // Use the new enhanced symbol discovery endpoint
+      const response = await fetch(`${apiUrl}/api/market-data/symbols/discover`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          symbol: searchTerm,
+          pattern: searchTerm,
           secType: filters.secType,
           exchange: filters.exchange,
           currency: filters.currency,
+          max_results: 20,
+          use_fallback: true,
           account_mode: 'paper'
         })
       });
 
       if (response.ok) {
         const data = await response.json();
+        console.log(`Symbol discovery: Found ${data.count} results using ${data.method}${data.cached ? ' (cached)' : ''}`);
         setSearchResults(data.results || []);
       } else {
-        console.error('Search failed:', response.statusText);
-        setSearchResults([]);
+        console.error('Symbol discovery failed:', response.statusText);
+        
+        // Fallback to the old search method if the new one fails
+        try {
+          const fallbackResponse = await fetch(`${apiUrl}/api/market-data/search`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              symbol: searchTerm,
+              secType: filters.secType,
+              exchange: filters.exchange,
+              currency: filters.currency,
+              account_mode: 'paper'
+            })
+          });
+
+          if (fallbackResponse.ok) {
+            const fallbackData = await fallbackResponse.json();
+            console.log('Fallback search successful');
+            setSearchResults(fallbackData.results || []);
+          } else {
+            setSearchResults([]);
+          }
+        } catch (fallbackError) {
+          console.error('Fallback search also failed:', fallbackError);
+          setSearchResults([]);
+        }
       }
     } catch (error) {
-      console.error('Error searching symbols:', error);
+      console.error('Error in symbol discovery:', error);
       setSearchResults([]);
     } finally {
       setIsSearching(false);
@@ -234,12 +265,12 @@ export default function ExchangeDrivenFilters({ onFiltersChange, disabled = fals
   // Debounced search
   useEffect(() => {
     const timeoutId = setTimeout(() => {
-      if (filters.searchTerm && filters.searchTerm.length >= 2) {
+      if (filters.searchTerm && filters.searchTerm.length >= 1) {
         searchSymbols(filters.searchTerm);
       } else {
         setSearchResults([]);
       }
-    }, 300);
+    }, 500); // Increased debounce time for better performance
 
     return () => clearTimeout(timeoutId);
   }, [filters.searchTerm, filters.exchange, filters.secType, filters.currency]);

@@ -739,4 +739,106 @@ router.get('/indicators/available', async (req: Request, res: Response) => {
   }
 });
 
+// Enhanced Symbol Discovery Endpoint
+router.post('/symbols/discover', async (req: Request, res: Response) => {
+  try {
+    const { pattern, secType, exchange, currency, max_results, use_fallback, account_mode } = req.body;
+
+    // Validate required parameters
+    if (!pattern) {
+      return res.status(400).json({
+        error: 'Missing required parameter: pattern',
+        required: ['pattern'],
+        optional: ['secType', 'exchange', 'currency', 'max_results', 'use_fallback', 'account_mode']
+      });
+    }
+
+    console.log(`Symbol discovery for pattern: ${pattern} (${secType}) on ${exchange}`);
+
+    // Request symbol discovery from IB service
+    const discoveryPayload = {
+      pattern: pattern.trim(),
+      secType: secType || 'STK',
+      exchange: exchange || 'SMART',
+      currency: currency || 'USD',
+      max_results: max_results || 50,
+      use_fallback: use_fallback !== false, // Default to true
+      account_mode: account_mode || 'paper'
+    };
+
+    const response = await axios.post(`${IB_SERVICE_URL}/symbols/discover`, discoveryPayload, {
+      timeout: 15000 // 15 second timeout for symbol discovery
+    });
+
+    if (response.data.error) {
+      return res.status(500).json({
+        error: 'IB Service returned error',
+        detail: response.data.error,
+        ib_service_url: `${IB_SERVICE_URL}/symbols/discover`
+      });
+    }
+
+    // Return the discovery results
+    res.json({
+      pattern: discoveryPayload.pattern,
+      secType: discoveryPayload.secType,
+      exchange: discoveryPayload.exchange,
+      currency: discoveryPayload.currency,
+      results: response.data.results || [],
+      count: response.data.count || 0,
+      method: response.data.method || 'none',
+      cached: response.data.cached || false,
+      source: 'Interactive Brokers',
+      last_updated: new Date().toISOString()
+    });
+
+  } catch (error: any) {
+    console.error('Error in symbol discovery:', error);
+    
+    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
+    const statusCode = error.response?.status || 500;
+    
+    res.status(statusCode).json({
+      error: 'Failed to discover symbols',
+      detail: errorMessage,
+      ib_service_status: statusCode,
+      ib_service_url: `${IB_SERVICE_URL}/symbols/discover`,
+      pattern: req.body.pattern
+    });
+  }
+});
+
+// Cache management endpoints
+router.get('/symbols/cache/stats', async (req: Request, res: Response) => {
+  try {
+    const response = await axios.get(`${IB_SERVICE_URL}/symbols/cache/stats`, {
+      timeout: 10000
+    });
+
+    res.json(response.data);
+  } catch (error: any) {
+    console.error('Error getting cache stats:', error);
+    res.status(500).json({
+      error: 'Failed to get cache statistics',
+      detail: error.message
+    });
+  }
+});
+
+router.post('/symbols/cache/clear', async (req: Request, res: Response) => {
+  try {
+    const response = await axios.post(`${IB_SERVICE_URL}/symbols/cache/clear`, {}, {
+      timeout: 10000
+    });
+
+    res.json(response.data);
+  } catch (error: any) {
+    console.error('Error clearing cache:', error);
+    res.status(500).json({
+      error: 'Failed to clear cache',
+      detail: error.message
+    });
+  }
+});
+
 export default router; 

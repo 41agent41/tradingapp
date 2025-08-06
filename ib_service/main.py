@@ -68,6 +68,11 @@ account_data = {}
 positions_data = []
 orders_data = []
 
+# Symbol discovery cache with TTL
+symbol_cache = {}
+cache_ttl = 3600  # 1 hour cache TTL
+max_cache_size = 10000  # Maximum cache entries
+
 class MarketDataRequest(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=10)
     timeframe: str = Field(..., pattern=r'^(5min|15min|30min|1hour|4hour|8hour|1day)$')
@@ -135,6 +140,15 @@ class AdvancedSearchRequest(BaseModel):
     multiplier: str = ""
     includeExpired: bool = False
     name: bool = False
+    account_mode: str = "paper"
+
+class SymbolDiscoveryRequest(BaseModel):
+    pattern: str  # Search pattern (partial symbol)
+    secType: str = "STK"
+    exchange: str = "SMART"
+    currency: str = "USD"
+    max_results: int = 50
+    use_fallback: bool = True  # Whether to use reqMatchingSymbols as fallback
     account_mode: str = "paper"
 
 # Account-related models
@@ -469,6 +483,45 @@ def disconnect_ib():
                 'last_error': None
             })
             logger.info("Connection cleanup completed")
+
+# Cache utility functions
+def get_cache_key(pattern: str, secType: str, exchange: str, currency: str) -> str:
+    """Generate cache key for symbol search"""
+    return f"{pattern.upper()}:{secType}:{exchange}:{currency}"
+
+def is_cache_valid(cache_entry: dict) -> bool:
+    """Check if cache entry is still valid"""
+    if not cache_entry:
+        return False
+    return (time.time() - cache_entry.get('timestamp', 0)) < cache_ttl
+
+def get_cached_symbols(cache_key: str) -> Optional[List[Dict]]:
+    """Get symbols from cache if valid"""
+    if cache_key in symbol_cache:
+        cache_entry = symbol_cache[cache_key]
+        if is_cache_valid(cache_entry):
+            logger.info(f"Cache hit for {cache_key}")
+            return cache_entry['data']
+        else:
+            # Remove expired entry
+            del symbol_cache[cache_key]
+            logger.info(f"Cache expired for {cache_key}")
+    return None
+
+def cache_symbols(cache_key: str, data: List[Dict]) -> None:
+    """Cache symbol search results"""
+    # Implement simple LRU by removing oldest entries when cache is full
+    if len(symbol_cache) >= max_cache_size:
+        # Remove 10% of oldest entries
+        sorted_cache = sorted(symbol_cache.items(), key=lambda x: x[1]['timestamp'])
+        for i in range(len(sorted_cache) // 10):
+            del symbol_cache[sorted_cache[i][0]]
+    
+    symbol_cache[cache_key] = {
+        'data': data,
+        'timestamp': time.time()
+    }
+    logger.info(f"Cached {len(data)} symbols for {cache_key}")
 
 def create_contract(symbol: str, sec_type: str = 'STK', exchange: str = 'SMART', currency: str = 'USD'):
     """Create IB contract using TWS API"""
@@ -2182,6 +2235,208 @@ async def get_all_account_data():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get all account data: {error_str}"
         )
+
+# Enhanced Symbol Discovery Endpoint (Phases 1-3)
+@app.post("/symbols/discover")
+async def discover_symbols(request: SymbolDiscoveryRequest):
+    """
+    Enhanced symbol discovery with 3-phase approach:
+    Phase 1: reqContractDetails for precise filtering
+    Phase 2: reqMatchingSymbols as fallback for broader discovery  
+    Phase 3: Intelligent caching for performance
+    """
+    try:
+        pattern = request.pattern.strip().upper()
+        if not pattern:
+            return {"results": [], "method": "none", "cached": False, "count": 0}
+        
+        # Phase 3: Check cache first
+        cache_key = get_cache_key(pattern, request.secType, request.exchange, request.currency)
+        cached_results = get_cached_symbols(cache_key)
+        if cached_results:
+            return {
+                "results": cached_results[:request.max_results],
+                "method": "cache",
+                "cached": True,
+                "count": len(cached_results)
+            }
+        
+        logger.info(f"Symbol discovery for pattern: {pattern} ({request.secType}) on {request.exchange}")
+        
+        # Get connection
+        ib = get_ib_connection()
+        if not verify_connection_health(ib):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="IB Gateway connection is not available"
+            )
+        
+        results = []
+        method_used = "none"
+        
+        # Phase 1: Try reqContractDetails first (precise filtering)
+        try:
+            logger.info(f"Phase 1: Trying reqContractDetails for {pattern}")
+            
+            # Support wildcard pattern matching
+            search_patterns = []
+            if len(pattern) == 1:
+                # Single letter: try A*, AA*, AAA*
+                search_patterns = [f"{pattern}*", f"{pattern}{pattern}*"]
+            elif len(pattern) >= 2:
+                # Multiple letters: try exact and wildcard
+                search_patterns = [pattern, f"{pattern}*"]
+            else:
+                search_patterns = [pattern]
+            
+            for search_pattern in search_patterns:
+                contract = create_contract(search_pattern, request.secType, request.exchange, request.currency)
+                
+                # Clear previous results
+                ib.contracts = []
+                
+                # Request contract details
+                ib.reqContractDetails(10, contract)
+                time.sleep(2)  # Wait for results
+                
+                if ib.contracts:
+                    for contract_detail in ib.contracts:
+                        contract_obj = contract_detail.contract
+                        
+                        # Filter results to match the original pattern (case-insensitive)
+                        if pattern.lower() in contract_obj.symbol.lower():
+                            result = {
+                                "symbol": contract_obj.symbol,
+                                "company_name": getattr(contract_detail, 'longName', contract_obj.symbol),
+                                "description": f"{contract_obj.symbol} - {getattr(contract_detail, 'longName', 'N/A')}",
+                                "secType": contract_obj.secType,
+                                "exchange": contract_obj.exchange,
+                                "currency": contract_obj.currency,
+                                "conid": getattr(contract_obj, 'conId', ''),
+                                "primary_exchange": getattr(contract_obj, 'primaryExchange', ''),
+                                "local_symbol": getattr(contract_obj, 'localSymbol', ''),
+                                "trading_class": getattr(contract_obj, 'tradingClass', ''),
+                                "method": "reqContractDetails"
+                            }
+                            
+                            # Avoid duplicates
+                            if not any(r['symbol'] == result['symbol'] for r in results):
+                                results.append(result)
+                
+                # Stop if we have enough results
+                if len(results) >= request.max_results:
+                    break
+            
+            if results:
+                method_used = "reqContractDetails"
+                logger.info(f"Phase 1 success: Found {len(results)} symbols using reqContractDetails")
+            
+        except Exception as e:
+            logger.warning(f"Phase 1 (reqContractDetails) failed: {e}")
+        
+        # Phase 2: Fallback to reqMatchingSymbols if needed and enabled
+        if not results and request.use_fallback:
+            try:
+                logger.info(f"Phase 2: Trying reqMatchingSymbols for {pattern}")
+                
+                # Clear any previous data
+                if hasattr(ib, 'symbols'):
+                    ib.symbols = []
+                else:
+                    ib.symbols = []
+                
+                # Request matching symbols
+                ib.reqMatchingSymbols(11, pattern)
+                time.sleep(3)  # Wait longer for matching symbols
+                
+                if hasattr(ib, 'symbols') and ib.symbols:
+                    for contract_desc in ib.symbols:
+                        contract_obj = contract_desc.contract
+                        
+                        # Filter by security type and exchange if specified
+                        if (contract_obj.secType == request.secType and 
+                            (request.exchange == 'SMART' or contract_obj.exchange == request.exchange) and
+                            contract_obj.currency == request.currency):
+                            
+                            result = {
+                                "symbol": contract_obj.symbol,
+                                "company_name": getattr(contract_desc, 'derivativeSecTypes', [contract_obj.symbol])[0] if hasattr(contract_desc, 'derivativeSecTypes') else contract_obj.symbol,
+                                "description": f"{contract_obj.symbol} - {getattr(contract_desc, 'derivativeSecTypes', ['N/A'])[0] if hasattr(contract_desc, 'derivativeSecTypes') else 'N/A'}",
+                                "secType": contract_obj.secType,
+                                "exchange": contract_obj.exchange,
+                                "currency": contract_obj.currency,
+                                "conid": getattr(contract_obj, 'conId', ''),
+                                "primary_exchange": getattr(contract_obj, 'primaryExchange', ''),
+                                "local_symbol": getattr(contract_obj, 'localSymbol', ''),
+                                "trading_class": getattr(contract_obj, 'tradingClass', ''),
+                                "method": "reqMatchingSymbols"
+                            }
+                            
+                            # Avoid duplicates
+                            if not any(r['symbol'] == result['symbol'] for r in results):
+                                results.append(result)
+                
+                if results:
+                    method_used = "reqMatchingSymbols"
+                    logger.info(f"Phase 2 success: Found {len(results)} symbols using reqMatchingSymbols")
+                
+            except Exception as e:
+                logger.warning(f"Phase 2 (reqMatchingSymbols) failed: {e}")
+        
+        # Sort results by symbol name for consistency
+        results.sort(key=lambda x: x['symbol'])
+        
+        # Limit results
+        limited_results = results[:request.max_results]
+        
+        # Phase 3: Cache the results
+        if limited_results:
+            cache_symbols(cache_key, limited_results)
+        
+        logger.info(f"Symbol discovery completed: {len(limited_results)} results using {method_used}")
+        
+        return {
+            "results": limited_results,
+            "method": method_used,
+            "cached": False,
+            "count": len(limited_results),
+            "pattern": pattern,
+            "secType": request.secType,
+            "exchange": request.exchange,
+            "currency": request.currency
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in symbol discovery: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Symbol discovery failed: {str(e)}"
+        )
+
+# Cache management endpoints
+@app.get("/symbols/cache/stats")
+async def get_cache_stats():
+    """Get cache statistics"""
+    total_entries = len(symbol_cache)
+    valid_entries = sum(1 for entry in symbol_cache.values() if is_cache_valid(entry))
+    expired_entries = total_entries - valid_entries
+    
+    return {
+        "total_entries": total_entries,
+        "valid_entries": valid_entries,
+        "expired_entries": expired_entries,
+        "cache_size_limit": max_cache_size,
+        "ttl_seconds": cache_ttl
+    }
+
+@app.post("/symbols/cache/clear")
+async def clear_cache():
+    """Clear symbol cache"""
+    global symbol_cache
+    cache_size = len(symbol_cache)
+    symbol_cache = {}
+    logger.info(f"Symbol cache cleared. Removed {cache_size} entries.")
+    return {"message": f"Cache cleared. Removed {cache_size} entries."}
 
 if __name__ == "__main__":
     logger.info("Starting TWS API Service...")
