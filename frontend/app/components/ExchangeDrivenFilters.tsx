@@ -17,14 +17,10 @@ const EXCHANGES = {
     { value: 'PSX', label: 'PSX', description: 'NASDAQ PSX' }
   ],
   AU: [
-    { value: 'ASX', label: 'ASX', description: 'Australian Securities Exchange' },
-    { value: 'ASXCEN', label: 'ASX Centre Point', description: 'ASX Centre Point Dark Pool' },
-    { value: 'CHIXAU', label: 'CBOE Australia', description: 'CBOE Australia (formerly Chi-X)' },
-    { value: 'SNFE', label: 'Sydney Futures Exchange', description: 'Futures and options exchange' },
-    { value: 'NSX', label: 'NSX', description: 'National Stock Exchange of Australia' },
-    { value: 'SSX', label: 'Sydney Stock Exchange', description: 'Sydney Stock Exchange' },
-    { value: 'AXHX', label: 'Australian Securities Exchange Historical', description: 'ASX Historical Exchange' },
-    { value: 'SMART', label: 'SMART (Best Execution)', description: 'Automated routing for best execution across AU markets' }
+    { value: 'ASX', label: 'ASX (Australian Stock Exchange)', description: 'Australian Securities Exchange' },
+    { value: 'ASXCEN', label: 'ASXCEN (ASX Centre Point)', description: 'ASX Centre Point Dark Pool' },
+    { value: 'CHIXAU', label: 'CHIXAU (CBOE Australia)', description: 'CBOE Australia (formerly Chi-X)' },
+    { value: 'SNFE', label: 'SNFE (Sydney Futures Exchange)', description: 'Sydney Futures Exchange for futures and options' }
   ]
 };
 
@@ -82,13 +78,16 @@ const POPULAR_SYMBOLS: Record<string, Record<string, string[]>> = {
     'OPT': ['CBAO', 'CSLO', 'BHPO', 'WBCO', 'NABO', 'ANZO', 'RIOO', 'WESO', 'MQGO', 'TLSO'],
     'WAR': ['CBAW', 'CSLW', 'BHPW', 'WBCW', 'NABW', 'ANZW', 'RIOW', 'WESW', 'MQGW', 'TLSW']
   },
-  'SNFE': {
-    'FUT': ['SPI', 'YT', 'IR', 'XT', 'TF', 'CF', 'WF', 'SF', 'MF', 'BF'],
-    'OPT': ['SPIO', 'YTO', 'IRO', 'XTO', 'TFO', 'CFO', 'WFO', 'SFO', 'MFO', 'BFO']
+  'ASXCEN': {
+    'STK': ['CBA', 'CSL', 'NAB', 'ANZ', 'WBC', 'BHP', 'RIO', 'WES', 'WOW', 'MQG']
   },
   'CHIXAU': {
     'STK': ['CBA', 'CSL', 'NAB', 'ANZ', 'WBC', 'BHP', 'RIO', 'WES', 'WOW', 'MQG'],
-    'ETF': ['VAS', 'VGS', 'VAF', 'VGE', 'VGT', 'VISM', 'VESG', 'VDHG', 'VTS', 'VEU']
+    'WAR': ['CBAW', 'CSLW', 'BHPW', 'WBCW', 'NABW', 'ANZW', 'RIOW', 'WESW', 'MQGW', 'TLSW']
+  },
+  'SNFE': {
+    'FUT': ['SPI', 'YT', 'IR', 'XT', 'TF', 'CF', 'WF', 'SF', 'MF', 'BF'],
+    'OPT': ['SPIO', 'YTO', 'IRO', 'XTO', 'TFO', 'CFO', 'WFO', 'SFO', 'MFO', 'BFO']
   }
 };
 
