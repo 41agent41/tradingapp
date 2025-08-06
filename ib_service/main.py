@@ -2299,29 +2299,34 @@ async def discover_symbols(request: SymbolDiscoveryRequest):
                 ib.reqContractDetails(10, contract)
                 time.sleep(2)  # Wait for results
                 
+                logger.info(f"Found {len(ib.contracts)} contracts for pattern: {search_pattern}")
+                
                 if ib.contracts:
-                    for contract_detail in ib.contracts:
-                        contract_obj = contract_detail.contract
-                        
+                    for contract in ib.contracts:
                         # Filter results to match the original pattern (case-insensitive)
-                        if pattern.lower() in contract_obj.symbol.lower():
+                        if pattern.lower() in contract.symbol.lower():
+                            # Extract company name (consistent with existing endpoint)
+                            company_name = getattr(contract, 'longName', '') or contract.symbol
+                            
                             result = {
-                                "symbol": contract_obj.symbol,
-                                "company_name": getattr(contract_detail, 'longName', contract_obj.symbol),
-                                "description": f"{contract_obj.symbol} - {getattr(contract_detail, 'longName', 'N/A')}",
-                                "secType": contract_obj.secType,
-                                "exchange": contract_obj.exchange,
-                                "currency": contract_obj.currency,
-                                "conid": getattr(contract_obj, 'conId', ''),
-                                "primary_exchange": getattr(contract_obj, 'primaryExchange', ''),
-                                "local_symbol": getattr(contract_obj, 'localSymbol', ''),
-                                "trading_class": getattr(contract_obj, 'tradingClass', ''),
+                                "symbol": contract.symbol,
+                                "company_name": company_name,
+                                "description": f"{contract.symbol} - {company_name}",
+                                "secType": contract.secType,
+                                "exchange": contract.exchange,
+                                "currency": contract.currency,
+                                "conid": str(getattr(contract, 'conId', '')),
+                                "primary_exchange": getattr(contract, 'primaryExchange', ''),
+                                "local_symbol": getattr(contract, 'localSymbol', ''),
+                                "trading_class": getattr(contract, 'tradingClass', ''),
                                 "method": "reqContractDetails"
                             }
                             
                             # Avoid duplicates
                             if not any(r['symbol'] == result['symbol'] for r in results):
                                 results.append(result)
+                            
+                            logger.info(f"Found matching contract: {contract.symbol} ({contract.secType}) on {contract.exchange}")
                 
                 # Stop if we have enough results
                 if len(results) >= request.max_results:
@@ -2330,9 +2335,11 @@ async def discover_symbols(request: SymbolDiscoveryRequest):
             if results:
                 method_used = "reqContractDetails"
                 logger.info(f"Phase 1 success: Found {len(results)} symbols using reqContractDetails")
+            else:
+                logger.info(f"Phase 1: No results found for pattern {pattern} using reqContractDetails")
             
         except Exception as e:
-            logger.warning(f"Phase 1 (reqContractDetails) failed: {e}")
+            logger.error(f"Phase 1 (reqContractDetails) failed: {e}", exc_info=True)
         
         # Phase 2: Fallback to reqMatchingSymbols if needed and enabled
         if not results and request.use_fallback:
@@ -2348,6 +2355,8 @@ async def discover_symbols(request: SymbolDiscoveryRequest):
                 # Request matching symbols
                 ib.reqMatchingSymbols(11, pattern)
                 time.sleep(3)  # Wait longer for matching symbols
+                
+                logger.info(f"Phase 2: reqMatchingSymbols returned {len(getattr(ib, 'symbols', []))} symbols")
                 
                 if hasattr(ib, 'symbols') and ib.symbols:
                     for contract_desc in ib.symbols:
@@ -2394,6 +2403,9 @@ async def discover_symbols(request: SymbolDiscoveryRequest):
             cache_symbols(cache_key, limited_results)
         
         logger.info(f"Symbol discovery completed: {len(limited_results)} results using {method_used}")
+        if limited_results:
+            symbols_found = [r['symbol'] for r in limited_results]
+            logger.info(f"Symbols found: {symbols_found}")
         
         return {
             "results": limited_results,
