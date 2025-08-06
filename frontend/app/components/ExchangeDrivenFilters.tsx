@@ -18,8 +18,13 @@ const EXCHANGES = {
   ],
   AU: [
     { value: 'ASX', label: 'ASX', description: 'Australian Securities Exchange' },
-    { value: 'CHI-X', label: 'CHI-X Australia', description: 'Chi-X Australia' },
-    { value: 'NSX', label: 'NSX', description: 'National Stock Exchange of Australia' }
+    { value: 'ASXCEN', label: 'ASX Centre Point', description: 'ASX Centre Point Dark Pool' },
+    { value: 'CHIXAU', label: 'CBOE Australia', description: 'CBOE Australia (formerly Chi-X)' },
+    { value: 'SNFE', label: 'Sydney Futures Exchange', description: 'Futures and options exchange' },
+    { value: 'NSX', label: 'NSX', description: 'National Stock Exchange of Australia' },
+    { value: 'SSX', label: 'Sydney Stock Exchange', description: 'Sydney Stock Exchange' },
+    { value: 'AXHX', label: 'Australian Securities Exchange Historical', description: 'ASX Historical Exchange' },
+    { value: 'SMART', label: 'SMART (Best Execution)', description: 'Automated routing for best execution across AU markets' }
   ]
 };
 
@@ -38,7 +43,9 @@ const SECURITY_TYPES = {
     { value: 'OPT', label: 'Option', description: 'Australian options' },
     { value: 'ETF', label: 'ETF', description: 'Australian ETFs' },
     { value: 'FUT', label: 'Future', description: 'Australian futures' },
-    { value: 'CASH', label: 'Forex', description: 'Foreign exchange pairs' }
+    { value: 'CASH', label: 'Forex', description: 'Foreign exchange pairs' },
+    { value: 'BOND', label: 'Bond', description: 'Australian government and corporate bonds' },
+    { value: 'WAR', label: 'Warrant', description: 'Warrants and structured products' }
   ]
 };
 
@@ -71,7 +78,17 @@ const POPULAR_SYMBOLS: Record<string, Record<string, string[]>> = {
   },
   'ASX': {
     'STK': ['CBA', 'CSL', 'NAB', 'ANZ', 'WBC', 'BHP', 'RIO', 'WES', 'WOW', 'MQG'],
-    'ETF': ['VAS', 'VGS', 'VAF', 'VGE', 'VISM', 'VISM', 'VISM', 'VISM', 'VISM', 'VISM']
+    'ETF': ['VAS', 'VGS', 'VAF', 'VGE', 'VGT', 'VISM', 'VESG', 'VDHG', 'VTS', 'VEU'],
+    'OPT': ['CBAO', 'CSLO', 'BHPO', 'WBCO', 'NABO', 'ANZO', 'RIOO', 'WESO', 'MQGO', 'TLSO'],
+    'WAR': ['CBAW', 'CSLW', 'BHPW', 'WBCW', 'NABW', 'ANZW', 'RIOW', 'WESW', 'MQGW', 'TLSW']
+  },
+  'SNFE': {
+    'FUT': ['SPI', 'YT', 'IR', 'XT', 'TF', 'CF', 'WF', 'SF', 'MF', 'BF'],
+    'OPT': ['SPIO', 'YTO', 'IRO', 'XTO', 'TFO', 'CFO', 'WFO', 'SFO', 'MFO', 'BFO']
+  },
+  'CHIXAU': {
+    'STK': ['CBA', 'CSL', 'NAB', 'ANZ', 'WBC', 'BHP', 'RIO', 'WES', 'WOW', 'MQG'],
+    'ETF': ['VAS', 'VGS', 'VAF', 'VGE', 'VGT', 'VISM', 'VESG', 'VDHG', 'VTS', 'VEU']
   }
 };
 
