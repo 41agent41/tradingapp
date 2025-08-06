@@ -137,15 +137,15 @@ export default function DataframeViewer({
         return value;
       case 'date':
         if (value instanceof Date) {
-          return value.toLocaleString();
+          return value.toLocaleString('en-US', { timeZone: 'UTC' }) + ' UTC';
         } else if (typeof value === 'number') {
           // Handle Unix timestamps (assume seconds if less than a certain threshold)
           const timestamp = value > 1000000000000 ? value : value * 1000;
           const date = new Date(timestamp);
-          return isNaN(date.getTime()) ? value : date.toLocaleString();
+          return isNaN(date.getTime()) ? value : date.toLocaleString('en-US', { timeZone: 'UTC' }) + ' UTC';
         } else if (typeof value === 'string') {
           const date = new Date(value);
-          return isNaN(date.getTime()) ? value : date.toLocaleString();
+          return isNaN(date.getTime()) ? value : date.toLocaleString('en-US', { timeZone: 'UTC' }) + ' UTC';
         }
         return value;
       default:
