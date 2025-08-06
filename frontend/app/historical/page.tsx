@@ -122,15 +122,28 @@ export default function HistoricalChartPage() {
         console.log('Current year check - milliseconds format:', new Date(timestamp).getFullYear());
       }
       
-      // Backend sends Unix timestamps in seconds, validate they're reasonable
-      const timestampAsDate = new Date(timestamp * 1000);
+      // Smart timestamp validation - try both seconds and milliseconds
+      let timestampAsDate = new Date(timestamp * 1000); // Assume seconds first
+      let isValidDate = timestampAsDate.getFullYear() >= 2020 && timestampAsDate.getFullYear() <= 2030;
       
-      // Validate timestamp represents a date between 2020-2030
-      if (timestampAsDate.getFullYear() < 2020 || timestampAsDate.getFullYear() > 2030) {
-        console.warn('Timestamp out of reasonable range:', {
-          timestamp: timestamp,
-          interpretedDate: timestampAsDate,
-          year: timestampAsDate.getFullYear()
+      if (!isValidDate) {
+        // Try interpreting as milliseconds
+        timestampAsDate = new Date(timestamp);
+        isValidDate = timestampAsDate.getFullYear() >= 2020 && timestampAsDate.getFullYear() <= 2030;
+        
+        if (isValidDate) {
+          // Convert back to seconds for consistency
+          timestamp = Math.floor(timestamp / 1000);
+        }
+      }
+      
+      // Validate timestamp represents a reasonable date
+      if (!isValidDate) {
+        console.warn('Timestamp out of reasonable range after both attempts:', {
+          original: bar.timestamp,
+          asSeconds: new Date(bar.timestamp * 1000),
+          asMilliseconds: new Date(bar.timestamp),
+          finalInterpretation: timestampAsDate
         });
         continue;
       }
@@ -163,8 +176,9 @@ export default function HistoricalChartPage() {
     // Sort by timestamp in ascending order (oldest first) - required by TradingView
     processedBars.sort((a, b) => a.time - b.time);
     
-    console.log('Processed and sorted bars:', processedBars.length);
+    console.log(`Data processing summary: ${processedBars.length} bars processed from ${bars.length} input bars`);
     if (processedBars.length > 0) {
+      console.log(`Date range after processing: ${new Date(processedBars[0].time * 1000).toLocaleString()} to ${new Date(processedBars[processedBars.length - 1].time * 1000).toLocaleString()}`);
       console.log('First bar (oldest):', new Date(processedBars[0].time * 1000));
       console.log('Last bar (newest):', new Date(processedBars[processedBars.length - 1].time * 1000));
     }
