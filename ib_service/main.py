@@ -2281,8 +2281,24 @@ async def discover_symbols(request: SymbolDiscoveryRequest):
             # Support wildcard pattern matching
             search_patterns = []
             if len(pattern) == 1:
-                # Single letter: try exact first, then wildcards
-                search_patterns = [pattern, f"{pattern}*"]
+                # Single letter: try exact first, then common two-letter combinations
+                search_patterns = [
+                    pattern,  # Exact match (e.g., "A")
+                    f"{pattern}A",  # AA (American Airlines, etc.)
+                    f"{pattern}M",  # AM (American Express, AMD, etc.)
+                    f"{pattern}P",  # AP (Apple, etc.)
+                    f"{pattern}D",  # AD patterns
+                    f"{pattern}I",  # AI patterns
+                    f"{pattern}L",  # AL patterns
+                    f"{pattern}B",  # AB patterns
+                    f"{pattern}C",  # AC patterns
+                    f"{pattern}G",  # AG patterns
+                    f"{pattern}R",  # AR patterns
+                    f"{pattern}S",  # AS patterns
+                    f"{pattern}T",  # AT patterns
+                    f"{pattern}V",  # AV patterns
+                    f"{pattern}Z",  # AZ patterns
+                ]
             elif len(pattern) >= 2:
                 # Multiple letters: try exact and wildcard
                 search_patterns = [pattern, f"{pattern}*"]
@@ -2355,7 +2371,7 @@ async def discover_symbols(request: SymbolDiscoveryRequest):
             logger.error(f"Phase 1 (reqContractDetails) failed: {e}", exc_info=True)
         
         # Phase 2: Fallback to reqMatchingSymbols if needed and enabled
-        if not results and request.use_fallback:
+        if len(results) < 5 and request.use_fallback:  # Use fallback if we have fewer than 5 results
             try:
                 logger.info(f"Phase 2: Trying reqMatchingSymbols for {pattern}")
                 
@@ -2365,8 +2381,13 @@ async def discover_symbols(request: SymbolDiscoveryRequest):
                 else:
                     ib.symbols = []
                 
-                # Request matching symbols
-                ib.reqMatchingSymbols(11, pattern)
+                # Request matching symbols - try both exact and expanded patterns
+                search_term = pattern
+                if len(pattern) == 1:
+                    # For single characters, search for common combinations
+                    search_term = pattern  # Start with exact character
+                
+                ib.reqMatchingSymbols(11, search_term)
                 time.sleep(3)  # Wait longer for matching symbols
                 
                 logger.info(f"Phase 2: reqMatchingSymbols returned {len(getattr(ib, 'symbols', []))} symbols")
