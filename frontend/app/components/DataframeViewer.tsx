@@ -44,7 +44,10 @@ export default function DataframeViewer({
       const value = firstRow[key];
       let type: Column['type'] = 'string';
       
-      if (typeof value === 'number') {
+      // Special handling for timestamp fields
+      if (key.toLowerCase() === 'timestamp' || key.toLowerCase() === 'time') {
+        type = 'date';
+      } else if (typeof value === 'number') {
         type = 'number';
       } else if (value instanceof Date || (typeof value === 'string' && !isNaN(Date.parse(value)))) {
         type = 'date';
@@ -56,7 +59,7 @@ export default function DataframeViewer({
         key,
         label: key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1'),
         type,
-        width: type === 'date' ? '120px' : type === 'number' ? '100px' : 'auto'
+        width: type === 'date' ? '160px' : type === 'number' ? '100px' : 'auto'
       };
     });
   }, [data]);
@@ -134,10 +137,15 @@ export default function DataframeViewer({
         return value;
       case 'date':
         if (value instanceof Date) {
-          return value.toLocaleDateString();
+          return value.toLocaleString();
+        } else if (typeof value === 'number') {
+          // Handle Unix timestamps (assume seconds if less than a certain threshold)
+          const timestamp = value > 1000000000000 ? value : value * 1000;
+          const date = new Date(timestamp);
+          return isNaN(date.getTime()) ? value : date.toLocaleString();
         } else if (typeof value === 'string') {
           const date = new Date(value);
-          return isNaN(date.getTime()) ? value : date.toLocaleDateString();
+          return isNaN(date.getTime()) ? value : date.toLocaleString();
         }
         return value;
       default:
