@@ -8,22 +8,35 @@ services:
       - NODE_ENV=${NODE_ENV:-production}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
       - IB_SERVICE_URL=http://172.20.0.10:8000
-      - POSTGRES_HOST=172.20.0.20
+      # External PostgreSQL Configuration
+      - POSTGRES_HOST=${POSTGRES_HOST}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
-      - POSTGRES_USER=${POSTGRES_USER:-tradingapp}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-tradingapp123}
-      - POSTGRES_DB=${POSTGRES_DB:-tradingapp}
-      - REDIS_HOST=172.20.0.30
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_SSL_MODE=${POSTGRES_SSL_MODE:-require}
+      - POSTGRES_SSL_CA=${POSTGRES_SSL_CA}
+      - POSTGRES_SSL_CERT=${POSTGRES_SSL_CERT}
+      - POSTGRES_SSL_KEY=${POSTGRES_SSL_KEY}
+      # External Redis Configuration
+      - REDIS_HOST=${REDIS_HOST}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_SSL_ENABLED=${REDIS_SSL_ENABLED:-false}
+      - REDIS_SSL_CA=${REDIS_SSL_CA}
+      # Cache Configuration
+      - CACHE_TTL_HISTORICAL=${CACHE_TTL_HISTORICAL:-3600}
+      - CACHE_TTL_REALTIME=${CACHE_TTL_REALTIME:-60}
+      - CACHE_TTL_SYMBOLS=${CACHE_TTL_SYMBOLS:-1800}
+      - CACHE_MAX_SIZE=${CACHE_MAX_SIZE:-10000}
+      # Security
       - JWT_SECRET=${JWT_SECRET:-changeme_jwt_secret}
       - SESSION_SECRET=${SESSION_SECRET:-changeme_session_secret}
     ports:
       - "${BACKEND_PORT:-4000}:${BACKEND_PORT:-4000}"
     depends_on:
       - ib_service
-      - postgres
-      - redis
     networks:
       tradingapp-network:
         ipv4_address: 172.20.0.5
@@ -59,6 +72,28 @@ services:
       - IB_CLIENT_ID=${IB_CLIENT_ID:-1}
       - IB_TIMEOUT=${IB_TIMEOUT:-30}
       - IB_CORS_ORIGINS=${IB_CORS_ORIGINS:-http://localhost:3000}
+      # External PostgreSQL Configuration
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_SSL_MODE=${POSTGRES_SSL_MODE:-require}
+      - POSTGRES_SSL_CA=${POSTGRES_SSL_CA}
+      - POSTGRES_SSL_CERT=${POSTGRES_SSL_CERT}
+      - POSTGRES_SSL_KEY=${POSTGRES_SSL_KEY}
+      # External Redis Configuration
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_SSL_ENABLED=${REDIS_SSL_ENABLED:-false}
+      - REDIS_SSL_CA=${REDIS_SSL_CA}
+      # Cache Configuration
+      - CACHE_TTL_HISTORICAL=${CACHE_TTL_HISTORICAL:-3600}
+      - CACHE_TTL_REALTIME=${CACHE_TTL_REALTIME:-60}
+      - CACHE_TTL_SYMBOLS=${CACHE_TTL_SYMBOLS:-1800}
+      - CACHE_MAX_SIZE=${CACHE_MAX_SIZE:-10000}
       # Timezone configuration for consistent timestamp handling
       - TZ=UTC
       - IB_TIMEZONE=${IB_TIMEZONE:-UTC}
@@ -75,33 +110,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-      
-  postgres:
-    image: postgres:15-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-tradingapp}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tradingapp123}
-      POSTGRES_DB: ${POSTGRES_DB:-tradingapp}
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    networks:
-      tradingapp-network:
-        ipv4_address: 172.20.0.20
-      
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    networks:
-      tradingapp-network:
-        ipv4_address: 172.20.0.30
-
-volumes:
-  pgdata:
 
 networks:
   tradingapp-network:
