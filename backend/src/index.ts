@@ -6,6 +6,7 @@ import marketDataRoutes from './routes/marketData.js';
 import accountRoutes from './routes/account.js';
 import settingsRoutes from './routes/settings.js';
 import axios from 'axios';
+import { dbService } from './services/database.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -29,6 +30,9 @@ app.get('/api/health', async (req, res) => {
     // Check IB service health
     const ibResponse = await axios.get(`${IB_SERVICE_URL}/health`, { timeout: 5000 });
     
+    // Check database health
+    const dbConnected = await dbService.testConnection();
+    
     res.json({
       status: 'healthy',
       timestamp: new Date().toISOString(),
@@ -36,6 +40,10 @@ app.get('/api/health', async (req, res) => {
         backend: {
           status: 'running',
           port: PORT
+        },
+        database: {
+          status: dbConnected ? 'connected' : 'disconnected',
+          connected: dbConnected
         },
         ib_service: {
           status: ibResponse.data?.status || 'unknown',
@@ -45,6 +53,9 @@ app.get('/api/health', async (req, res) => {
       }
     });
   } catch (error) {
+    // Check database health even if IB service fails
+    const dbConnected = await dbService.testConnection();
+    
     res.status(503).json({
       status: 'unhealthy',
       timestamp: new Date().toISOString(),
@@ -53,6 +64,10 @@ app.get('/api/health', async (req, res) => {
           status: 'running',
           port: PORT
         },
+        database: {
+          status: dbConnected ? 'connected' : 'disconnected',
+          connected: dbConnected
+        },
         ib_service: {
           status: 'error',
           connected: false,
@@ -60,6 +75,34 @@ app.get('/api/health', async (req, res) => {
           error: error instanceof Error ? error.message : 'Unknown error'
         }
       }
+    });
+  }
+});
+
+// Database health check endpoint
+app.get('/api/database/health', async (req, res) => {
+  try {
+    const connected = await dbService.testConnection();
+    
+    if (connected) {
+      res.json({
+        status: 'healthy',
+        database: 'connected',
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(503).json({
+        status: 'unhealthy',
+        database: 'disconnected',
+        timestamp: new Date().toISOString()
+      });
+    }
+  } catch (error) {
+    res.status(503).json({
+      status: 'unhealthy',
+      database: 'error',
+      error: error instanceof Error ? error.message : 'Unknown error',
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -76,6 +119,7 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     endpoints: {
       health: '/api/health',
+      database_health: '/api/database/health',
       market_data: '/api/market-data',
       settings: '/api/settings'
     }
@@ -135,10 +179,40 @@ io.on('connection', (socket) => {
   });
 });
 
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  await dbService.close();
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', async () => {
+  console.log('SIGINT received, shutting down gracefully');
+  await dbService.close();
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});
+
 // Start server
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Backend server running on port ${PORT}`);
   console.log(`IB Service URL: ${IB_SERVICE_URL}`);
+  
+  // Test database connection on startup
+  dbService.testConnection().then(connected => {
+    if (connected) {
+      console.log('Database connection established');
+    } else {
+      console.warn('Database connection failed - some features may be limited');
+    }
+  }).catch(error => {
+    console.error('Database connection error:', error);
+  });
 });
 
 export default app;

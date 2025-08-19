@@ -1,6 +1,7 @@
 import express from 'express';
 import type { Request, Response } from 'express';
 import axios from 'axios';
+import { marketDataService, type Contract, type CandlestickBar } from '../services/marketDataService.js';
 
 const router = express.Router();
 const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
@@ -100,123 +101,96 @@ router.post('/search', async (req: Request, res: Response) => {
       });
     }
 
-    console.log(`Searching contracts for ${symbol} - ${secType}`);
+    // Check if data querying is enabled
+    if (!isDataQueryEnabled(req)) {
+      return handleDisabledDataQuery(res, 'Market data search is disabled');
+    }
 
-    // Request contract search from IB service
-    const searchPayload = {
-      symbol: symbol.trim().toUpperCase(),
+    console.log(`Searching for contract: ${symbol} (${secType}) on ${exchange || 'any exchange'}`);
+
+    const response = await axios.post(`${IB_SERVICE_URL}/market-data/search`, {
+      symbol: symbol,
       secType: secType,
-      exchange: exchange || 'SMART',
-      currency: currency || 'USD',
-      name: searchByName || false,
-      account_mode: account_mode || 'paper' // Default to paper trading
-    };
-
-    const response = await axios.post(`${IB_SERVICE_URL}/contract/search`, searchPayload, {
-      timeout: 30000 // 30 second timeout for search
-    });
-
-    if (response.data.error) {
-      return res.status(500).json({
-        error: 'IB Service returned error',
-        detail: response.data.error,
-        ib_service_url: `${IB_SERVICE_URL}/contract/search`
-      });
-    }
-
-    // Process and filter results based on additional criteria
-    let results = response.data.results || response.data || [];
-    
-    // Ensure results is an array
-    if (!Array.isArray(results)) {
-      results = [];
-    }
-
-    // Filter by exchange if specified
-    if (exchange && exchange !== 'SMART') {
-      results = results.filter((contract: any) => {
-        // Check if exchange matches in sections or description
-        if (contract.sections) {
-          return contract.sections.some((section: any) => 
-            section.exchange && section.exchange.includes(exchange)
-          );
-        }
-        return contract.description && contract.description.includes(exchange);
-      });
-    }
-
-    // Filter by currency if specified
-    if (currency) {
-      results = results.filter((contract: any) => {
-        return contract.currency === currency || 
-               contract.description?.includes(currency) ||
-               !contract.currency; // Include contracts without currency specified
-      });
-    }
-
-    // Transform results to a consistent format
-    const transformedResults = results.map((contract: any) => {
-      // Extract the relevant section for the requested secType
-      let relevantSection = null;
-      if (contract.sections) {
-        relevantSection = contract.sections.find((section: any) => section.secType === secType);
+      exchange: exchange,
+      currency: currency,
+      searchByName: searchByName,
+      account_mode: account_mode
+    }, {
+      timeout: 30000, // 30 second timeout for search
+      headers: {
+        'Connection': 'close'
       }
-
-      return {
-        conid: contract.conid,
-        symbol: contract.symbol,
-        companyName: contract.companyName || contract.symbol,
-        description: contract.description || '',
-        secType: secType,
-        currency: contract.currency || currency || '',
-        exchange: relevantSection?.exchange || contract.exchange || exchange || '',
-        sections: contract.sections || []
-      };
     });
 
-    // Return the processed results
-    res.json({
-      symbol: symbol.toUpperCase(),
-      secType,
-      exchange: exchange || 'ANY',
-      currency: currency || 'ANY',
-      searchByName: searchByName || false,
-      results: transformedResults,
-      count: transformedResults.length,
-      source: 'Interactive Brokers',
-      last_updated: new Date().toISOString()
-    });
+    console.log(`Found ${response.data?.contracts?.length || 0} contracts for ${symbol}`);
+
+    // Store contracts in database for future reference
+    if (response.data?.contracts && Array.isArray(response.data.contracts)) {
+      for (const contract of response.data.contracts) {
+        try {
+          const contractData: Contract = {
+            symbol: contract.symbol,
+            secType: contract.secType,
+            exchange: contract.exchange,
+            currency: contract.currency,
+            multiplier: contract.multiplier,
+            expiry: contract.expiry,
+            strike: contract.strike,
+            right: contract.right,
+            localSymbol: contract.localSymbol,
+            contractId: contract.contractId
+          };
+          
+          await marketDataService.getOrCreateContract(contractData);
+        } catch (error) {
+          console.error('Error storing contract in database:', error);
+          // Continue processing other contracts
+        }
+      }
+    }
+
+    res.json(response.data);
 
   } catch (error: any) {
-    console.error('Error searching contracts:', error);
+    console.error('Error in contract search:', error);
     
-    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
-    const statusCode = error.response?.status || 500;
+    let errorMessage = 'Unknown error';
+    let statusCode = 500;
+    
+    if (error.code === 'ECONNREFUSED') {
+      errorMessage = 'IB Service connection refused - service may be starting up';
+      statusCode = 503;
+    } else if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) {
+      errorMessage = 'Request timed out - IB Service may be busy';
+      statusCode = 504;
+    } else if (error.response?.status) {
+      statusCode = error.response.status;
+      errorMessage = error.response.data?.error || error.response.statusText;
+    } else {
+      errorMessage = error.message || 'Failed to search for contracts';
+    }
     
     res.status(statusCode).json({
-      error: 'Failed to search contracts',
-      detail: errorMessage,
-      ib_service_status: statusCode,
-      ib_service_url: `${IB_SERVICE_URL}/contract/search`,
-      symbol: req.body.symbol,
-      secType: req.body.secType
+      error: 'Failed to search for contracts',
+      message: errorMessage,
+      timestamp: new Date().toISOString()
     });
   }
 });
 
-// Advanced contract search endpoint
-router.post('/advanced-search', async (req: Request, res: Response) => {
+// Advanced search endpoint
+router.post('/search/advanced', async (req: Request, res: Response) => {
   try {
-    const { 
-      symbol, 
-      secType, 
-      exchange, 
-      currency, 
-      expiry, 
-      strike, 
-      right, 
-      multiplier, 
-      includeExpired, 
+    const {
+      symbol,
+      secType,
+      exchange,
+      currency,
+      expiry,
+      strike,
+      right,
+      multiplier,
+      includeExpired,
       searchByName,
       account_mode
     } = req.body as AdvancedSearchQuery;
@@ -224,137 +198,93 @@ router.post('/advanced-search', async (req: Request, res: Response) => {
     // Validate required parameters
     if (!secType) {
       return res.status(400).json({
-        error: 'Missing required parameters',
-        required: ['secType'],
-        received: { secType, symbol, exchange, currency, expiry, strike, right, multiplier, includeExpired, searchByName }
+        error: 'Missing required parameter: secType',
+        received: { secType, symbol, exchange, currency, expiry, strike, right, multiplier }
       });
     }
 
-    // Validate security type
-    const validSecTypes = ['STK', 'OPT', 'FUT', 'CASH', 'BOND', 'CFD', 'CMDTY', 'CRYPTO', 'WAR', 'FUND', 'IND', 'BAG'];
-    if (!validSecTypes.includes(secType)) {
-      return res.status(400).json({
-        error: 'Invalid security type',
-        valid_secTypes: validSecTypes,
-        received: secType
-      });
+    // Check if data querying is enabled
+    if (!isDataQueryEnabled(req)) {
+      return handleDisabledDataQuery(res, 'Advanced market data search is disabled');
     }
 
-    console.log(`Advanced search for ${symbol || 'ALL'} - ${secType}`);
+    console.log(`Advanced search for: ${secType} ${symbol || ''} on ${exchange || 'any exchange'}`);
 
-    // Request advanced contract search from IB service
-    const searchPayload = {
-      symbol: symbol ? symbol.trim().toUpperCase() : '',
+    const response = await axios.post(`${IB_SERVICE_URL}/market-data/search/advanced`, {
+      symbol: symbol,
       secType: secType,
-      exchange: exchange || 'SMART',
-      currency: currency || 'USD',
-      expiry: expiry || '',
-      strike: strike || 0,
-      right: right || '',
-      multiplier: multiplier || '',
-      includeExpired: includeExpired || false,
-      name: searchByName || false,
-      account_mode: account_mode || 'paper'
-    };
-
-    const response = await axios.post(`${IB_SERVICE_URL}/contract/advanced-search`, searchPayload, {
-      timeout: 30000 // 30 second timeout for advanced search
+      exchange: exchange,
+      currency: currency,
+      expiry: expiry,
+      strike: strike,
+      right: right,
+      multiplier: multiplier,
+      includeExpired: includeExpired,
+      searchByName: searchByName,
+      account_mode: account_mode
+    }, {
+      timeout: 30000,
+      headers: {
+        'Connection': 'close'
+      }
     });
 
-    if (response.data.error) {
-      return res.status(500).json({
-        error: 'IB Service returned error',
-        detail: response.data.error,
-        ib_service_url: `${IB_SERVICE_URL}/contract/advanced-search`
-      });
+    console.log(`Advanced search found ${response.data?.contracts?.length || 0} contracts`);
+
+    // Store contracts in database
+    if (response.data?.contracts && Array.isArray(response.data.contracts)) {
+      for (const contract of response.data.contracts) {
+        try {
+          const contractData: Contract = {
+            symbol: contract.symbol,
+            secType: contract.secType,
+            exchange: contract.exchange,
+            currency: contract.currency,
+            multiplier: contract.multiplier,
+            expiry: contract.expiry,
+            strike: contract.strike,
+            right: contract.right,
+            localSymbol: contract.localSymbol,
+            contractId: contract.contractId
+          };
+          
+          await marketDataService.getOrCreateContract(contractData);
+        } catch (error) {
+          console.error('Error storing contract in database:', error);
+        }
+      }
     }
 
-    // Process results
-    let results = response.data.results || response.data || [];
-    
-    // Ensure results is an array
-    if (!Array.isArray(results)) {
-      results = [];
-    }
-
-    // Transform results to a consistent format
-    const transformedResults = results.map((contract: any) => {
-      return {
-        conid: contract.conid,
-        symbol: contract.symbol,
-        companyName: contract.companyName || contract.symbol,
-        description: contract.description || '',
-        secType: secType,
-        currency: contract.currency || currency || '',
-        exchange: contract.exchange || exchange || '',
-        primaryExchange: contract.primaryExchange || '',
-        localSymbol: contract.localSymbol || '',
-        tradingClass: contract.tradingClass || '',
-        multiplier: contract.multiplier || '',
-        strike: contract.strike || '',
-        right: contract.right || '',
-        expiry: contract.expiry || '',
-        includeExpired: contract.includeExpired || false,
-        comboLegsDescrip: contract.comboLegsDescrip || '',
-        contractMonth: contract.contractMonth || '',
-        industry: contract.industry || '',
-        category: contract.category || '',
-        subcategory: contract.subcategory || '',
-        timeZoneId: contract.timeZoneId || '',
-        tradingHours: contract.tradingHours || '',
-        liquidHours: contract.liquidHours || '',
-        evRule: contract.evRule || '',
-        evMultiplier: contract.evMultiplier || '',
-        secIdList: contract.secIdList || [],
-        aggGroup: contract.aggGroup || '',
-        underSymbol: contract.underSymbol || '',
-        underSecType: contract.underSecType || '',
-        marketRuleIds: contract.marketRuleIds || '',
-        realExpirationDate: contract.realExpirationDate || '',
-        lastTradingDay: contract.lastTradingDay || '',
-        stockType: contract.stockType || '',
-        minSize: contract.minSize || '',
-        sizeIncrement: contract.sizeIncrement || '',
-        suggestedSizeIncrement: contract.suggestedSizeIncrement || '',
-        sections: contract.sections || []
-      };
-    });
-
-    // Return the processed results
-    res.json({
-      symbol: symbol ? symbol.toUpperCase() : 'ALL',
-      secType,
-      exchange: exchange || 'ANY',
-      currency: currency || 'ANY',
-      expiry: expiry || 'ANY',
-      strike: strike || 'ANY',
-      right: right || 'ANY',
-      multiplier: multiplier || 'ANY',
-      includeExpired: includeExpired || false,
-      searchByName: searchByName || false,
-      results: transformedResults,
-      count: transformedResults.length,
-      source: 'Interactive Brokers',
-      last_updated: new Date().toISOString()
-    });
+    res.json(response.data);
 
   } catch (error: any) {
     console.error('Error in advanced contract search:', error);
     
-    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
-    const statusCode = error.response?.status || 500;
+    let errorMessage = 'Unknown error';
+    let statusCode = 500;
+    
+    if (error.code === 'ECONNREFUSED') {
+      errorMessage = 'IB Service connection refused - service may be starting up';
+      statusCode = 503;
+    } else if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) {
+      errorMessage = 'Request timed out - IB Service may be busy';
+      statusCode = 504;
+    } else if (error.response?.status) {
+      statusCode = error.response.status;
+      errorMessage = error.response.data?.error || error.response.statusText;
+    } else {
+      errorMessage = error.message || 'Failed to perform advanced search';
+    }
     
     res.status(statusCode).json({
-      error: 'Failed to perform advanced contract search',
-      detail: errorMessage,
-      ib_service_status: statusCode,
-      ib_service_url: `${IB_SERVICE_URL}/contract/advanced-search`,
-      search_params: req.body
+      error: 'Failed to perform advanced search',
+      message: errorMessage,
+      timestamp: new Date().toISOString()
     });
   }
 });
 
-// Get historical market data
+// Historical data endpoint - now with database integration
 router.get('/history', async (req: Request, res: Response) => {
   try {
     // Check if data querying is enabled
@@ -362,13 +292,27 @@ router.get('/history', async (req: Request, res: Response) => {
       return handleDisabledDataQuery(res, 'Historical market data querying is disabled');
     }
 
-    const { symbol, timeframe, period, account_mode, start_date, end_date, secType, exchange, currency } = req.query as Partial<MarketDataQuery & { 
-      account_mode?: string;
+    const { 
+      symbol, 
+      timeframe, 
+      period, 
+      account_mode, 
+      start_date, 
+      end_date, 
+      secType, 
+      exchange, 
+      currency,
+      include_indicators = 'false',
+      use_database = 'true'
+    } = req.query as Partial<MarketDataQuery & {
       start_date?: string;
       end_date?: string;
+      account_mode?: string;
       secType?: string;
       exchange?: string;
       currency?: string;
+      include_indicators?: string;
+      use_database?: string;
     }>;
 
     // Validate required parameters
@@ -376,70 +320,12 @@ router.get('/history', async (req: Request, res: Response) => {
       return res.status(400).json({
         error: 'Missing required parameters',
         required: ['symbol', 'timeframe'],
-        optional: ['period', 'start_date', 'end_date', 'secType', 'exchange', 'currency'],
-        received: { symbol, timeframe, period, start_date, end_date, secType, exchange, currency }
-      });
-    }
-
-    // Validate that we have either period OR date range, but not both
-    const hasDateRange = start_date && end_date;
-    const hasPeriod = period && period !== 'CUSTOM';
-    
-    if (!hasDateRange && !hasPeriod) {
-      return res.status(400).json({
-        error: 'Must provide either period OR date range (start_date and end_date)',
-        received: { period, start_date, end_date }
-      });
-    }
-
-    if (hasDateRange && hasPeriod) {
-      return res.status(400).json({
-        error: 'Cannot specify both period and date range. Use period OR start_date/end_date',
-        received: { period, start_date, end_date }
-      });
-    }
-
-    // Validate date range if provided
-    if (hasDateRange) {
-      const startDateTime = new Date(start_date!);
-      const endDateTime = new Date(end_date!);
-      const now = new Date();
-      
-      if (isNaN(startDateTime.getTime()) || isNaN(endDateTime.getTime())) {
-        return res.status(400).json({
-          error: 'Invalid date format. Use YYYY-MM-DD format',
-          start_date,
-          end_date
-        });
-      }
-      
-      if (startDateTime >= endDateTime) {
-        return res.status(400).json({
-          error: 'Start date must be before end date',
-          start_date,
-          end_date
-        });
-      }
-      
-      if (endDateTime > now) {
-        return res.status(400).json({
-          error: 'End date cannot be in the future',
-          end_date,
-          current_date: now.toISOString().split('T')[0]
-        });
-      }
-    }
-
-    // Validate symbol - basic validation
-    if (!/^[A-Z]{1,10}$/.test(symbol.toUpperCase())) {
-      return res.status(400).json({
-        error: 'Invalid symbol format. Symbol should be 1-10 uppercase letters.',
-        symbol: symbol
+        received: { symbol, timeframe, period, start_date, end_date }
       });
     }
 
     // Validate timeframe
-    const validTimeframes = ['5min', '15min', '30min', '1hour', '4hour', '8hour', '1day'];
+    const validTimeframes = ['1min', '5min', '15min', '30min', '1hour', '4hour', '8hour', '1day'];
     if (!validTimeframes.includes(timeframe)) {
       return res.status(400).json({
         error: 'Invalid timeframe',
@@ -448,82 +334,129 @@ router.get('/history', async (req: Request, res: Response) => {
       });
     }
 
-    const accountMode = account_mode || 'paper'; // Default to paper trading
-    
-    // Log the request details
-    if (hasDateRange) {
-      console.log(`Fetching historical data for ${symbol} - ${timeframe} - ${start_date} to ${end_date} (${accountMode} mode)`);
-    } else {
-      console.log(`Fetching historical data for ${symbol} - ${timeframe} - ${period} (${accountMode} mode)`);
+    // Check if we should use database first
+    const useDatabase = use_database === 'true';
+    const includeIndicators = include_indicators === 'true';
+
+    if (useDatabase) {
+      try {
+        // Try to get data from database first
+        const startDate = start_date ? new Date(start_date) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days ago
+        const endDate = end_date ? new Date(end_date) : new Date();
+        
+        const dbData = await marketDataService.getHistoricalData(
+          symbol,
+          timeframe,
+          startDate,
+          endDate,
+          includeIndicators
+        );
+
+        if (dbData.length > 0) {
+          console.log(`Retrieved ${dbData.length} bars from database for ${symbol} ${timeframe}`);
+          
+          return res.json({
+            symbol: symbol,
+            timeframe: timeframe,
+            data: dbData,
+            source: 'database',
+            count: dbData.length,
+            start_date: startDate.toISOString(),
+            end_date: endDate.toISOString(),
+            timestamp: new Date().toISOString()
+          });
+        }
+      } catch (dbError) {
+        console.warn('Database query failed, falling back to IB service:', dbError);
+      }
     }
 
-    // Build request parameters for IB service
-    const ibServiceParams: any = {
-      symbol: symbol.toUpperCase(),
-      timeframe,
-      account_mode: accountMode
-    };
+    // Fallback to IB service
+    console.log(`Fetching historical data from IB service: ${symbol} ${timeframe} ${period}`);
 
-    // Add optional contract details
-    if (secType) {
-      ibServiceParams.secType = secType;
-    }
-    if (exchange) {
-      ibServiceParams.exchange = exchange;
-    }
-    if (currency) {
-      ibServiceParams.currency = currency;
-    }
-
-    // Add either period or date range parameters
-    if (hasDateRange) {
-      ibServiceParams.start_date = start_date;
-      ibServiceParams.end_date = end_date;
-    } else {
-      ibServiceParams.period = period;
-    }
-
-    // Request historical data from IB service
-    console.log(`Making request to IB service: ${IB_SERVICE_URL}/market-data/history with params:`, ibServiceParams);
-    
     const response = await axios.get(`${IB_SERVICE_URL}/market-data/history`, {
-      params: ibServiceParams,
-      timeout: 20000 // 20 seconds timeout
+      params: {
+        symbol: symbol,
+        timeframe: timeframe,
+        period: period,
+        account_mode: account_mode,
+        start_date: start_date,
+        end_date: end_date,
+        secType: secType,
+        exchange: exchange,
+        currency: currency,
+        include_indicators: include_indicators
+      },
+      timeout: 60000, // 60 second timeout for historical data
+      headers: {
+        'Connection': 'close'
+      }
     });
 
-    console.log(`IB service response status: ${response.status}`);
-    console.log(`IB service response data:`, response.data);
+    console.log(`Retrieved ${response.data?.data?.length || 0} bars from IB service for ${symbol}`);
 
-    if (response.data.error) {
-      return res.status(500).json({
-        error: 'IB Service returned error',
-        detail: response.data.error,
-        ib_service_url: `${IB_SERVICE_URL}/market-data/history`
-      });
+    // Store data in database if we have valid data
+    if (response.data?.data && Array.isArray(response.data.data) && response.data.data.length > 0) {
+      try {
+        // Get or create contract
+        const contractData: Contract = {
+          symbol: symbol,
+          secType: secType || 'STK',
+          exchange: exchange,
+          currency: currency
+        };
+        
+        const contractId = await marketDataService.getOrCreateContract(contractData);
+        
+        // Convert data format and store
+        const bars: CandlestickBar[] = response.data.data.map((bar: any) => ({
+          timestamp: new Date(bar.time * 1000), // Convert Unix timestamp to Date
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          volume: bar.volume,
+          wap: bar.wap,
+          count: bar.count
+        }));
+
+        const storeResult = await marketDataService.storeCandlestickData(contractId, timeframe, bars);
+        console.log(`Stored ${storeResult.inserted} new bars, updated ${storeResult.updated} bars for ${symbol} ${timeframe}`);
+
+        // Store technical indicators if included
+        if (includeIndicators && response.data?.indicators) {
+          for (const bar of response.data.data) {
+            const timestamp = new Date(bar.time * 1000);
+            const indicators = [];
+            
+            if (bar.sma_20) indicators.push({ name: 'SMA', period: 20, value: bar.sma_20 });
+            if (bar.sma_50) indicators.push({ name: 'SMA', period: 50, value: bar.sma_50 });
+            if (bar.ema_12) indicators.push({ name: 'EMA', period: 12, value: bar.ema_12 });
+            if (bar.ema_26) indicators.push({ name: 'EMA', period: 26, value: bar.ema_26 });
+            if (bar.rsi) indicators.push({ name: 'RSI', period: 14, value: bar.rsi });
+            if (bar.macd) indicators.push({ name: 'MACD', period: 12, value: bar.macd });
+            if (bar.macd_signal) indicators.push({ name: 'MACD_SIGNAL', period: 26, value: bar.macd_signal });
+            if (bar.bb_upper) indicators.push({ name: 'BB_UPPER', period: 20, value: bar.bb_upper });
+            if (bar.bb_middle) indicators.push({ name: 'BB_MIDDLE', period: 20, value: bar.bb_middle });
+            if (bar.bb_lower) indicators.push({ name: 'BB_LOWER', period: 20, value: bar.bb_lower });
+
+            if (indicators.length > 0) {
+              await marketDataService.storeTechnicalIndicators(contractId, timeframe, timestamp, indicators);
+            }
+          }
+        }
+
+      } catch (storeError) {
+        console.error('Error storing data in database:', storeError);
+        // Continue with response even if storage fails
+      }
     }
 
-    // Return the data in TradingView format
-    const responseData: any = {
-      symbol: symbol.toUpperCase(),
-      timeframe,
-      account_mode: accountMode,
-      bars: response.data.bars || [],
-      count: response.data.count || 0,
-      last_updated: response.data.last_updated || new Date().toISOString(),
-      source: 'Interactive Brokers'
-    };
-
-    // Add period or date range info to response
-    if (hasDateRange) {
-      responseData.start_date = start_date;
-      responseData.end_date = end_date;
-      responseData.date_range = true;
-    } else {
-      responseData.period = period;
-      responseData.date_range = false;
-    }
-
-    res.json(responseData);
+    res.json({
+      ...response.data,
+      source: 'ib_service',
+      timestamp: new Date().toISOString()
+    });
 
   } catch (error: any) {
     console.error('Error fetching historical data:', error);
@@ -535,60 +468,60 @@ router.get('/history', async (req: Request, res: Response) => {
       errorMessage = 'IB Service connection refused - service may be starting up';
       statusCode = 503;
     } else if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) {
-      errorMessage = 'IB Service timeout - service may be busy with other requests';
+      errorMessage = 'Request timed out - IB Service may be busy';
       statusCode = 504;
-    } else if (error.response) {
-      errorMessage = error.response.data?.detail || error.response.statusText || 'IB Service error';
+    } else if (error.response?.status) {
       statusCode = error.response.status;
+      errorMessage = error.response.data?.error || error.response.statusText;
     } else {
-      errorMessage = error.message || 'Failed to connect to IB Service';
+      errorMessage = error.message || 'Failed to fetch historical data';
     }
     
     res.status(statusCode).json({
-      error: 'Failed to fetch historical market data',
-      detail: errorMessage,
-      ib_service_status: statusCode,
-      ib_service_url: `${IB_SERVICE_URL}/market-data/history`,
+      error: 'Failed to fetch historical data',
+      message: errorMessage,
       timestamp: new Date().toISOString()
     });
   }
 });
 
-// Get real-time market data (current price)
+// Real-time data endpoint
 router.get('/realtime', async (req: Request, res: Response) => {
-  const { symbol, account_mode } = req.query;
-
-  if (!symbol) {
-    return res.status(400).json({
-      error: 'Symbol parameter is required'
-    });
-  }
-
-  // Check if data querying is enabled
-  if (!isDataQueryEnabled(req)) {
-    return handleDisabledDataQuery(res, 'Real-time market data querying is disabled');
-  }
-
   try {
-    const accountMode = account_mode || 'paper'; // Default to paper trading
-    console.log(`Fetching ${accountMode} data for ${symbol} from ${IB_SERVICE_URL}`);
+    const { symbol, account_mode } = req.query;
+
+    // Validate required parameters
+    if (!symbol) {
+      return res.status(400).json({
+        error: 'Missing required parameter: symbol',
+        received: { symbol, account_mode }
+      });
+    }
+
+    // Check if data querying is enabled
+    if (!isDataQueryEnabled(req)) {
+      return handleDisabledDataQuery(res, 'Real-time market data querying is disabled');
+    }
+
+    console.log(`Fetching real-time data for ${symbol}`);
 
     const response = await axios.get(`${IB_SERVICE_URL}/market-data/realtime`, {
-      params: { 
-        symbol: (symbol as string).toUpperCase(),
-        account_mode: accountMode
+      params: {
+        symbol: symbol,
+        account_mode: account_mode
       },
-      timeout: 15000, // Reduced to 15 seconds to align with frontend
+      timeout: 10000, // 10 second timeout for real-time data
       headers: {
         'Connection': 'close'
       }
     });
 
-    console.log(`Successfully fetched data for ${symbol}:`, response.data);
+    console.log(`Retrieved real-time data for ${symbol}`);
+
     res.json(response.data);
 
   } catch (error: any) {
-    console.error('Error fetching real-time market data:', error);
+    console.error('Error fetching real-time data:', error);
     
     let errorMessage = 'Unknown error';
     let statusCode = 500;
@@ -597,121 +530,117 @@ router.get('/realtime', async (req: Request, res: Response) => {
       errorMessage = 'IB Service connection refused - service may be starting up';
       statusCode = 503;
     } else if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) {
-      errorMessage = 'IB Service timeout - service may be busy or starting up';
+      errorMessage = 'Request timed out - IB Service may be busy';
       statusCode = 504;
-    } else if (error.response) {
-      errorMessage = error.response.data?.detail || error.response.statusText || 'IB Service error';
+    } else if (error.response?.status) {
       statusCode = error.response.status;
+      errorMessage = error.response.data?.error || error.response.statusText;
     } else {
-      errorMessage = error.message || 'Failed to connect to IB Service';
+      errorMessage = error.message || 'Failed to fetch real-time data';
     }
     
     res.status(statusCode).json({
-      error: 'Failed to fetch real-time market data',
-      detail: errorMessage,
-      ib_service_status: statusCode,
-      ib_service_url: IB_SERVICE_URL,
-      symbol: symbol,
+      error: 'Failed to fetch real-time data',
+      message: errorMessage,
       timestamp: new Date().toISOString()
     });
   }
 });
 
-// Subscribe to real-time market data updates
-router.post('/subscribe', async (req: Request, res: Response) => {
+// Technical indicators endpoint
+router.get('/indicators', async (req: Request, res: Response) => {
   try {
-    const { symbol, timeframe } = req.body;
+    const { 
+      symbol, 
+      timeframe, 
+      period, 
+      indicators, 
+      account_mode,
+      use_database = 'true'
+    } = req.query as {
+      symbol: string;
+      timeframe: string;
+      period: string;
+      indicators: string;
+      account_mode?: string;
+      use_database?: string;
+    };
 
-    if (!symbol) {
+    // Validate required parameters
+    if (!symbol || !timeframe || !indicators) {
       return res.status(400).json({
-        error: 'Symbol is required in request body'
+        error: 'Missing required parameters',
+        required: ['symbol', 'timeframe', 'indicators'],
+        received: { symbol, timeframe, indicators, period, account_mode }
       });
     }
 
-    console.log(`Subscribing to real-time updates for ${symbol} - ${timeframe || 'tick'}`);
-
-    const response = await axios.post(`${IB_SERVICE_URL}/market-data/subscribe`, {
-      symbol: symbol.toUpperCase(),
-      timeframe: timeframe || 'tick'
-    });
-
-    res.json({
-      message: `Subscribed to real-time data for ${symbol}`,
-      subscription: response.data
-    });
-
-  } catch (error: any) {
-    console.error('Error subscribing to market data:', error);
-    
-    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
-    const statusCode = error.response?.status || 500;
-    
-    res.status(statusCode).json({
-      error: 'Failed to subscribe to market data',
-      detail: errorMessage,
-      ib_service_status: statusCode
-    });
-  }
-});
-
-// Unsubscribe from real-time market data
-router.post('/unsubscribe', async (req: Request, res: Response) => {
-  try {
-    const { symbol } = req.body;
-
-    if (!symbol) {
-      return res.status(400).json({
-        error: 'Symbol is required in request body'
-      });
-    }
-
-    console.log(`Unsubscribing from real-time updates for ${symbol}`);
-
-    const response = await axios.post(`${IB_SERVICE_URL}/market-data/unsubscribe`, {
-      symbol: symbol.toUpperCase()
-    });
-
-    res.json({
-      message: `Unsubscribed from real-time data for ${symbol}`,
-      result: response.data
-    });
-
-  } catch (error: any) {
-    console.error('Error unsubscribing from market data:', error);
-    
-    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
-    
-    res.status(500).json({
-      error: 'Failed to unsubscribe from market data',
-      detail: errorMessage
-    });
-  }
-});
-
-// Get available technical indicators
-router.get('/indicators/available', async (req: Request, res: Response) => {
-  try {
     // Check if data querying is enabled
     if (!isDataQueryEnabled(req)) {
       return handleDisabledDataQuery(res, 'Technical indicators querying is disabled');
     }
 
-    const response = await axios.get(`${IB_SERVICE_URL}/indicators/available`, {
-      timeout: 10000 // 10 second timeout
-    });
+    const useDatabase = use_database === 'true';
 
-    if (response.data.error) {
-      return res.status(500).json({
-        error: 'IB Service returned error',
-        detail: response.data.error,
-        ib_service_url: `${IB_SERVICE_URL}/indicators/available`
-      });
+    if (useDatabase) {
+      try {
+        // Try to get indicators from database
+        const endDate = new Date();
+        const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days ago
+        
+        const dbData = await marketDataService.getHistoricalData(
+          symbol,
+          timeframe,
+          startDate,
+          endDate,
+          true // Include indicators
+        );
+
+        if (dbData.length > 0) {
+          console.log(`Retrieved ${dbData.length} bars with indicators from database for ${symbol} ${timeframe}`);
+          
+          return res.json({
+            symbol: symbol,
+            timeframe: timeframe,
+            indicators: indicators.split(','),
+            data: dbData,
+            source: 'database',
+            count: dbData.length,
+            timestamp: new Date().toISOString()
+          });
+        }
+      } catch (dbError) {
+        console.warn('Database query failed, falling back to IB service:', dbError);
+      }
     }
 
-    res.json(response.data);
+    // Fallback to IB service
+    console.log(`Calculating technical indicators for ${symbol} ${timeframe}`);
+
+    const response = await axios.get(`${IB_SERVICE_URL}/market-data/indicators`, {
+      params: {
+        symbol: symbol,
+        timeframe: timeframe,
+        period: period,
+        indicators: indicators,
+        account_mode: account_mode
+      },
+      timeout: 30000, // 30 second timeout for indicators
+      headers: {
+        'Connection': 'close'
+      }
+    });
+
+    console.log(`Calculated indicators for ${symbol} ${timeframe}`);
+
+    res.json({
+      ...response.data,
+      source: 'ib_service',
+      timestamp: new Date().toISOString()
+    });
 
   } catch (error: any) {
-    console.error('Error fetching available indicators:', error);
+    console.error('Error calculating technical indicators:', error);
     
     let errorMessage = 'Unknown error';
     let statusCode = 500;
@@ -720,123 +649,62 @@ router.get('/indicators/available', async (req: Request, res: Response) => {
       errorMessage = 'IB Service connection refused - service may be starting up';
       statusCode = 503;
     } else if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) {
-      errorMessage = 'IB Service timeout - service may be busy';
+      errorMessage = 'Request timed out - IB Service may be busy';
       statusCode = 504;
-    } else if (error.response) {
-      errorMessage = error.response.data?.detail || error.response.statusText || 'IB Service error';
+    } else if (error.response?.status) {
       statusCode = error.response.status;
+      errorMessage = error.response.data?.error || error.response.statusText;
     } else {
-      errorMessage = error.message || 'Failed to connect to IB Service';
+      errorMessage = error.message || 'Failed to calculate technical indicators';
     }
     
     res.status(statusCode).json({
-      error: 'Failed to fetch available technical indicators',
-      detail: errorMessage,
-      ib_service_status: statusCode,
-      ib_service_url: `${IB_SERVICE_URL}/indicators/available`,
+      error: 'Failed to calculate technical indicators',
+      message: errorMessage,
       timestamp: new Date().toISOString()
     });
   }
 });
 
-// Enhanced Symbol Discovery Endpoint
-router.post('/symbols/discover', async (req: Request, res: Response) => {
+// Database statistics endpoint
+router.get('/database/stats', async (req: Request, res: Response) => {
   try {
-    const { pattern, secType, exchange, currency, max_results, use_fallback, account_mode } = req.body;
-
-    // Validate required parameters
-    if (!pattern) {
-      return res.status(400).json({
-        error: 'Missing required parameter: pattern',
-        required: ['pattern'],
-        optional: ['secType', 'exchange', 'currency', 'max_results', 'use_fallback', 'account_mode']
-      });
-    }
-
-    console.log(`Symbol discovery for pattern: ${pattern} (${secType}) on ${exchange}`);
-
-    // Request symbol discovery from IB service
-    const discoveryPayload = {
-      pattern: pattern.trim(),
-      secType: secType || 'STK',
-      exchange: exchange || 'SMART',
-      currency: currency || 'USD',
-      max_results: max_results || 50,
-      use_fallback: use_fallback !== false, // Default to true
-      account_mode: account_mode || 'paper'
-    };
-
-    const response = await axios.post(`${IB_SERVICE_URL}/symbols/discover`, discoveryPayload, {
-      timeout: 15000 // 15 second timeout for symbol discovery
-    });
-
-    if (response.data.error) {
-      return res.status(500).json({
-        error: 'IB Service returned error',
-        detail: response.data.error,
-        ib_service_url: `${IB_SERVICE_URL}/symbols/discover`
-      });
-    }
-
-    // Return the discovery results
+    const { symbol } = req.query as { symbol?: string };
+    
+    const stats = await marketDataService.getDataCollectionStats(symbol);
+    
     res.json({
-      pattern: discoveryPayload.pattern,
-      secType: discoveryPayload.secType,
-      exchange: discoveryPayload.exchange,
-      currency: discoveryPayload.currency,
-      results: response.data.results || [],
-      count: response.data.count || 0,
-      method: response.data.method || 'none',
-      cached: response.data.cached || false,
-      source: 'Interactive Brokers',
-      last_updated: new Date().toISOString()
+      stats: stats,
+      timestamp: new Date().toISOString()
     });
-
   } catch (error: any) {
-    console.error('Error in symbol discovery:', error);
+    console.error('Error getting database stats:', error);
     
-    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
-    const statusCode = error.response?.status || 500;
-    
-    res.status(statusCode).json({
-      error: 'Failed to discover symbols',
-      detail: errorMessage,
-      ib_service_status: statusCode,
-      ib_service_url: `${IB_SERVICE_URL}/symbols/discover`,
-      pattern: req.body.pattern
+    res.status(500).json({
+      error: 'Failed to get database statistics',
+      message: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
 
-// Cache management endpoints
-router.get('/symbols/cache/stats', async (req: Request, res: Response) => {
+// Clean old data endpoint
+router.post('/database/clean', async (req: Request, res: Response) => {
   try {
-    const response = await axios.get(`${IB_SERVICE_URL}/symbols/cache/stats`, {
-      timeout: 10000
+    const result = await marketDataService.cleanOldData();
+    
+    res.json({
+      message: 'Data cleanup completed',
+      result: result,
+      timestamp: new Date().toISOString()
     });
-
-    res.json(response.data);
   } catch (error: any) {
-    console.error('Error getting cache stats:', error);
+    console.error('Error cleaning old data:', error);
+    
     res.status(500).json({
-      error: 'Failed to get cache statistics',
-      detail: error.message
-    });
-  }
-});
-
-router.post('/symbols/cache/clear', async (req: Request, res: Response) => {
-  try {
-    const response = await axios.post(`${IB_SERVICE_URL}/symbols/cache/clear`, {}, {
-      timeout: 10000
-    });
-
-    res.json(response.data);
-  } catch (error: any) {
-    console.error('Error clearing cache:', error);
-    res.status(500).json({
-      error: 'Failed to clear cache',
-      detail: error.message
+      error: 'Failed to clean old data',
+      message: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
