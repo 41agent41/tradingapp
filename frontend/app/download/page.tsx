@@ -16,6 +16,8 @@ interface HistoricalData {
   count: number;
   last_updated: string;
   source: string;
+  exchange?: string;
+  secType?: string;
 }
 
 interface DownloadStatus {
@@ -449,7 +451,7 @@ export default function DownloadPage() {
                   Downloaded Data: {chartData.symbol}
                 </h2>
                 <div className="text-sm text-gray-500">
-                  {chartData.exchange} - {chartData.secType} | Timeframe: {timeframes.find(tf => tf.value === timeframe)?.label}
+                  {exchangeFilters.exchange} - {exchangeFilters.secType} | Timeframe: {timeframes.find(tf => tf.value === timeframe)?.label}
                   {chartData.last_updated && (
                     <span className="ml-4">
                       Last update: {formatTime(new Date(chartData.last_updated))}
