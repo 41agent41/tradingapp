@@ -317,7 +317,7 @@ router.get('/history', async (req: Request, res: Response) => {
     }
 
     // Validate timeframe
-    const validTimeframes = ['1min', '5min', '15min', '30min', '1hour', '4hour', '8hour', '1day'];
+    const validTimeframes = ['tick', '1min', '5min', '15min', '30min', '1hour', '4hour', '8hour', '1day'];
     if (!validTimeframes.includes(timeframe)) {
       return res.status(400).json({
         error: 'Invalid timeframe',

@@ -45,6 +45,8 @@ interface CandlestickData {
 }
 
 const timeframes = [
+  { label: 'Tick', value: 'tick', minutes: 0 },
+  { label: '1m', value: '1min', minutes: 1 },
   { label: '5m', value: '5min', minutes: 5 },
   { label: '15m', value: '15min', minutes: 15 },
   { label: '30m', value: '30min', minutes: 30 },

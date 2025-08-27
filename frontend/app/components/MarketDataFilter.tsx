@@ -116,6 +116,8 @@ const CURRENCIES: Currency[] = [
 ];
 
 const TIMEFRAMES: Timeframe[] = [
+  { value: 'tick', label: 'Tick', minutes: 0 },
+  { value: '1min', label: '1m', minutes: 1 },
   { value: '5min', label: '5m', minutes: 5 },
   { value: '15min', label: '15m', minutes: 15 },
   { value: '30min', label: '30m', minutes: 30 },

@@ -75,7 +75,7 @@ max_cache_size = 10000  # Maximum cache entries
 
 class MarketDataRequest(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=10)
-    timeframe: str = Field(..., pattern=r'^(5min|15min|30min|1hour|4hour|8hour|1day)$')
+    timeframe: str = Field(..., pattern=r'^(tick|1min|5min|15min|30min|1hour|4hour|8hour|1day)$')
     period: str = Field(default="1Y", pattern=r'^(1D|1W|1M|3M|6M|1Y)$')
 
 class CandlestickBar(BaseModel):
@@ -549,6 +549,8 @@ def get_market_data_source(account_mode: str = 'paper') -> str:
 def convert_timeframe(timeframe: str) -> str:
     """Convert timeframe to IB format"""
     timeframe_map = {
+        'tick': '1 secs',  # Tick data - use 1 second as closest approximation
+        '1min': '1 min',
         '5min': '5 mins',
         '15min': '15 mins',
         '30min': '30 mins',
@@ -1436,6 +1438,8 @@ async def run_backtest(
         
         # Convert timeframe
         timeframe_map = {
+            'tick': '1 secs',  # Tick data - use 1 second as closest approximation
+            '1min': '1 min',
             '5min': '5 mins',
             '15min': '15 mins', 
             '30min': '30 mins',
@@ -1633,6 +1637,96 @@ def get_realtime_data_sync(symbol: str, account_mode: str = "paper"):
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise Exception(f"Failed to get real-time data for {symbol}: {type(e).__name__}: {str(e)}")
+
+# Tick data endpoint
+@app.get("/market-data/tick")
+async def get_tick_data(symbol: str, account_mode: str = "paper"):
+    """Get high-frequency tick data"""
+    try:
+        logger.info(f"Tick data endpoint called for symbol: {symbol}")
+        
+        # Run the synchronous operation in a separate thread
+        tick_data = await run_tws_operation(lambda: get_tick_data_sync(symbol, account_mode))
+        
+        logger.info(f"Successfully retrieved tick data for {symbol}")
+        return tick_data
+        
+    except HTTPException as he:
+        logger.error(f"HTTP Exception in tick data endpoint: {he.detail}")
+        raise he
+    except Exception as e:
+        error_str = str(e)
+        logger.error(f"Unexpected error in tick data endpoint: {type(e).__name__}: {error_str}")
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get tick data for {symbol}: {error_str}"
+        )
+
+def get_tick_data_sync(symbol: str, account_mode: str = "paper"):
+    """Get tick data synchronously"""
+    try:
+        # Get connection
+        ib = get_ib_connection()
+        
+        # Create contract
+        contract = create_contract(symbol.upper(), 'STK', 'SMART', 'USD')
+        
+        # Clear previous contracts
+        ib.contracts = []
+        
+        # Qualify contract
+        ib.reqContractDetails(6, contract)
+        time.sleep(2)
+        
+        if not ib.contracts:
+            logger.error(f"No qualified contracts found for symbol: {symbol}")
+            raise Exception(f"Symbol {symbol} not found or cannot be qualified")
+        
+        qualified_contract = ib.contracts[0]
+        logger.info(f"Using qualified contract for tick data: {qualified_contract}")
+        
+        # Request tick data
+        req_id = 7
+        ib.reqMktData(req_id, qualified_contract, '', False, False, [])
+        logger.info(f"Tick data requested for {qualified_contract.symbol}")
+        
+        # Wait for data
+        time.sleep(5)  # Longer wait for tick data
+        
+        # Get data from the client
+        tick_data = ib.data.get(req_id, {})
+        logger.info(f"Tick data received: {tick_data}")
+        
+        # Process tick data
+        tick_info = {
+            "symbol": symbol.upper(),
+            "timestamp": datetime.now().isoformat(),
+            "bid": tick_data.get('bid'),
+            "ask": tick_data.get('ask'),
+            "last": tick_data.get('last'),
+            "volume": tick_data.get('volume'),
+            "high": tick_data.get('high'),
+            "low": tick_data.get('low'),
+            "close": tick_data.get('close'),
+            "open": tick_data.get('open'),
+            "tick_type": tick_data.get('tickType'),
+            "exchange": tick_data.get('exchange'),
+            "special_conditions": tick_data.get('specialConditions')
+        }
+        
+        # Cancel market data subscription to clean up
+        ib.cancelMktData(req_id)
+        logger.info("Tick data subscription cancelled")
+        
+        return tick_info
+        
+    except Exception as e:
+        logger.error(f"Exception in get_tick_data_sync: {type(e).__name__}: {str(e)}")
+        logger.error(f"Exception details: {repr(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise Exception(f"Failed to get tick data for {symbol}: {type(e).__name__}: {str(e)}")
 
 # Real-time data endpoint
 @app.get("/market-data/realtime", response_model=RealTimeQuote)
