@@ -476,16 +476,25 @@ export default function DownloadPage() {
               </div>
             </div>
             
-            {/* Dataframe Viewer */}
-            <DataframeViewer
-              data={chartData.bars}
-              title={`Historical Data - ${chartData.symbol}`}
-              description={`${chartData.bars.length} records from ${chartData.source} | Timeframe: ${timeframes.find(tf => tf.value === timeframe)?.label}`}
-              maxHeight="600px"
-              showExport={true}
-              showPagination={true}
-              itemsPerPage={25}
-            />
+                         {/* Dataframe Viewer */}
+             <DataframeViewer
+               data={chartData.bars.map(bar => ({
+                 timestamp: bar.timestamp,
+                 open: bar.open,
+                 high: bar.high,
+                 low: bar.low,
+                 close: bar.close,
+                 volume: bar.volume,
+                 wap: bar.wap,
+                 count: bar.count
+               }))}
+               title={`Historical Data - ${chartData.symbol}`}
+               description={`${chartData.bars.length} records from ${chartData.source} | Timeframe: ${timeframes.find(tf => tf.value === timeframe)?.label}`}
+               maxHeight="600px"
+               showExport={true}
+               showPagination={true}
+               itemsPerPage={25}
+             />
           </div>
         ) : (
           <div className="bg-white rounded-lg shadow-sm border p-6">
