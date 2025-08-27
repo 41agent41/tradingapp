@@ -35,19 +35,19 @@ RUN useradd --create-home --shell /bin/bash --uid 1000 ibservice
 
 WORKDIR /app
 
-# Copy installed packages from builder stage to both root and user locations
-COPY --from=builder /root/.local /root/.local
-COPY --from=builder /root/.local /home/ibservice/.local
+# Copy installed packages from builder stage
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Set up Python path for both root and user
-ENV PATH=/root/.local/bin:/home/ibservice/.local/bin:$PATH
-ENV PYTHONPATH=/app:/root/.local/lib/python3.11/site-packages:/home/ibservice/.local/lib/python3.11/site-packages
+# Set up Python path
+ENV PATH=/usr/local/bin:$PATH
+ENV PYTHONPATH=/app:/usr/local/lib/python3.11/site-packages
 
 # Copy application code as root (needed for proper permissions)
 COPY . .
 
 # Fix ownership after copying all files
-RUN chown -R ibservice:ibservice /app /home/ibservice/.local
+RUN chown -R ibservice:ibservice /app
 
 # Verify that fastapi is installed
 RUN python -c "import fastapi; print('FastAPI version:', fastapi.__version__)" || \
