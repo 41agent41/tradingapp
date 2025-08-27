@@ -8,11 +8,12 @@ services:
       - NODE_ENV=${NODE_ENV:-production}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
       - IB_SERVICE_URL=http://172.20.0.10:8000
-      - POSTGRES_HOST=172.20.0.20
+      - POSTGRES_HOST=${POSTGRES_HOST:-localhost}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - POSTGRES_USER=${POSTGRES_USER:-tradingapp}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-tradingapp123}
       - POSTGRES_DB=${POSTGRES_DB:-tradingapp}
+      - POSTGRES_SSL=${POSTGRES_SSL:-false}
       - REDIS_HOST=172.20.0.30
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
@@ -22,7 +23,6 @@ services:
       - "${BACKEND_PORT:-4000}:${BACKEND_PORT:-4000}"
     depends_on:
       - ib_service
-      - postgres
       - redis
     networks:
       tradingapp-network:
@@ -76,20 +76,7 @@ services:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
       
-  postgres:
-    image: postgres:15-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-tradingapp}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tradingapp123}
-      POSTGRES_DB: ${POSTGRES_DB:-tradingapp}
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    networks:
-      tradingapp-network:
-        ipv4_address: 172.20.0.20
+
       
   redis:
     image: redis:7-alpine
@@ -100,8 +87,7 @@ services:
       tradingapp-network:
         ipv4_address: 172.20.0.30
 
-volumes:
-  pgdata:
+
 
 networks:
   tradingapp-network:
