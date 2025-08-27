@@ -382,6 +382,51 @@ export class MarketDataService {
     // Get count of deleted records (this would need to be implemented in the function)
     return { deleted: 0 };
   }
+
+  // Upload historical data to database
+  async uploadHistoricalData(data: {
+    symbol: string;
+    timeframe: string;
+    bars: any[];
+    account_mode: string;
+    secType: string;
+    exchange: string;
+    currency: string;
+  }): Promise<{ uploaded_count: number; skipped_count: number }> {
+    const { symbol, timeframe, bars, account_mode, secType, exchange, currency } = data;
+    
+    console.log(`Uploading ${bars.length} bars for ${symbol} ${timeframe} to database`);
+    
+    // Get or create contract
+    const contractId = await this.getOrCreateContract({
+      symbol,
+      secType,
+      exchange,
+      currency
+    });
+    
+    // Convert bars to CandlestickBar format
+    const candlestickBars: CandlestickBar[] = bars.map(bar => ({
+      timestamp: new Date(bar.timestamp * 1000), // Convert Unix timestamp to Date
+      open: parseFloat(bar.open),
+      high: parseFloat(bar.high),
+      low: parseFloat(bar.low),
+      close: parseFloat(bar.close),
+      volume: parseInt(bar.volume),
+      wap: bar.wap ? parseFloat(bar.wap) : undefined,
+      count: bar.count ? parseInt(bar.count) : undefined
+    }));
+    
+    // Store candlestick data
+    const result = await this.storeCandlestickData(contractId, timeframe, candlestickBars);
+    
+    console.log(`Upload completed: ${result.inserted} inserted, ${result.updated} updated, ${result.errors} errors`);
+    
+    return {
+      uploaded_count: result.inserted + result.updated,
+      skipped_count: result.errors
+    };
+  }
 }
 
 // Export singleton instance

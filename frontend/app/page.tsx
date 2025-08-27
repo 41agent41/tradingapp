@@ -30,7 +30,7 @@ export default function HomePage() {
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8">
         {/* Quick Access Links */}
-        <div className="mb-6 sm:mb-8 lg:mb-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 lg:gap-8">
+        <div className="mb-6 sm:mb-8 lg:mb-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 lg:gap-8">
           <a 
             href="/account" 
             className="block p-4 sm:p-6 lg:p-8 bg-white rounded-lg shadow-sm border hover:shadow-md transition-shadow duration-200"
@@ -53,6 +53,19 @@ export default function HomePage() {
               <div className="min-w-0 flex-1">
                 <h3 className="text-base sm:text-lg lg:text-xl font-medium text-gray-900 truncate">Historical Chart</h3>
                 <p className="text-xs sm:text-sm lg:text-base text-gray-600 mt-1 line-clamp-2">MSFT historical data with multiple timeframes</p>
+              </div>
+            </div>
+          </a>
+          
+          <a 
+            href="/download" 
+            className="block p-4 sm:p-6 lg:p-8 bg-white rounded-lg shadow-sm border hover:shadow-md transition-shadow duration-200"
+          >
+            <div className="flex items-start sm:items-center">
+              <div className="text-2xl sm:text-3xl lg:text-4xl mr-3 sm:mr-4 flex-shrink-0">⬇️</div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-base sm:text-lg lg:text-xl font-medium text-gray-900 truncate">Download Data</h3>
+                <p className="text-xs sm:text-sm lg:text-base text-gray-600 mt-1 line-clamp-2">Download historical data and load into database</p>
               </div>
             </div>
           </a>
