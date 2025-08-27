@@ -1,7 +1,7 @@
 import express from 'express';
 import type { Request, Response } from 'express';
 import axios from 'axios';
-import { marketDataService, type Contract, type CandlestickBar } from '../services/marketDataService.js';
+import { marketDataService, type Contract, type CandlestickBar, type TechnicalIndicator } from '../services/marketDataService.js';
 
 const router = express.Router();
 const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
@@ -38,15 +38,7 @@ interface AdvancedSearchQuery {
   account_mode?: string;
 }
 
-// Interface for candlestick data
-interface CandlestickBar {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
+
 
 // Helper function to check if data query is enabled via headers
 function isDataQueryEnabled(req: Request): boolean {
@@ -427,7 +419,7 @@ router.get('/history', async (req: Request, res: Response) => {
         if (includeIndicators && response.data?.indicators) {
           for (const bar of response.data.data) {
             const timestamp = new Date(bar.time * 1000);
-            const indicators = [];
+            const indicators: TechnicalIndicator[] = [];
             
             if (bar.sma_20) indicators.push({ name: 'SMA', period: 20, value: bar.sma_20 });
             if (bar.sma_50) indicators.push({ name: 'SMA', period: 50, value: bar.sma_50 });
