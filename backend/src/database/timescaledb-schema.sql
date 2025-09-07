@@ -1,10 +1,6 @@
--- TradingApp TimescaleDB Schema
--- Optimized for streaming historical market data
--- Run this script against your TimescaleDB-enabled PostgreSQL instance
-
--- ==============================================
--- EXTENSIONS
--- ==============================================
+-- TradingApp TimescaleDB Schema - Raw Data Only
+-- Stores only raw market data from IB Gateway
+-- All technical indicators calculated by TradingView Lightweight Charts
 
 -- Enable required extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -14,7 +10,7 @@ CREATE EXTENSION IF NOT EXISTS "timescaledb";
 -- CORE TABLES
 -- ==============================================
 
--- Symbols/Contracts table - stores contract information
+-- Symbols/Contracts table - stores contract information from IB Gateway
 CREATE TABLE IF NOT EXISTS contracts (
     id SERIAL PRIMARY KEY,
     symbol VARCHAR(20) NOT NULL,
@@ -23,7 +19,7 @@ CREATE TABLE IF NOT EXISTS contracts (
     currency VARCHAR(3) DEFAULT 'USD',
     multiplier VARCHAR(10),
     expiry DATE,
-    strike DECIMAL(10,2),
+    strike DECIMAL(20,8),
     right VARCHAR(4), -- CALL, PUT for options
     local_symbol VARCHAR(50),
     contract_id INTEGER, -- IB contract ID
@@ -41,22 +37,22 @@ CREATE INDEX IF NOT EXISTS idx_contracts_exchange ON contracts(exchange);
 CREATE INDEX IF NOT EXISTS idx_contracts_contract_id ON contracts(contract_id);
 
 -- ==============================================
--- TIMESERIES TABLES (HYPERTABLES)
+-- RAW DATA TABLES (HYPERTABLES)
 -- ==============================================
 
--- OHLCV candlestick data - PRIMARY TIMESERIES TABLE
+-- OHLCV candlestick data - RAW DATA ONLY from IB Gateway
 CREATE TABLE IF NOT EXISTS candlestick_data (
     id BIGSERIAL,
-    contract_id INTEGER NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
-    timestamp TIMESTAMPTZ NOT NULL, -- Changed to TIMESTAMPTZ for timezone support
+    contract_id INTEGER NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
     timeframe VARCHAR(10) NOT NULL, -- 1min, 5min, 15min, 30min, 1hour, 4hour, 8hour, 1day
-    open DECIMAL(15,6) NOT NULL,
-    high DECIMAL(15,6) NOT NULL,
-    low DECIMAL(15,6) NOT NULL,
-    close DECIMAL(15,6) NOT NULL,
+    open DECIMAL(20,8) NOT NULL,
+    high DECIMAL(20,8) NOT NULL,
+    low DECIMAL(20,8) NOT NULL,
+    close DECIMAL(20,8) NOT NULL,
     volume BIGINT NOT NULL DEFAULT 0,
-    wap DECIMAL(15,6), -- Volume Weighted Average Price
-    count INTEGER, -- Number of trades
+    wap DECIMAL(20,8), -- Volume Weighted Average Price from IB
+    count INTEGER, -- Number of trades from IB
     created_at TIMESTAMPTZ DEFAULT NOW(),
     
     -- Composite unique constraint to prevent duplicates
@@ -64,20 +60,23 @@ CREATE TABLE IF NOT EXISTS candlestick_data (
 );
 
 -- Convert to hypertable with 1-day chunks for optimal performance
-SELECT create_hypertable('candlestick_data', 'timestamp', chunk_time_interval => INTERVAL '1 day');
+SELECT create_hypertable('candlestick_data', 'timestamp', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
 
 -- Create TimescaleDB-optimized indexes
+-- Primary index for most common queries (contract + timeframe + timestamp)
 CREATE INDEX IF NOT EXISTS idx_candlestick_contract_timeframe_timestamp ON candlestick_data(contract_id, timeframe, timestamp DESC);
+-- Index for time-based queries across all contracts
 CREATE INDEX IF NOT EXISTS idx_candlestick_timestamp_desc ON candlestick_data(timestamp DESC);
+-- Index for contract-specific queries without timeframe filter
 CREATE INDEX IF NOT EXISTS idx_candlestick_contract_timestamp_desc ON candlestick_data(contract_id, timestamp DESC);
 
--- Real-time tick data (for high-frequency data) - SECONDARY TIMESERIES TABLE
+-- Real-time tick data (for high-frequency data) - RAW DATA ONLY from IB Gateway
 CREATE TABLE IF NOT EXISTS tick_data (
     id BIGSERIAL,
-    contract_id INTEGER NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    contract_id INTEGER NOT NULL,
     timestamp TIMESTAMPTZ NOT NULL,
-    tick_type VARCHAR(20) NOT NULL, -- bid, ask, last, volume, etc.
-    price DECIMAL(15,6),
+    tick_type VARCHAR(20) NOT NULL, -- bid, ask, last, volume, etc. from IB
+    price DECIMAL(20,8),
     size INTEGER,
     exchange VARCHAR(20),
     special_conditions VARCHAR(50),
@@ -85,43 +84,26 @@ CREATE TABLE IF NOT EXISTS tick_data (
 );
 
 -- Convert to hypertable with 1-hour chunks for high-frequency data
-SELECT create_hypertable('tick_data', 'timestamp', chunk_time_interval => INTERVAL '1 hour');
+SELECT create_hypertable('tick_data', 'timestamp', chunk_time_interval => INTERVAL '1 hour', if_not_exists => TRUE);
 
 -- Create TimescaleDB-optimized indexes for tick data
 CREATE INDEX IF NOT EXISTS idx_tick_contract_timestamp_desc ON tick_data(contract_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_tick_type_timestamp ON tick_data(tick_type, timestamp DESC);
 
--- Technical indicators - TIMESERIES TABLE
-CREATE TABLE IF NOT EXISTS technical_indicators (
-    id BIGSERIAL,
-    candlestick_id BIGINT NOT NULL REFERENCES candlestick_data(id) ON DELETE CASCADE,
-    contract_id INTEGER NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
-    timestamp TIMESTAMPTZ NOT NULL,
-    timeframe VARCHAR(10) NOT NULL,
-    indicator_name VARCHAR(20) NOT NULL, -- SMA, EMA, RSI, MACD, etc.
-    period INTEGER, -- Period for the indicator (e.g., 20 for SMA20)
-    value DECIMAL(15,6),
-    additional_data JSONB, -- For indicators with multiple values (e.g., MACD signal, histogram)
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    
-    UNIQUE(contract_id, timestamp, timeframe, indicator_name, period)
-);
-
--- Convert to hypertable with 1-day chunks
-SELECT create_hypertable('technical_indicators', 'timestamp', chunk_time_interval => INTERVAL '1 day');
-
--- Create TimescaleDB-optimized indexes for indicators
-CREATE INDEX IF NOT EXISTS idx_indicators_contract_timeframe_timestamp ON technical_indicators(contract_id, timeframe, timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_indicators_name_timestamp ON technical_indicators(indicator_name, timestamp DESC);
+-- Add foreign key constraints after hypertable creation
+ALTER TABLE candlestick_data ADD CONSTRAINT fk_candlestick_contract 
+    FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE CASCADE;
+ALTER TABLE tick_data ADD CONSTRAINT fk_tick_contract 
+    FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE CASCADE;
 
 -- ==============================================
--- METADATA TABLES (NON-TIMESERIES)
+-- DATA COLLECTION METADATA
 -- ==============================================
 
--- Track data collection sessions
+-- Track data collection sessions from IB Gateway
 CREATE TABLE IF NOT EXISTS data_collection_sessions (
     id SERIAL PRIMARY KEY,
-    contract_id INTEGER NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    contract_id INTEGER NOT NULL,
     timeframe VARCHAR(10) NOT NULL,
     start_time TIMESTAMPTZ NOT NULL,
     end_time TIMESTAMPTZ,
@@ -134,19 +116,18 @@ CREATE TABLE IF NOT EXISTS data_collection_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_contract ON data_collection_sessions(contract_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON data_collection_sessions(status);
-CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON data_collection_sessions(start_time DESC);
 
--- Data quality metrics
+-- Data quality metrics for raw data validation
 CREATE TABLE IF NOT EXISTS data_quality_metrics (
     id SERIAL PRIMARY KEY,
-    contract_id INTEGER NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    contract_id INTEGER NOT NULL,
     timeframe VARCHAR(10) NOT NULL,
     date DATE NOT NULL,
     total_bars INTEGER DEFAULT 0,
     missing_bars INTEGER DEFAULT 0,
     duplicate_bars INTEGER DEFAULT 0,
     invalid_bars INTEGER DEFAULT 0,
-    data_quality_score DECIMAL(3,2), -- 0.00 to 1.00
+    data_quality_score DECIMAL(5,4), -- 0.0000 to 1.0000 (higher precision)
     last_updated TIMESTAMPTZ DEFAULT NOW(),
     
     UNIQUE(contract_id, timeframe, date)
@@ -154,15 +135,15 @@ CREATE TABLE IF NOT EXISTS data_quality_metrics (
 
 CREATE INDEX IF NOT EXISTS idx_quality_contract_date ON data_quality_metrics(contract_id, date DESC);
 
--- Data collection configuration
+-- Data collection configuration for IB Gateway
 CREATE TABLE IF NOT EXISTS data_collection_config (
     id SERIAL PRIMARY KEY,
-    contract_id INTEGER NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    contract_id INTEGER NOT NULL,
     timeframe VARCHAR(10) NOT NULL,
     enabled BOOLEAN DEFAULT true,
     auto_collect BOOLEAN DEFAULT false,
     collection_interval_minutes INTEGER DEFAULT 5,
-    retention_days INTEGER DEFAULT 365, -- How long to keep data
+    retention_days INTEGER DEFAULT 365, -- How long to keep raw data
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     
@@ -170,10 +151,10 @@ CREATE TABLE IF NOT EXISTS data_collection_config (
 );
 
 -- ==============================================
--- CONTINUOUS AGGREGATES
+-- CONTINUOUS AGGREGATES (TIMESCALEDB FEATURE)
 -- ==============================================
 
--- Daily aggregated data for faster queries
+-- Daily aggregated raw data for faster queries
 CREATE MATERIALIZED VIEW IF NOT EXISTS daily_candlestick_data
 WITH (timescaledb.continuous) AS
 SELECT 
@@ -190,60 +171,58 @@ SELECT
 FROM candlestick_data
 GROUP BY contract_id, timeframe, day;
 
--- Add refresh policy for continuous aggregates (refresh every hour)
-SELECT add_continuous_aggregate_policy('daily_candlestick_data',
-    start_offset => INTERVAL '3 days',
-    end_offset => INTERVAL '1 hour',
-    schedule_interval => INTERVAL '1 hour');
-
--- Hourly aggregated data for intraday analysis
-CREATE MATERIALIZED VIEW IF NOT EXISTS hourly_candlestick_data
-WITH (timescaledb.continuous) AS
-SELECT 
-    contract_id,
-    timeframe,
-    time_bucket('1 hour', timestamp) AS hour,
-    FIRST(open, timestamp) AS hour_open,
-    MAX(high) AS hour_high,
-    MIN(low) AS hour_low,
-    LAST(close, timestamp) AS hour_close,
-    SUM(volume) AS hour_volume,
-    AVG(wap) AS hour_avg_wap,
-    SUM(count) AS hour_trade_count
-FROM candlestick_data
-WHERE timeframe IN ('1min', '5min', '15min', '30min') -- Only for intraday timeframes
-GROUP BY contract_id, timeframe, hour;
-
--- Add refresh policy for hourly aggregates
-SELECT add_continuous_aggregate_policy('hourly_candlestick_data',
-    start_offset => INTERVAL '1 day',
-    end_offset => INTERVAL '1 hour',
-    schedule_interval => INTERVAL '1 hour');
+-- Add refresh policy for continuous aggregates (only if not exists)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM timescaledb_information.continuous_aggregates 
+        WHERE view_name = 'daily_candlestick_data'
+    ) THEN
+        SELECT add_continuous_aggregate_policy('daily_candlestick_data',
+            start_offset => INTERVAL '3 days',
+            end_offset => INTERVAL '1 hour',
+            schedule_interval => INTERVAL '1 hour');
+    END IF;
+END $$;
 
 -- ==============================================
--- DATA RETENTION POLICIES
+-- DATA RETENTION POLICIES (TIMESCALEDB FEATURE)
 -- ==============================================
 
--- Set up automated data retention policies
--- Keep candlestick data for 2 years
-SELECT add_retention_policy('candlestick_data', INTERVAL '2 years');
-
--- Keep tick data for 30 days (high frequency, large volume)
-SELECT add_retention_policy('tick_data', INTERVAL '30 days');
-
--- Keep technical indicators for 2 years (same as candlestick data)
-SELECT add_retention_policy('technical_indicators', INTERVAL '2 years');
+-- Set up automated data retention policies for raw data (only if not exists)
+DO $$
+BEGIN
+    -- Add retention policy for candlestick_data if not exists
+    IF NOT EXISTS (
+        SELECT 1 FROM timescaledb_information.jobs 
+        WHERE proc_name = 'policy_retention' 
+        AND hypertable_name = 'candlestick_data'
+    ) THEN
+        SELECT add_retention_policy('candlestick_data', INTERVAL '2 years');
+    END IF;
+    
+    -- Add retention policy for tick_data if not exists
+    IF NOT EXISTS (
+        SELECT 1 FROM timescaledb_information.jobs 
+        WHERE proc_name = 'policy_retention' 
+        AND hypertable_name = 'tick_data'
+    ) THEN
+        SELECT add_retention_policy('tick_data', INTERVAL '30 days');
+    END IF;
+END $$;
 
 -- ==============================================
--- VIEWS FOR EASY DATA ACCESS
+-- VIEWS FOR RAW DATA ACCESS
 -- ==============================================
 
--- Enhanced view for latest candlestick data with indicators
+-- View for latest raw candlestick data (NO INDICATORS)
+-- Note: This view should be used with LIMIT in queries to avoid large result sets
 CREATE OR REPLACE VIEW latest_candlestick_data AS
 SELECT 
     c.symbol,
     c.sec_type,
     c.exchange,
+    c.currency,
     cd.timestamp,
     cd.timeframe,
     cd.open,
@@ -252,30 +231,18 @@ SELECT
     cd.close,
     cd.volume,
     cd.wap,
-    cd.count,
-    -- Technical indicators
-    MAX(CASE WHEN ti.indicator_name = 'SMA' AND ti.period = 20 THEN ti.value END) as sma_20,
-    MAX(CASE WHEN ti.indicator_name = 'SMA' AND ti.period = 50 THEN ti.value END) as sma_50,
-    MAX(CASE WHEN ti.indicator_name = 'EMA' AND ti.period = 12 THEN ti.value END) as ema_12,
-    MAX(CASE WHEN ti.indicator_name = 'EMA' AND ti.period = 26 THEN ti.value END) as ema_26,
-    MAX(CASE WHEN ti.indicator_name = 'RSI' AND ti.period = 14 THEN ti.value END) as rsi_14,
-    MAX(CASE WHEN ti.indicator_name = 'MACD' AND ti.period = 12 THEN ti.value END) as macd,
-    MAX(CASE WHEN ti.indicator_name = 'MACD_SIGNAL' AND ti.period = 26 THEN ti.value END) as macd_signal,
-    MAX(CASE WHEN ti.indicator_name = 'BB_UPPER' AND ti.period = 20 THEN ti.value END) as bb_upper,
-    MAX(CASE WHEN ti.indicator_name = 'BB_MIDDLE' AND ti.period = 20 THEN ti.value END) as bb_middle,
-    MAX(CASE WHEN ti.indicator_name = 'BB_LOWER' AND ti.period = 20 THEN ti.value END) as bb_lower
+    cd.count
 FROM candlestick_data cd
 JOIN contracts c ON cd.contract_id = c.id
-LEFT JOIN technical_indicators ti ON cd.id = ti.candlestick_id
-GROUP BY c.symbol, c.sec_type, c.exchange, cd.timestamp, cd.timeframe, cd.open, cd.high, cd.low, cd.close, cd.volume, cd.wap, cd.count
 ORDER BY cd.timestamp DESC;
 
--- View for daily aggregated data with contract info
+-- View for daily aggregated raw data with contract info
 CREATE OR REPLACE VIEW daily_trading_summary AS
 SELECT 
     c.symbol,
     c.sec_type,
     c.exchange,
+    c.currency,
     dcd.day,
     dcd.timeframe,
     dcd.day_open,
@@ -285,9 +252,12 @@ SELECT
     dcd.day_volume,
     dcd.day_avg_wap,
     dcd.day_trade_count,
-    -- Calculate daily change
+    -- Simple daily change calculation (raw data only)
     dcd.day_close - dcd.day_open AS daily_change,
-    ROUND(((dcd.day_close - dcd.day_open) / dcd.day_open * 100), 2) AS daily_change_percent
+    CASE 
+        WHEN dcd.day_open > 0 THEN ROUND(((dcd.day_close - dcd.day_open) / dcd.day_open * 100), 2)
+        ELSE NULL 
+    END AS daily_change_percent
 FROM daily_candlestick_data dcd
 JOIN contracts c ON dcd.contract_id = c.id
 ORDER BY dcd.day DESC, c.symbol;
@@ -305,69 +275,18 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
--- Trigger for contracts table
+-- Triggers
 CREATE TRIGGER update_contracts_updated_at 
     BEFORE UPDATE ON contracts 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- Trigger for data_collection_sessions table
 CREATE TRIGGER update_sessions_updated_at 
     BEFORE UPDATE ON data_collection_sessions 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- Trigger for data_collection_config table
 CREATE TRIGGER update_config_updated_at 
     BEFORE UPDATE ON data_collection_config 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- Enhanced function for data quality monitoring
-CREATE OR REPLACE FUNCTION update_data_quality_metrics()
-RETURNS TRIGGER AS $$
-DECLARE
-    total_bars INTEGER;
-    missing_bars INTEGER;
-    duplicate_bars INTEGER;
-    invalid_bars INTEGER;
-    quality_score DECIMAL(3,2);
-BEGIN
-    -- Calculate metrics for the day
-    SELECT 
-        COUNT(*) as total,
-        COUNT(*) FILTER (WHERE open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL) as missing,
-        COUNT(*) - COUNT(DISTINCT timestamp) as duplicates,
-        COUNT(*) FILTER (WHERE open <= 0 OR high <= 0 OR low <= 0 OR close <= 0 OR high < low) as invalid
-    INTO total_bars, missing_bars, duplicate_bars, invalid_bars
-    FROM candlestick_data 
-    WHERE contract_id = NEW.contract_id 
-    AND timeframe = NEW.timeframe
-    AND DATE(timestamp) = DATE(NEW.timestamp);
-    
-    -- Calculate quality score (0.0 to 1.0)
-    quality_score := CASE 
-        WHEN total_bars = 0 THEN 0.0
-        ELSE (total_bars - missing_bars - duplicate_bars - invalid_bars)::DECIMAL / total_bars
-    END;
-    
-    -- Insert or update quality metrics
-    INSERT INTO data_quality_metrics (contract_id, timeframe, date, total_bars, missing_bars, duplicate_bars, invalid_bars, data_quality_score)
-    VALUES (NEW.contract_id, NEW.timeframe, DATE(NEW.timestamp), total_bars, missing_bars, duplicate_bars, invalid_bars, quality_score)
-    ON CONFLICT (contract_id, timeframe, date) 
-    DO UPDATE SET 
-        total_bars = EXCLUDED.total_bars,
-        missing_bars = EXCLUDED.missing_bars,
-        duplicate_bars = EXCLUDED.duplicate_bars,
-        invalid_bars = EXCLUDED.invalid_bars,
-        data_quality_score = EXCLUDED.data_quality_score,
-        last_updated = NOW();
-    
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Trigger to update data quality metrics
-CREATE TRIGGER update_quality_metrics_trigger
-    AFTER INSERT OR UPDATE ON candlestick_data
-    FOR EACH ROW EXECUTE FUNCTION update_data_quality_metrics();
 
 -- ==============================================
 -- INITIAL DATA
@@ -379,27 +298,8 @@ INSERT INTO contracts (symbol, sec_type, exchange, currency) VALUES
     ('AAPL', 'STK', 'NASDAQ', 'USD'),
     ('GOOGL', 'STK', 'NASDAQ', 'USD'),
     ('SPY', 'STK', 'ARCA', 'USD'),
-    ('QQQ', 'STK', 'NASDAQ', 'USD'),
-    ('TSLA', 'STK', 'NASDAQ', 'USD'),
-    ('NVDA', 'STK', 'NASDAQ', 'USD'),
-    ('AMZN', 'STK', 'NASDAQ', 'USD'),
-    ('META', 'STK', 'NASDAQ', 'USD'),
-    ('NFLX', 'STK', 'NASDAQ', 'USD')
+    ('QQQ', 'STK', 'NASDAQ', 'USD')
 ON CONFLICT (symbol, sec_type, exchange, currency, expiry, strike, right) DO NOTHING;
-
--- ==============================================
--- COMMENTS
--- ==============================================
-
-COMMENT ON TABLE contracts IS 'Stores contract information from Interactive Brokers';
-COMMENT ON TABLE candlestick_data IS 'OHLCV candlestick data for all timeframes - TimescaleDB hypertable';
-COMMENT ON TABLE tick_data IS 'Real-time tick data for high-frequency analysis - TimescaleDB hypertable';
-COMMENT ON TABLE technical_indicators IS 'Calculated technical indicators - TimescaleDB hypertable';
-COMMENT ON TABLE data_collection_sessions IS 'Tracks data collection sessions';
-COMMENT ON TABLE data_quality_metrics IS 'Data quality metrics and monitoring';
-COMMENT ON TABLE data_collection_config IS 'Configuration for data collection';
-COMMENT ON MATERIALIZED VIEW daily_candlestick_data IS 'Daily aggregated candlestick data - TimescaleDB continuous aggregate';
-COMMENT ON MATERIALIZED VIEW hourly_candlestick_data IS 'Hourly aggregated candlestick data - TimescaleDB continuous aggregate';
 
 -- ==============================================
 -- VERIFICATION QUERIES
@@ -411,21 +311,11 @@ SELECT * FROM pg_extension WHERE extname = 'timescaledb';
 -- Verify hypertables were created
 SELECT * FROM timescaledb_information.hypertables;
 
--- Verify continuous aggregates were created
-SELECT * FROM timescaledb_information.continuous_aggregates;
-
--- Verify retention policies were created
-SELECT * FROM timescaledb_information.policies;
-
 -- Verify tables were created
-SELECT table_name 
-FROM information_schema.tables 
+SELECT table_name FROM information_schema.tables 
 WHERE table_schema = 'public' 
-AND table_name IN ('contracts', 'candlestick_data', 'tick_data', 'technical_indicators', 'data_collection_sessions', 'data_quality_metrics', 'data_collection_config')
+AND table_name IN ('contracts', 'candlestick_data', 'tick_data')
 ORDER BY table_name;
-
--- Verify initial data was inserted
-SELECT symbol, sec_type, exchange, currency FROM contracts ORDER BY symbol;
 
 -- ==============================================
 -- COMPLETION MESSAGE
@@ -433,15 +323,8 @@ SELECT symbol, sec_type, exchange, currency FROM contracts ORDER BY symbol;
 
 DO $$
 BEGIN
-    RAISE NOTICE 'TradingApp TimescaleDB schema initialization completed successfully!';
-    RAISE NOTICE 'TimescaleDB extension enabled';
-    RAISE NOTICE 'Hypertables created: candlestick_data, tick_data, technical_indicators';
-    RAISE NOTICE 'Continuous aggregates created: daily_candlestick_data, hourly_candlestick_data';
-    RAISE NOTICE 'Retention policies configured for automated data cleanup';
-    RAISE NOTICE 'Tables created: contracts, data_collection_sessions, data_quality_metrics, data_collection_config';
-    RAISE NOTICE 'Views created: latest_candlestick_data, daily_trading_summary';
-    RAISE NOTICE 'Functions created: update_updated_at_column, update_data_quality_metrics';
-    RAISE NOTICE 'Triggers created: update_contracts_updated_at, update_sessions_updated_at, update_config_updated_at, update_quality_metrics_trigger';
-    RAISE NOTICE 'Initial data: 10 common stock contracts inserted';
-    RAISE NOTICE 'Ready for high-performance time-series data streaming!';
+    RAISE NOTICE 'TradingApp TimescaleDB Schema Ready!';
+    RAISE NOTICE 'Features: Hypertables, Continuous Aggregates, Retention Policies';
+    RAISE NOTICE 'Raw data only - Technical indicators handled by TradingView Charts';
 END $$;
+
