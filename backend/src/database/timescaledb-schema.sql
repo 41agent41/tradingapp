@@ -178,7 +178,7 @@ BEGIN
         SELECT 1 FROM timescaledb_information.continuous_aggregates 
         WHERE view_name = 'daily_candlestick_data'
     ) THEN
-        SELECT add_continuous_aggregate_policy('daily_candlestick_data',
+        PERFORM add_continuous_aggregate_policy('daily_candlestick_data',
             start_offset => INTERVAL '3 days',
             end_offset => INTERVAL '1 hour',
             schedule_interval => INTERVAL '1 hour');
@@ -198,7 +198,7 @@ BEGIN
         WHERE proc_name = 'policy_retention' 
         AND hypertable_name = 'candlestick_data'
     ) THEN
-        SELECT add_retention_policy('candlestick_data', INTERVAL '2 years');
+        PERFORM add_retention_policy('candlestick_data', INTERVAL '2 years');
     END IF;
     
     -- Add retention policy for tick_data if not exists
@@ -207,7 +207,7 @@ BEGIN
         WHERE proc_name = 'policy_retention' 
         AND hypertable_name = 'tick_data'
     ) THEN
-        SELECT add_retention_policy('tick_data', INTERVAL '30 days');
+        PERFORM add_retention_policy('tick_data', INTERVAL '30 days');
     END IF;
 END $$;
 
