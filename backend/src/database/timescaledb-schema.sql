@@ -20,14 +20,14 @@ CREATE TABLE IF NOT EXISTS contracts (
     multiplier VARCHAR(10),
     expiry DATE,
     strike DECIMAL(20,8),
-    right VARCHAR(4), -- CALL, PUT for options
+    "right" VARCHAR(4), -- CALL, PUT for options
     local_symbol VARCHAR(50),
     contract_id INTEGER, -- IB contract ID
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     
     -- Composite unique constraint
-    UNIQUE(symbol, sec_type, exchange, currency, expiry, strike, right)
+    UNIQUE(symbol, sec_type, exchange, currency, expiry, strike, "right")
 );
 
 -- Create index for efficient contract lookups
@@ -299,7 +299,7 @@ INSERT INTO contracts (symbol, sec_type, exchange, currency) VALUES
     ('GOOGL', 'STK', 'NASDAQ', 'USD'),
     ('SPY', 'STK', 'ARCA', 'USD'),
     ('QQQ', 'STK', 'NASDAQ', 'USD')
-ON CONFLICT (symbol, sec_type, exchange, currency, expiry, strike, right) DO NOTHING;
+ON CONFLICT (symbol, sec_type, exchange, currency, expiry, strike, "right") DO NOTHING;
 
 -- ==============================================
 -- VERIFICATION QUERIES
