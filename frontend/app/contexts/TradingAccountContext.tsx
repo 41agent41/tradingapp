@@ -41,14 +41,10 @@ export function TradingAccountProvider({ children }: TradingAccountProviderProps
     isLiveTrading,
     setIsLiveTrading,
     accountMode,
-    dataType
+    dataType,
   };
 
-  return (
-    <TradingAccountContext.Provider value={value}>
-      {children}
-    </TradingAccountContext.Provider>
-  );
+  return <TradingAccountContext.Provider value={value}>{children}</TradingAccountContext.Provider>;
 }
 
 export function useTradingAccount() {
@@ -57,4 +53,4 @@ export function useTradingAccount() {
     throw new Error('useTradingAccount must be used within a TradingAccountProvider');
   }
   return context;
-} 
+}

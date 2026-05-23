@@ -52,15 +52,10 @@ export interface ApiFetchInit extends RequestInit {
  *   - Preserves any caller-supplied headers (including the existing
  *     `X-Data-Query-Enabled` toggle).
  */
-export function apiFetch(
-  pathOrUrl: string,
-  init: ApiFetchInit = {}
-): Promise<Response> {
+export function apiFetch(pathOrUrl: string, init: ApiFetchInit = {}): Promise<Response> {
   const { absolute, skipAuth, headers: callerHeaders, ...rest } = init;
 
-  const url = absolute || /^https?:\/\//i.test(pathOrUrl)
-    ? pathOrUrl
-    : apiUrl(pathOrUrl);
+  const url = absolute || /^https?:\/\//i.test(pathOrUrl) ? pathOrUrl : apiUrl(pathOrUrl);
 
   const merged = new Headers(callerHeaders);
   if (!skipAuth && TOKEN && !merged.has('Authorization')) {

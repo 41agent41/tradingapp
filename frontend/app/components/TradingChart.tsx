@@ -13,7 +13,7 @@ interface CandlestickData {
   low: number;
   close: number;
   volume?: number;
-  
+
   // Technical Indicators
   sma_20?: number;
   sma_50?: number;
@@ -48,7 +48,7 @@ const timeframes = [
   { label: '1h', value: '1hour', minutes: 60 },
   { label: '4h', value: '4hour', minutes: 240 },
   { label: '8h', value: '8hour', minutes: 480 },
-  { label: '1d', value: '1day', minutes: 1440 }
+  { label: '1d', value: '1day', minutes: 1440 },
 ];
 
 export default function TradingChart({ onTimeframeChange, onSymbolChange }: TradingChartProps) {
@@ -57,7 +57,7 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
   const candlestickSeries = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
   const socket = useRef<Socket | null>(null);
-  
+
   const [currentSymbol, setCurrentSymbol] = useState('AAPL');
   const [symbolInput, setSymbolInput] = useState('AAPL');
   const [currentTimeframe, setCurrentTimeframe] = useState('5min');
@@ -67,7 +67,7 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
   const [realTimePrice, setRealTimePrice] = useState<number | null>(null);
   const [connectionStatus, setConnectionStatus] = useState('Disconnected');
   const [isSubscribed, setIsSubscribed] = useState(false);
-  
+
   // Indicator states
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>([]);
   const indicatorSeries = useRef<Map<string, ISeriesApi<any>>>(new Map());
@@ -157,12 +157,12 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
     socket.current.on('market-data-update', (data: any) => {
       if (data.symbol === currentSymbol && data.data?.last) {
         setRealTimePrice(data.data.last);
-        
+
         // Update chart with real-time price if we have chart data
         if (chartData.length > 0 && candlestickSeries.current) {
           const lastBar = chartData[chartData.length - 1];
           const now = Math.floor(Date.now() / 1000);
-          
+
           // Create a new bar or update the last bar based on timeframe
           const updatedBar: CandlestickData = {
             time: now as Time,
@@ -170,9 +170,9 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
             high: Math.max(lastBar.high, data.data.last),
             low: Math.min(lastBar.low, data.data.last),
             close: data.data.last,
-            volume: lastBar.volume || 0
+            volume: lastBar.volume || 0,
           };
-          
+
           candlestickSeries.current.update(updatedBar);
         }
       }
@@ -192,11 +192,11 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
       if (isSubscribed) {
         socket.current.emit('unsubscribe-market-data', { symbol: currentSymbol });
       }
-      
+
       // Subscribe to new symbol
       socket.current.emit('subscribe-market-data', {
         symbol: currentSymbol,
-        timeframe: currentTimeframe
+        timeframe: currentTimeframe,
       });
       setIsSubscribed(true);
     }
@@ -210,76 +210,84 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
   const fetchHistoricalData = async () => {
     setIsLoading(true);
     setError(null);
-    
+
     try {
       const response = await apiFetch(
         `/api/market-data/history?symbol=${currentSymbol}&timeframe=${currentTimeframe}&period=90D`
       );
-      
+
       if (!response.ok) {
         throw new Error(`Failed to fetch data: ${response.statusText}`);
       }
-      
+
       const data = await response.json();
-      
+
       if (data.error) {
         throw new Error(data.error);
       }
-      
+
       // Convert data to TradingView format with proper timestamp handling and validation
-      const formattedData: CandlestickData[] = data.bars?.map((bar: any) => {
-        // Validate and convert timestamp to TradingView format (Unix timestamp in seconds)
-        let timestamp = bar.timestamp || bar.time;
-        
-        // Validate timestamp is a valid number
-        if (typeof timestamp !== 'number' || isNaN(timestamp)) {
-          console.warn('Invalid timestamp:', timestamp, 'for bar:', bar);
-          return null;
-        }
-        
-        // Convert to seconds if in milliseconds
-        if (timestamp > 1000000000000) {
-          timestamp = Math.floor(timestamp / 1000);
-        }
-        
-        // Validate timestamp is reasonable (not in the future or too far in the past)
-        const now = Math.floor(Date.now() / 1000);
-        if (timestamp > now + 86400 || timestamp < now - 31536000 * 10) { // Within 1 day future or 10 years past
-          console.warn('Timestamp out of reasonable range:', timestamp, 'for bar:', bar);
-          return null;
-        }
-        
-        return {
-          time: timestamp as Time,
-          open: bar.open,
-          high: bar.high,
-          low: bar.low,
-          close: bar.close,
-          volume: bar.volume,
-        };
-            }).filter((bar: CandlestickData | null) =>
-        bar !== null && !isNaN(bar.open) && !isNaN(bar.high) && !isNaN(bar.low) && !isNaN(bar.close)
-      ) || [];
+      const formattedData: CandlestickData[] =
+        data.bars
+          ?.map((bar: any) => {
+            // Validate and convert timestamp to TradingView format (Unix timestamp in seconds)
+            let timestamp = bar.timestamp || bar.time;
+
+            // Validate timestamp is a valid number
+            if (typeof timestamp !== 'number' || isNaN(timestamp)) {
+              console.warn('Invalid timestamp:', timestamp, 'for bar:', bar);
+              return null;
+            }
+
+            // Convert to seconds if in milliseconds
+            if (timestamp > 1000000000000) {
+              timestamp = Math.floor(timestamp / 1000);
+            }
+
+            // Validate timestamp is reasonable (not in the future or too far in the past)
+            const now = Math.floor(Date.now() / 1000);
+            if (timestamp > now + 86400 || timestamp < now - 31536000 * 10) {
+              // Within 1 day future or 10 years past
+              console.warn('Timestamp out of reasonable range:', timestamp, 'for bar:', bar);
+              return null;
+            }
+
+            return {
+              time: timestamp as Time,
+              open: bar.open,
+              high: bar.high,
+              low: bar.low,
+              close: bar.close,
+              volume: bar.volume,
+            };
+          })
+          .filter(
+            (bar: CandlestickData | null) =>
+              bar !== null &&
+              !isNaN(bar.open) &&
+              !isNaN(bar.high) &&
+              !isNaN(bar.low) &&
+              !isNaN(bar.close)
+          ) || [];
 
       // Sort by timestamp in ascending order (oldest first) - required by TradingView
       formattedData.sort((a, b) => (a.time as number) - (b.time as number));
 
       setChartData(formattedData);
-      
+
       // Update chart series
       if (candlestickSeries.current && volumeSeries.current) {
         candlestickSeries.current.setData(formattedData);
-        
+
         // Volume data
-        const volumeData = formattedData.map(bar => ({
+        const volumeData = formattedData.map((bar) => ({
           time: bar.time,
           value: bar.volume || 0,
-          color: bar.close >= bar.open ? '#4CAF50' : '#F44336'
+          color: bar.close >= bar.open ? '#4CAF50' : '#F44336',
         }));
-        
+
         volumeSeries.current.setData(volumeData);
       }
-      
     } catch (err) {
       console.error('Error fetching historical data:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch data');
@@ -305,7 +313,7 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
   };
 
   const updateRealTimeData = (newBar: CandlestickData) => {
-    setChartData(prev => {
+    setChartData((prev) => {
       const updated = [...prev, newBar];
       if (candlestickSeries.current) {
         candlestickSeries.current.update(newBar);
@@ -341,7 +349,7 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
                 Load
               </button>
             </form>
-            
+
             {/* Current Symbol and Price Display */}
             <div className="flex items-center gap-2">
               <span className="text-lg font-bold text-gray-900">{currentSymbol}</span>
@@ -356,7 +364,9 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
           {/* Status Indicators */}
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
-              <div className={`w-2 h-2 rounded-full ${connectionStatus === 'Connected' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              <div
+                className={`w-2 h-2 rounded-full ${connectionStatus === 'Connected' ? 'bg-green-500' : 'bg-red-500'}`}
+              ></div>
               <span className="text-sm text-gray-600">{connectionStatus}</span>
             </div>
             {isSubscribed && (
@@ -407,4 +417,4 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
       </div>
     </div>
   );
-} 
+}

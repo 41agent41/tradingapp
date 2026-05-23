@@ -28,7 +28,7 @@ interface IndicatorSelectorProps {
 const IndicatorSelector: React.FC<IndicatorSelectorProps> = ({
   selectedIndicators,
   onIndicatorChange,
-  isLoading = false
+  isLoading = false,
 }) => {
   const [availableIndicators, setAvailableIndicators] = useState<AvailableIndicators | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -50,7 +50,7 @@ const IndicatorSelector: React.FC<IndicatorSelectorProps> = ({
       } catch (err) {
         console.error('Error fetching indicators:', err);
         setError(err instanceof Error ? err.message : 'Failed to load indicators');
-        
+
         // Fallback to static indicators if API fails
         setAvailableIndicators({
           trend: {
@@ -72,7 +72,7 @@ const IndicatorSelector: React.FC<IndicatorSelectorProps> = ({
             obv: { name: 'OBV', description: 'On-Balance Volume' },
             vwap: { name: 'VWAP', description: 'Volume Weighted Average Price' },
             volume_sma: { name: 'Volume SMA', description: 'Volume Simple Moving Average' },
-          }
+          },
         });
       } finally {
         setLoadingIndicators(false);
@@ -84,9 +84,9 @@ const IndicatorSelector: React.FC<IndicatorSelectorProps> = ({
 
   const handleIndicatorToggle = (indicatorKey: string) => {
     const newSelectedIndicators = selectedIndicators.includes(indicatorKey)
-      ? selectedIndicators.filter(id => id !== indicatorKey)
+      ? selectedIndicators.filter((id) => id !== indicatorKey)
       : [...selectedIndicators, indicatorKey];
-    
+
     onIndicatorChange(newSelectedIndicators);
   };
 
@@ -98,14 +98,14 @@ const IndicatorSelector: React.FC<IndicatorSelectorProps> = ({
     trend: 'text-blue-600 border-blue-200 bg-blue-50',
     momentum: 'text-orange-600 border-orange-200 bg-orange-50',
     volatility: 'text-purple-600 border-purple-200 bg-purple-50',
-    volume: 'text-green-600 border-green-200 bg-green-50'
+    volume: 'text-green-600 border-green-200 bg-green-50',
   };
 
   const categoryIcons = {
     trend: '📈',
     momentum: '⚡',
     volatility: '🌊',
-    volume: '📊'
+    volume: '📊',
   };
 
   if (loadingIndicators) {
@@ -122,9 +122,7 @@ const IndicatorSelector: React.FC<IndicatorSelectorProps> = ({
   if (!availableIndicators) {
     return (
       <div className="bg-white rounded-lg border border-red-200 p-4">
-        <div className="text-red-600 text-sm">
-          {error || 'Failed to load indicators'}
-        </div>
+        <div className="text-red-600 text-sm">{error || 'Failed to load indicators'}</div>
       </div>
     );
   }
@@ -132,7 +130,7 @@ const IndicatorSelector: React.FC<IndicatorSelectorProps> = ({
   return (
     <div className="bg-white rounded-lg border border-gray-200">
       {/* Header */}
-      <div 
+      <div
         className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50"
         onClick={() => setIsExpanded(!isExpanded)}
       >
@@ -175,10 +173,12 @@ const IndicatorSelector: React.FC<IndicatorSelectorProps> = ({
           {Object.entries(availableIndicators).map(([categoryKey, indicators]) => (
             <div key={categoryKey} className="space-y-2">
               <div className="flex items-center space-x-2">
-                <span className="text-lg">{categoryIcons[categoryKey as keyof typeof categoryIcons]}</span>
+                <span className="text-lg">
+                  {categoryIcons[categoryKey as keyof typeof categoryIcons]}
+                </span>
                 <h4 className="font-medium text-gray-700 capitalize">{categoryKey}</h4>
               </div>
-              
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 {Object.entries(indicators).map(([indicatorKey, metadata]) => {
                   const indicatorMeta = metadata as IndicatorMetadata;

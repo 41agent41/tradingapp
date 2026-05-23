@@ -14,14 +14,16 @@ export default function MSFTPage() {
             <div className="flex items-center space-x-2 sm:space-x-4">
               <BackToHome />
               <div className="min-w-0 flex-1">
-                <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">MSFT Real-time Chart</h1>
-                <p className="text-xs sm:text-sm text-gray-600 mt-1">Microsoft Corporation - Live Market Data</p>
+                <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">
+                  MSFT Real-time Chart
+                </h1>
+                <p className="text-xs sm:text-sm text-gray-600 mt-1">
+                  Microsoft Corporation - Live Market Data
+                </p>
               </div>
             </div>
             <div className="flex items-center space-x-2 sm:space-x-4">
-              <div className="text-xs sm:text-sm text-gray-500">
-                Connected to IB Gateway
-              </div>
+              <div className="text-xs sm:text-sm text-gray-500">Connected to IB Gateway</div>
             </div>
           </div>
         </div>
@@ -34,12 +36,20 @@ export default function MSFTPage() {
           <h3 className="text-base sm:text-lg font-medium text-blue-900 mb-2">Debug Information</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 text-xs sm:text-sm">
             <div>
-              <p><strong>API URL:</strong> {process.env.NEXT_PUBLIC_API_URL || 'Not configured'}</p>
-              <p><strong>Environment:</strong> {process.env.NODE_ENV || 'development'}</p>
+              <p>
+                <strong>API URL:</strong> {process.env.NEXT_PUBLIC_API_URL || 'Not configured'}
+              </p>
+              <p>
+                <strong>Environment:</strong> {process.env.NODE_ENV || 'development'}
+              </p>
             </div>
             <div>
-              <p><strong>Target Endpoint:</strong> /api/market-data/realtime?symbol=MSFT</p>
-              <p><strong>Update Frequency:</strong> Every 2 seconds</p>
+              <p>
+                <strong>Target Endpoint:</strong> /api/market-data/realtime?symbol=MSFT
+              </p>
+              <p>
+                <strong>Update Frequency:</strong> Every 2 seconds
+              </p>
             </div>
           </div>
         </div>
@@ -54,10 +64,11 @@ export default function MSFTPage() {
             Test the API endpoint directly from your browser or terminal:
           </p>
           <div className="bg-gray-800 text-green-400 p-2 sm:p-3 rounded font-mono text-xs sm:text-sm overflow-x-auto">
-            curl "{process.env.NEXT_PUBLIC_API_URL || 'http://10.7.3.20:4000'}/api/market-data/realtime?symbol=MSFT"
+            curl "{process.env.NEXT_PUBLIC_API_URL || 'http://10.7.3.20:4000'}
+            /api/market-data/realtime?symbol=MSFT"
           </div>
         </div>
       </main>
     </div>
   );
-} 
+}

@@ -64,7 +64,7 @@ export default function AccountPage() {
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [nextAutoRefresh, setNextAutoRefresh] = useState<Date | null>(null);
-  
+
   // Data switch state
   const [dataQueryEnabled, setDataQueryEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -83,7 +83,7 @@ export default function AccountPage() {
     if (typeof window !== 'undefined') {
       localStorage.setItem('account-data-enabled', JSON.stringify(enabled));
     }
-    
+
     // Clear any errors when disabling
     if (!enabled) {
       setError(null);
@@ -97,7 +97,7 @@ export default function AccountPage() {
         method: 'GET',
         headers: { 'Content-Type': 'application/json' },
       });
-      
+
       if (connectionRes.ok) {
         const connectionData = await connectionRes.json();
         setConnectionStatus(connectionData);
@@ -116,56 +116,61 @@ export default function AccountPage() {
   };
 
   // Fetch all account data (separate from connection check)
-  const fetchAccountData = useCallback(async (isManualRefresh = false) => {
-    if (!dataQueryEnabled) {
-      console.log('Account data fetching is disabled');
-      setLoading(false);
-      setRefreshing(false);
-      return;
-    }
-    
-    if (isManualRefresh) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
-    }
-    setError(null);
-    
-    try {
-      console.log('Fetching all account data...');
-      
-      const accountRes = await apiFetch(`/api/account/all`, {
-        method: 'GET',
-        headers: { 
-          'Content-Type': 'application/json',
-          'X-Data-Query-Enabled': dataQueryEnabled.toString()
-        },
-        signal: AbortSignal.timeout(30000) // 30 second timeout
-      });
-
-      if (accountRes.ok) {
-        const data: AccountData = await accountRes.json();
-        setAccountData(data);
-        setLastRefresh(new Date());
-        
-        // Set next auto refresh time (1 hour from now)
-        const nextRefresh = new Date();
-        nextRefresh.setHours(nextRefresh.getHours() + 1);
-        setNextAutoRefresh(nextRefresh);
-        
-        console.log('Successfully loaded account data');
-      } else {
-        const errorData = await accountRes.json();
-        throw new Error(errorData.detail || `HTTP ${accountRes.status}: ${accountRes.statusText}`);
+  const fetchAccountData = useCallback(
+    async (isManualRefresh = false) => {
+      if (!dataQueryEnabled) {
+        console.log('Account data fetching is disabled');
+        setLoading(false);
+        setRefreshing(false);
+        return;
       }
-    } catch (err) {
-      console.error('Error fetching account data:', err);
-      setError(err instanceof Error ? err.message : 'Failed to fetch account data');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [dataQueryEnabled]);
+
+      if (isManualRefresh) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+      setError(null);
+
+      try {
+        console.log('Fetching all account data...');
+
+        const accountRes = await apiFetch(`/api/account/all`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Data-Query-Enabled': dataQueryEnabled.toString(),
+          },
+          signal: AbortSignal.timeout(30000), // 30 second timeout
+        });
+
+        if (accountRes.ok) {
+          const data: AccountData = await accountRes.json();
+          setAccountData(data);
+          setLastRefresh(new Date());
+
+          // Set next auto refresh time (1 hour from now)
+          const nextRefresh = new Date();
+          nextRefresh.setHours(nextRefresh.getHours() + 1);
+          setNextAutoRefresh(nextRefresh);
+
+          console.log('Successfully loaded account data');
+        } else {
+          const errorData = await accountRes.json();
+          throw new Error(
+            errorData.detail || `HTTP ${accountRes.status}: ${accountRes.statusText}`
+          );
+        }
+      } catch (err) {
+        console.error('Error fetching account data:', err);
+        setError(err instanceof Error ? err.message : 'Failed to fetch account data');
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [dataQueryEnabled]
+  );
 
   // Keep the ref updated with the latest function
   useEffect(() => {
@@ -198,7 +203,7 @@ export default function AccountPage() {
     }
 
     console.log('Setting up hourly auto-refresh for account data (60 minutes)');
-    
+
     // Create a stable function that uses the ref to call the latest function
     const intervalFunction = () => {
       console.log('🕐 Auto-refreshing account data (hourly interval)');
@@ -206,7 +211,7 @@ export default function AccountPage() {
         fetchAccountDataRef.current();
       }
     };
-    
+
     const interval = setInterval(intervalFunction, 60 * 60 * 1000); // 1 hour in milliseconds (60 minutes)
 
     return () => {
@@ -217,7 +222,7 @@ export default function AccountPage() {
 
   // Helper functions
   const formatTime = (date: Date) => {
-    return date.toLocaleString('en-US', { 
+    return date.toLocaleString('en-US', {
       weekday: 'short',
       year: 'numeric',
       month: 'short',
@@ -225,7 +230,7 @@ export default function AccountPage() {
       hour: 'numeric',
       minute: '2-digit',
       second: '2-digit',
-      hour12: true
+      hour12: true,
     });
   };
 
@@ -274,7 +279,7 @@ export default function AccountPage() {
                 </>
               )}
             </button>
-            
+
             {!dataQueryEnabled && (
               <div className="px-3 py-1 bg-amber-100 text-amber-800 text-sm rounded border border-amber-200">
                 Data querying disabled
@@ -285,9 +290,7 @@ export default function AccountPage() {
 
         {/* Refresh Status */}
         <div className="text-sm text-gray-600 mb-4">
-          {lastRefresh && (
-            <div>Last updated: {formatTime(lastRefresh)}</div>
-          )}
+          {lastRefresh && <div>Last updated: {formatTime(lastRefresh)}</div>}
           {nextAutoRefresh && dataQueryEnabled && (
             <div>Next auto-refresh: {formatTime(nextAutoRefresh)} (60 minutes)</div>
           )}
@@ -300,7 +303,9 @@ export default function AccountPage() {
         {!dataQueryEnabled ? (
           <div className="text-center py-8">
             <div className="text-gray-600 mb-2">⚠️ Data querying is disabled</div>
-            <p className="text-sm text-gray-500">Enable data querying above to fetch account information from IB Gateway</p>
+            <p className="text-sm text-gray-500">
+              Enable data querying above to fetch account information from IB Gateway
+            </p>
           </div>
         ) : loading ? (
           <div className="flex items-center justify-center py-8">
@@ -337,7 +342,10 @@ export default function AccountPage() {
               <div className="bg-blue-50 p-4 rounded">
                 <span className="text-sm text-blue-600">Net Liquidation</span>
                 <div className="text-xl font-bold text-blue-700">
-                  {formatCurrency(accountData.account.net_liquidation, accountData.account.currency)}
+                  {formatCurrency(
+                    accountData.account.net_liquidation,
+                    accountData.account.currency
+                  )}
                 </div>
               </div>
             </div>
@@ -358,11 +366,13 @@ export default function AccountPage() {
             {accountData?.positions?.length || 0} positions
           </div>
         </div>
-        
+
         {!dataQueryEnabled ? (
           <div className="text-center py-8">
             <div className="text-gray-600 mb-2">⚠️ Data querying is disabled</div>
-            <p className="text-sm text-gray-500">Enable data querying to fetch positions from IB Gateway</p>
+            <p className="text-sm text-gray-500">
+              Enable data querying to fetch positions from IB Gateway
+            </p>
           </div>
         ) : !connectionStatus?.connected ? (
           <div className="text-amber-600">Please connect to IB Gateway to view positions</div>
@@ -389,18 +399,28 @@ export default function AccountPage() {
                       <td className="p-3 font-semibold">{position.symbol}</td>
                       <td className="p-3 text-right">{position.position}</td>
                       <td className="p-3 text-right">
-                        {position.market_price ? formatCurrency(position.market_price, position.currency) : 'N/A'}
+                        {position.market_price
+                          ? formatCurrency(position.market_price, position.currency)
+                          : 'N/A'}
                       </td>
                       <td className="p-3 text-right">
-                        {position.market_value ? formatCurrency(position.market_value, position.currency) : 'N/A'}
+                        {position.market_value
+                          ? formatCurrency(position.market_value, position.currency)
+                          : 'N/A'}
                       </td>
                       <td className="p-3 text-right">
-                        {position.average_cost ? formatCurrency(position.average_cost, position.currency) : 'N/A'}
+                        {position.average_cost
+                          ? formatCurrency(position.average_cost, position.currency)
+                          : 'N/A'}
                       </td>
-                      <td className={`p-3 text-right font-semibold ${
-                        (position.unrealized_pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
-                      }`}>
-                        {position.unrealized_pnl ? formatCurrency(position.unrealized_pnl, position.currency) : 'N/A'}
+                      <td
+                        className={`p-3 text-right font-semibold ${
+                          (position.unrealized_pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
+                        }`}
+                      >
+                        {position.unrealized_pnl
+                          ? formatCurrency(position.unrealized_pnl, position.currency)
+                          : 'N/A'}
                       </td>
                       <td className="p-3 text-center">{position.currency}</td>
                     </tr>
@@ -408,18 +428,18 @@ export default function AccountPage() {
                 </tbody>
               </table>
             </div>
-            
+
             {/* Dataframe Display */}
             <div className="mt-6">
               <DataframeViewer
-                data={accountData.positions.map(position => ({
+                data={accountData.positions.map((position) => ({
                   symbol: position.symbol,
                   position: position.position,
                   market_price: position.market_price,
                   market_value: position.market_value,
                   average_cost: position.average_cost,
                   unrealized_pnl: position.unrealized_pnl,
-                  currency: position.currency
+                  currency: position.currency,
                 }))}
                 title="Positions Data"
                 description={`${accountData.positions.length} positions from IB Gateway`}
@@ -440,15 +460,15 @@ export default function AccountPage() {
       <div className="bg-white p-6 rounded-lg shadow">
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-lg font-semibold">Active Orders</h3>
-          <div className="text-sm text-gray-600">
-            {accountData?.orders?.length || 0} orders
-          </div>
+          <div className="text-sm text-gray-600">{accountData?.orders?.length || 0} orders</div>
         </div>
-        
+
         {!dataQueryEnabled ? (
           <div className="text-center py-8">
             <div className="text-gray-600 mb-2">⚠️ Data querying is disabled</div>
-            <p className="text-sm text-gray-500">Enable data querying to fetch orders from IB Gateway</p>
+            <p className="text-sm text-gray-500">
+              Enable data querying to fetch orders from IB Gateway
+            </p>
           </div>
         ) : !connectionStatus?.connected ? (
           <div className="text-amber-600">Please connect to IB Gateway to view orders</div>
@@ -475,19 +495,25 @@ export default function AccountPage() {
                     <tr key={index} className="border-b hover:bg-gray-50">
                       <td className="p-3 font-mono">{order.order_id}</td>
                       <td className="p-3 font-semibold">{order.symbol}</td>
-                      <td className={`p-3 text-center font-semibold ${
-                        order.action === 'BUY' ? 'text-green-600' : 'text-red-600'
-                      }`}>
+                      <td
+                        className={`p-3 text-center font-semibold ${
+                          order.action === 'BUY' ? 'text-green-600' : 'text-red-600'
+                        }`}
+                      >
                         {order.action}
                       </td>
                       <td className="p-3 text-right">{order.quantity}</td>
                       <td className="p-3 text-center">{order.order_type}</td>
                       <td className="p-3 text-center">
-                        <span className={`px-2 py-1 rounded text-xs ${
-                          order.status === 'Filled' ? 'bg-green-100 text-green-800' :
-                          order.status === 'Cancelled' ? 'bg-red-100 text-red-800' :
-                          'bg-yellow-100 text-yellow-800'
-                        }`}>
+                        <span
+                          className={`px-2 py-1 rounded text-xs ${
+                            order.status === 'Filled'
+                              ? 'bg-green-100 text-green-800'
+                              : order.status === 'Cancelled'
+                                ? 'bg-red-100 text-red-800'
+                                : 'bg-yellow-100 text-yellow-800'
+                          }`}
+                        >
                           {order.status}
                         </span>
                       </td>
@@ -500,11 +526,11 @@ export default function AccountPage() {
                 </tbody>
               </table>
             </div>
-            
+
             {/* Dataframe Display */}
             <div className="mt-6">
               <DataframeViewer
-                data={accountData.orders.map(order => ({
+                data={accountData.orders.map((order) => ({
                   order_id: order.order_id,
                   symbol: order.symbol,
                   action: order.action,
@@ -513,7 +539,7 @@ export default function AccountPage() {
                   status: order.status,
                   filled_quantity: order.filled_quantity || 0,
                   remaining_quantity: order.remaining_quantity || 0,
-                  avg_fill_price: order.avg_fill_price
+                  avg_fill_price: order.avg_fill_price,
                 }))}
                 title="Orders Data"
                 description={`${accountData.orders.length} orders from IB Gateway`}
@@ -533,16 +559,18 @@ export default function AccountPage() {
     <div className="space-y-6">
       <div className="bg-white p-6 rounded-lg shadow">
         <h3 className="text-lg font-semibold mb-4">IB Gateway Connection</h3>
-        
+
         {connectionStatus && (
           <div className="space-y-4">
             <div className="flex items-center gap-3">
-              <div className={`w-4 h-4 rounded-full ${connectionStatus.connected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              <div
+                className={`w-4 h-4 rounded-full ${connectionStatus.connected ? 'bg-green-500' : 'bg-red-500'}`}
+              ></div>
               <span className="font-medium text-lg">
                 {connectionStatus.connected ? 'Connected' : 'Disconnected'}
               </span>
             </div>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
               <div className="bg-gray-50 p-3 rounded">
                 <span className="text-gray-600">Host:</span>
@@ -602,14 +630,16 @@ export default function AccountPage() {
             <div className="flex items-center space-x-2 sm:space-x-4">
               <BackToHome />
               <div className="min-w-0 flex-1">
-                <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">Account Dashboard</h1>
-                <p className="text-xs sm:text-sm text-gray-600 mt-1">Monitor your IB Gateway account information</p>
+                <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">
+                  Account Dashboard
+                </h1>
+                <p className="text-xs sm:text-sm text-gray-600 mt-1">
+                  Monitor your IB Gateway account information
+                </p>
               </div>
             </div>
             <div className="flex items-center space-x-2 sm:space-x-4">
-              <div className="text-xs sm:text-sm text-gray-500">
-                Connected to IB Gateway
-              </div>
+              <div className="text-xs sm:text-sm text-gray-500">Connected to IB Gateway</div>
             </div>
           </div>
         </div>
@@ -619,8 +649,8 @@ export default function AccountPage() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8">
         <div className="mb-6 sm:mb-8">
           <div className="text-xs sm:text-sm text-blue-600 bg-blue-50 p-3 rounded border border-blue-200">
-            💡 <strong>Refresh Schedule:</strong> Data refreshes automatically every 60 minutes or manually via "Refresh Now" button. 
-            No frequent polling to minimize IB Gateway API calls.
+            💡 <strong>Refresh Schedule:</strong> Data refreshes automatically every 60 minutes or
+            manually via "Refresh Now" button. No frequent polling to minimize IB Gateway API calls.
           </div>
         </div>
 
@@ -660,4 +690,4 @@ export default function AccountPage() {
       </main>
     </div>
   );
-} 
+}

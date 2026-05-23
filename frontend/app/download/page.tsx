@@ -31,7 +31,7 @@ interface DownloadStatus {
 
 export default function DownloadPage() {
   const { isLiveTrading, accountMode, dataType } = useTradingAccount();
-  
+
   // Enhanced filter state
   const [exchangeFilters, setExchangeFilters] = useState({
     region: 'US' as 'US' | 'AU',
@@ -39,9 +39,9 @@ export default function DownloadPage() {
     secType: 'STK',
     symbol: 'MSFT',
     currency: 'USD',
-    searchTerm: ''
+    searchTerm: '',
   });
-  
+
   const [periodFilters, setPeriodFilters] = useState<{
     period: string;
     startDate?: string;
@@ -51,18 +51,18 @@ export default function DownloadPage() {
     period: '3M',
     startDate: undefined,
     endDate: undefined,
-    useDateRange: false
+    useDateRange: false,
   });
-  
+
   const [timeframe, setTimeframe] = useState('1hour');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [chartData, setChartData] = useState<HistoricalData | null>(null);
   const [downloadStatus, setDownloadStatus] = useState<DownloadStatus>({
     isDownloading: false,
-    isUploading: false
+    isUploading: false,
   });
-  
+
   // Data query switch state
   const [dataQueryEnabled, setDataQueryEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -82,7 +82,7 @@ export default function DownloadPage() {
     { label: '1 Hour', value: '1hour' },
     { label: '4 Hours', value: '4hour' },
     { label: '8 Hours', value: '8hour' },
-    { label: '1 Day', value: '1day' }
+    { label: '1 Day', value: '1day' },
   ];
 
   // Handle data switch toggle
@@ -104,11 +104,15 @@ export default function DownloadPage() {
       setIsLoading(false);
       return;
     }
-    
+
     setIsLoading(true);
     setError(null);
-    setDownloadStatus({ isDownloading: true, isUploading: false, downloadProgress: 'Connecting to IB Gateway...' });
-    
+    setDownloadStatus({
+      isDownloading: true,
+      isUploading: false,
+      downloadProgress: 'Connecting to IB Gateway...',
+    });
+
     try {
       // Build query parameters
       const params = new URLSearchParams({
@@ -118,7 +122,7 @@ export default function DownloadPage() {
         account_mode: accountMode,
         secType: exchangeFilters.secType,
         exchange: exchangeFilters.exchange,
-        currency: exchangeFilters.currency
+        currency: exchangeFilters.currency,
       });
 
       // Add date range if using custom dates
@@ -131,14 +135,17 @@ export default function DownloadPage() {
 
       console.log('Fetching historical data:', url);
 
-      setDownloadStatus(prev => ({ ...prev, downloadProgress: 'Fetching data from IB Gateway...' }));
+      setDownloadStatus((prev) => ({
+        ...prev,
+        downloadProgress: 'Fetching data from IB Gateway...',
+      }));
 
       const response = await apiFetch(url, {
         headers: {
           'X-Data-Query-Enabled': 'true',
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
         },
-        signal: AbortSignal.timeout(30000) // 30 second timeout
+        signal: AbortSignal.timeout(30000), // 30 second timeout
       });
 
       console.log('Response status:', response.status);
@@ -146,7 +153,7 @@ export default function DownloadPage() {
       if (!response.ok) {
         const errorText = await response.text();
         console.error('API Error:', errorText);
-        
+
         if (response.status === 504) {
           throw new Error('Gateway timeout - IB service busy, please try again');
         } else if (response.status === 503) {
@@ -159,7 +166,9 @@ export default function DownloadPage() {
             } else if (errorData.detail && errorData.detail.includes('timeout')) {
               throw new Error('IB Gateway timeout - please try again');
             } else {
-              throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+              throw new Error(
+                errorData.detail || `HTTP ${response.status}: ${response.statusText}`
+              );
             }
           } catch (jsonError) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -171,7 +180,7 @@ export default function DownloadPage() {
 
       const data: HistoricalData = await response.json();
       console.log('Historical data received:', data);
-      
+
       if (!data.bars || !Array.isArray(data.bars)) {
         throw new Error('No bars data received from API');
       }
@@ -179,13 +188,20 @@ export default function DownloadPage() {
       console.log('Received', data.bars.length, 'bars');
 
       setChartData(data);
-      setDownloadStatus({ isDownloading: false, isUploading: false, downloadProgress: `Successfully downloaded ${data.bars.length} records` });
+      setDownloadStatus({
+        isDownloading: false,
+        isUploading: false,
+        downloadProgress: `Successfully downloaded ${data.bars.length} records`,
+      });
       console.log('Historical data downloaded successfully');
-
     } catch (err) {
       console.error('Error fetching historical data:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch historical data');
-      setDownloadStatus({ isDownloading: false, isUploading: false, error: err instanceof Error ? err.message : 'Failed to fetch historical data' });
+      setDownloadStatus({
+        isDownloading: false,
+        isUploading: false,
+        error: err instanceof Error ? err.message : 'Failed to fetch historical data',
+      });
     } finally {
       setIsLoading(false);
     }
@@ -198,17 +214,21 @@ export default function DownloadPage() {
       return;
     }
 
-    setDownloadStatus({ isDownloading: false, isUploading: true, uploadProgress: 'Preparing data for database...' });
+    setDownloadStatus({
+      isDownloading: false,
+      isUploading: true,
+      uploadProgress: 'Preparing data for database...',
+    });
     setError(null);
 
     try {
-      setDownloadStatus(prev => ({ ...prev, uploadProgress: 'Uploading data to PostgreSQL...' }));
+      setDownloadStatus((prev) => ({ ...prev, uploadProgress: 'Uploading data to PostgreSQL...' }));
 
       const response = await apiFetch(`/api/market-data/upload`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Data-Query-Enabled': 'true'
+          'X-Data-Query-Enabled': 'true',
         },
         body: JSON.stringify({
           symbol: chartData.symbol,
@@ -217,14 +237,14 @@ export default function DownloadPage() {
           account_mode: chartData.account_mode,
           secType: exchangeFilters.secType,
           exchange: exchangeFilters.exchange,
-          currency: exchangeFilters.currency
-        })
+          currency: exchangeFilters.currency,
+        }),
       });
 
       if (!response.ok) {
         const errorText = await response.text();
         console.error('Upload Error:', errorText);
-        
+
         try {
           const errorData = JSON.parse(errorText);
           throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
@@ -235,20 +255,19 @@ export default function DownloadPage() {
 
       const result = await response.json();
       console.log('Upload result:', result);
-      
-      setDownloadStatus({ 
-        isDownloading: false, 
-        isUploading: false, 
-        uploadProgress: `Successfully uploaded ${result.uploaded_count || chartData.bars.length} records to database` 
-      });
 
+      setDownloadStatus({
+        isDownloading: false,
+        isUploading: false,
+        uploadProgress: `Successfully uploaded ${result.uploaded_count || chartData.bars.length} records to database`,
+      });
     } catch (err) {
       console.error('Error uploading data:', err);
       setError(err instanceof Error ? err.message : 'Failed to upload data to database');
-      setDownloadStatus({ 
-        isDownloading: false, 
-        isUploading: false, 
-        error: err instanceof Error ? err.message : 'Failed to upload data to database' 
+      setDownloadStatus({
+        isDownloading: false,
+        isUploading: false,
+        error: err instanceof Error ? err.message : 'Failed to upload data to database',
       });
     }
   };
@@ -259,12 +278,12 @@ export default function DownloadPage() {
       setError('Data querying is disabled. Please enable the switch above.');
       return;
     }
-    
+
     if (!exchangeFilters.symbol.trim()) {
       setError('Please select a valid symbol');
       return;
     }
-    
+
     fetchHistoricalData();
   };
 
@@ -274,17 +293,17 @@ export default function DownloadPage() {
       setError('No data available to upload. Please download data first.');
       return;
     }
-    
+
     loadDataToDatabase();
   };
 
   // Helper function to format time
   const formatTime = (date: Date) => {
-    return date.toLocaleTimeString('en-US', { 
-      hour12: true, 
-      hour: 'numeric', 
-      minute: '2-digit', 
-      second: '2-digit' 
+    return date.toLocaleTimeString('en-US', {
+      hour12: true,
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
     });
   };
 
@@ -297,8 +316,12 @@ export default function DownloadPage() {
             <div className="flex items-center space-x-2 sm:space-x-4">
               <BackToHome />
               <div className="min-w-0 flex-1">
-                <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">Download Historical Data</h1>
-                <p className="text-xs sm:text-sm text-gray-600 mt-1">Download data from IB API and load into PostgreSQL database</p>
+                <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">
+                  Download Historical Data
+                </h1>
+                <p className="text-xs sm:text-sm text-gray-600 mt-1">
+                  Download data from IB API and load into PostgreSQL database
+                </p>
               </div>
             </div>
             <div className="flex items-center space-x-2 sm:space-x-4">
@@ -338,22 +361,17 @@ export default function DownloadPage() {
             {/* Period & Date Filters */}
             <div>
               <h3 className="text-sm font-medium text-gray-900 mb-4">Time Period</h3>
-              <PeriodDateFilters
-                onFiltersChange={setPeriodFilters}
-                disabled={!dataQueryEnabled}
-              />
+              <PeriodDateFilters onFiltersChange={setPeriodFilters} disabled={!dataQueryEnabled} />
             </div>
 
             {/* Timeframe & Actions */}
             <div className="space-y-4">
               <div>
                 <h3 className="text-sm font-medium text-gray-900 mb-4">Download Settings</h3>
-                
+
                 {/* Timeframe Selection */}
                 <div className="mb-4">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Timeframe
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Timeframe</label>
                   <select
                     value={timeframe}
                     onChange={(e) => setTimeframe(e.target.value)}
@@ -377,10 +395,15 @@ export default function DownloadPage() {
                   >
                     {downloadStatus.isDownloading ? 'Downloading...' : 'Download from IB API'}
                   </button>
-                  
+
                   <button
                     onClick={handleUploadData}
-                    disabled={!chartData || !chartData.bars || chartData.bars.length === 0 || downloadStatus.isUploading}
+                    disabled={
+                      !chartData ||
+                      !chartData.bars ||
+                      chartData.bars.length === 0 ||
+                      downloadStatus.isUploading
+                    }
                     className="w-full px-4 py-3 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
                   >
                     {downloadStatus.isUploading ? 'Uploading...' : 'Load to PostgreSQL'}
@@ -392,24 +415,40 @@ export default function DownloadPage() {
         </div>
 
         {/* Status Display */}
-        {(downloadStatus.isDownloading || downloadStatus.isUploading || downloadStatus.downloadProgress || downloadStatus.uploadProgress || downloadStatus.error) && (
+        {(downloadStatus.isDownloading ||
+          downloadStatus.isUploading ||
+          downloadStatus.downloadProgress ||
+          downloadStatus.uploadProgress ||
+          downloadStatus.error) && (
           <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-md">
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-2">
                 {downloadStatus.isDownloading && <span className="text-blue-600">⏳</span>}
                 {downloadStatus.isUploading && <span className="text-green-600">⏳</span>}
                 {downloadStatus.error && <span className="text-red-600">⚠️</span>}
-                {!downloadStatus.isDownloading && !downloadStatus.isUploading && !downloadStatus.error && <span className="text-green-600">✅</span>}
+                {!downloadStatus.isDownloading &&
+                  !downloadStatus.isUploading &&
+                  !downloadStatus.error && <span className="text-green-600">✅</span>}
                 <div>
-                  {downloadStatus.isDownloading && <p className="text-sm text-blue-800">Downloading...</p>}
-                  {downloadStatus.isUploading && <p className="text-sm text-green-800">Uploading...</p>}
-                  {downloadStatus.error && <p className="text-sm text-red-800">{downloadStatus.error}</p>}
-                  {downloadStatus.downloadProgress && !downloadStatus.isDownloading && !downloadStatus.error && (
-                    <p className="text-sm text-blue-800">{downloadStatus.downloadProgress}</p>
+                  {downloadStatus.isDownloading && (
+                    <p className="text-sm text-blue-800">Downloading...</p>
                   )}
-                  {downloadStatus.uploadProgress && !downloadStatus.isUploading && !downloadStatus.error && (
-                    <p className="text-sm text-green-800">{downloadStatus.uploadProgress}</p>
+                  {downloadStatus.isUploading && (
+                    <p className="text-sm text-green-800">Uploading...</p>
                   )}
+                  {downloadStatus.error && (
+                    <p className="text-sm text-red-800">{downloadStatus.error}</p>
+                  )}
+                  {downloadStatus.downloadProgress &&
+                    !downloadStatus.isDownloading &&
+                    !downloadStatus.error && (
+                      <p className="text-sm text-blue-800">{downloadStatus.downloadProgress}</p>
+                    )}
+                  {downloadStatus.uploadProgress &&
+                    !downloadStatus.isUploading &&
+                    !downloadStatus.error && (
+                      <p className="text-sm text-green-800">{downloadStatus.uploadProgress}</p>
+                    )}
                 </div>
               </div>
             </div>
@@ -442,7 +481,8 @@ export default function DownloadPage() {
                   Downloaded Data: {chartData.symbol}
                 </h2>
                 <div className="text-sm text-gray-500">
-                  {exchangeFilters.exchange} - {exchangeFilters.secType} | Timeframe: {timeframes.find(tf => tf.value === timeframe)?.label}
+                  {exchangeFilters.exchange} - {exchangeFilters.secType} | Timeframe:{' '}
+                  {timeframes.find((tf) => tf.value === timeframe)?.label}
                   {chartData.last_updated && (
                     <span className="ml-4">
                       Last update: {formatTime(new Date(chartData.last_updated))}
@@ -450,7 +490,7 @@ export default function DownloadPage() {
                   )}
                 </div>
               </div>
-              
+
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                 <div className="p-3 bg-green-50 border border-green-200 rounded-md">
                   <p className="text-green-800 font-medium">Records Downloaded</p>
@@ -466,26 +506,26 @@ export default function DownloadPage() {
                 </div>
               </div>
             </div>
-            
-                         {/* Dataframe Viewer */}
-             <DataframeViewer
-               data={chartData.bars.map(bar => ({
-                 timestamp: bar.timestamp,
-                 open: bar.open,
-                 high: bar.high,
-                 low: bar.low,
-                 close: bar.close,
-                 volume: bar.volume,
-                 wap: bar.wap,
-                 count: bar.count
-               }))}
-               title={`Historical Data - ${chartData.symbol}`}
-               description={`${chartData.bars.length} records from ${chartData.source} | Timeframe: ${timeframes.find(tf => tf.value === timeframe)?.label}`}
-               maxHeight="600px"
-               showExport={true}
-               showPagination={true}
-               itemsPerPage={25}
-             />
+
+            {/* Dataframe Viewer */}
+            <DataframeViewer
+              data={chartData.bars.map((bar) => ({
+                timestamp: bar.timestamp,
+                open: bar.open,
+                high: bar.high,
+                low: bar.low,
+                close: bar.close,
+                volume: bar.volume,
+                wap: bar.wap,
+                count: bar.count,
+              }))}
+              title={`Historical Data - ${chartData.symbol}`}
+              description={`${chartData.bars.length} records from ${chartData.source} | Timeframe: ${timeframes.find((tf) => tf.value === timeframe)?.label}`}
+              maxHeight="600px"
+              showExport={true}
+              showPagination={true}
+              itemsPerPage={25}
+            />
           </div>
         ) : (
           <div className="bg-white rounded-lg shadow-sm border p-6">
@@ -493,15 +533,15 @@ export default function DownloadPage() {
               <div className="text-4xl mb-4">📊</div>
               <p className="text-gray-600">No data downloaded yet</p>
               <p className="text-sm text-gray-500 mt-2">
-                {dataQueryEnabled 
+                {dataQueryEnabled
                   ? `Select market, symbol, and timeframe, then click "Download from IB API" to fetch data`
-                  : 'Enable data querying to download historical data from IB Gateway'
-                }
+                  : 'Enable data querying to download historical data from IB Gateway'}
               </p>
               {!dataQueryEnabled && (
                 <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-md">
                   <p className="text-sm text-amber-800">
-                    Data querying is currently disabled. Enable the switch above to connect to IB Gateway.
+                    Data querying is currently disabled. Enable the switch above to connect to IB
+                    Gateway.
                   </p>
                 </div>
               )}
