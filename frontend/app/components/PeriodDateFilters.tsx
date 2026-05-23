@@ -3,7 +3,12 @@
 import React, { useState } from 'react';
 
 interface PeriodDateFiltersProps {
-  onFiltersChange: (filters: { period: string; startDate?: string; endDate?: string; useDateRange: boolean }) => void;
+  onFiltersChange: (filters: {
+    period: string;
+    startDate?: string;
+    endDate?: string;
+    useDateRange: boolean;
+  }) => void;
   disabled?: boolean;
 }
 
@@ -13,10 +18,13 @@ const PERIODS = [
   { value: '1M', label: '1 Month', description: 'Last 30 days' },
   { value: '3M', label: '3 Months', description: 'Last 90 days' },
   { value: '6M', label: '6 Months', description: 'Last 180 days' },
-  { value: '1Y', label: '1 Year', description: 'Last 365 days' }
+  { value: '1Y', label: '1 Year', description: 'Last 365 days' },
 ];
 
-export default function PeriodDateFilters({ onFiltersChange, disabled = false }: PeriodDateFiltersProps) {
+export default function PeriodDateFilters({
+  onFiltersChange,
+  disabled = false,
+}: PeriodDateFiltersProps) {
   const [useDateRange, setUseDateRange] = useState(false);
   const [period, setPeriod] = useState('3M');
   const [startDate, setStartDate] = useState('');
@@ -34,7 +42,7 @@ export default function PeriodDateFilters({ onFiltersChange, disabled = false }:
     setUseDateRange(false);
     onFiltersChange({
       period: newPeriod,
-      useDateRange: false
+      useDateRange: false,
     });
   };
 
@@ -46,12 +54,12 @@ export default function PeriodDateFilters({ onFiltersChange, disabled = false }:
         period: 'CUSTOM',
         startDate,
         endDate,
-        useDateRange: true
+        useDateRange: true,
       });
     } else {
       onFiltersChange({
         period,
-        useDateRange: false
+        useDateRange: false,
       });
     }
   };
@@ -64,7 +72,7 @@ export default function PeriodDateFilters({ onFiltersChange, disabled = false }:
         period: 'CUSTOM',
         startDate: date,
         endDate,
-        useDateRange: true
+        useDateRange: true,
       });
     }
   };
@@ -77,7 +85,7 @@ export default function PeriodDateFilters({ onFiltersChange, disabled = false }:
         period: 'CUSTOM',
         startDate,
         endDate: date,
-        useDateRange: true
+        useDateRange: true,
       });
     }
   };
@@ -88,7 +96,7 @@ export default function PeriodDateFilters({ onFiltersChange, disabled = false }:
     const start = new Date(startDate);
     const end = new Date(endDate);
     const today = new Date();
-    
+
     return start < end && end <= today;
   };
 
@@ -98,9 +106,7 @@ export default function PeriodDateFilters({ onFiltersChange, disabled = false }:
     <div className="space-y-4">
       {/* Period vs Date Range Toggle */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          Time Period
-        </label>
+        <label className="block text-sm font-medium text-gray-700 mb-2">Time Period</label>
         <div className="flex space-x-2">
           <button
             onClick={() => handleDateRangeToggle(false)}
@@ -130,9 +136,7 @@ export default function PeriodDateFilters({ onFiltersChange, disabled = false }:
       {!useDateRange ? (
         /* Predefined Period Selection */
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Select Period
-          </label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">Select Period</label>
           <div className="grid grid-cols-2 gap-2">
             {PERIODS.map((periodOption) => (
               <button
@@ -156,9 +160,7 @@ export default function PeriodDateFilters({ onFiltersChange, disabled = false }:
         <div className="space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Start Date
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
               <input
                 type="date"
                 value={startDate}
@@ -169,9 +171,7 @@ export default function PeriodDateFilters({ onFiltersChange, disabled = false }:
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                End Date
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">End Date</label>
               <input
                 type="date"
                 value={endDate}
@@ -188,7 +188,8 @@ export default function PeriodDateFilters({ onFiltersChange, disabled = false }:
           {startDate && endDate && !isDateRangeValid && (
             <div className="p-2 bg-red-50 border border-red-200 rounded-md">
               <p className="text-xs text-red-600">
-                ⚠️ Invalid date range. Start date must be before end date and end date cannot be in the future.
+                ⚠️ Invalid date range. Start date must be before end date and end date cannot be in
+                the future.
               </p>
             </div>
           )}
@@ -200,7 +201,12 @@ export default function PeriodDateFilters({ onFiltersChange, disabled = false }:
                 ✓ Date range: {startDate} to {endDate}
               </p>
               <p className="text-xs text-green-500 mt-1">
-                Duration: {Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24))} days
+                Duration:{' '}
+                {Math.ceil(
+                  (new Date(endDate).getTime() - new Date(startDate).getTime()) /
+                    (1000 * 60 * 60 * 24)
+                )}{' '}
+                days
               </p>
             </div>
           )}
@@ -211,18 +217,16 @@ export default function PeriodDateFilters({ onFiltersChange, disabled = false }:
       <div className="p-3 bg-gray-50 border border-gray-200 rounded-md">
         <p className="text-sm text-gray-700">
           <span className="font-medium">Selected:</span>{' '}
-          {useDateRange 
+          {useDateRange
             ? `Custom range: ${startDate} to ${endDate}`
-            : `${PERIODS.find(p => p.value === period)?.label}`
-          }
+            : `${PERIODS.find((p) => p.value === period)?.label}`}
         </p>
         <p className="text-xs text-gray-500 mt-1">
-          {useDateRange 
+          {useDateRange
             ? 'Custom date range selected'
-            : `${PERIODS.find(p => p.value === period)?.description}`
-          }
+            : `${PERIODS.find((p) => p.value === period)?.description}`}
         </p>
       </div>
     </div>
   );
-} 
+}

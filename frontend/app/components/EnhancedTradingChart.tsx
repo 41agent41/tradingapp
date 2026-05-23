@@ -39,7 +39,7 @@ const timeframes = [
   { label: '1h', value: '1hour', minutes: 60 },
   { label: '4h', value: '4hour', minutes: 240 },
   { label: '8h', value: '8hour', minutes: 480 },
-  { label: '1d', value: '1day', minutes: 1440 }
+  { label: '1d', value: '1day', minutes: 1440 },
 ];
 
 const periods = [
@@ -48,19 +48,19 @@ const periods = [
   { label: '1 Month', value: '1M' },
   { label: '3 Months', value: '3M' },
   { label: '6 Months', value: '6M' },
-  { label: '1 Year', value: '1Y' }
+  { label: '1 Year', value: '1Y' },
 ];
 
-export default function EnhancedTradingChart({ 
-  contract, 
-  timeframe, 
-  onTimeframeChange 
+export default function EnhancedTradingChart({
+  contract,
+  timeframe,
+  onTimeframeChange,
 }: EnhancedTradingChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const candlestickSeries = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
-  
+
   const [currentTimeframe, setCurrentTimeframe] = useState(timeframe);
   const [currentPeriod, setCurrentPeriod] = useState('3M');
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
@@ -155,83 +155,91 @@ export default function EnhancedTradingChart({
 
     setIsLoading(true);
     setError(null);
-    
+
     try {
       const response = await apiFetch(
         `/api/market-data/history?symbol=${contract.symbol}&timeframe=${currentTimeframe}&period=${currentPeriod}`
       );
-      
+
       if (!response.ok) {
         throw new Error(`Failed to fetch data: ${response.statusText}`);
       }
-      
+
       const data = await response.json();
-      
+
       if (data.error) {
         throw new Error(data.error);
       }
-      
+
       // Convert data to TradingView format with proper timestamp handling and validation
-      const formattedData: CandlestickData[] = data.bars?.map((bar: any) => {
-        // Validate and convert timestamp to TradingView format (Unix timestamp in seconds)
-        let timestamp = bar.timestamp || bar.time;
-        
-        // Validate timestamp is a valid number
-        if (typeof timestamp !== 'number' || isNaN(timestamp)) {
-          console.warn('Invalid timestamp:', timestamp, 'for bar:', bar);
-          return null;
-        }
-        
-        // Convert to seconds if in milliseconds
-        if (timestamp > 1000000000000) {
-          timestamp = Math.floor(timestamp / 1000);
-        }
-        
-        // Validate timestamp is reasonable (not in the future or too far in the past)
-        const now = Math.floor(Date.now() / 1000);
-        if (timestamp > now + 86400 || timestamp < now - 31536000 * 10) { // Within 1 day future or 10 years past
-          console.warn('Timestamp out of reasonable range:', timestamp, 'for bar:', bar);
-          return null;
-        }
-        
-        return {
-          time: timestamp as Time,
-          open: bar.open,
-          high: bar.high,
-          low: bar.low,
-          close: bar.close,
-          volume: bar.volume,
-        };
-            }).filter((bar: CandlestickData | null) =>
-        bar !== null && !isNaN(bar.open) && !isNaN(bar.high) && !isNaN(bar.low) && !isNaN(bar.close)
-      ) || [];
+      const formattedData: CandlestickData[] =
+        data.bars
+          ?.map((bar: any) => {
+            // Validate and convert timestamp to TradingView format (Unix timestamp in seconds)
+            let timestamp = bar.timestamp || bar.time;
+
+            // Validate timestamp is a valid number
+            if (typeof timestamp !== 'number' || isNaN(timestamp)) {
+              console.warn('Invalid timestamp:', timestamp, 'for bar:', bar);
+              return null;
+            }
+
+            // Convert to seconds if in milliseconds
+            if (timestamp > 1000000000000) {
+              timestamp = Math.floor(timestamp / 1000);
+            }
+
+            // Validate timestamp is reasonable (not in the future or too far in the past)
+            const now = Math.floor(Date.now() / 1000);
+            if (timestamp > now + 86400 || timestamp < now - 31536000 * 10) {
+              // Within 1 day future or 10 years past
+              console.warn('Timestamp out of reasonable range:', timestamp, 'for bar:', bar);
+              return null;
+            }
+
+            return {
+              time: timestamp as Time,
+              open: bar.open,
+              high: bar.high,
+              low: bar.low,
+              close: bar.close,
+              volume: bar.volume,
+            };
+          })
+          .filter(
+            (bar: CandlestickData | null) =>
+              bar !== null &&
+              !isNaN(bar.open) &&
+              !isNaN(bar.high) &&
+              !isNaN(bar.low) &&
+              !isNaN(bar.close)
+          ) || [];
 
       // Sort by timestamp in ascending order (oldest first) - required by TradingView
       formattedData.sort((a, b) => (a.time as number) - (b.time as number));
 
       setChartData(formattedData);
-      
+
       // Update chart series
       if (candlestickSeries.current && volumeSeries.current && formattedData.length > 0) {
         candlestickSeries.current.setData(formattedData);
-        
+
         // Volume data
-        const volumeData = formattedData.map(bar => ({
+        const volumeData = formattedData.map((bar) => ({
           time: bar.time,
           value: bar.volume || 0,
-          color: bar.close >= bar.open ? '#4CAF50' : '#F44336'
+          color: bar.close >= bar.open ? '#4CAF50' : '#F44336',
         }));
-        
+
         volumeSeries.current.setData(volumeData);
-        
+
         // Set last price
         const lastBar = formattedData[formattedData.length - 1];
         setLastPrice(lastBar.close);
-        
+
         // Fit content
         chart.current?.timeScale().fitContent();
       }
-      
     } catch (err) {
       console.error('Error fetching historical data:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch data');
@@ -277,12 +285,10 @@ export default function EnhancedTradingChart({
               {contract.currency && ` • ${contract.currency}`}
             </div>
             {lastPrice && (
-              <div className="text-xl font-bold text-gray-900 mt-1">
-                ${lastPrice.toFixed(2)}
-              </div>
+              <div className="text-xl font-bold text-gray-900 mt-1">${lastPrice.toFixed(2)}</div>
             )}
           </div>
-          
+
           {isLoading && (
             <div className="flex items-center text-blue-600">
               <span className="animate-spin mr-2">↻</span>
@@ -350,21 +356,19 @@ export default function EnhancedTradingChart({
       {chartData.length > 0 && !isLoading && (
         <div className="px-4 pb-4">
           <div className="flex items-center justify-between text-sm text-gray-600">
-            <div>
-              Data points: {chartData.length}
-            </div>
+            <div>Data points: {chartData.length}</div>
             <div>
               Period: {currentPeriod} • Timeframe: {currentTimeframe}
             </div>
           </div>
         </div>
       )}
-      
+
       {/* Dataframe Display */}
       {chartData.length > 0 && !isLoading && (
         <div className="mt-6 p-4 border-t border-gray-200">
           <DataframeViewer
-            data={chartData.map(bar => ({
+            data={chartData.map((bar) => ({
               time: (() => {
                 if (typeof bar.time === 'number') {
                   return new Date(bar.time * 1000).toLocaleString();
@@ -380,7 +384,7 @@ export default function EnhancedTradingChart({
               high: bar.high,
               low: bar.low,
               close: bar.close,
-              volume: bar.volume || 0
+              volume: bar.volume || 0,
             }))}
             title={`${contract.symbol} Historical Data`}
             description={`${chartData.length} data points for ${currentTimeframe} timeframe`}
@@ -393,4 +397,4 @@ export default function EnhancedTradingChart({
       )}
     </div>
   );
-} 
+}

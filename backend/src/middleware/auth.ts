@@ -24,11 +24,7 @@ import crypto from 'crypto';
  *     unauthenticated health endpoints remain reachable.
  */
 
-const OPEN_PATHS = new Set<string>([
-  '/',
-  '/api/health',
-  '/api/database/health',
-]);
+const OPEN_PATHS = new Set<string>(['/', '/api/health', '/api/database/health']);
 
 let warned = false;
 
@@ -81,8 +77,7 @@ export function createAuthMiddleware() {
     if (!supplied || !safeEqual(supplied, expected)) {
       return res.status(401).json({
         error: 'Unauthorized',
-        message:
-          'A valid Bearer token (Authorization: Bearer <token>) is required.',
+        message: 'A valid Bearer token (Authorization: Bearer <token>) is required.',
         timestamp: new Date().toISOString(),
       });
     }
@@ -118,8 +113,7 @@ export function checkSocketAuth(
       ? authHeader.slice(7).trim()
       : '';
 
-  const fromQuery =
-    typeof query['token'] === 'string' ? (query['token'] as string).trim() : '';
+  const fromQuery = typeof query['token'] === 'string' ? (query['token'] as string).trim() : '';
 
   const supplied = fromAuth || fromHeader || fromQuery;
   if (!supplied || !safeEqual(supplied, expected)) {

@@ -89,7 +89,7 @@ const SECURITY_TYPES: SecurityType[] = [
   { value: 'WAR', label: 'Warrants', description: 'Stock Warrants' },
   { value: 'FUND', label: 'Funds', description: 'Mutual Funds' },
   { value: 'IND', label: 'Indices', description: 'Market Indices' },
-  { value: 'BAG', label: 'Baskets', description: 'Basket Products' }
+  { value: 'BAG', label: 'Baskets', description: 'Basket Products' },
 ];
 
 const EXCHANGES: Exchange[] = [
@@ -102,7 +102,7 @@ const EXCHANGES: Exchange[] = [
   { value: 'TSE', label: 'Tokyo Stock Exchange' },
   { value: 'IDEALPRO', label: 'Forex (IDEALPRO)' },
   { value: 'CME', label: 'Chicago Mercantile Exchange' },
-  { value: 'CBOE', label: 'Chicago Board Options Exchange' }
+  { value: 'CBOE', label: 'Chicago Board Options Exchange' },
 ];
 
 const CURRENCIES: Currency[] = [
@@ -113,7 +113,7 @@ const CURRENCIES: Currency[] = [
   { value: 'CAD', label: 'Canadian Dollar' },
   { value: 'AUD', label: 'Australian Dollar' },
   { value: 'CHF', label: 'Swiss Franc' },
-  { value: 'HKD', label: 'Hong Kong Dollar' }
+  { value: 'HKD', label: 'Hong Kong Dollar' },
 ];
 
 const TIMEFRAMES: Timeframe[] = [
@@ -125,7 +125,7 @@ const TIMEFRAMES: Timeframe[] = [
   { value: '1hour', label: '1h', minutes: 60 },
   { value: '4hour', label: '4h', minutes: 240 },
   { value: '8hour', label: '8h', minutes: 480 },
-  { value: '1day', label: '1d', minutes: 1440 }
+  { value: '1day', label: '1d', minutes: 1440 },
 ];
 
 const POPULAR_SYMBOLS = [
@@ -138,12 +138,12 @@ const POPULAR_SYMBOLS = [
   { symbol: 'META', name: 'Meta Platforms Inc.' },
   { symbol: 'SPY', name: 'SPDR S&P 500 ETF' },
   { symbol: 'QQQ', name: 'Invesco QQQ Trust' },
-  { symbol: 'IWM', name: 'iShares Russell 2000 ETF' }
+  { symbol: 'IWM', name: 'iShares Russell 2000 ETF' },
 ];
 
 export default function MarketDataFilter() {
   const { accountMode, dataType } = useTradingAccount();
-  
+
   // Basic filter state
   const [symbol, setSymbol] = useState('');
   const [securityType, setSecurityType] = useState('STK');
@@ -170,10 +170,10 @@ export default function MarketDataFilter() {
 
   // Connection status
   const [connectionStatus, setConnectionStatus] = useState('Checking...');
-  
+
   // Search history
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
-  
+
   // Track if search should be auto-triggered
   const [autoSearchTrigger, setAutoSearchTrigger] = useState<string | null>(null);
 
@@ -218,28 +218,32 @@ export default function MarketDataFilter() {
     setShowChart(false);
 
     try {
-      const endpoint = showAdvancedSearch ? '/api/market-data/advanced-search' : '/api/market-data/search';
-      
-      const searchPayload = showAdvancedSearch ? {
-        symbol: symbol.trim().toUpperCase() || '',
-        secType: securityType,
-        exchange: exchange,
-        currency: currency,
-        expiry: expiry,
-        strike: strike ? parseFloat(strike) : undefined,
-        right: right,
-        multiplier: multiplier,
-        includeExpired: includeExpired,
-        searchByName: searchByName,
-        account_mode: accountMode
-      } : {
-        symbol: symbol.trim().toUpperCase(),
-        secType: securityType,
-        exchange: exchange,
-        currency: currency,
-        searchByName: searchByName,
-        account_mode: accountMode
-      };
+      const endpoint = showAdvancedSearch
+        ? '/api/market-data/advanced-search'
+        : '/api/market-data/search';
+
+      const searchPayload = showAdvancedSearch
+        ? {
+            symbol: symbol.trim().toUpperCase() || '',
+            secType: securityType,
+            exchange: exchange,
+            currency: currency,
+            expiry: expiry,
+            strike: strike ? parseFloat(strike) : undefined,
+            right: right,
+            multiplier: multiplier,
+            includeExpired: includeExpired,
+            searchByName: searchByName,
+            account_mode: accountMode,
+          }
+        : {
+            symbol: symbol.trim().toUpperCase(),
+            secType: securityType,
+            exchange: exchange,
+            currency: currency,
+            searchByName: searchByName,
+            account_mode: accountMode,
+          };
 
       const response = await apiFetch(endpoint, {
         method: 'POST',
@@ -254,13 +258,16 @@ export default function MarketDataFilter() {
       }
 
       const data = await response.json();
-      
+
       if (data.results && data.results.length > 0) {
         setSearchResults(data.results);
-        
+
         // Save to search history
         if (symbol.trim()) {
-          const newHistory = [symbol.trim().toUpperCase(), ...searchHistory.filter(h => h !== symbol.trim().toUpperCase())].slice(0, 10);
+          const newHistory = [
+            symbol.trim().toUpperCase(),
+            ...searchHistory.filter((h) => h !== symbol.trim().toUpperCase()),
+          ].slice(0, 10);
           setSearchHistory(newHistory);
         }
       } else {
@@ -308,19 +315,19 @@ export default function MarketDataFilter() {
   const handleQuickSearch = async (quickSymbol: string) => {
     // Clear any previous errors
     setError(null);
-    
+
     // Clear previous results
     setSearchResults([]);
     setSelectedContract(null);
     setMarketData(null);
     setShowChart(false);
-    
+
     // Update state
     setSymbol(quickSymbol);
     setSecurityType('STK');
     setExchange('SMART');
     setCurrency('USD');
-    
+
     // Set the auto-search trigger
     setAutoSearchTrigger(quickSymbol);
   };
@@ -332,18 +339,26 @@ export default function MarketDataFilter() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between space-y-2 sm:space-y-0">
           <div className="flex flex-col sm:flex-row items-start sm:items-center space-y-2 sm:space-y-0 sm:space-x-4">
             <div className="flex items-center space-x-2">
-              <div className={`w-3 h-3 rounded-full ${
-                connectionStatus === 'Connected' ? 'bg-green-500' : 
-                connectionStatus === 'Checking...' ? 'bg-yellow-500' : 'bg-red-500'
-              }`}></div>
+              <div
+                className={`w-3 h-3 rounded-full ${
+                  connectionStatus === 'Connected'
+                    ? 'bg-green-500'
+                    : connectionStatus === 'Checking...'
+                      ? 'bg-yellow-500'
+                      : 'bg-red-500'
+                }`}
+              ></div>
               <span className="text-xs sm:text-sm font-medium">{connectionStatus}</span>
             </div>
             <div className="flex items-center space-x-2">
-              <div className={`w-3 h-3 rounded-full ${
-                accountMode === 'live' ? 'bg-red-500' : 'bg-green-500'
-              }`}></div>
+              <div
+                className={`w-3 h-3 rounded-full ${
+                  accountMode === 'live' ? 'bg-red-500' : 'bg-green-500'
+                }`}
+              ></div>
               <span className="text-xs sm:text-sm font-medium">
-                {accountMode.toUpperCase()} Mode • {dataType === 'real-time' ? 'Live Data' : 'Delayed Data'}
+                {accountMode.toUpperCase()} Mode •{' '}
+                {dataType === 'real-time' ? 'Live Data' : 'Delayed Data'}
               </span>
             </div>
           </div>
@@ -398,7 +413,9 @@ export default function MarketDataFilter() {
                 placeholder="e.g., AAPL, Microsoft"
                 className="w-full pl-8 sm:pl-10 pr-3 sm:pr-4 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
-              <span className="absolute left-2 sm:left-3 top-2.5 text-gray-400 text-xs sm:text-sm">🔍</span>
+              <span className="absolute left-2 sm:left-3 top-2.5 text-gray-400 text-xs sm:text-sm">
+                🔍
+              </span>
             </div>
             <div className="mt-1">
               <label className="flex items-center text-xs sm:text-sm text-gray-600">
@@ -411,7 +428,7 @@ export default function MarketDataFilter() {
                 Search by company name
               </label>
             </div>
-            
+
             {/* Search History */}
             {searchHistory.length > 0 && (
               <div className="mt-2">
@@ -549,9 +566,7 @@ export default function MarketDataFilter() {
 
             {/* Option Right */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Option Right
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Option Right</label>
               <select
                 value={right}
                 onChange={(e) => setRight(e.target.value)}
@@ -565,9 +580,7 @@ export default function MarketDataFilter() {
 
             {/* Multiplier */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Multiplier
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Multiplier</label>
               <input
                 type="text"
                 value={multiplier}
@@ -607,18 +620,14 @@ export default function MarketDataFilter() {
           >
             Clear Search
           </button>
-          
+
           <div className="flex space-x-2">
             <button
               onClick={handleSearch}
               disabled={loading || (!showAdvancedSearch && !symbol.trim())}
               className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
             >
-              {loading ? (
-                <span className="animate-spin">↻</span>
-              ) : (
-                <span>🔍</span>
-              )}
+              {loading ? <span className="animate-spin">↻</span> : <span>🔍</span>}
               <span>{loading ? 'Searching...' : 'Search'}</span>
             </button>
           </div>
@@ -672,9 +681,7 @@ export default function MarketDataFilter() {
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center space-x-2 mb-1">
-                      <div className="font-medium text-gray-900">
-                        {contract.symbol}
-                      </div>
+                      <div className="font-medium text-gray-900">{contract.symbol}</div>
                       <div className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
                         {contract.secType}
                       </div>
@@ -684,50 +691,32 @@ export default function MarketDataFilter() {
                         </div>
                       )}
                     </div>
-                    
-                    <div className="text-sm text-gray-700 mb-2">
-                      {contract.companyName}
-                    </div>
-                    
+
+                    <div className="text-sm text-gray-700 mb-2">{contract.companyName}</div>
+
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-gray-600">
-                      {contract.currency && (
-                        <div>Currency: {contract.currency}</div>
-                      )}
-                      {contract.primaryExchange && (
-                        <div>Primary: {contract.primaryExchange}</div>
-                      )}
-                      {contract.expiry && (
-                        <div>Expiry: {contract.expiry}</div>
-                      )}
-                      {contract.strike && (
-                        <div>Strike: {contract.strike}</div>
-                      )}
+                      {contract.currency && <div>Currency: {contract.currency}</div>}
+                      {contract.primaryExchange && <div>Primary: {contract.primaryExchange}</div>}
+                      {contract.expiry && <div>Expiry: {contract.expiry}</div>}
+                      {contract.strike && <div>Strike: {contract.strike}</div>}
                       {contract.right && (
                         <div>Right: {contract.right === 'C' ? 'Call' : 'Put'}</div>
                       )}
-                      {contract.multiplier && (
-                        <div>Multiplier: {contract.multiplier}</div>
-                      )}
-                      {contract.tradingClass && (
-                        <div>Class: {contract.tradingClass}</div>
-                      )}
-                      {contract.industry && (
-                        <div>Industry: {contract.industry}</div>
-                      )}
+                      {contract.multiplier && <div>Multiplier: {contract.multiplier}</div>}
+                      {contract.tradingClass && <div>Class: {contract.tradingClass}</div>}
+                      {contract.industry && <div>Industry: {contract.industry}</div>}
                     </div>
-                    
+
                     {contract.tradingHours && (
                       <div className="text-xs text-gray-500 mt-1">
                         Trading Hours: {contract.tradingHours}
                       </div>
                     )}
                   </div>
-                  
+
                   <div className="text-xs text-gray-500 ml-4">
                     <div>ID: {contract.conid}</div>
-                    {contract.localSymbol && (
-                      <div>Local: {contract.localSymbol}</div>
-                    )}
+                    {contract.localSymbol && <div>Local: {contract.localSymbol}</div>}
                   </div>
                 </div>
               </div>
@@ -746,7 +735,7 @@ export default function MarketDataFilter() {
                 Market Data - {selectedContract.symbol}
               </h3>
             </div>
-            
+
             <div className="flex space-x-2">
               <button
                 onClick={handleShowChart}
@@ -757,7 +746,7 @@ export default function MarketDataFilter() {
               </button>
             </div>
           </div>
-          
+
           {loading ? (
             <div className="flex items-center justify-center py-8">
               <span className="animate-spin mr-2">↻</span>
@@ -791,9 +780,7 @@ export default function MarketDataFilter() {
               </div>
             </div>
           ) : (
-            <div className="text-center py-8 text-gray-500">
-              No market data available
-            </div>
+            <div className="text-center py-8 text-gray-500">No market data available</div>
           )}
         </div>
       )}
@@ -808,4 +795,4 @@ export default function MarketDataFilter() {
       )}
     </div>
   );
-} 
+}

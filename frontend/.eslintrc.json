@@ -1,0 +1,10 @@
+{
+  "root": true,
+  "extends": ["next/core-web-vitals", "prettier"],
+  "ignorePatterns": [".next", "node_modules", "out"],
+  "rules": {
+    "react/no-unescaped-entities": "off",
+    "@next/next/no-img-element": "off",
+    "react-hooks/exhaustive-deps": "warn"
+  }
+}

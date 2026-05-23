@@ -7,7 +7,13 @@
     "dev": "next dev -H 0.0.0.0",
     "build": "next build",
     "start": "next start -H 0.0.0.0",
-    "lint": "next lint"
+    "type-check": "tsc --noEmit",
+    "lint": "next lint",
+    "lint:fix": "next lint --fix",
+    "format": "prettier --write \"app/**/*.{ts,tsx,js,jsx,css,md,json}\"",
+    "format:check": "prettier --check \"app/**/*.{ts,tsx,js,jsx,css,md,json}\"",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "next": "^14.0.0",
@@ -21,8 +27,17 @@
     "postcss": "^8.4.0"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.5.0",
+    "@testing-library/react": "^16.0.1",
     "@types/node": "^20.0.0",
     "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0"
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^14.2.18",
+    "eslint-config-prettier": "^9.1.0",
+    "jsdom": "^25.0.1",
+    "prettier": "^3.3.3",
+    "vitest": "^2.1.8"
   }
-} 
+}

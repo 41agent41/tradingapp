@@ -28,7 +28,7 @@ export default function DataframeViewer({
   maxHeight = '400px',
   showExport = true,
   showPagination = true,
-  itemsPerPage = 50
+  itemsPerPage = 50,
 }: DataframeViewerProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const [searchTerm, setSearchTerm] = useState('');
@@ -38,28 +38,36 @@ export default function DataframeViewer({
   // Infer columns from data
   const columns: Column[] = useMemo(() => {
     if (!data || data.length === 0) return [];
-    
+
     const firstRow = data[0];
-    return Object.keys(firstRow).map(key => {
+    return Object.keys(firstRow).map((key) => {
       const value = firstRow[key];
       let type: Column['type'] = 'string';
-      
+
       // Special handling for timestamp fields
       if (key.toLowerCase() === 'timestamp' || key.toLowerCase() === 'time') {
         type = 'date';
       } else if (typeof value === 'number') {
         type = 'number';
-      } else if (value instanceof Date || (typeof value === 'string' && !isNaN(Date.parse(value)))) {
+      } else if (
+        value instanceof Date ||
+        (typeof value === 'string' && !isNaN(Date.parse(value)))
+      ) {
         type = 'date';
-      } else if (typeof value === 'string' && (value.includes('$') || key.toLowerCase().includes('price') || key.toLowerCase().includes('value'))) {
+      } else if (
+        typeof value === 'string' &&
+        (value.includes('$') ||
+          key.toLowerCase().includes('price') ||
+          key.toLowerCase().includes('value'))
+      ) {
         type = 'currency';
       }
-      
+
       return {
         key,
         label: key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1'),
         type,
-        width: type === 'date' ? '160px' : type === 'number' ? '100px' : 'auto'
+        width: type === 'date' ? '160px' : type === 'number' ? '100px' : 'auto',
       };
     });
   }, [data]);
@@ -67,38 +75,38 @@ export default function DataframeViewer({
   // Filter and sort data
   const filteredAndSortedData = useMemo(() => {
     if (!data) return [];
-    
+
     let filtered = data;
-    
+
     // Apply search filter
     if (searchTerm) {
-      filtered = data.filter(row =>
-        Object.values(row).some(value =>
+      filtered = data.filter((row) =>
+        Object.values(row).some((value) =>
           String(value).toLowerCase().includes(searchTerm.toLowerCase())
         )
       );
     }
-    
+
     // Apply sorting
     if (sortColumn) {
       filtered = [...filtered].sort((a, b) => {
         const aVal = a[sortColumn];
         const bVal = b[sortColumn];
-        
+
         if (aVal === null || aVal === undefined) return 1;
         if (bVal === null || bVal === undefined) return -1;
-        
+
         let comparison = 0;
         if (typeof aVal === 'number' && typeof bVal === 'number') {
           comparison = aVal - bVal;
         } else {
           comparison = String(aVal).localeCompare(String(bVal));
         }
-        
+
         return sortDirection === 'asc' ? comparison : -comparison;
       });
     }
-    
+
     return filtered;
   }, [data, searchTerm, sortColumn, sortDirection]);
 
@@ -121,7 +129,7 @@ export default function DataframeViewer({
   // Format cell value
   const formatCellValue = (value: any, type: Column['type']) => {
     if (value === null || value === undefined) return 'N/A';
-    
+
     switch (type) {
       case 'number':
         return typeof value === 'number' ? value.toLocaleString() : value;
@@ -142,10 +150,14 @@ export default function DataframeViewer({
           // Handle Unix timestamps (assume seconds if less than a certain threshold)
           const timestamp = value > 1000000000000 ? value : value * 1000;
           const date = new Date(timestamp);
-          return isNaN(date.getTime()) ? value : date.toLocaleString('en-US', { timeZone: 'UTC' }) + ' UTC';
+          return isNaN(date.getTime())
+            ? value
+            : date.toLocaleString('en-US', { timeZone: 'UTC' }) + ' UTC';
         } else if (typeof value === 'string') {
           const date = new Date(value);
-          return isNaN(date.getTime()) ? value : date.toLocaleString('en-US', { timeZone: 'UTC' }) + ' UTC';
+          return isNaN(date.getTime())
+            ? value
+            : date.toLocaleString('en-US', { timeZone: 'UTC' }) + ' UTC';
         }
         return value;
       default:
@@ -156,15 +168,17 @@ export default function DataframeViewer({
   // Export functions
   const exportToCSV = () => {
     if (!filteredAndSortedData.length) return;
-    
-    const headers = columns.map(col => col.label).join(',');
-    const rows = filteredAndSortedData.map(row =>
-      columns.map(col => {
-        const value = row[col.key];
-        return typeof value === 'string' && value.includes(',') ? `"${value}"` : value;
-      }).join(',')
+
+    const headers = columns.map((col) => col.label).join(',');
+    const rows = filteredAndSortedData.map((row) =>
+      columns
+        .map((col) => {
+          const value = row[col.key];
+          return typeof value === 'string' && value.includes(',') ? `"${value}"` : value;
+        })
+        .join(',')
     );
-    
+
     const csv = [headers, ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
@@ -204,11 +218,9 @@ export default function DataframeViewer({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between space-y-2 sm:space-y-0">
           <div>
             <h3 className="text-base sm:text-lg font-medium text-gray-900">{title}</h3>
-            {description && (
-              <p className="text-xs sm:text-sm text-gray-600 mt-1">{description}</p>
-            )}
+            {description && <p className="text-xs sm:text-sm text-gray-600 mt-1">{description}</p>}
           </div>
-          
+
           {showExport && (
             <div className="flex items-center space-x-2">
               <button
@@ -246,7 +258,7 @@ export default function DataframeViewer({
               {filteredAndSortedData.length} of {data.length} records
             </div>
           </div>
-          
+
           {showPagination && totalPages > 1 && (
             <div className="flex items-center space-x-2 text-xs sm:text-sm">
               <span className="text-gray-600">
@@ -275,9 +287,7 @@ export default function DataframeViewer({
                     <div className="flex items-center space-x-1">
                       <span>{column.label}</span>
                       {sortColumn === column.key && (
-                        <span className="text-blue-600">
-                          {sortDirection === 'asc' ? '↑' : '↓'}
-                        </span>
+                        <span className="text-blue-600">{sortDirection === 'asc' ? '↑' : '↓'}</span>
                       )}
                     </div>
                   </th>
@@ -286,15 +296,14 @@ export default function DataframeViewer({
             </thead>
             <tbody className="divide-y divide-gray-200">
               {paginatedData.map((row, rowIndex) => (
-                <tr
-                  key={rowIndex}
-                  className="hover:bg-gray-50 transition-colors"
-                >
+                <tr key={rowIndex} className="hover:bg-gray-50 transition-colors">
                   {columns.map((column) => (
                     <td
                       key={column.key}
                       className={`px-3 py-2 text-gray-900 ${
-                        column.type === 'number' || column.type === 'currency' ? 'text-right' : 'text-left'
+                        column.type === 'number' || column.type === 'currency'
+                          ? 'text-right'
+                          : 'text-left'
                       }`}
                     >
                       {formatCellValue(row[column.key], column.type)}
@@ -312,9 +321,10 @@ export default function DataframeViewer({
         <div className="p-4 border-t border-gray-200">
           <div className="flex items-center justify-between">
             <div className="text-xs sm:text-sm text-gray-600">
-              Showing {startIndex + 1} to {Math.min(endIndex, filteredAndSortedData.length)} of {filteredAndSortedData.length} results
+              Showing {startIndex + 1} to {Math.min(endIndex, filteredAndSortedData.length)} of{' '}
+              {filteredAndSortedData.length} results
             </div>
-            
+
             <div className="flex items-center space-x-2">
               <button
                 onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
@@ -323,7 +333,7 @@ export default function DataframeViewer({
               >
                 Previous
               </button>
-              
+
               <div className="flex items-center space-x-1">
                 {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
                   let pageNum;
@@ -336,7 +346,7 @@ export default function DataframeViewer({
                   } else {
                     pageNum = currentPage - 2 + i;
                   }
-                  
+
                   return (
                     <button
                       key={pageNum}
@@ -352,7 +362,7 @@ export default function DataframeViewer({
                   );
                 })}
               </div>
-              
+
               <button
                 onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
                 disabled={currentPage === totalPages}
@@ -366,4 +376,4 @@ export default function DataframeViewer({
       )}
     </div>
   );
-} 
+}

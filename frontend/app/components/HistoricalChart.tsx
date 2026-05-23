@@ -111,7 +111,7 @@ export default function HistoricalChart({ data, symbol, timeframe }: HistoricalC
     if (!candlestickSeriesRef.current || !volumeSeriesRef.current || !data.length) return;
 
     // Convert data to TradingView format
-    const candlestickData: CandlestickData[] = data.map(bar => ({
+    const candlestickData: CandlestickData[] = data.map((bar) => ({
       time: bar.time as Time,
       open: bar.open,
       high: bar.high,
@@ -119,7 +119,7 @@ export default function HistoricalChart({ data, symbol, timeframe }: HistoricalC
       close: bar.close,
     }));
 
-    const volumeData = data.map(bar => ({
+    const volumeData = data.map((bar) => ({
       time: bar.time as Time,
       value: bar.volume,
       color: bar.close >= bar.open ? '#26a69a' : '#ef5350',
@@ -137,13 +137,12 @@ export default function HistoricalChart({ data, symbol, timeframe }: HistoricalC
 
   return (
     <div className="w-full h-full">
-      <div 
-        ref={chartContainerRef} 
-        className="w-full h-full"
-      />
+      <div ref={chartContainerRef} className="w-full h-full" />
       {data.length > 0 && (
         <div className="mt-2 text-xs text-gray-500 space-y-1">
-          <div>Data points: {data.length} | Timeframe: {timeframe}</div>
+          <div>
+            Data points: {data.length} | Timeframe: {timeframe}
+          </div>
           <div className="flex items-center gap-4">
             <span className="flex items-center gap-1">
               <div className="w-3 h-3 bg-green-500 rounded"></div>
@@ -156,18 +155,18 @@ export default function HistoricalChart({ data, symbol, timeframe }: HistoricalC
           </div>
         </div>
       )}
-      
+
       {/* Dataframe Display */}
       {data.length > 0 && (
         <div className="mt-6">
           <DataframeViewer
-            data={data.map(bar => ({
+            data={data.map((bar) => ({
               time: new Date(bar.time * 1000).toLocaleString(),
               open: bar.open,
               high: bar.high,
               low: bar.low,
               close: bar.close,
-              volume: bar.volume
+              volume: bar.volume,
             }))}
             title={`${symbol} Historical Data`}
             description={`${data.length} data points for ${timeframe} timeframe`}
@@ -180,4 +179,4 @@ export default function HistoricalChart({ data, symbol, timeframe }: HistoricalC
       )}
     </div>
   );
-} 
+}

@@ -1,54 +1,131 @@
 name: CI
+
 on:
   push:
-    branches: [main]
+    branches: [master, main]
   pull_request:
-    branches: [main]
+    branches: [master, main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
-  build:
+  # --------------------------------------------------------------------
+  # Backend (Node + TypeScript)
+  # --------------------------------------------------------------------
+  backend:
+    name: backend (lint / type-check / test)
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: tradinguser
-          POSTGRES_PASSWORD: tradingpass
-          POSTGRES_DB: tradingdb
-        ports:
-          - 5432:5432
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
+    defaults:
+      run:
+        working-directory: backend
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package.json
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check (prettier)
+        run: npm run format:check
+
+      - name: Type-check
+        run: npm run type-check
+
+      - name: Tests (jest + supertest)
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  # --------------------------------------------------------------------
+  # Frontend (Next.js + React)
+  # --------------------------------------------------------------------
+  frontend:
+    name: frontend (lint / type-check / test / build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      # The frontend bakes NEXT_PUBLIC_* into the static bundle at build
+      # time. Provide stable placeholder values so `next build` succeeds
+      # in CI without leaking real ones.
+      NEXT_PUBLIC_API_URL: http://localhost:4000
+      NEXT_PUBLIC_API_TOKEN: ci-placeholder-token
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package.json
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check (prettier)
+        run: npm run format:check
+
+      - name: Type-check
+        run: npm run type-check
+
+      - name: Tests (vitest)
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  # --------------------------------------------------------------------
+  # IB service (Python / FastAPI)
+  # --------------------------------------------------------------------
+  ib_service:
+    name: ib_service (ruff / black / pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ib_service
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install backend dependencies
+          cache: pip
+          cache-dependency-path: |
+            ib_service/requirements.txt
+            ib_service/requirements-dev.txt
+
+      - name: Install dependencies
         run: |
-          cd backend
-          npm install
-      - name: Build backend
-        run: |
-          cd backend
-          npm run build
-      - name: Install frontend dependencies
-        run: |
-          cd frontend
-          npm install
-      - name: Build frontend
-        run: |
-          cd frontend
-          npm run build
-      - name: Install IB service dependencies
-        run: |
-          cd ib_service
-          pip install -r requirements.txt
-      - name: Lint and test (placeholder)
-        run: echo "Add your tests here" 
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Black (format check)
+        run: black --check .
+
+      - name: Pytest
+        run: pytest -q

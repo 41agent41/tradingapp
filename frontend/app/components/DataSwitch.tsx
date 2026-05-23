@@ -19,7 +19,7 @@ export default function DataSwitch({
   description,
   size = 'medium',
   disabled = false,
-  className = ''
+  className = '',
 }: DataSwitchProps) {
   const handleToggle = () => {
     if (!disabled) {
@@ -33,22 +33,22 @@ export default function DataSwitch({
       thumb: 'w-3 h-3',
       translate: 'translate-x-3',
       label: 'text-sm',
-      description: 'text-xs'
+      description: 'text-xs',
     },
     medium: {
       switch: 'w-11 h-6',
       thumb: 'w-4 h-4',
       translate: 'translate-x-5',
       label: 'text-base',
-      description: 'text-sm'
+      description: 'text-sm',
     },
     large: {
       switch: 'w-14 h-7',
       thumb: 'w-5 h-5',
       translate: 'translate-x-7',
       label: 'text-lg',
-      description: 'text-base'
-    }
+      description: 'text-base',
+    },
   };
 
   const sizes = sizeClasses[size];
@@ -56,7 +56,7 @@ export default function DataSwitch({
   return (
     <div className={`flex items-center justify-between ${className}`}>
       <div className="flex-1 mr-4">
-        <label 
+        <label
           htmlFor={`data-switch-${label.replace(/\s+/g, '-').toLowerCase()}`}
           className={`font-medium text-gray-900 ${sizes.label} ${disabled ? 'opacity-50' : ''}`}
         >
@@ -68,21 +68,15 @@ export default function DataSwitch({
           </p>
         )}
       </div>
-      
+
       <div className="flex items-center">
         <button
           type="button"
           className={`
             relative inline-flex shrink-0 cursor-pointer rounded-full border-2 border-transparent 
             transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-offset-2
-            ${enabled 
-              ? 'bg-blue-600 focus:ring-blue-500' 
-              : 'bg-gray-200 focus:ring-gray-300'
-            }
-            ${disabled 
-              ? 'opacity-50 cursor-not-allowed' 
-              : 'hover:bg-opacity-90'
-            }
+            ${enabled ? 'bg-blue-600 focus:ring-blue-500' : 'bg-gray-200 focus:ring-gray-300'}
+            ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-opacity-90'}
             ${sizes.switch}
           `}
           role="switch"
@@ -102,17 +96,17 @@ export default function DataSwitch({
             `}
           />
         </button>
-        
+
         {/* Status indicator */}
         <div className="ml-3 flex items-center">
-          <div 
+          <div
             className={`
               w-2 h-2 rounded-full 
               ${enabled ? 'bg-green-500' : 'bg-red-500'}
               ${disabled ? 'opacity-50' : ''}
             `}
           />
-          <span 
+          <span
             className={`
               ml-2 text-xs font-medium
               ${enabled ? 'text-green-700' : 'text-red-700'}
@@ -125,4 +119,4 @@ export default function DataSwitch({
       </div>
     </div>
   );
-} 
+}
