@@ -7,6 +7,7 @@ import IndicatorSelector from './IndicatorSelector';
 import DataframeViewer from './DataframeViewer';
 import { useTradingAccount } from '../contexts/TradingAccountContext';
 import { apiFetch } from '../lib/api';
+import { useRealtimeStream, TickPayload } from '../lib/useRealtimeStream';
 
 interface RealtimeData {
   symbol: string;
@@ -495,14 +496,15 @@ export default function MSFTRealtimeChart() {
     }
   };
 
-  // Fetch real-time data for current price display
-  const fetchRealtimeData = async () => {
+  // One-shot REST fetch used to seed the price display before the
+  // first streaming tick arrives, and as a manual-refresh fallback.
+  // Live updates come from `useRealtimeStream` below — there is no
+  // polling timer any more (see GAP_ANALYSIS.md Phase 4).
+  const refreshRealtimeOnce = async () => {
     if (!dataQueryEnabled) {
-      console.log('Real-time data fetching is disabled');
       setIsLoading(false);
       return;
     }
-
     try {
       const response = await apiFetch(
         `/api/market-data/realtime?symbol=MSFT&account_mode=${accountMode}`,
@@ -515,55 +517,18 @@ export default function MSFTRealtimeChart() {
           signal: AbortSignal.timeout(15000),
         }
       );
-
       if (!response.ok) {
-        if (response.status === 504) {
-          throw new Error('Gateway timeout - IB service busy, will retry');
-        } else if (response.status === 503) {
-          throw new Error('Service temporarily unavailable, will retry');
-        } else if (response.status === 500) {
-          try {
-            const errorData = await response.json();
-            if (errorData.detail && errorData.detail.includes('subscription')) {
-              throw new Error('Using delayed market data - real-time subscription not available');
-            } else if (errorData.detail && errorData.detail.includes('timeout')) {
-              throw new Error('IB Gateway timeout - will retry');
-            } else {
-              throw new Error(
-                errorData.detail || `HTTP ${response.status}: ${response.statusText}`
-              );
-            }
-          } catch (jsonError) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-          }
-        } else {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
-
       const data: RealtimeData = await response.json();
-
       if (data.last && data.last > 0) {
         setCurrentData(data);
         setLastUpdate(new Date());
         setError(null);
-      } else {
-        throw new Error('Invalid data received from API');
       }
     } catch (err) {
-      console.error('Error fetching real-time data:', err);
-
-      if (
-        err instanceof Error &&
-        (err.message.includes('timeout') || err.message.includes('busy'))
-      ) {
-        console.log('Temporary timeout, will retry automatically...');
-        if (!currentData || new Date().getTime() - (lastUpdate?.getTime() || 0) > 30000) {
-          setError('Connection temporarily slow, retrying...');
-        }
-      } else {
-        setError(err instanceof Error ? err.message : 'Failed to fetch data');
-      }
+      console.error('Error seeding real-time data:', err);
+      setError(err instanceof Error ? err.message : 'Failed to fetch data');
     } finally {
       setIsLoading(false);
     }
@@ -576,22 +541,80 @@ export default function MSFTRealtimeChart() {
     }
   }, [currentTimeframe, currentPeriod, dataQueryEnabled, selectedIndicators]);
 
-  // Set up polling for real-time data - only when data query is enabled
+  // Seed the price display once on mount / when the dependencies
+  // change. Live updates come from the streaming hook below; we do
+  // NOT poll on a timer any more.
   useEffect(() => {
     if (!dataQueryEnabled) {
-      console.log('Real-time polling disabled - data querying is off');
+      console.log('Real-time updates disabled - data querying is off');
       return;
     }
-
     if (useCustomDateRange) {
-      console.log('Custom date range active, stopping real-time polling.');
+      console.log('Custom date range active, skipping real-time seed.');
       return;
     }
+    refreshRealtimeOnce();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataQueryEnabled, useCustomDateRange, accountMode]);
 
-    fetchRealtimeData();
-    const interval = setInterval(fetchRealtimeData, 5000); // Every 5 seconds for current price
-    return () => clearInterval(interval);
-  }, [dataQueryEnabled, useCustomDateRange]);
+  // Real-time tick stream from the backend Socket.IO bridge. The hook
+  // owns the Socket.IO connection and per-symbol subscribe/unsubscribe;
+  // we just consume the latest tick payload as it arrives.
+  const streamEnabled = dataQueryEnabled && !useCustomDateRange;
+  const stream = useRealtimeStream({
+    symbol: streamEnabled ? 'MSFT' : null,
+    secType: 'STK',
+    exchange: 'SMART',
+    currency: 'USD',
+    enabled: streamEnabled,
+  });
+
+  // Merge each incoming tick into the synthetic RealtimeData shape so
+  // the rest of the chart (which expects bid/ask/last/volume) doesn't
+  // have to change. We persist non-zero numeric values so a LAST tick
+  // doesn't wipe the most-recent BID and vice-versa.
+  useEffect(() => {
+    const tick: TickPayload | null = stream.latestTick;
+    if (!tick) return;
+    setCurrentData((prev) => {
+      const merged: RealtimeData = {
+        symbol: tick.symbol,
+        bid: prev?.bid ?? 0,
+        ask: prev?.ask ?? 0,
+        last: prev?.last ?? 0,
+        volume: prev?.volume ?? 0,
+        timestamp: new Date(tick.timestamp * 1000).toISOString(),
+      };
+      const value = typeof tick.value === 'number' ? tick.value : null;
+      if (value !== null && Number.isFinite(value) && value > 0) {
+        switch (tick.tick_type) {
+          case 'BID':
+            merged.bid = value;
+            break;
+          case 'ASK':
+            merged.ask = value;
+            break;
+          case 'LAST':
+            merged.last = value;
+            break;
+          case 'VOLUME':
+            merged.volume = Math.round(value);
+            break;
+          default:
+            break;
+        }
+      }
+      return merged;
+    });
+    setLastUpdate(new Date());
+    setError(null);
+  }, [stream.latestTick]);
+
+  // Surface stream-level errors (Socket.IO connect_error, subscribe
+  // failures) on the existing error banner.
+  useEffect(() => {
+    if (stream.error) setError(stream.error);
+  }, [stream.error]);
 
   // Helper functions
   const formatTime = (date: Date) => {
@@ -854,7 +877,7 @@ export default function MSFTRealtimeChart() {
               <p className="text-sm text-red-800">{error}</p>
             </div>
             <button
-              onClick={fetchRealtimeData}
+              onClick={refreshRealtimeOnce}
               className="mt-2 px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700"
             >
               Retry
