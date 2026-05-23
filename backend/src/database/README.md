@@ -1,319 +1,295 @@
-# TradingApp Database Setup Guide
+# TradingApp Database
 
-This guide explains how to set up and use the external PostgreSQL database for storing historical market data from Interactive Brokers.
+This directory contains the **single canonical database schema** for
+TradingApp and the migration scripts retained for historical reference.
 
-## 📋 Overview
+> Canonical schema: [`timescaledb-schema.sql`](timescaledb-schema.sql)
+>
+> Everything else (the old `schema.sql`, `init.sql`,
+> `migrate-to-timescaledb.sql`, `README_TIMESCALEDB.md`,
+> `TIMESCALEDB_SETUP.md`) has been moved into [`archive/`](archive/) and is
+> kept only so historical deployments can still find their migration path.
 
-The TradingApp database schema is designed to efficiently store and retrieve:
-- **Contract Information**: Symbol details, exchange, currency, etc.
-- **Historical Data**: OHLCV candlestick data for multiple timeframes
-- **Technical Indicators**: Calculated indicators (SMA, EMA, RSI, MACD, etc.)
-- **Data Quality Metrics**: Monitoring data integrity and completeness
-- **Collection Sessions**: Tracking data collection processes
+The backend (`backend/src/services/database.ts`,
+`backend/src/services/marketDataService.ts`) is wired to **PostgreSQL with
+the TimescaleDB extension**. Plain PostgreSQL will mostly work for
+development but you will lose hypertables, continuous aggregates and
+retention policies.
 
-## 🗄️ Database Schema
+---
 
-### Core Tables
+## Table of Contents
 
-1. **`contracts`** - Contract information from Interactive Brokers
-2. **`candlestick_data`** - OHLCV historical data
-3. **`tick_data`** - Real-time tick data (high-frequency)
-4. **`technical_indicators`** - Calculated technical indicators
-5. **`data_collection_sessions`** - Data collection tracking
-6. **`data_quality_metrics`** - Data quality monitoring
-7. **`data_collection_config`** - Collection configuration
+1. [Why TimescaleDB](#why-timescaledb)
+2. [Deployment Options](#deployment-options)
+3. [Applying the Schema](#applying-the-schema)
+4. [Backend Configuration](#backend-configuration)
+5. [Schema Overview](#schema-overview)
+6. [Known Schema / Code Mismatch](#known-schema--code-mismatch)
+7. [Operational SQL Snippets](#operational-sql-snippets)
+8. [Backups](#backups)
+9. [Security Notes](#security-notes)
+
+---
+
+## Why TimescaleDB
+
+TimescaleDB is PostgreSQL plus first-class support for time-series data,
+which fits the trading workload:
+
+- **Hypertables** transparently shard the large `candlestick_data` and
+  `tick_data` tables by time so range scans stay fast as the dataset grows.
+- **Continuous aggregates** maintain rolled-up daily/hourly views without
+  rebuilding them on every query.
+- **Retention policies** automatically drop chunks older than a configurable
+  cutoff (2 years for OHLCV, 30 days for ticks in the shipped schema).
+- It remains 100% PostgreSQL on the wire, so `pg` / `psql` / any Postgres
+  client just works.
+
+## Deployment Options
+
+Any of the following will work. The Docker compose file in this repo does
+**not** provision Postgres for you — you must point `POSTGRES_HOST` at an
+external instance.
+
+| Option | Notes |
+|---|---|
+| **Timescale Cloud** | https://cloud.timescale.com/ — managed, extension pre-enabled |
+| **AWS RDS / Azure DB / GCP Cloud SQL for Postgres** | Need to enable the `timescaledb` extension where supported |
+| **Self-hosted Docker** | `docker run -d --name timescaledb -e POSTGRES_PASSWORD=... -e POSTGRES_DB=tradingapp -p 5432:5432 timescale/timescaledb:latest-pg15` |
+| **Apt install on Ubuntu** | https://docs.timescale.com/install/latest/self-hosted/installation-debian/ |
+
+A Phase-2 task in [`GAP_ANALYSIS.md`](../../../GAP_ANALYSIS.md) is to add an
+optional `docker-compose.db.yml` override that brings up TimescaleDB
+locally and applies this schema automatically.
+
+## Applying the Schema
+
+```bash
+# Create the database (skip if already created)
+createdb -h "$POSTGRES_HOST" -U "$POSTGRES_USER" "$POSTGRES_DB"
+
+# Apply the canonical schema
+psql "host=$POSTGRES_HOST port=$POSTGRES_PORT user=$POSTGRES_USER \
+      dbname=$POSTGRES_DB sslmode=require" \
+  -f backend/src/database/timescaledb-schema.sql
+```
+
+The script is idempotent — every `CREATE TABLE`, `CREATE INDEX`, hypertable
+conversion and policy registration is guarded with `IF NOT EXISTS` /
+`DO $$ ... $$` blocks, so you can re-run it safely.
+
+### Migrating an existing plain-Postgres deployment
+
+If you previously initialised the database from the archived
+`schema.sql` / `init.sql` (no TimescaleDB extension):
+
+1. Take a backup (`pg_dump`).
+2. Enable the extension: `CREATE EXTENSION IF NOT EXISTS timescaledb;`
+3. Run the archived migration:
+   `psql ... -f backend/src/database/archive/migrate-to-timescaledb.sql`
+
+The migration converts the existing tables into hypertables and adds the
+retention/aggregate policies. Read the script before running it — it is
+preserved for historical context only and is not part of the supported
+path.
+
+## Backend Configuration
+
+The backend reads connection details from the standard `POSTGRES_*`
+environment variables (see [`.env.example`](../../../.env.example)):
+
+```bash
+POSTGRES_HOST=db.example.com
+POSTGRES_PORT=5432
+POSTGRES_USER=tradingapp
+POSTGRES_PASSWORD=<rotate-me>
+POSTGRES_DB=tradingapp
+POSTGRES_SSL=true        # set to "false" for unencrypted local dev
+```
+
+The pool is configured in `backend/src/services/database.ts` with up to 20
+connections, a 30-second idle timeout and a 2-second connect timeout.
+
+### Health checks
+
+```bash
+curl -fs http://<server-ip>:4000/api/database/health
+# => { "status": "healthy", "database": "connected", "timestamp": "..." }
+```
+
+A non-200 response from this endpoint means the backend cannot talk to
+Postgres. Walk through the [Database section in
+`TROUBLESHOOTING.md`](../../../TROUBLESHOOTING.md#database) for next steps.
+
+## Schema Overview
+
+The canonical schema ships the following objects:
+
+### Tables
+
+| Table | Purpose | Time-series? |
+|---|---|---|
+| `contracts` | One row per `(symbol, sec_type, exchange, currency, expiry, strike, right)` tuple resolved by IB | No |
+| `candlestick_data` | OHLCV bars, one row per `(contract, timeframe, timestamp)` | **Hypertable**, 1-day chunks |
+| `tick_data` | High-frequency tick rows from IB | **Hypertable**, 1-hour chunks |
+| `data_collection_sessions` | Audit trail for each data pull from IB | No |
+| `data_quality_metrics` | Per-(contract, timeframe, date) counts of total / missing / duplicate / invalid bars | No |
+| `data_collection_config` | Per-(contract, timeframe) collection toggles & retention | No |
+
+### Continuous aggregates
+
+- `daily_candlestick_data` — rolled-up daily OHLCV per `(contract, timeframe)`. Refresh policy: every hour over the last 3 days.
 
 ### Views
 
-- **`latest_candlestick_data`** - Latest data with indicators for easy access
+- `latest_candlestick_data` — raw rows joined to contract metadata, ordered by timestamp DESC. Always paginate with `LIMIT`.
+- `daily_trading_summary` — `daily_candlestick_data` joined to contract metadata with a daily-change column.
 
-## 🚀 Setup Instructions
+### Retention policies
 
-### 1. External Database Setup
+- `candlestick_data` — drop chunks older than 2 years.
+- `tick_data` — drop chunks older than 30 days.
 
-#### Option A: Cloud Database (Recommended)
-- **AWS RDS**: PostgreSQL instance
-- **Google Cloud SQL**: PostgreSQL instance
-- **Azure Database**: PostgreSQL instance
-- **DigitalOcean**: Managed PostgreSQL database
+### Triggers
 
-#### Option B: Self-Hosted Database
-- **Docker**: `docker run --name tradingapp-db -e POSTGRES_PASSWORD=your_password -d postgres:15`
-- **Local Installation**: Install PostgreSQL 15+ on your server
+- `update_updated_at_column()` keeps `updated_at` fresh on `contracts`,
+  `data_collection_sessions` and `data_collection_config`.
 
-### 2. Database Initialization
+### Seed data
+
+The schema inserts a handful of common contracts (`MSFT`, `AAPL`, `GOOGL`,
+`SPY`, `QQQ`) so you can sanity-check the install with `SELECT * FROM contracts;`.
+
+## Known Schema / Code Mismatch
+
+The canonical schema **intentionally omits** the `technical_indicators`
+table — the project decided to compute and display indicators in the
+frontend (`lightweight-charts`) rather than persist them.
+
+However, `backend/src/services/marketDataService.ts` still issues
+`INSERT INTO technical_indicators ...` and `LEFT JOIN technical_indicators`
+queries inherited from the old plain-Postgres schema. Those calls error
+against the canonical schema today.
+
+This is tracked as a follow-up in
+[`GAP_ANALYSIS.md`](../../../GAP_ANALYSIS.md). Until it lands the
+practical effect is that requests with `include_indicators=true` will
+fall back to the IB-service code path that computes indicators in
+`ib_service/indicators.py`. If you need persistence in the meantime, run
+the archived `init.sql` after the TimescaleDB schema so the table exists
+in your database:
 
 ```bash
-# Connect to your PostgreSQL database
-psql -h YOUR_DB_HOST -U YOUR_USERNAME -d tradingapp
-
-# Run the initialization script
-\i backend/src/database/init.sql
+psql ... -f backend/src/database/archive/init.sql
 ```
 
-Or run the script directly:
-```bash
-psql -h YOUR_DB_HOST -U YOUR_USERNAME -d tradingapp -f backend/src/database/init.sql
-```
+(That file ships the legacy `technical_indicators` table without
+hypertable conversion. It is **not** part of the supported deployment path
+and will be replaced when the code is reworked.)
 
-### 3. Environment Configuration
-
-Update your `.env` file with external database settings:
-
-```bash
-# External Database Configuration
-POSTGRES_HOST=your-db-server.com
-POSTGRES_PORT=5432
-POSTGRES_USER=tradingapp
-POSTGRES_PASSWORD=your_secure_password
-POSTGRES_DB=tradingapp
-POSTGRES_SSL=true
-```
-
-### 4. Verify Setup
-
-Test the database connection:
-```bash
-curl http://your-server:4000/api/database/health
-```
-
-Expected response:
-```json
-{
-  "status": "healthy",
-  "database": "connected",
-  "timestamp": "2024-01-01T00:00:00.000Z"
-}
-```
-
-## 📊 Data Flow
-
-### 1. Contract Search
-```
-Frontend → Backend → IB Service → Database Storage
-```
-
-When searching for contracts:
-- IB Service returns contract details
-- Backend stores contracts in database
-- Future searches can use cached contract data
-
-### 2. Historical Data Collection
-```
-IB Service → Backend → Database Storage → Frontend
-```
-
-When requesting historical data:
-- Backend checks database first
-- If not found, requests from IB Service
-- Stores new data in database
-- Returns data to frontend
-
-### 3. Technical Indicators
-```
-Database → Backend → Frontend
-```
-
-Technical indicators are:
-- Calculated when data is stored
-- Cached in database
-- Retrieved directly from database
-
-## 🔧 Database Operations
-
-### Manual Data Operations
-
-#### Check Data Statistics
-```bash
-curl "http://your-server:4000/api/market-data/database/stats?symbol=MSFT"
-```
-
-#### Clean Old Data
-```bash
-curl -X POST http://your-server:4000/api/market-data/database/clean
-```
-
-#### Direct Database Queries
+## Operational SQL Snippets
 
 ```sql
--- Get latest data for MSFT
-SELECT * FROM latest_candlestick_data 
-WHERE symbol = 'MSFT' 
-ORDER BY timestamp DESC 
+-- Latest 100 bars for a symbol/timeframe
+SELECT *
+FROM latest_candlestick_data
+WHERE symbol = 'MSFT' AND timeframe = '1hour'
 LIMIT 100;
 
--- Check data quality
-SELECT * FROM data_quality_metrics 
-WHERE contract_id = (SELECT id FROM contracts WHERE symbol = 'MSFT')
-ORDER BY date DESC;
+-- Per-symbol storage stats
+SELECT
+  c.symbol,
+  cd.timeframe,
+  COUNT(*)              AS bars,
+  MIN(cd.timestamp)     AS earliest,
+  MAX(cd.timestamp)     AS latest
+FROM candlestick_data cd
+JOIN contracts c ON c.id = cd.contract_id
+GROUP BY c.symbol, cd.timeframe
+ORDER BY c.symbol, cd.timeframe;
 
--- Get collection sessions
-SELECT * FROM data_collection_sessions 
-WHERE contract_id = (SELECT id FROM contracts WHERE symbol = 'MSFT')
-ORDER BY start_time DESC;
-```
+-- Recent data-collection sessions
+SELECT
+  c.symbol,
+  s.timeframe,
+  s.status,
+  s.records_collected,
+  s.start_time,
+  s.end_time
+FROM data_collection_sessions s
+JOIN contracts c ON c.id = s.contract_id
+WHERE s.start_time >= NOW() - INTERVAL '24 hours'
+ORDER BY s.start_time DESC;
 
-## 📈 Performance Optimization
+-- Data-quality scores in the last week
+SELECT
+  c.symbol,
+  q.timeframe,
+  q.date,
+  q.total_bars,
+  q.missing_bars,
+  q.data_quality_score
+FROM data_quality_metrics q
+JOIN contracts c ON c.id = q.contract_id
+WHERE q.date >= CURRENT_DATE - INTERVAL '7 days'
+ORDER BY q.date DESC, c.symbol;
 
-### Indexes
-The schema includes optimized indexes for:
-- Symbol lookups
-- Time-based queries
-- Contract-timeframe combinations
-- Technical indicator searches
-
-### Partitioning (Optional)
-For high-volume data, consider partitioning:
-
-```sql
--- Partition candlestick_data by date
-CREATE TABLE candlestick_data_2024 PARTITION OF candlestick_data
-FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
+-- Verify hypertables and policies
+SELECT * FROM timescaledb_information.hypertables;
+SELECT * FROM timescaledb_information.continuous_aggregates;
+SELECT * FROM timescaledb_information.jobs;
 ```
 
 ### Maintenance
-Regular maintenance tasks:
 
 ```sql
--- Update table statistics
 ANALYZE candlestick_data;
-ANALYZE technical_indicators;
-
--- Clean old data (automated)
-SELECT clean_old_data();
-
--- Vacuum tables
 VACUUM ANALYZE candlestick_data;
 ```
 
-## 🔍 Monitoring
+The retention policies registered by the schema run automatically — no
+cron is required.
 
-### Database Health
+## Backups
+
+The backend treats Postgres as an externally-managed dependency, so
+backups are the responsibility of whatever Postgres you point at. A
+straightforward host-side cron job:
+
 ```bash
-# Check database connection
-curl http://your-server:4000/api/database/health
+#!/usr/bin/env bash
+set -euo pipefail
+: "${POSTGRES_HOST:?}"; : "${POSTGRES_USER:?}"
+: "${POSTGRES_PASSWORD:?}"; : "${POSTGRES_DB:?}"
 
-# Check overall system health
-curl http://your-server:4000/api/health
+OUT_DIR=/var/backups/tradingapp
+mkdir -p "$OUT_DIR"
+
+PGPASSWORD="$POSTGRES_PASSWORD" pg_dump \
+  -h "$POSTGRES_HOST" -U "$POSTGRES_USER" "$POSTGRES_DB" \
+  | gzip > "$OUT_DIR/tradingapp_$(date +%Y%m%d_%H%M%S).sql.gz"
+
+find "$OUT_DIR" -name 'tradingapp_*.sql.gz' -mtime +14 -delete
 ```
 
-### Data Quality Monitoring
-```sql
--- Check data quality scores
-SELECT 
-    c.symbol,
-    dqm.timeframe,
-    dqm.date,
-    dqm.data_quality_score,
-    dqm.total_bars,
-    dqm.missing_bars
-FROM data_quality_metrics dqm
-JOIN contracts c ON dqm.contract_id = c.id
-WHERE dqm.date >= CURRENT_DATE - INTERVAL '7 days'
-ORDER BY dqm.date DESC, c.symbol;
-```
+Managed services (Timescale Cloud, RDS, etc.) provide point-in-time
+recovery and continuous backups out of the box — prefer those when
+possible.
 
-### Collection Session Monitoring
-```sql
--- Check recent collection sessions
-SELECT 
-    c.symbol,
-    dcs.timeframe,
-    dcs.status,
-    dcs.records_collected,
-    dcs.start_time,
-    dcs.end_time
-FROM data_collection_sessions dcs
-JOIN contracts c ON dcs.contract_id = c.id
-WHERE dcs.start_time >= CURRENT_DATE - INTERVAL '1 day'
-ORDER BY dcs.start_time DESC;
-```
+## Security Notes
 
-## 🛠️ Troubleshooting
+1. **Always enable TLS** for any database that is not on `localhost`. Set
+   `POSTGRES_SSL=true` in `.env`.
+2. **Strong, rotated credentials.** Do not reuse the `tradingapp123`
+   password from `tradingapp.sh setup` — that value exists purely for
+   bootstrapping a local Docker dev DB.
+3. **Restrict network access** — only the backend container needs
+   `5432/tcp` access; nothing else on the LAN should be able to reach the
+   database.
+4. **Audit logging.** Enable `log_statement = 'ddl'` (or stricter) on the
+   database and ship logs to your central log store.
 
-### Common Issues
-
-#### 1. Connection Refused
-```bash
-# Check if database is accessible
-telnet YOUR_DB_HOST 5432
-
-# Verify credentials
-psql -h YOUR_DB_HOST -U YOUR_USERNAME -d tradingapp -c "SELECT 1;"
-```
-
-#### 2. SSL Connection Issues
-```bash
-# For self-signed certificates, set in .env:
-POSTGRES_SSL=true
-
-# Or disable SSL for local development:
-POSTGRES_SSL=false
-```
-
-#### 3. Permission Denied
-```sql
--- Grant necessary permissions
-GRANT ALL PRIVILEGES ON DATABASE tradingapp TO tradingapp;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO tradingapp;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO tradingapp;
-```
-
-#### 4. Schema Not Found
-```bash
-# Re-run initialization script
-psql -h YOUR_DB_HOST -U YOUR_USERNAME -d tradingapp -f backend/src/database/init.sql
-```
-
-## 📚 API Endpoints
-
-### Database-Specific Endpoints
-
-- `GET /api/database/health` - Database connection status
-- `GET /api/market-data/database/stats` - Data collection statistics
-- `POST /api/market-data/database/clean` - Clean old data
-
-### Enhanced Market Data Endpoints
-
-All market data endpoints now support database integration:
-- `GET /api/market-data/history?use_database=true` - Use database first
-- `GET /api/market-data/indicators?use_database=true` - Get cached indicators
-
-## 🔐 Security Considerations
-
-1. **Use SSL**: Always enable SSL for external database connections
-2. **Strong Passwords**: Use complex passwords for database access
-3. **Network Security**: Restrict database access to application servers
-4. **Regular Backups**: Implement automated database backups
-5. **Access Logging**: Monitor database access and queries
-
-## 📊 Backup and Recovery
-
-### Automated Backups
-```bash
-#!/bin/bash
-# backup-db.sh
-BACKUP_DIR="/backups/tradingapp"
-DATE=$(date +%Y%m%d_%H%M%S)
-mkdir -p $BACKUP_DIR
-
-pg_dump -h YOUR_DB_HOST -U YOUR_USERNAME tradingapp > $BACKUP_DIR/tradingapp_backup_$DATE.sql
-
-# Keep only last 7 days
-find $BACKUP_DIR -name "tradingapp_backup_*.sql" -mtime +7 -delete
-```
-
-### Restore from Backup
-```bash
-psql -h YOUR_DB_HOST -U YOUR_USERNAME -d tradingapp < backup_file.sql
-```
-
-## 🎯 Next Steps
-
-1. **Set up external database** using the provided schema
-2. **Configure environment variables** for database connection
-3. **Test database connectivity** using health check endpoints
-4. **Monitor data collection** and quality metrics
-5. **Implement automated backups** for data protection
-
-The database integration provides a robust foundation for storing and retrieving historical market data, enabling faster queries and better data management for your trading application.
+For broader security gaps (auth middleware on the backend, the
+unintentional `/api/settings` secret leak, etc.) see
+[`GAP_ANALYSIS.md`](../../../GAP_ANALYSIS.md).
