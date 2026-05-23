@@ -12,3 +12,6 @@ numpy>=1.24.0
 # Basic utilities
 python-dateutil==2.8.2
 pytz==2023.3
+
+# Phase 4 — real-time pipeline
+redis>=5.0.1
