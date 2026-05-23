@@ -19,6 +19,14 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - JWT_SECRET=${JWT_SECRET:-changeme_jwt_secret}
       - SESSION_SECRET=${SESSION_SECRET:-changeme_session_secret}
+      # Bearer token enforced by the backend auth middleware. Leave
+      # empty (the default) to disable auth — the backend prints a
+      # warning at startup so the unauthenticated state is loud.
+      - API_TOKEN=${API_TOKEN:-}
+      # Redis cache controls
+      - REDIS_ENABLED=${REDIS_ENABLED:-true}
+      - CACHE_TTL_REALTIME=${CACHE_TTL_REALTIME:-2}
+      - CACHE_TTL_SEARCH=${CACHE_TTL_SEARCH:-300}
     ports:
       - "${BACKEND_PORT:-4000}:${BACKEND_PORT:-4000}"
     depends_on:

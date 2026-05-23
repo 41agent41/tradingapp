@@ -55,3 +55,14 @@ diagnostics.txt
 *.bak
 *.backup
 *.orig
+
+# tradingapp.sh state files
+.tradingapp.with-db
+
+# Auto-generated lockfiles (kept locally; tracked lockfiles are a separate hygiene PR)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Next.js auto-generated type shim — re-created on every build
+frontend/next-env.d.ts

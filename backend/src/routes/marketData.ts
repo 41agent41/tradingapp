@@ -2,9 +2,17 @@ import express from 'express';
 import type { Request, Response } from 'express';
 import axios from 'axios';
 import { marketDataService, type Contract, type CandlestickBar, type TechnicalIndicator } from '../services/marketDataService.js';
+import { cacheService } from '../services/cache.js';
 
 const router = express.Router();
 const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
+
+// Cache TTLs (seconds). Tunable via env so operators don't have to redeploy.
+const REALTIME_CACHE_TTL = parseInt(process.env.CACHE_TTL_REALTIME || '2', 10);
+
+function cacheKey(parts: Array<string | number | boolean | undefined | null>): string {
+  return parts.map((p) => (p === undefined || p === null ? '' : String(p))).join('|');
+}
 
 // Interface for market data request parameters
 interface MarketDataQuery {
@@ -654,6 +662,29 @@ router.get('/indicators', async (req: Request, res: Response) => {
       error: 'Failed to calculate technical indicators',
       message: errorMessage,
       timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Proxy: list available technical indicators from the IB service.
+// Frontend code historically hit the IB service on :8000 directly to get
+// this catalogue, which bypassed CORS and auth. Going through the
+// backend keeps everything behind the same security perimeter.
+router.get('/indicators/available', async (_req: Request, res: Response) => {
+  try {
+    const data = await cacheService.wrap('indicators:available', 3600, async () => {
+      const response = await axios.get(`${IB_SERVICE_URL}/indicators/available`, {
+        timeout: 5000,
+      });
+      return response.data;
+    });
+    res.json(data);
+  } catch (error: any) {
+    console.error('Error fetching available indicators:', error);
+    res.status(502).json({
+      error: 'Failed to fetch available indicators',
+      message: error?.message || 'Unknown error',
+      timestamp: new Date().toISOString(),
     });
   }
 });

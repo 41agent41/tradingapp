@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import EnhancedTradingChart from './EnhancedTradingChart';
 import { useTradingAccount } from '../contexts/TradingAccountContext';
+import { apiFetch } from '../lib/api';
 
 interface SecurityType {
   value: string;
@@ -190,12 +191,8 @@ export default function MarketDataFilter() {
 
   const checkConnection = async () => {
     try {
-      const backendUrl = (typeof window !== 'undefined' && (window as any).ENV?.NEXT_PUBLIC_API_URL) || process.env.NEXT_PUBLIC_API_URL;
-      if (!backendUrl) {
-        setConnectionStatus('Error');
-        return;
-      }
-      const response = await fetch(`${backendUrl}/api/health`);
+      // /api/health is on the auth allow-list; skipAuth keeps the request lean.
+      const response = await apiFetch(`/api/health`, { skipAuth: true });
       if (response.ok) {
         setConnectionStatus('Connected');
       } else {
@@ -221,11 +218,6 @@ export default function MarketDataFilter() {
     setShowChart(false);
 
     try {
-      const backendUrl = (typeof window !== 'undefined' && (window as any).ENV?.NEXT_PUBLIC_API_URL) || process.env.NEXT_PUBLIC_API_URL;
-      if (!backendUrl) {
-        throw new Error('NEXT_PUBLIC_API_URL is not configured');
-      }
-
       const endpoint = showAdvancedSearch ? '/api/market-data/advanced-search' : '/api/market-data/search';
       
       const searchPayload = showAdvancedSearch ? {
@@ -249,7 +241,7 @@ export default function MarketDataFilter() {
         account_mode: accountMode
       };
 
-      const response = await fetch(`${backendUrl}${endpoint}`, {
+      const response = await apiFetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -288,12 +280,8 @@ export default function MarketDataFilter() {
     setLoading(true);
 
     try {
-      const backendUrl = (typeof window !== 'undefined' && (window as any).ENV?.NEXT_PUBLIC_API_URL) || process.env.NEXT_PUBLIC_API_URL;
-      if (!backendUrl) {
-        throw new Error('NEXT_PUBLIC_API_URL is not configured');
-      }
-      const response = await fetch(
-        `${backendUrl}/api/market-data/realtime?symbol=${contract.symbol}&conid=${contract.conid}&account_mode=${accountMode}`
+      const response = await apiFetch(
+        `/api/market-data/realtime?symbol=${contract.symbol}&conid=${contract.conid}&account_mode=${accountMode}`
       );
 
       if (response.ok) {

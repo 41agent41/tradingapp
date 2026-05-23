@@ -8,6 +8,7 @@ import BackToHome from '../components/BackToHome';
 import ExchangeDrivenFilters from '../components/ExchangeDrivenFilters';
 import PeriodDateFilters from '../components/PeriodDateFilters';
 import TechnicalIndicatorsFilter from '../components/TechnicalIndicatorsFilter';
+import { apiFetch } from '../lib/api';
 
 interface HistoricalData {
   symbol: string;
@@ -200,10 +201,6 @@ export default function HistoricalChartPage() {
     setError(null);
     
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-      if (!apiUrl) {
-        throw new Error('API URL not configured');
-      }
 
       // Build query parameters
       const params = new URLSearchParams({
@@ -227,11 +224,11 @@ export default function HistoricalChartPage() {
         params.append('indicators', selectedIndicators.join(','));
       }
 
-      const url = `${apiUrl}/api/market-data/history?${params.toString()}`;
-      
+      const url = `/api/market-data/history?${params.toString()}`;
+
       console.log('Fetching historical data:', url);
-      
-      const response = await fetch(url, {
+
+      const response = await apiFetch(url, {
         headers: { 
           'X-Data-Query-Enabled': 'true',
           'Content-Type': 'application/json'

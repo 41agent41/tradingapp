@@ -6,6 +6,7 @@ import DataSwitch from './DataSwitch';
 import IndicatorSelector from './IndicatorSelector';
 import DataframeViewer from './DataframeViewer';
 import { useTradingAccount } from '../contexts/TradingAccountContext';
+import { apiFetch } from '../lib/api';
 
 interface RealtimeData {
   symbol: string;
@@ -346,13 +347,8 @@ export default function MSFTRealtimeChart() {
     setError(null);
     
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-      if (!apiUrl) {
-        throw new Error('API URL not configured');
-      }
-
-      // Simple query building
-      let url = `${apiUrl}/api/market-data/history?symbol=MSFT&timeframe=${currentTimeframe}&account_mode=${accountMode}`;
+      // Simple query building (apiFetch will prefix with NEXT_PUBLIC_API_URL)
+      let url = `/api/market-data/history?symbol=MSFT&timeframe=${currentTimeframe}&account_mode=${accountMode}`;
       
       if (useCustomDateRange && startDate && endDate) {
         url += `&start_date=${startDate}&end_date=${endDate}`;
@@ -370,7 +366,7 @@ export default function MSFTRealtimeChart() {
 
       console.log('API Request:', url);
       
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         headers: { 'X-Data-Query-Enabled': 'true' }
       });
 
@@ -488,12 +484,7 @@ export default function MSFTRealtimeChart() {
     }
     
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-      if (!apiUrl) {
-        throw new Error('NEXT_PUBLIC_API_URL not configured');
-      }
-
-      const response = await fetch(`${apiUrl}/api/market-data/realtime?symbol=MSFT&account_mode=${accountMode}`, {
+      const response = await apiFetch(`/api/market-data/realtime?symbol=MSFT&account_mode=${accountMode}`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
