@@ -1,0 +1,63 @@
+# Optional Docker Compose override that brings up a local TimescaleDB
+# instance and wires the backend at it.
+#
+# Use this for development or self-hosted deployments where you don't have
+# an external Postgres. Production deployments should keep using an
+# externally-managed database (Timescale Cloud, RDS, etc.) and NOT enable
+# this override.
+#
+#   # Bring up the full stack including the database
+#   docker compose -f docker-compose.yml -f docker-compose.db.yml up -d
+#
+#   # Or via the management script
+#   ./tradingapp.sh deploy --with-db
+#
+# The canonical schema in backend/src/database/timescaledb-schema.sql is
+# applied automatically on the first run via /docker-entrypoint-initdb.d/.
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tradingapp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tradingapp123}
+      POSTGRES_DB: ${POSTGRES_DB:-tradingapp}
+      # Force UTC so timestamps round-trip cleanly with the IB service.
+      PGTZ: UTC
+      TZ: UTC
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - tradingapp_pgdata:/var/lib/postgresql/data
+      # Schema is applied on first init only. To re-apply, remove the
+      # volume and restart the service.
+      - ./backend/src/database/timescaledb-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    networks:
+      tradingapp-network:
+        ipv4_address: 172.20.0.20
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # Point the backend at the local Postgres when this override is active.
+  # POSTGRES_HOST is set explicitly so it overrides any value in .env.
+  backend:
+    environment:
+      - POSTGRES_HOST=172.20.0.20
+      - POSTGRES_PORT=5432
+      - POSTGRES_SSL=false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ib_service:
+        condition: service_started
+      redis:
+        condition: service_started
+
+volumes:
+  tradingapp_pgdata:
+    driver: local

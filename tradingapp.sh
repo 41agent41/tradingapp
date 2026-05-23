@@ -23,16 +23,67 @@ DEFAULT_SERVER_IP="10.7.3.20"
 DEFAULT_IB_PORT="4002"
 DEFAULT_CLIENT_ID="1"
 
+# State file that remembers whether the last deploy opted into the
+# bundled TimescaleDB (`--with-db`). The presence of this file makes all
+# subsequent compose calls (`start`, `stop`, `restart`, `logs`, `status`)
+# pick up the override automatically.
+WITH_DB_STATE_FILE=".tradingapp.with-db"
+
+# Build the `docker compose` invocation, layering the database override
+# when --with-db is requested or the state file is present.
+compose_cmd() {
+    local -a files=(-f docker-compose.yml)
+    if [[ "${WITH_DB:-0}" == "1" ]] || [[ -f "$WITH_DB_STATE_FILE" ]]; then
+        if [[ -f docker-compose.db.yml ]]; then
+            files+=(-f docker-compose.db.yml)
+        else
+            print_warning "WITH_DB requested but docker-compose.db.yml is missing"
+        fi
+    fi
+    if command -v "docker-compose" >/dev/null 2>&1; then
+        docker-compose "${files[@]}" "$@"
+    else
+        docker compose "${files[@]}" "$@"
+    fi
+}
+
+# Parse `--with-db` out of the remaining argv so the subcommand dispatch
+# below sees a clean list.
+parse_global_flags() {
+    local -a remaining=()
+    for arg in "$@"; do
+        case "$arg" in
+            --with-db)
+                WITH_DB=1
+                ;;
+            --no-db)
+                WITH_DB=0
+                rm -f "$WITH_DB_STATE_FILE"
+                ;;
+            *)
+                remaining+=("$arg")
+                ;;
+        esac
+    done
+    GLOBAL_ARGS=("${remaining[@]}")
+}
+
+
 show_usage() {
     echo "🚀 TradingApp Unified Management Script"
     echo "======================================"
     echo ""
-    echo "Usage: $0 [COMMAND]"
+    echo "Usage: $0 [COMMAND] [--with-db | --no-db]"
     echo ""
     echo "Setup & Deployment:"
     echo "  setup       - Install Docker, setup environment, configure IB"
     echo "  deploy      - Deploy the complete application"
     echo "  redeploy    - Clean redeploy (recommended for changes)"
+    echo ""
+    echo "Global flags:"
+    echo "  --with-db   - Also bring up a local TimescaleDB via"
+    echo "                docker-compose.db.yml (development / self-hosted)"
+    echo "  --no-db     - Stop using the local TimescaleDB override"
     echo ""
     echo "Configuration:"
     echo "  config      - Configure IB Gateway connection"
@@ -199,35 +250,41 @@ test_ib_connection() {
 
 deploy_application() {
     print_info "Deploying TradingApp..."
-    
+
     # Ensure Docker is running
     if ! docker info &> /dev/null; then
         print_error "Docker is not running. Please start Docker first."
         exit 1
     fi
-    
+
+    # Persist the --with-db choice across subsequent invocations
+    if [[ "${WITH_DB:-0}" == "1" ]]; then
+        touch "$WITH_DB_STATE_FILE"
+        print_info "TimescaleDB override enabled (--with-db)"
+    fi
+
     # Clean deployment for reliability
     print_info "Cleaning previous deployment..."
-    docker-compose down --remove-orphans 2>/dev/null || true
-    
+    compose_cmd down --remove-orphans 2>/dev/null || true
+
     # Build and start services
     print_info "Building and starting services..."
-    docker-compose up --build -d
-    
+    compose_cmd up --build -d
+
     # Wait for services to be ready
     print_info "Waiting for services to start..."
     sleep 10
-    
+
     # Verify TWS API installation
     print_info "Verifying TWS API installation..."
-    if docker-compose exec -T ib_service python -c "import ibapi; print('TWS API installed successfully')" 2>/dev/null; then
+    if compose_cmd exec -T ib_service python -c "import ibapi; print('TWS API installed successfully')" 2>/dev/null; then
         print_status "TWS API (ibapi) is properly installed"
     else
         print_error "TWS API installation verification failed"
         print_info "This may indicate a Docker cache issue. Try: $0 clean && $0 deploy"
         return 1
     fi
-    
+
     # Test deployment
     test_deployment
 }
@@ -313,7 +370,7 @@ run_diagnostics() {
     
     echo ""
     echo "=== Container Status ==="
-    docker-compose ps 2>/dev/null || echo "No containers running"
+    compose_cmd ps 2>/dev/null || echo "No containers running"
     
     echo ""
     echo "=== Environment ==="
@@ -345,8 +402,8 @@ fix_issues() {
     
     # Fix 2: Restart services
     print_info "Restarting services..."
-    docker-compose down --remove-orphans 2>/dev/null || true
-    docker-compose up --build -d
+    compose_cmd down --remove-orphans 2>/dev/null || true
+    compose_cmd up --build -d
     
     # Fix 3: Wait and test
     print_info "Waiting for services to stabilize..."
@@ -362,18 +419,23 @@ show_logs() {
     print_info "Showing service logs..."
     
     if [[ "$1" == "follow" ]] || [[ "$1" == "-f" ]]; then
-        docker-compose logs -f
+        compose_cmd logs -f
     else
         echo "=== Recent logs (last 20 lines per service) ==="
         echo ""
         echo "--- Frontend ---"
-        docker-compose logs --tail=20 frontend 2>/dev/null || echo "Frontend not running"
+        compose_cmd logs --tail=20 frontend 2>/dev/null || echo "Frontend not running"
         echo ""
         echo "--- Backend ---"
-        docker-compose logs --tail=20 backend 2>/dev/null || echo "Backend not running"
+        compose_cmd logs --tail=20 backend 2>/dev/null || echo "Backend not running"
         echo ""
         echo "--- IB Service ---"
-        docker-compose logs --tail=20 ib_service 2>/dev/null || echo "IB Service not running"
+        compose_cmd logs --tail=20 ib_service 2>/dev/null || echo "IB Service not running"
+        if [[ "${WITH_DB:-0}" == "1" ]] || [[ -f "$WITH_DB_STATE_FILE" ]]; then
+            echo ""
+            echo "--- Postgres (TimescaleDB) ---"
+            compose_cmd logs --tail=20 postgres 2>/dev/null || echo "Postgres not running"
+        fi
     fi
 }
 
@@ -444,6 +506,11 @@ show_ib_help() {
     print_status "After configuring IB Gateway, run: ./tradingapp.sh test"
 }
 
+# Strip the global flags (--with-db / --no-db) from $@ so the case
+# dispatch below only sees the subcommand and its positional arguments.
+parse_global_flags "$@"
+set -- "${GLOBAL_ARGS[@]}"
+
 # Main command handling
 case "${1:-}" in
     "setup")
@@ -457,17 +524,17 @@ case "${1:-}" in
         ;;
     "redeploy")
         print_info "Clean redeployment (recommended for changes)..."
-        docker-compose down --remove-orphans
-        
+        compose_cmd down --remove-orphans
+
         # Remove project images to ensure fresh build
         docker rmi $(docker images -q tradingapp_ib_service) 2>/dev/null || echo "No ib_service images to remove"
         docker rmi $(docker images -q tradingapp_backend) 2>/dev/null || echo "No backend images to remove"
         docker rmi $(docker images -q tradingapp_frontend) 2>/dev/null || echo "No frontend images to remove"
-        
+
         # Clear build cache
         docker system prune -f
         docker builder prune -f
-        
+
         deploy_application
         ;;
     "config")
@@ -478,19 +545,19 @@ case "${1:-}" in
         setup_environment
         ;;
     "start")
-        docker-compose up -d
+        compose_cmd up -d
         print_status "Services started"
         ;;
     "stop")
-        docker-compose down --remove-orphans
+        compose_cmd down --remove-orphans
         print_status "Services stopped"
         ;;
     "restart")
-        docker-compose restart
+        compose_cmd restart
         print_status "Services restarted"
         ;;
     "status")
-        docker-compose ps
+        compose_cmd ps
         ;;
     "logs")
         show_logs "$2"
@@ -514,7 +581,8 @@ case "${1:-}" in
             print_info "Performing complete cleanup..."
             
             # Stop and remove containers
-            docker-compose down --remove-orphans
+            compose_cmd down --remove-orphans
+            rm -f "$WITH_DB_STATE_FILE"
             
             # Remove all project images
             docker rmi $(docker images -q tradingapp_ib_service) 2>/dev/null || echo "No ib_service images to remove"
