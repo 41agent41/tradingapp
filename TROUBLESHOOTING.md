@@ -1,715 +1,377 @@
-# 🔧 TradingApp Troubleshooting Guide
+# TradingApp Troubleshooting Guide
 
-Comprehensive troubleshooting guide for TradingApp deployment and operation issues.
+Practical fixes for the most common deployment and runtime problems. All
+operational commands route through `./tradingapp.sh` — this repo does **not**
+ship `deploy-tradingapp.sh`, `fix-ib-connection.sh`, `fix-ib-config.sh` or
+`diagnose-connection.sh`; if you see those names in older notes, ignore
+them.
 
-## 📋 Table of Contents
+## Table of Contents
 
-1. [Quick Fix Scripts](#quick-fix-scripts)
+1. [First-Response Commands](#first-response-commands)
 2. [Common Issues](#common-issues)
 3. [Service-Specific Issues](#service-specific-issues)
-4. [Network & Connection Issues](#network--connection-issues)
-5. [IB Gateway Connection Issues](#ib-gateway-connection-issues)
-6. [Docker & Container Issues](#docker--container-issues)
-7. [Development Issues](#development-issues)
-8. [Performance Issues](#performance-issues)
-9. [Diagnostic Tools](#diagnostic-tools)
+4. [Network & CORS](#network--cors)
+5. [IB Gateway Connection](#ib-gateway-connection)
+6. [Docker & Containers](#docker--containers)
+7. [Database](#database)
+8. [Development Issues](#development-issues)
+9. [Performance](#performance)
 10. [Emergency Recovery](#emergency-recovery)
+11. [Reporting Issues](#reporting-issues)
 
-## 🚨 Quick Fix Scripts
+## First-Response Commands
 
-### Automatic Fix Script
 ```bash
-# Run automatic connection fix
-./fix-ib-connection.sh
+# Quick status (containers + ports)
+./tradingapp.sh status
+
+# Comprehensive health check (frontend / backend / IB service / IB Gateway)
+./tradingapp.sh test
+
+# Deep diagnostics (Docker info, env, network, services)
+./tradingapp.sh diagnose
+
+# Auto-repair (regenerates .env if missing, rebuilds, retests)
+./tradingapp.sh fix
+
+# Logs
+./tradingapp.sh logs            # last 20 lines per service
+./tradingapp.sh logs follow     # stream all services
 ```
 
-This script automatically:
-- ✅ Creates missing `.env` configuration
-- ✅ Rebuilds IB service container
-- ✅ Fixes network connectivity issues
-- ✅ Tests IB Gateway connection
-- ✅ Restarts backend service
-- ✅ Verifies all endpoints
+If you need an IB Gateway configuration walk-through with values from your
+current `.env`:
 
-### Diagnostic Script
 ```bash
-# Run comprehensive diagnostics
-./diagnose-connection.sh
+./tradingapp.sh ib-help
 ```
 
-This script helps identify:
-- Container status and health
-- Service connectivity
-- IB Gateway connection
-- API endpoint availability
-- Configuration issues
+## Common Issues
 
-## 🔍 Common Issues
+### Services won't start
 
-### Issue 1: Services Won't Start
+**Symptoms:** Containers exit immediately or `docker compose up` reports
+port binding errors.
 
-**Symptoms:**
-- Docker containers exit immediately
-- Services fail to start up
-- Port binding errors
-
-**Solutions:**
 ```bash
-# Check port conflicts
-sudo netstat -tlnp | grep -E ':(3000|4000|8000)'
+# Inspect port usage
+sudo ss -ltnp | grep -E ':(3000|4000|8000)'
 
-# Stop conflicting services
-sudo systemctl stop apache2  # if using Apache
-sudo systemctl stop nginx    # if using Nginx
+# Stop anything competing for the port (examples)
+sudo systemctl stop nginx
+sudo systemctl stop apache2
 
 # Clean restart
-./deploy-tradingapp.sh stop
-./deploy-tradingapp.sh clean
-./deploy-tradingapp.sh deploy
+./tradingapp.sh stop
+./tradingapp.sh clean
+./tradingapp.sh deploy
 ```
 
-### Issue 2: Frontend Can't Connect to Backend
+### Frontend can't reach the backend
 
-**Symptoms:**
-- Network errors in browser console
-- API calls failing
-- CORS errors
+**Symptoms:** Network errors in the browser console, blank charts, CORS
+warnings.
 
-**Solutions:**
 ```bash
-# Check environment variables
-cat .env | grep -E '(API_URL|CORS_ORIGINS)'
-
-# Verify backend is running
-curl http://localhost:4000/health
-
-# Check CORS configuration
-grep CORS_ORIGINS .env
-
-# Fix CORS in .env
-CORS_ORIGINS=http://your-server-ip:3000,http://localhost:3000
+grep -E 'API_URL|CORS_ORIGINS' .env
+curl -fs http://<server-ip>:4000/api/health
 ```
 
-### Issue 3: Market Data Search Not Working
+The two values must agree. For example, if `NEXT_PUBLIC_API_URL` is
+`http://10.7.3.20:4000` then `CORS_ORIGINS` must contain
+`http://10.7.3.20:3000`. Update `.env` and `./tradingapp.sh restart`.
 
-**Symptoms:**
-- Search returns no results
-- API errors when searching
-- Contract resolution failures
+### Market-data search returns nothing
 
-**Solutions:**
+**Symptoms:** Empty results, "Failed to search for contracts" toasts.
+
 ```bash
-# Test IB service directly
-curl -X POST http://localhost:8000/contract/search \
-  -H "Content-Type: application/json" \
+curl -s -X POST http://<server-ip>:8000/contract/search \
+  -H 'Content-Type: application/json' \
   -d '{"symbol":"AAPL","secType":"STK","exchange":"SMART"}'
 
-# Check IB Gateway connection
-curl http://localhost:8000/health
-
-# Restart IB service
-docker-compose restart ib_service
+curl -fs http://<server-ip>:8000/health
+docker compose restart ib_service
 ```
 
-### Issue 4: Charts Not Loading
+If the IB service answers but the search is empty, the most likely causes
+are: IB Gateway not logged in, market-data subscription missing for the
+requested asset, or the server IP not in IB Gateway's trusted list.
 
-**Symptoms:**
-- Chart components not rendering
-- JavaScript errors in console
-- TradingView library not loading
+### Charts not loading
 
-**Solutions:**
 ```bash
-# Check frontend logs
-docker-compose logs frontend
-
-# Verify TradingView library
-# Check browser console for library loading errors
-
-# Restart frontend
-docker-compose restart frontend
-
-# Rebuild with no cache
-docker-compose build --no-cache frontend
+./tradingapp.sh logs               # look for frontend errors
+docker compose build --no-cache frontend
+./tradingapp.sh restart
 ```
 
-## 🏢 Service-Specific Issues
+## Service-Specific Issues
 
-### Frontend Issues
+### Frontend
 
-**Issue: Build Failures**
 ```bash
-# Clear npm cache
-docker-compose exec frontend npm cache clean --force
+# Rebuild without cache
+docker compose build --no-cache frontend
 
-# Rebuild with no cache
-docker-compose build --no-cache frontend
-
-# Check for TypeScript errors
-docker-compose exec frontend npm run build
+# Inspect Next.js build inside the container
+docker compose exec frontend npm run build
 ```
 
-**Issue: Environment Variables Not Loading**
+Environment variables that affect the build must start with `NEXT_PUBLIC_`
+and must be present **at build time** — change `.env`, then redeploy with
+`./tradingapp.sh redeploy`.
+
+### Backend
+
 ```bash
-# Check Next.js environment variable format
-grep NEXT_PUBLIC .env
+# Logs
+docker compose logs --tail=200 backend
 
-# Ensure variables start with NEXT_PUBLIC_
-NEXT_PUBLIC_API_URL=http://your-server-ip:4000
+# Health
+curl -fs http://<server-ip>:4000/api/health
 
-# Restart frontend after env changes
-docker-compose restart frontend
+# Database health (Phase 2 work — see GAP_ANALYSIS.md)
+curl -fs http://<server-ip>:4000/api/database/health
 ```
 
-### Backend Issues
+### IB Service
 
-**Issue: API Endpoints Not Responding**
 ```bash
-# Check backend logs
-docker-compose logs backend
+docker compose logs --tail=200 ib_service
 
-# Test health endpoint
-curl http://localhost:4000/health
+# Verify the IB Python client is installed
+docker compose exec ib_service python -c "import ibapi, fastapi; print('ok')"
 
-# Verify Express server is running
-docker-compose exec backend ps aux | grep node
-
-# Check for port conflicts
-sudo netstat -tlnp | grep 4000
+# Force a rebuild (clears cached wheels)
+docker compose build --no-cache ib_service
 ```
 
-**Issue: Database Connection Errors**
+## Network & CORS
+
+### Inter-container connectivity
+
 ```bash
-# Check if database is running
-docker-compose ps postgres
-
-# Test database connection
-docker-compose exec backend npm run db:test
-
-# Check database environment variables
-grep -E '(POSTGRES|DATABASE)' .env
-```
-
-### IB Service Issues
-
-**Issue: IB Service Won't Start**
-```bash
-# Check Python dependencies
-docker-compose exec ib_service pip list | grep -E '(fastapi|ibapi)'
-
-# Rebuild IB service
-docker-compose build --no-cache ib_service
-
-# Check for Python errors
-docker-compose logs ib_service
-```
-
-**Issue: FastAPI Import Errors**
-```bash
-# Check if FastAPI is installed
-docker-compose exec ib_service python -c "import fastapi; print('FastAPI OK')"
-
-# Reinstall dependencies
-docker-compose exec ib_service pip install -r requirements.txt
-
-# Check Python path
-docker-compose exec ib_service python -c "import sys; print(sys.path)"
-```
-
-## 🌐 Network & Connection Issues
-
-### Issue: Services Can't Communicate Internally
-
-**Symptoms:**
-- Backend can't reach IB service
-- Internal API calls failing
-- Docker network issues
-
-**Solutions:**
-```bash
-# Test internal Docker network
-docker-compose exec backend curl http://ib_service:8000/health
-
-# Check Docker network
+docker compose exec backend curl -fs http://ib_service:8000/health
+docker compose exec backend ping -c1 ib_service
 docker network ls
-docker network inspect tradingapp_default
-
-# Recreate network
-docker-compose down
-docker network prune -f
-docker-compose up -d
+docker network inspect tradingapp_tradingapp-network
 ```
 
-### Issue: External Access Problems
+### Inbound firewall
 
-**Symptoms:**
-- Can't access application from outside server
-- Timeout errors from remote clients
-- Firewall blocking connections
-
-**Solutions:**
 ```bash
-# Check firewall status
 sudo ufw status
-
-# Open required ports
 sudo ufw allow 3000
 sudo ufw allow 4000
 sudo ufw allow 8000
-
-# Check service binding
-netstat -tlnp | grep -E ':(3000|4000|8000)'
-
-# Verify Docker port mapping
-docker-compose ps
 ```
 
-## 🔌 IB Gateway Connection Issues
+When using a reverse proxy (see `DEPLOYMENT.md`) keep these ports closed
+externally and only allow `80/443`.
 
-### Issue: IB Gateway Connection Failed
+## IB Gateway Connection
 
-**Symptoms:**
-- IB service shows "not connected" status
-- Connection timeout errors
-- API connection refused
+### Reachability
 
-**Diagnostic Steps:**
 ```bash
-# Test IB Gateway connectivity
-telnet your-ib-gateway-ip 4002
-
-# Check IB service logs
-docker-compose logs ib_service | grep -i connect
-
-# Verify IB configuration
-curl http://localhost:8000/connection
+ping -c1 $IB_HOST
+nc -zv $IB_HOST $IB_PORT
+./tradingapp.sh test
 ```
 
-**Solutions:**
+### Common causes
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `Connection refused` | IB Gateway not running, wrong port | Launch IB Gateway; confirm `IB_PORT` matches the gateway's socket port |
+| `Timeout` / `Host unreachable` | Firewall between server and gateway | Open the IB port on both hosts; verify routing |
+| Connects then disconnects | `IB_CLIENT_ID` already in use | Pick an unused client id (1, 2, 3, …) and update `.env` |
+| Connects but no market data | Missing market-data subscription, or live data on a paper account | Subscribe in IB Account Management, or test with a symbol you do have data for |
+
+After any change in `.env`, redeploy:
+
 ```bash
-# Check .env configuration
-grep -E '(IB_HOST|IB_PORT|IB_CLIENT_ID)' .env
-
-# Correct configuration example:
-IB_HOST=localhost        # or your IB Gateway IP
-IB_PORT=4002            # IB Gateway port
-IB_CLIENT_ID=1          # Unique client ID
-
-# Restart IB service
-docker-compose restart ib_service
-
-# Run automatic fix
-./fix-ib-connection.sh
+./tradingapp.sh redeploy
 ```
 
-### Issue: IB Gateway API Not Enabled
+### IB Gateway API settings
 
-**Symptoms:**
-- Connection attempts fail immediately
-- "API not enabled" errors
-- No response from IB Gateway
+In IB Gateway / TWS: `File → Global Configuration → API → Settings`
 
-**Solutions:**
-1. **Enable API in IB Gateway:**
-   - File → Global Configuration → API → Settings
-   - Check "Enable ActiveX and Socket Clients"
-   - Set port to 4002
-   - Click "Apply" and "OK"
+- ✅ Enable ActiveX and Socket Clients
+- ✅ Socket port matches `IB_PORT` in `.env`
+- ✅ Master API client ID matches `IB_CLIENT_ID`
+- ✅ Add the trading server's IP to **Trusted IPs**
+- ✅ Uncheck "Read-Only API" if you ever intend to place orders
+- 💾 Apply, OK, restart IB Gateway
 
-2. **Set Trusted IPs:**
-   - Add your server IP to trusted IPs
-   - For local testing, add 127.0.0.1
+## Docker & Containers
 
-3. **Check Client ID:**
-   - Ensure unique client ID
-   - Try different client IDs (1, 2, 3, etc.)
+### Build failures
 
-### Issue: Market Data Permissions
-
-**Symptoms:**
-- Connections successful but no market data
-- "No market data permissions" errors
-- Data requests return empty results
-
-**Solutions:**
-1. **Check Market Data Subscriptions:**
-   - Verify you have data subscriptions for the assets
-   - Check if using paper trading account (limited data)
-
-2. **Test with Different Symbols:**
-   - Try major stocks like AAPL, MSFT
-   - Use exchanges you have data for
-
-3. **Check Data Permissions:**
-   - Account Management → Market Data Subscriptions
-   - Verify active subscriptions
-
-## 🐳 Docker & Container Issues
-
-### Issue: Docker Build Failures
-
-**Symptoms:**
-- Build process stops with errors
-- Package installation failures
-- Permission denied errors
-
-**Solutions:**
 ```bash
-# Clear Docker cache
 docker system prune -a -f
-
-# Rebuild with no cache
-docker-compose build --no-cache
-
-# Check Docker daemon
+docker compose build --no-cache
 sudo systemctl status docker
-
-# Increase Docker memory if needed
-# Docker Desktop → Settings → Resources → Advanced
 ```
 
-### Issue: Container Exit Codes
+### Unexpected exit codes
 
-**Common Exit Codes:**
-- **Exit Code 0**: Clean exit (normal)
-- **Exit Code 1**: General error
-- **Exit Code 125**: Docker daemon error
-- **Exit Code 126**: Container command not executable
-- **Exit Code 127**: Container command not found
+| Code | Meaning |
+|---|---|
+| `0` | Clean exit |
+| `1` | General error — check the service's logs |
+| `125` | Docker daemon problem |
+| `126` | Container command not executable |
+| `127` | Container command not found |
 
-**Solutions:**
 ```bash
-# Check exit code
-docker-compose ps
-
-# View detailed logs
-docker-compose logs service-name
-
-# Check container command
-docker-compose exec service-name ps aux
-
-# Verify entrypoint
-docker-compose exec service-name which python
+docker compose ps
+docker compose logs <service>
+docker compose exec <service> ps aux
 ```
 
-### Issue: Volume Mount Problems
+### Volume / permissions
 
-**Symptoms:**
-- Code changes not reflected
-- File permission errors
-- Volume not found errors
-
-**Solutions:**
 ```bash
-# Check volume mounts
-docker-compose config
-
-# Fix permissions
-sudo chown -R $USER:$USER ./
-
-# Recreate volumes
-docker-compose down -v
-docker-compose up -d
+docker compose config           # confirm mounts
+sudo chown -R "$USER":"$USER" . # fix host permissions
+docker compose down -v          # rebuild volumes
+docker compose up -d
 ```
 
-## 💻 Development Issues
+## Database
 
-### Issue: TypeScript Errors
+The Docker compose file does **not** provision Postgres — the backend
+connects to an external instance configured via `POSTGRES_*` env vars.
 
-**Symptoms:**
-- Build fails with TypeScript errors
-- Import resolution failures
-- Type checking errors
-
-**Solutions:**
 ```bash
-# Check TypeScript configuration
+# Reachability from inside the backend container
+docker compose exec backend node -e "
+  const net = require('net');
+  const s = net.connect(parseInt(process.env.POSTGRES_PORT||'5432'), process.env.POSTGRES_HOST);
+  s.on('connect', () => { console.log('reachable'); s.end(); });
+  s.on('error', err => { console.error('unreachable:', err.message); process.exit(1); });
+"
+
+# Apply / re-apply the canonical TimescaleDB schema
+psql "host=$POSTGRES_HOST user=$POSTGRES_USER dbname=$POSTGRES_DB sslmode=require" \
+  -f backend/src/database/timescaledb-schema.sql
+```
+
+If `/api/database/health` returns `unhealthy`:
+
+1. Confirm credentials in `.env` match the actual database.
+2. Confirm `POSTGRES_SSL` matches what the server requires.
+3. Confirm the user owns the `contracts`, `candlestick_data`,
+   `technical_indicators`, `data_collection_sessions`,
+   `data_collection_config` and `data_quality_metrics` tables.
+4. Apply the schema as shown above.
+
+## Development Issues
+
+### TypeScript errors
+
+```bash
 cat frontend/tsconfig.json
-
-# Install missing type definitions
-cd frontend
-npm install --save-dev @types/node @types/react
-
-# Check for TypeScript errors
-npm run type-check
+cd frontend && npm install --save-dev @types/node @types/react
+cd frontend && npx tsc --noEmit
 ```
 
-### Issue: ESLint/Prettier Conflicts
+### Hot reload not working
 
-**Symptoms:**
-- Code formatting issues
-- Build warnings
-- Linting errors
+Local Next.js dev runs outside Docker:
 
-**Solutions:**
 ```bash
-# Fix linting issues
-cd frontend
-npm run lint:fix
-
-# Format code
-npm run format
-
-# Check configuration
-cat .eslintrc.json
-cat .prettierrc
+cd frontend && npm run dev
+cd backend  && npm run dev
+cd ib_service && uvicorn main:app --reload --host 0.0.0.0
 ```
 
-### Issue: Hot Reload Not Working
+Inside Docker the production images do not enable hot reload — make code
+changes and `./tradingapp.sh redeploy`.
 
-**Symptoms:**
-- Changes not reflected immediately
-- Need to restart for changes
-- Development server issues
+## Performance
 
-**Solutions:**
 ```bash
-# Check if running in development mode
-grep NODE_ENV .env
-
-# Restart development server
-docker-compose restart frontend
-
-# Check file watchers
-docker-compose exec frontend npm run dev
-```
-
-## 🚀 Performance Issues
-
-### Issue: Slow Chart Loading
-
-**Symptoms:**
-- Charts take long time to load
-- Laggy interactions
-- Memory usage issues
-
-**Solutions:**
-```bash
-# Check memory usage
+# Live resource usage
 docker stats
 
-# Optimize chart data
-# Reduce historical data range
-# Implement data pagination
-
-# Check network latency
-curl -w "@curl-format.txt" -o /dev/null http://localhost:8000/health
+# Per-container snapshot
+docker compose top
 ```
 
-### Issue: High CPU Usage
+### Slow chart loading
 
-**Symptoms:**
-- System becomes unresponsive
-- High CPU usage by containers
-- Slow API responses
+- Reduce the period (e.g. `3M` instead of `1Y`) while debugging.
+- Check the response size from `/api/market-data/history` and confirm IB
+  isn't returning back-fill rate-limited data.
+- Inspect browser devtools for slow XHRs.
 
-**Solutions:**
+### High CPU
+
 ```bash
-# Monitor resource usage
-htop
-docker stats
-
-# Check for infinite loops in logs
-docker-compose logs | grep -i error
-
-# Restart problematic services
-docker-compose restart service-name
+docker compose logs | grep -i error    # tight error loops?
+docker compose restart <service>
 ```
 
-### Issue: Memory Leaks
-
-**Symptoms:**
-- Memory usage constantly increasing
-- Out of memory errors
-- System becomes unstable
-
-**Solutions:**
-```bash
-# Monitor memory usage over time
-watch -n 1 'docker stats --no-stream'
-
-# Check for memory leaks in code
-# Implement proper cleanup
-# Use memory profiling tools
-
-# Restart services periodically
-# Set up memory limits in docker-compose.yml
-```
-
-## 🔧 Diagnostic Tools
-
-### Health Check Commands
+## Emergency Recovery
 
 ```bash
-# Check all services
-./deploy-tradingapp.sh status
+# Full reset and rebuild
+./tradingapp.sh stop
+./tradingapp.sh clean
+./tradingapp.sh deploy
 
-# Test all connections
-./deploy-tradingapp.sh test
-
-# View comprehensive logs
-./deploy-tradingapp.sh logs
-
-# Check specific service
-docker-compose logs service-name
-```
-
-### Network Diagnostics
-
-```bash
-# Test internal connectivity
-docker-compose exec backend ping ib_service
-docker-compose exec frontend ping backend
-
-# Test external connectivity
-curl -I http://localhost:3000
-curl -I http://localhost:4000
-curl -I http://localhost:8000
-
-# Check DNS resolution
-nslookup your-domain.com
-```
-
-### Database Diagnostics
-
-```bash
-# Check database connection
-docker-compose exec postgres psql -U tradingapp -d tradingapp -c "SELECT version();"
-
-# Check database logs
-docker-compose logs postgres
-
-# Backup database
-docker-compose exec postgres pg_dump -U tradingapp tradingapp > backup.sql
-```
-
-## 🚨 Emergency Recovery
-
-### Complete System Reset
-
-```bash
-# Stop all services
-./deploy-tradingapp.sh stop
-
-# Clean everything
-./deploy-tradingapp.sh clean
-
-# Remove all Docker data
+# Even more aggressive
 docker system prune -a -f
 docker volume prune -f
-
-# Rebuild from scratch
-./deploy-tradingapp.sh deploy
+./tradingapp.sh deploy
 ```
 
-### Backup and Restore
+### Configuration recovery
 
 ```bash
-# Create backup
-tar -czf tradingapp_backup_$(date +%Y%m%d).tar.gz \
-  --exclude='node_modules' \
-  --exclude='.git' \
-  .
-
-# Restore from backup
-tar -xzf tradingapp_backup_YYYYMMDD.tar.gz
-cd tradingapp
-./deploy-tradingapp.sh deploy
+cp .env.example .env
+$EDITOR .env
+./tradingapp.sh redeploy
 ```
 
-### Configuration Recovery
+## Reporting Issues
+
+Before opening an issue, please collect:
 
 ```bash
-# Restore configuration from template
-cp env.template .env
-
-# Edit with your specific values
-nano .env
-
-# Test configuration
-./deploy-tradingapp.sh test
+./tradingapp.sh diagnose > diagnostics.txt 2>&1
+docker --version          >> diagnostics.txt
+docker compose version    >> diagnostics.txt
+uname -a                  >> diagnostics.txt
+df -h                     >> diagnostics.txt
+free -h                   >> diagnostics.txt
 ```
 
-## 📞 Getting Help
+And include:
 
-### Before Asking for Help
+- OS and kernel version
+- Output of `diagnostics.txt`
+- Exact reproduction steps
+- Anonymised `.env` (strip secrets!)
 
-1. **Check logs first:**
-   ```bash
-   ./deploy-tradingapp.sh logs
-   ```
+### Quick reference: error messages
 
-2. **Run diagnostics:**
-   ```bash
-   ./diagnose-connection.sh
-   ```
-
-3. **Try automatic fixes:**
-   ```bash
-   ./fix-ib-connection.sh
-   ```
-
-4. **Check documentation:**
-   - README.md
-   - DEPLOYMENT.md
-   - This troubleshooting guide
-
-### When Reporting Issues
-
-Include this information:
-- Operating system and version
-- Docker and Docker Compose versions
-- Complete error messages
-- Steps to reproduce the issue
-- Output of diagnostic commands
-- Configuration files (with sensitive data removed)
-
-### Log Collection
-
-```bash
-# Collect comprehensive logs
-./deploy-tradingapp.sh logs > logs.txt 2>&1
-
-# Collect system information
-docker version >> logs.txt
-docker-compose version >> logs.txt
-uname -a >> logs.txt
-df -h >> logs.txt
-free -h >> logs.txt
-```
-
-## 📝 Common Error Messages
-
-### "Connection refused"
-- Service not running
-- Port not accessible
-- Firewall blocking connection
-
-### "No such file or directory"
-- Missing files
-- Incorrect paths
-- Permission issues
-
-### "Permission denied"
-- File permissions wrong
-- Docker permissions not set
-- User not in docker group
-
-### "Port already in use"
-- Another service using the port
-- Previous container not stopped
-- Port conflict in configuration
-
-### "Module not found"
-- Missing dependencies
-- Python path issues
-- Package installation failed
-
-### "CORS error"
-- CORS origins not configured
-- Frontend/backend URL mismatch
-- Missing CORS headers
+| Message | Most likely cause |
+|---|---|
+| `Connection refused` | Service not running, port closed, firewall |
+| `No such file or directory` | Mount path wrong, file missing in image |
+| `Permission denied` | Host file owned by root, or user not in `docker` group |
+| `Port already in use` | Another process bound to 3000 / 4000 / 8000 |
+| `Module not found` | `npm install` / `pip install` failed during build |
+| `CORS error` | `CORS_ORIGINS` does not include the frontend's origin |
 
 ---
 
-**🔧 If you're still having issues, run the diagnostic script and check the logs for specific error messages.** 
+If the issue persists after `./tradingapp.sh fix`, see
+[`GAP_ANALYSIS.md`](GAP_ANALYSIS.md) for known limitations and planned
+improvements.
