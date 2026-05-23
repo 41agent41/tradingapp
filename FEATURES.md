@@ -71,10 +71,12 @@ A dedicated `/msft` page implements the `.cursorrules` brief: an MSFT chart
 that you can switch across the 5m / 15m / 30m / 1h / 4h / 8h / 1d
 timeframes with up to 12 months of history.
 
-> ⚠️ The "real-time" updates are currently driven by REST polling against
-> `/api/market-data/realtime` and `/api/market-data/history`. True
-> streaming via IB market-data subscriptions and Socket.IO fan-out is on
-> the roadmap (Phase 4 in `GAP_ANALYSIS.md`).
+The page now consumes a true real-time tick stream: the IB service
+calls `reqMktData` on IB Gateway and publishes every tick to Redis,
+the backend forwards each tick into a Socket.IO room, and the page's
+`useRealtimeStream` hook updates the price display as ticks arrive.
+A one-shot REST call seeds the badge before the first tick lands and
+acts as a fallback when streaming is disabled.
 
 ### Technical indicators
 
@@ -180,13 +182,6 @@ when the IB service is unreachable, `504` on IB timeouts.
 The items below are described in the existing documentation set or
 implied by the codebase but are **not yet implemented**. They are the
 forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
-
-### Real-time pipeline
-
-- IB `reqMktData` / `reqRealTimeBars` worker in the IB service.
-- Redis pub/sub fan-out from `ib_service` to `backend`.
-- Socket.IO push of ticks/bars to subscribed clients (replacing the
-  current polling model).
 
 ### Backtesting UI
 

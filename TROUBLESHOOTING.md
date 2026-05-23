@@ -293,6 +293,32 @@ cd ib_service && uvicorn main:app --reload --host 0.0.0.0
 Inside Docker the production images do not enable hot reload — make code
 changes and `./tradingapp.sh redeploy`.
 
+## Real-time streaming
+
+The chart price stops updating but historical bars still load. Walk
+through these in order:
+
+```bash
+# Is the bridge connected to Redis?
+curl -fs http://<server-ip>:4000/api/health | jq .services.streaming
+
+# Per-symbol refcounts and tick counters from the publisher side
+curl -fs http://<server-ip>:8000/market-data/stream/status | jq
+
+# Inspect what the publisher is actually sending (tail the channel)
+docker compose exec redis redis-cli psubscribe 'marketdata:tick:*'
+```
+
+Likely causes:
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `services.streaming.connected: false` | Backend can't reach Redis | `docker compose logs backend` for the error; confirm `REDIS_HOST` / `REDIS_PORT`; restart Redis |
+| Stream status `connected: true` but `subscriptions: []` | No client has called `subscribe-market-data` | Reload the chart page; check the browser console for Socket.IO errors |
+| Bridge connected, IB shows tick counts > 0, browser sees nothing | Auth header dropped at the Socket.IO handshake | Verify `NEXT_PUBLIC_API_TOKEN` matches `API_TOKEN`; rebuild frontend |
+| Browser sees ticks but the chart's "current price" is zero | Symbol mismatch (frontend asks for `MSFT`, IB service is publishing `aapl`) | The hook upper-cases symbols automatically; check that the page passes the symbol you expect |
+| Want to skip the streaming pipeline | Set `STREAMING_ENABLED=false` on the backend and redeploy. The chart will fall back to REST seeding (no live updates). |
+
 ## Performance
 
 ```bash

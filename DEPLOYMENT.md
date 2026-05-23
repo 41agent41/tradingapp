@@ -254,6 +254,51 @@ without it. Health is surfaced in `/api/health` under
 `services.cache.connected`. To disable caching entirely set
 `REDIS_ENABLED=false` in `.env`.
 
+## Real-time streaming (Phase 4)
+
+The IB service runs an in-process `StreamingManager` that subscribes
+to IB tick data (`reqMktData`) and publishes each tick to Redis on
+`marketdata:tick:<SYMBOL>`. The backend opens a second Redis client in
+subscribe-mode and forwards every tick to Socket.IO clients in the
+`market-data:<SYMBOL>` room.
+
+The end-to-end flow is:
+
+```
+IB Gateway ──reqMktData──▶ ib_service ──redis.publish──▶ Redis
+                                                          │  pSUBSCRIBE
+                                                          ▼
+                              Socket.IO room ◀── backend StreamingBridge
+                                    │
+                                    ▼
+                        frontend useRealtimeStream hook
+                        (MSFTRealtimeChart, etc.)
+```
+
+Operational notes:
+
+- **Per-symbol refcounting** lives in both the IB service and the
+  backend so multiple browsers sharing a symbol only generate one
+  IB-side subscription.
+- **Subscriptions clean up on disconnect.** When a Socket.IO client
+  drops, the backend bridge runs `releaseSocket()` which decrements
+  every symbol it held and `cancelMktData`s anything that reaches
+  refcount zero.
+- **REST polling fallback** still works. The frontend seeds the price
+  display with a one-shot `/api/market-data/realtime` call before the
+  first tick arrives — useful when streaming is disabled or when
+  Redis is briefly unreachable.
+- **Turning it off:** set `STREAMING_ENABLED=false` in `.env` and the
+  backend bridge will not connect to Redis. The chart falls back to
+  one-shot REST calls (no live updates) and the rest of the app keeps
+  working normally.
+- **Diagnostics:**
+    - Backend `/api/health` includes a `services.streaming` block
+      (connected flag, per-symbol refcounts, ticks received /
+      forwarded / dropped totals).
+    - IB service `GET /market-data/stream/status` shows the same view
+      from the publisher side.
+
 ## Service Verification
 
 ```bash
