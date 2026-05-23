@@ -95,20 +95,37 @@ BACKEND_PORT=4000
 IB_SERVICE_PORT=8000
 ```
 
-## 🏗️ **Simplified Architecture**
+## 🏗️ **Architecture**
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│                 │    │                 │    │                 │
-│   Frontend      │    │   Backend       │    │   IB Service    │
-│   (Next.js)     │◄──►│   (Express)     │◄──►│   (FastAPI)     │
-│                 │    │                 │    │                 │
-│ • TradingView   │    │ • API Routes    │    │ • Simple Sync   │
-│ • Real-time UI  │    │ • WebSocket     │    │ • Direct IB     │
-│ • Charts        │    │ • Proxy         │    │ • No Pooling    │
-│                 │    │                 │    │                 │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐    ┌────────────┐
+│                 │    │                 │    │                 │    │            │
+│   Frontend      │    │   Backend       │    │   IB Service    │◄──►│ IB Gateway │
+│   (Next.js)     │◄──►│   (Express +    │◄──►│   (FastAPI +    │    │   / TWS    │
+│                 │    │    Socket.IO)   │    │    ibapi)       │    │            │
+│ • TradingView   │    │ • REST routes   │    │ • REST routes   │    └────────────┘
+│ • Real-time UI  │    │ • Auth, CORS    │    │ • reqMktData    │
+│ • Charts        │    │ • Redis cache   │    │ • Redis publish │
+│                 │    │ • Stream bridge │    │                 │
+└─────────────────┘    └────────┬────────┘    └────────┬────────┘
+                                ▲                      │
+                                │                      │  PUBLISH
+                                │  pSUBSCRIBE          ▼
+                                └──────────┐  ┌──────────────────┐
+                                           │  │                  │
+                                           └──┤      Redis       │
+                                              │  marketdata:tick │
+                                              │  marketdata:status
+                                              └──────────────────┘
 ```
+
+The real-time pipeline (Phase 4): `ib_service` subscribes to IB tick
+data via `reqMktData` and publishes every tick to
+`marketdata:tick:<SYMBOL>` on Redis. The `backend` subscribes to that
+pattern and fans each tick out to Socket.IO clients in the
+`market-data:<SYMBOL>` room. The frontend's
+`useRealtimeStream` hook consumes those events and updates the chart
+without polling.
 
 ## 🔍 **Troubleshooting**
 
