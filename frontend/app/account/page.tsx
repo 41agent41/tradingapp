@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import DataSwitch from '../components/DataSwitch';
 import BackToHome from '../components/BackToHome';
 import DataframeViewer from '../components/DataframeViewer';
+import { apiFetch } from '../lib/api';
 
 interface ConnectionStatus {
   connected: boolean;
@@ -89,16 +90,10 @@ export default function AccountPage() {
     }
   };
 
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-  if (!apiUrl) {
-    console.error('NEXT_PUBLIC_API_URL is not configured');
-    return <div>Configuration error: API URL not set</div>;
-  }
-
   // Fetch connection status (independent of account data) - only when needed
   const fetchConnectionStatus = useCallback(async () => {
     try {
-      const connectionRes = await fetch(`${apiUrl}/api/account/connection`, {
+      const connectionRes = await apiFetch(`/api/account/connection`, {
         method: 'GET',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -113,7 +108,7 @@ export default function AccountPage() {
       console.warn('Connection status check failed:', err);
       setConnectionStatus(null);
     }
-  }, [apiUrl]);
+  }, []);
 
   // Manual connection status check function
   const handleConnectionCheck = () => {
@@ -139,7 +134,7 @@ export default function AccountPage() {
     try {
       console.log('Fetching all account data...');
       
-      const accountRes = await fetch(`${apiUrl}/api/account/all`, {
+      const accountRes = await apiFetch(`/api/account/all`, {
         method: 'GET',
         headers: { 
           'Content-Type': 'application/json',
@@ -170,7 +165,7 @@ export default function AccountPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [apiUrl, dataQueryEnabled]);
+  }, [dataQueryEnabled]);
 
   // Keep the ref updated with the latest function
   useEffect(() => {

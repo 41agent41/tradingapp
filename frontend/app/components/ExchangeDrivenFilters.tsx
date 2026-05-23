@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { apiFetch } from '../lib/api';
 
 // Exchange and Security Type definitions for US and Australian markets
 const EXCHANGES = {
@@ -213,13 +214,8 @@ export default function ExchangeDrivenFilters({ onFiltersChange, disabled = fals
 
     setIsSearching(true);
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-      if (!apiUrl) {
-        throw new Error('API URL not configured');
-      }
-
       // Use the new enhanced symbol discovery endpoint
-      const response = await fetch(`${apiUrl}/api/market-data/symbols/discover`, {
+      const response = await apiFetch(`/api/market-data/symbols/discover`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -244,7 +240,7 @@ export default function ExchangeDrivenFilters({ onFiltersChange, disabled = fals
         
         // Fallback to the old search method if the new one fails
         try {
-          const fallbackResponse = await fetch(`${apiUrl}/api/market-data/search`, {
+          const fallbackResponse = await apiFetch(`/api/market-data/search`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',

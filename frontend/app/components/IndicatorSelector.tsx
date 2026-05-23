@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { apiFetch } from '../lib/api';
 
 interface IndicatorMetadata {
   name: string;
@@ -38,12 +39,7 @@ const IndicatorSelector: React.FC<IndicatorSelectorProps> = ({
   useEffect(() => {
     const fetchIndicators = async () => {
       try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-        if (!apiUrl) {
-          throw new Error('API URL not configured');
-        }
-
-        const response = await fetch(`${apiUrl.replace(':4000', ':8000')}/indicators/available`);
+        const response = await apiFetch('/api/market-data/indicators/available');
         if (!response.ok) {
           throw new Error('Failed to fetch indicators');
         }

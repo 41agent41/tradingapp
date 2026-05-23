@@ -7,6 +7,7 @@ import DataframeViewer from '../components/DataframeViewer';
 import BackToHome from '../components/BackToHome';
 import ExchangeDrivenFilters from '../components/ExchangeDrivenFilters';
 import PeriodDateFilters from '../components/PeriodDateFilters';
+import { apiFetch } from '../lib/api';
 
 interface HistoricalData {
   symbol: string;
@@ -109,11 +110,6 @@ export default function DownloadPage() {
     setDownloadStatus({ isDownloading: true, isUploading: false, downloadProgress: 'Connecting to IB Gateway...' });
     
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-      if (!apiUrl) {
-        throw new Error('API URL not configured');
-      }
-
       // Build query parameters
       const params = new URLSearchParams({
         symbol: exchangeFilters.symbol,
@@ -131,14 +127,14 @@ export default function DownloadPage() {
         params.append('end_date', periodFilters.endDate);
       }
 
-      const url = `${apiUrl}/api/market-data/history?${params.toString()}`;
-      
+      const url = `/api/market-data/history?${params.toString()}`;
+
       console.log('Fetching historical data:', url);
-      
+
       setDownloadStatus(prev => ({ ...prev, downloadProgress: 'Fetching data from IB Gateway...' }));
-      
-      const response = await fetch(url, {
-        headers: { 
+
+      const response = await apiFetch(url, {
+        headers: {
           'X-Data-Query-Enabled': 'true',
           'Content-Type': 'application/json'
         },
@@ -206,14 +202,9 @@ export default function DownloadPage() {
     setError(null);
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-      if (!apiUrl) {
-        throw new Error('API URL not configured');
-      }
-
       setDownloadStatus(prev => ({ ...prev, uploadProgress: 'Uploading data to PostgreSQL...' }));
 
-      const response = await fetch(`${apiUrl}/api/market-data/upload`, {
+      const response = await apiFetch(`/api/market-data/upload`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

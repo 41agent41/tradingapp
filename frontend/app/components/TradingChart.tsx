@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
 import { io, Socket } from 'socket.io-client';
 import IndicatorSelector from './IndicatorSelector';
+import { apiFetch, apiBaseUrl, socketAuth } from '../lib/api';
 
 interface CandlestickData {
   time: Time;
@@ -140,12 +141,7 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
 
   // Set up Socket.io connection for real-time data
   useEffect(() => {
-    const backendUrl = process.env.NEXT_PUBLIC_API_URL;
-    if (!backendUrl) {
-      console.error('NEXT_PUBLIC_API_URL is not configured');
-      return;
-    }
-    socket.current = io(backendUrl);
+    socket.current = io(apiBaseUrl, socketAuth());
 
     socket.current.on('connect', () => {
       setConnectionStatus('Connected');
@@ -216,12 +212,8 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
     setError(null);
     
     try {
-      const backendUrl = process.env.NEXT_PUBLIC_API_URL;
-      if (!backendUrl) {
-        throw new Error('NEXT_PUBLIC_API_URL is not configured');
-      }
-      const response = await fetch(
-        `${backendUrl}/api/market-data/history?symbol=${currentSymbol}&timeframe=${currentTimeframe}&period=90D`
+      const response = await apiFetch(
+        `/api/market-data/history?symbol=${currentSymbol}&timeframe=${currentTimeframe}&period=90D`
       );
       
       if (!response.ok) {

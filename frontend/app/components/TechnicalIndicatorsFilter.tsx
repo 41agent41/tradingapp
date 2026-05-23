@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { apiFetch } from '../lib/api';
 
 interface TechnicalIndicatorsFilterProps {
   onIndicatorsChange: (indicators: string[]) => void;
@@ -50,14 +51,7 @@ export default function TechnicalIndicatorsFilter({ onIndicatorsChange, disabled
     const fetchIndicators = async () => {
       setIsLoading(true);
       try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-        if (!apiUrl) {
-          // Fallback to predefined indicators if API is not available
-          setAvailableIndicators(INDICATOR_CATEGORIES);
-          return;
-        }
-
-        const response = await fetch(`${apiUrl}/api/market-data/indicators/available`);
+        const response = await apiFetch(`/api/market-data/indicators/available`);
         if (response.ok) {
           const data = await response.json();
           // Transform API response to match our structure

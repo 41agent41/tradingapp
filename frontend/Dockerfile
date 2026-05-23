@@ -3,6 +3,9 @@ FROM node:20-alpine
 
 # Accept build arguments
 ARG NEXT_PUBLIC_API_URL=http://localhost:4000
+# Frontend-side bearer token; must match API_TOKEN on the backend. The
+# value is baked into the static bundle at build time.
+ARG NEXT_PUBLIC_API_TOKEN=
 ARG NODE_ENV=production
 
 WORKDIR /app
@@ -16,6 +19,7 @@ COPY . .
 
 # Set environment variables for build
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_TOKEN=$NEXT_PUBLIC_API_TOKEN
 
 # Build with environment variables available
 RUN npm run build
