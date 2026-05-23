@@ -1,0 +1,57 @@
+# Environment & secrets — NEVER commit
+.env
+.env.local
+.env.*.local
+*.env
+!.env.example
+**/.env
+**/.env.local
+**/.env.*.local
+!**/.env.example
+
+# Node / frontend / backend
+node_modules/
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+.npm/
+.yarn/
+.pnpm-store/
+.eslintcache
+
+# Python / ib_service
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors & OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs / runtime
+*.log
+logs/
+diagnostics.txt
+
+# Docker artefacts
+.docker/
+
+# Local backups
+*.bak
+*.backup
+*.orig

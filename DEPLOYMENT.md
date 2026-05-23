@@ -1,333 +1,208 @@
-# 🚀 TradingApp Deployment Guide
+# TradingApp Deployment Guide
 
-Complete guide for deploying TradingApp with market data filtering and TradingView charts on remote servers.
+Complete guide for deploying TradingApp on a remote server. All operations
+flow through the single management script `./tradingapp.sh` — there are no
+other deployment scripts in this repository.
 
-## 📋 Table of Contents
+## Table of Contents
 
 1. [Prerequisites](#prerequisites)
-2. [Single Command Deployment](#single-command-deployment)
+2. [One-Command Deployment](#one-command-deployment)
 3. [Manual Deployment](#manual-deployment)
 4. [Environment Configuration](#environment-configuration)
 5. [Service Verification](#service-verification)
-6. [Common Issues & Solutions](#common-issues--solutions)
+6. [Common Issues](#common-issues)
 7. [Production Setup](#production-setup)
 8. [Monitoring & Maintenance](#monitoring--maintenance)
+9. [Deployment Checklist](#deployment-checklist)
 
-## 🎯 Prerequisites
+## Prerequisites
 
-### System Requirements
-- **OS**: Linux (Ubuntu 20.04+ recommended) or macOS
-- **RAM**: Minimum 2GB, recommended 4GB+
-- **Storage**: 10GB+ free space
-- **Network**: Stable internet connection
-- **Ports**: 3000, 4000, 8000 available
+### System
 
-### Software Requirements
-- **Docker**: Version 20.10+
-- **Docker Compose**: Version 2.0+
-- **Git**: For repository cloning
+- **OS**: Ubuntu 20.04+ (the `tradingapp.sh` installer uses `apt`)
+- **RAM**: 2 GB minimum, 4 GB+ recommended
+- **Storage**: 10 GB free
+- **Ports**: 3000, 4000, 8000 (and 6379 if you expose Redis)
 
-### Interactive Brokers Requirements
-- **IB Gateway** or **TWS** running
-- **API access enabled** in IB Gateway/TWS settings
-- **Market data subscriptions** for assets you want to trade
-- **Paper trading account** (recommended for testing)
+### Software
 
-## 🚀 Single Command Deployment
+- **Docker** 20.10+
+- **Docker Compose** 2.0+
+- **Git**
 
-# as root - Local user creation
-sudo adduser <username>
-sudo usermod -aG sudo <username>
+`./tradingapp.sh setup` will install Docker and Docker Compose for you on a
+fresh Ubuntu host.
 
-# as root - install git
-apt install git
+### Interactive Brokers
 
-### Quick Start (Recommended)
-## all commands below to be executed as the tradingapp user which has sudo priviledges
+- **IB Gateway** or **TWS** running and logged in.
+- **API access enabled** (`File → Global Configuration → API → Settings`,
+  enable "ActiveX and Socket Clients", set the socket port — `4002` is the
+  default for paper trading).
+- The trading server's IP added to the **trusted IPs** list in IB Gateway.
+- Market-data subscriptions for the assets you intend to query (paper
+  accounts are recommended for testing).
+
+### External database (required)
+
+The Docker compose file does **not** provision a PostgreSQL container — the
+backend is wired to an external Postgres (TimescaleDB recommended). Make
+sure you have:
+
+- A reachable Postgres 14+ instance.
+- Connection credentials (host, port, user, password, database).
+- The schema initialised — see
+  [`backend/src/database/README.md`](backend/src/database/README.md).
+
+## One-Command Deployment
 
 ```bash
-# 1. Clone repository
-git clone https://github.com/your-username/tradingapp.git
+# 1. Clone
+git clone https://github.com/41agent41/tradingapp.git
 cd tradingapp
 
-chmod +x *.sh
+# 2. Make the script executable
+chmod +x tradingapp.sh
 
-# Set IB Gateway details in .env file
-./fix-ib-config.sh
+# 3. First-time setup (installs Docker, writes .env)
+./tradingapp.sh setup
 
-# 2. Install dependencies (first time only)
-./deploy-tradingapp.sh install
+# 4. Deploy the full stack
+./tradingapp.sh deploy
 
-# 3. Deploy application
-./deploy-tradingapp.sh deploy
-
-# 4. Verify deployment
-./deploy-tradingapp.sh status
+# 5. Confirm everything is healthy
+./tradingapp.sh test
 ```
 
-### Available Commands
+### Available `tradingapp.sh` commands
 
-| Command | Description | Use Case |
-|---------|-------------|----------|
-| `./deploy-tradingapp.sh install` | Install Docker & dependencies | First time server setup |
-| `./deploy-tradingapp.sh deploy` | Deploy full application | Initial deployment |
-| `./deploy-tradingapp.sh rebuild` | Rebuild all services | Major updates |
-| `./deploy-tradingapp.sh ib-rebuild` | Rebuild IB service only | IB-specific fixes |
-| `./deploy-tradingapp.sh status` | Check service health | Monitoring |
-| `./deploy-tradingapp.sh test` | Test all connections | Troubleshooting |
-| `./deploy-tradingapp.sh logs` | Show service logs | Debugging |
-| `./deploy-tradingapp.sh restart` | Restart services | Quick restart |
-| `./deploy-tradingapp.sh stop` | Stop all services | Maintenance |
-| `./deploy-tradingapp.sh clean` | Clean up containers | Reset environment |
-| `./deploy-tradingapp.sh env-setup` | Setup environment file | Configuration |
+| Command | Purpose | When to use |
+|---|---|---|
+| `setup` | Install Docker, write a baseline `.env`, configure IB | First-time host setup |
+| `deploy` | Build images and bring the stack up | Initial deployment |
+| `redeploy` | Stop, prune project images, rebuild from scratch | After code changes |
+| `config` | Re-prompt for IB Gateway host and rewrite `.env` | Change IB settings |
+| `env` | Same as `config`, but does not redeploy | Quick env regeneration |
+| `start` / `stop` / `restart` | Compose lifecycle | Day-to-day ops |
+| `status` | `docker-compose ps` | Quick health check |
+| `logs` | Last 20 lines per service (`logs -f` to follow) | Inspect output |
+| `test` | Check frontend, backend, IB service and IB Gateway reachability | Troubleshooting |
+| `diagnose` | All of `test`, plus Docker, env file and container summaries | Debug a broken host |
+| `fix` | Recreate `.env` if missing, restart services and re-test | Auto-recover |
+| `ib-help` | Print IB Gateway configuration walk-through | Tweaking IB settings |
+| `clean` | Stop, remove project images and prune Docker | Reset before a fresh `deploy` |
 
-## 🔧 Manual Deployment
+> Note: `tradingapp.sh config` **overwrites** `.env` with its own template.
+> If you have hand-edited keys (e.g. `POSTGRES_HOST`, `JWT_SECRET`), copy
+> them aside first and re-apply them after running `config`.
 
-### Step 1: System Preparation
+## Manual Deployment
 
-```bash
-# Update system
-sudo apt update && sudo apt upgrade -y
-
-# Install required packages
-sudo apt install -y curl wget git
-
-# Install Docker
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-sudo usermod -aG docker $USER
-
-# Install Docker Compose
-sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-sudo chmod +x /usr/local/bin/docker-compose
-
-# Logout and login again for group changes to take effect
-```
-
-### Step 2: Repository Setup
+If you prefer not to use `tradingapp.sh`:
 
 ```bash
-# Clone repository
-git clone https://github.com/your-username/tradingapp.git
+# Install Docker (Ubuntu)
+sudo apt update && sudo apt install -y curl git
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER  # log out / back in after this
+
+# Clone and configure
+git clone https://github.com/41agent41/tradingapp.git
 cd tradingapp
+cp .env.example .env
+$EDITOR .env   # set SERVER_IP, IB_HOST, POSTGRES_*, secrets, etc.
 
-# Make scripts executable
-chmod +x deploy-tradingapp.sh
-chmod +x diagnose-connection.sh
-chmod +x fix-ib-connection.sh
+# Build and start
+docker compose build
+docker compose up -d
+docker compose ps
 ```
 
-### Step 3: Environment Configuration
+## Environment Configuration
+
+`.env.example` is the documented reference; copy it to `.env` and fill in
+the values that apply to your environment. The most important keys:
 
 ```bash
-# Create environment file from template
-cp env.template .env
+# Server / network
+SERVER_IP=10.7.3.20
+NEXT_PUBLIC_API_URL=http://10.7.3.20:4000
+CORS_ORIGINS=http://10.7.3.20:3000
 
-# Edit environment file with your settings
-nano .env
-```
-
-### Step 4: Build and Deploy
-
-```bash
-# Build all services
-docker-compose build
-
-# Start all services
-docker-compose up -d
-
-# Check service status
-docker-compose ps
-```
-
-## ⚙️ Environment Configuration
-
-### Required Environment Variables
-
-Create a `.env` file in the project root:
-
-```bash
-# Server Configuration
-SERVER_IP=your.server.ip.address
-ENVIRONMENT=production
-
-# Frontend Configuration
-NEXT_PUBLIC_API_URL=http://your.server.ip.address:4000
-FRONTEND_PORT=3000
-
-# Backend Configuration
-BACKEND_PORT=4000
-CORS_ORIGINS=http://your.server.ip.address:3000
-
-# IB Service Configuration
-IB_SERVICE_PORT=8000
-IB_HOST=your.ib.gateway.ip
+# IB Gateway
+IB_HOST=10.7.3.21
 IB_PORT=4002
 IB_CLIENT_ID=1
 IB_TIMEOUT=30
 
-# Database Configuration (if using)
-POSTGRES_PASSWORD=your_secure_password
-POSTGRES_USER=tradingapp
-POSTGRES_DB=tradingapp
+# External Postgres / TimescaleDB
+POSTGRES_HOST=db.example.com
 POSTGRES_PORT=5432
+POSTGRES_USER=tradingapp
+POSTGRES_PASSWORD=<rotate-me>
+POSTGRES_DB=tradingapp
+POSTGRES_SSL=true
 
-# Redis Configuration (if using)
-REDIS_PORT=6379
-REDIS_PASSWORD=your_redis_password
-
-# Security
-JWT_SECRET=your_jwt_secret_key
-SESSION_SECRET=your_session_secret_key
+# Secrets (generate with: openssl rand -hex 32)
+JWT_SECRET=<rotate-me>
+SESSION_SECRET=<rotate-me>
 ```
 
-### IB Gateway Configuration
+### Configuring IB Gateway
 
-Configure IB Gateway settings:
+1. Launch IB Gateway / TWS and log in.
+2. `File → Global Configuration → API → Settings`
+   - Check **Enable ActiveX and Socket Clients**.
+   - Set **Socket port** to `4002` (paper) or `4001` (live).
+   - Add your trading server IP to **Trusted IPs**.
+3. Apply, click OK, and restart IB Gateway.
+4. Run `./tradingapp.sh test` to confirm the socket is reachable.
 
-1. **Enable API Access**:
-   - Open IB Gateway/TWS
-   - Go to `File → Global Configuration → API → Settings`
-   - Check "Enable ActiveX and Socket Clients"
-   - Set port to 4002 (or your preferred port)
+`./tradingapp.sh ib-help` prints the same walk-through with values
+substituted from your current `.env`.
 
-2. **Set Trusted IPs**:
-   - Add your server IP to trusted IP addresses
-   - Allow connections from localhost if running locally
-
-3. **Paper Trading** (recommended for testing):
-   - Use paper trading account for initial testing
-   - Switch to live account only after thorough testing
-
-## 🌐 Service Verification
-
-### Check Service Status
+## Service Verification
 
 ```bash
-# Using deployment script
-./deploy-tradingapp.sh status
+# Compose status
+./tradingapp.sh status
 
-# Using Docker directly
-docker-compose ps
-docker-compose logs
+# End-to-end health
+./tradingapp.sh test
+
+# Endpoint smoke tests
+curl -I  http://<server-ip>:3000          # Frontend
+curl -fs http://<server-ip>:4000/api/health
+curl -fs http://<server-ip>:8000/health   # IB service
 ```
 
-### Test Service Endpoints
+Open the frontend in a browser at `http://<server-ip>:3000`.
+
+## Common Issues
+
+| Symptom | First step |
+|---|---|
+| Services won't start (port clash) | `sudo ss -ltnp \| grep -E ':(3000\|4000\|8000)'` and free the port |
+| Frontend can't reach backend | Verify `NEXT_PUBLIC_API_URL` and `CORS_ORIGINS` agree with your server IP |
+| IB connection failures | `./tradingapp.sh ib-help`, then `./tradingapp.sh test` |
+| Database health check fails | Confirm `POSTGRES_HOST` is reachable from inside the backend container (`docker compose exec backend node -e "require('net').connect(5432,'$POSTGRES_HOST').on('connect',()=>console.log('ok'))"`) |
+| Charts not loading | `./tradingapp.sh logs` for frontend errors, then `./tradingapp.sh redeploy` |
+
+For a fuller list, see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
+
+## Production Setup
+
+### Reverse proxy + TLS
 
 ```bash
-# Frontend
-curl -I http://your-server-ip:3000
-
-# Backend API
-curl http://your-server-ip:4000/health
-
-# IB Service
-curl http://your-server-ip:8000/health
-
-# Test market data search
-curl -X POST http://your-server-ip:4000/api/market-data/search \
-  -H "Content-Type: application/json" \
-  -d '{"symbol":"AAPL","secType":"STK","exchange":"NASDAQ"}'
-```
-
-### Access Application
-
-- **Frontend**: `http://your-server-ip:3000`
-- **Backend**: `http://your-server-ip:4000`
-- **IB Service**: `http://your-server-ip:8000`
-
-## 🔍 Common Issues & Solutions
-
-### Issue 1: Docker Build Failures
-
-**Symptoms**: Build fails with package installation errors
-
-**Solutions**:
-```bash
-# Clean rebuild
-./deploy-tradingapp.sh clean
-./deploy-tradingapp.sh rebuild
-
-# Clear Docker cache
-docker system prune -a -f
-docker-compose build --no-cache
-```
-
-### Issue 2: IB Service Connection Issues
-
-**Symptoms**: IB service can't connect to IB Gateway
-
-**Solutions**:
-```bash
-# Check IB Gateway connectivity
-telnet your-ib-gateway-ip 4002
-
-# Run automatic fix
-./fix-ib-connection.sh
-
-# Manually restart IB service
-docker-compose restart ib_service
-```
-
-### Issue 3: Frontend Can't Connect to Backend
-
-**Symptoms**: Frontend shows connection errors
-
-**Solutions**:
-```bash
-# Check environment variables
-cat .env | grep API_URL
-
-# Verify backend is running
-curl http://your-server-ip:4000/health
-
-# Check CORS settings
-grep CORS_ORIGINS .env
-```
-
-### Issue 4: Port Conflicts
-
-**Symptoms**: Services fail to start due to port conflicts
-
-**Solutions**:
-```bash
-# Check port usage
-sudo netstat -tlnp | grep -E ':(3000|4000|8000)'
-
-# Modify ports in .env file
-nano .env
-
-# Update docker-compose.yml if needed
-nano docker-compose.yml
-```
-
-### Issue 5: Permission Errors
-
-**Symptoms**: Permission denied errors in containers
-
-**Solutions**:
-```bash
-# Fix file permissions
-sudo chown -R $USER:$USER .
-chmod +x deploy-tradingapp.sh
-
-# Fix Docker permissions
-sudo usermod -aG docker $USER
-# Logout and login again
-```
-
-## 🏭 Production Setup
-
-### 1. Domain and SSL Setup
-
-```bash
-# Install nginx
 sudo apt install -y nginx certbot python3-certbot-nginx
+sudo $EDITOR /etc/nginx/sites-available/tradingapp
+```
 
-# Configure nginx reverse proxy
-sudo nano /etc/nginx/sites-available/tradingapp
+Example `nginx` site:
 
-# Example nginx configuration
+```nginx
 server {
     listen 80;
     server_name your-domain.com;
@@ -335,58 +210,44 @@ server {
 }
 
 server {
-    listen 443 ssl;
+    listen 443 ssl http2;
     server_name your-domain.com;
 
-    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
+    ssl_certificate     /etc/letsencrypt/live/your-domain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
 
-    location / {
-        proxy_pass http://localhost:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
+    location /        { proxy_pass http://localhost:3000; }
+    location /api/    { proxy_pass http://localhost:4000; }
+    location /ib/     { proxy_pass http://localhost:8000; }
 
-    location /api {
-        proxy_pass http://localhost:4000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-
-    location /ib {
-        proxy_pass http://localhost:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
 }
+```
 
-# Enable site
+```bash
 sudo ln -s /etc/nginx/sites-available/tradingapp /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl restart nginx
-
-# Get SSL certificate
+sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d your-domain.com
 ```
 
-### 2. Firewall Configuration
+### Firewall
 
 ```bash
-# Configure UFW firewall
 sudo ufw allow OpenSSH
 sudo ufw allow 'Nginx Full'
-sudo ufw allow 3000
-sudo ufw allow 4000
-sudo ufw allow 8000
 sudo ufw enable
 ```
 
-### 3. Process Management
+If you expose the raw ports (no reverse proxy) also allow `3000`, `4000`,
+`8000`.
 
-```bash
-# Create systemd service for auto-start
-sudo nano /etc/systemd/system/tradingapp.service
+### Systemd auto-start
 
+```ini
+# /etc/systemd/system/tradingapp.service
 [Unit]
 Description=TradingApp
 After=docker.service
@@ -395,165 +256,78 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/path/to/tradingapp
-ExecStart=/usr/local/bin/docker-compose up -d
-ExecStop=/usr/local/bin/docker-compose down
-User=your-user
+WorkingDirectory=/opt/tradingapp
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+User=tradingapp
 
 [Install]
 WantedBy=multi-user.target
+```
 
-# Enable service
+```bash
 sudo systemctl daemon-reload
-sudo systemctl enable tradingapp
-sudo systemctl start tradingapp
+sudo systemctl enable --now tradingapp
 ```
 
-### 4. Database Backup (if using)
+## Monitoring & Maintenance
 
 ```bash
-# Create backup script
-nano backup-db.sh
+# Service health
+./tradingapp.sh status
+./tradingapp.sh test
 
-#!/bin/bash
-BACKUP_DIR="/backups/tradingapp"
-DATE=$(date +%Y%m%d_%H%M%S)
-mkdir -p $BACKUP_DIR
+# Logs
+./tradingapp.sh logs           # last 20 lines per service
+./tradingapp.sh logs follow    # stream all services
 
-# Backup PostgreSQL
-docker exec tradingapp_postgres_1 pg_dump -U tradingapp tradingapp > $BACKUP_DIR/db_backup_$DATE.sql
-
-# Keep only last 7 days
-find $BACKUP_DIR -name "db_backup_*.sql" -mtime +7 -delete
-
-# Make executable and setup cron
-chmod +x backup-db.sh
-crontab -e
-# Add: 0 2 * * * /path/to/backup-db.sh
-```
-
-## 📊 Monitoring & Maintenance
-
-### 1. Service Monitoring
-
-```bash
-# Check service health
-./deploy-tradingapp.sh status
-
-# Monitor resource usage
+# Resource usage
 docker stats
-
-# Check logs
-./deploy-tradingapp.sh logs
-
-# Monitor specific service
-docker-compose logs -f ib_service
-```
-
-### 2. Performance Monitoring
-
-```bash
-# System resources
-htop
-df -h
-free -h
-
-# Docker resources
 docker system df
-docker system events
 ```
 
-### 3. Log Management
+### Updates
 
 ```bash
-# Rotate logs
-sudo nano /etc/logrotate.d/docker-container
-
-/var/lib/docker/containers/*/*.log {
-    rotate 7
-    daily
-    compress
-    size=10M
-    missingok
-    delaycompress
-    copytruncate
-}
-```
-
-### 4. Update Process
-
-```bash
-# Update application
-cd /path/to/tradingapp
+cd /opt/tradingapp
 git pull origin master
-./deploy-tradingapp.sh rebuild
-
-# Update system
-sudo apt update && sudo apt upgrade -y
+./tradingapp.sh redeploy
 ```
 
-### 5. Backup Strategy
+### Database backups
+
+Because the database is external, backups are owned by whichever managed
+service or self-hosted Postgres you point `POSTGRES_HOST` at. A typical
+cron-driven dump:
 
 ```bash
-# Application backup
-tar -czf tradingapp_backup_$(date +%Y%m%d).tar.gz tradingapp/
-
-# Configuration backup
-cp .env .env.backup
-cp docker-compose.yml docker-compose.yml.backup
+#!/usr/bin/env bash
+set -euo pipefail
+BACKUP_DIR=/var/backups/tradingapp
+DATE=$(date +%Y%m%d_%H%M%S)
+mkdir -p "$BACKUP_DIR"
+PGPASSWORD="$POSTGRES_PASSWORD" pg_dump \
+  -h "$POSTGRES_HOST" -U "$POSTGRES_USER" "$POSTGRES_DB" \
+  > "$BACKUP_DIR/tradingapp_${DATE}.sql"
+find "$BACKUP_DIR" -name 'tradingapp_*.sql' -mtime +7 -delete
 ```
 
-## 📞 Support & Troubleshooting
+## Deployment Checklist
 
-### Getting Help
-
-1. **Check logs first**:
-   ```bash
-   ./deploy-tradingapp.sh logs
-   ```
-
-2. **Run diagnostics**:
-   ```bash
-   ./diagnose-connection.sh
-   ```
-
-3. **Try automatic fixes**:
-   ```bash
-   ./fix-ib-connection.sh
-   ```
-
-### Emergency Recovery
-
-```bash
-# Complete reset
-./deploy-tradingapp.sh stop
-./deploy-tradingapp.sh clean
-./deploy-tradingapp.sh deploy
-
-# Restore from backup
-tar -xzf tradingapp_backup_YYYYMMDD.tar.gz
-cd tradingapp
-./deploy-tradingapp.sh deploy
-```
-
-## 🎉 Deployment Checklist
-
-- [ ] Server meets minimum requirements
-- [ ] Docker and Docker Compose installed
-- [ ] Repository cloned and configured
-- [ ] Environment variables set in `.env`
-- [ ] IB Gateway/TWS running and configured
-- [ ] Firewall rules configured
-- [ ] All services deployed and healthy
-- [ ] Frontend accessible from browser
-- [ ] Backend API responding
-- [ ] IB service connecting to gateway
-- [ ] Market data search working
-- [ ] Charts displaying correctly
-- [ ] SSL certificate installed (production)
-- [ ] Monitoring setup
-- [ ] Backup strategy implemented
+- [ ] Host meets the prerequisites
+- [ ] Docker / Docker Compose installed (`./tradingapp.sh setup` handles this)
+- [ ] Repository cloned and `tradingapp.sh` executable
+- [ ] `.env` created from `.env.example` and reviewed (no placeholders left)
+- [ ] External Postgres reachable from the backend container; schema applied
+- [ ] IB Gateway / TWS running with API enabled and server IP trusted
+- [ ] Firewall allows the required ports (or reverse proxy in place)
+- [ ] `./tradingapp.sh deploy` completed
+- [ ] `./tradingapp.sh test` reports all services healthy
+- [ ] Frontend renders charts in the browser
+- [ ] TLS certificate installed (production)
+- [ ] Backup strategy in place for the external database
 
 ---
 
-**🚀 Your TradingApp is now ready for professional market data exploration!** 
+**You're ready to deploy.** If anything misbehaves, run
+`./tradingapp.sh diagnose` and see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
