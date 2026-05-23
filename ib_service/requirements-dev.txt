@@ -1,0 +1,5 @@
+# Development / CI-only dependencies for the IB service.
+# Install with: pip install -r requirements.txt -r requirements-dev.txt
+pytest>=7.4
+ruff>=0.6
+black>=24.8

@@ -1,0 +1,73 @@
+[project]
+name = "tradingapp-ib-service"
+version = "0.1.0"
+description = "TradingApp IB Gateway service"
+requires-python = ">=3.11"
+
+# ----------------------------------------------------------------------------
+# Black — code formatter
+# ----------------------------------------------------------------------------
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+include = '\.pyi?$'
+# main.py is the 2,500-line monolith slated for Phase-5 refactor; bring
+# it under Black at that time. Until then, formatting it now would add
+# thousands of cosmetic diff lines that obscure real changes.
+force-exclude = '(/main\.py$|/(\.venv|venv|__pycache__|build|dist)/)'
+
+# ----------------------------------------------------------------------------
+# Ruff — fast linter
+# ----------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# main.py is the 2,500-line monolithic file slated for refactor in
+# Phase 5 of GAP_ANALYSIS.md; lint it then. The rest of the package
+# (indicators, backtesting, tests) is held to the full Ruff rule set.
+extend-exclude = [".venv", "venv", "__pycache__", "build", "dist", "main.py"]
+
+[tool.ruff.lint]
+# A pragmatic starter set: pyflakes (F), pycodestyle errors (E),
+# pep8 warnings (W), import sorting (I), bug-bear (B), comprehensions
+# (C4), pyupgrade (UP), and a handful of stylistic rules.
+select = ["E", "F", "W", "I", "B", "C4", "UP"]
+# Don't fail on these — they're noisy in this brownfield codebase and a
+# Phase 5 refactor will address them properly.
+ignore = [
+    "E501",  # line too long; Black already enforces width
+    "B008",  # function call as default argument (FastAPI Depends etc.)
+    "UP006", # use X | Y syntax over typing.Optional — keep py3.9 friendly
+    "UP007", # ditto
+    "UP035", # `typing.Dict` etc.; mass-renaming is out of scope here
+    "B904",  # raise-from; legacy IB handlers do this everywhere
+    "E402",  # module-level imports not at top; main.py is a special case
+    "C401",  # generator-expression-to-set rewrites; cosmetic
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests can be relaxed.
+"tests/*" = ["E501", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["indicators", "backtesting"]
+
+# ----------------------------------------------------------------------------
+# Pytest
+# ----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:pandas.*",
+    "ignore::DeprecationWarning:numpy.*",
+    # Pandas FutureWarnings are mostly downstream from numpy; we mute
+    # them so an upstream release doesn't break our CI signal.
+    "ignore::FutureWarning",
+]
