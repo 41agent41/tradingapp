@@ -44,16 +44,32 @@ fresh Ubuntu host.
 - Market-data subscriptions for the assets you intend to query (paper
   accounts are recommended for testing).
 
-### External database (required)
+### External database (recommended for production)
 
-The Docker compose file does **not** provision a PostgreSQL container — the
-backend is wired to an external Postgres (TimescaleDB recommended). Make
-sure you have:
+By default the base `docker-compose.yml` does **not** provision a
+PostgreSQL container — the backend is wired to an external Postgres
+(TimescaleDB recommended). Make sure you have:
 
 - A reachable Postgres 14+ instance.
 - Connection credentials (host, port, user, password, database).
 - The schema initialised — see
   [`backend/src/database/README.md`](backend/src/database/README.md).
+
+#### Local / self-hosted alternative
+
+For development or self-hosted deployments without an external Postgres,
+opt into the bundled TimescaleDB by passing `--with-db` to any
+`tradingapp.sh` command:
+
+```bash
+./tradingapp.sh deploy --with-db    # bring up the stack including local TimescaleDB
+./tradingapp.sh status              # subsequent commands remember the choice
+./tradingapp.sh --no-db redeploy    # drop the override again
+```
+
+Under the hood `--with-db` layers `docker-compose.db.yml` onto the base
+file. The schema in `backend/src/database/timescaledb-schema.sql` is
+applied automatically on first run.
 
 ## One-Command Deployment
 
@@ -144,7 +160,9 @@ POSTGRES_PASSWORD=<rotate-me>
 POSTGRES_DB=tradingapp
 POSTGRES_SSL=true
 
-# Secrets (generate with: openssl rand -hex 32)
+# Secrets (generate each with: openssl rand -hex 32)
+API_TOKEN=<rotate-me>
+NEXT_PUBLIC_API_TOKEN=<same value as API_TOKEN>
 JWT_SECRET=<rotate-me>
 SESSION_SECRET=<rotate-me>
 ```
@@ -161,6 +179,80 @@ SESSION_SECRET=<rotate-me>
 
 `./tradingapp.sh ib-help` prints the same walk-through with values
 substituted from your current `.env`.
+
+## Authentication & CORS
+
+Phase 2 added bearer-token authentication and tightened CORS handling.
+Set up the two values together — they must match — and the frontend
+build picks the token up automatically.
+
+### Generate a token
+
+```bash
+# 32-byte hex string, plenty of entropy for a single-tenant app
+openssl rand -hex 32
+```
+
+Put the value into `.env` **twice**: once on the server side
+(`API_TOKEN`) and once on the frontend side (`NEXT_PUBLIC_API_TOKEN`).
+They must be identical.
+
+```bash
+API_TOKEN=<the-token-you-generated>
+NEXT_PUBLIC_API_TOKEN=<same-value>
+```
+
+Because Next.js bakes `NEXT_PUBLIC_*` variables into the static bundle
+at build time, you must rebuild the frontend whenever either value
+changes:
+
+```bash
+./tradingapp.sh redeploy
+```
+
+### How the token is used
+
+- **REST**: every backend route except `/api/health` and
+  `/api/database/health` requires `Authorization: Bearer <token>` (or
+  `X-API-Token: <token>`). The frontend's `apiFetch` helper attaches the
+  header automatically.
+- **Socket.IO**: the handshake reads the token from `auth.token`, the
+  `Authorization` header, or a `?token=` query parameter. The frontend's
+  Socket.IO calls use `socketAuth()` which sets `auth.token`.
+- **Validation**: comparisons run through `crypto.timingSafeEqual` so
+  timing attacks cannot probe the token byte-by-byte.
+
+If `API_TOKEN` is left empty, the backend prints a loud warning at
+startup and accepts unauthenticated requests. This is convenient for
+local development but should never ship to production.
+
+### CORS
+
+`CORS_ORIGINS` is now strictly enforced. Set it to a comma-separated
+list of trusted origins (the exact strings browsers send in their
+`Origin` header):
+
+```bash
+CORS_ORIGINS=http://10.7.3.20:3000,https://app.example.com
+```
+
+Setting `CORS_ORIGINS=*` (or leaving it empty) prints a startup warning
+and falls back to accepting any origin — again, fine for dev, not for
+production.
+
+## Redis cache
+
+The Redis container that ships with the base compose file is now wired
+into the backend as a **read-through cache** for high-traffic endpoints:
+
+- `/api/market-data/realtime` — `CACHE_TTL_REALTIME` seconds (default `2`).
+- `/api/market-data/indicators/available` — 1 hour, refreshed via the
+  cache wrapper.
+
+A Redis outage degrades into a cache miss — every endpoint keeps working
+without it. Health is surfaced in `/api/health` under
+`services.cache.connected`. To disable caching entirely set
+`REDIS_ENABLED=false` in `.env`.
 
 ## Service Verification
 
@@ -318,7 +410,10 @@ find "$BACKUP_DIR" -name 'tradingapp_*.sql' -mtime +7 -delete
 - [ ] Docker / Docker Compose installed (`./tradingapp.sh setup` handles this)
 - [ ] Repository cloned and `tradingapp.sh` executable
 - [ ] `.env` created from `.env.example` and reviewed (no placeholders left)
+- [ ] `API_TOKEN` and `NEXT_PUBLIC_API_TOKEN` set to the same fresh random value
+- [ ] `CORS_ORIGINS` set to the actual browser origin(s) — not `*`
 - [ ] External Postgres reachable from the backend container; schema applied
+      (or `--with-db` used to bring up the bundled TimescaleDB)
 - [ ] IB Gateway / TWS running with API enabled and server IP trusted
 - [ ] Firewall allows the required ports (or reverse proxy in place)
 - [ ] `./tradingapp.sh deploy` completed
