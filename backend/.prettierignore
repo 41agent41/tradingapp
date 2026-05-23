@@ -1,0 +1,6 @@
+dist
+node_modules
+coverage
+**/*.sql
+**/*.md
+src/database/

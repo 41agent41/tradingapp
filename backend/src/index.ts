@@ -119,11 +119,7 @@ app.get('/api/health', async (_req, res) => {
             error: ibResult.error,
           },
       cache: {
-        status: cacheStatus.enabled
-          ? redisConnected
-            ? 'connected'
-            : 'disconnected'
-          : 'disabled',
+        status: cacheStatus.enabled ? (redisConnected ? 'connected' : 'disconnected') : 'disabled',
         connected: redisConnected,
         host: cacheStatus.host,
         port: cacheStatus.port,

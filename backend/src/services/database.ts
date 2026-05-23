@@ -20,11 +20,11 @@ const dbConfig = {
 const pool = new Pool(dbConfig);
 
 // Test database connection
-pool.on('connect', (client: PoolClient) => {
+pool.on('connect', (_client: PoolClient) => {
   console.log('Connected to PostgreSQL database');
 });
 
-pool.on('error', (err: Error, client: PoolClient) => {
+pool.on('error', (err: Error, _client: PoolClient) => {
   console.error('Unexpected error on idle client', err);
 });
 

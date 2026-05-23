@@ -35,7 +35,6 @@ export interface TechnicalIndicator {
 
 // Market Data Service Class
 export class MarketDataService {
-  
   // Get or create contract in database
   async getOrCreateContract(contract: Contract): Promise<number> {
     const query = `
@@ -48,7 +47,7 @@ export class MarketDataService {
         updated_at = NOW()
       RETURNING id
     `;
-    
+
     const params = [
       contract.symbol,
       contract.secType,
@@ -59,17 +58,17 @@ export class MarketDataService {
       contract.strike || null,
       contract.right || null,
       contract.localSymbol || null,
-      contract.contractId || null
+      contract.contractId || null,
     ];
-    
+
     const result = await dbService.query(query, params);
     return result.rows[0].id;
   }
 
   // Store candlestick data
   async storeCandlestickData(
-    contractId: number, 
-    timeframe: string, 
+    contractId: number,
+    timeframe: string,
     bars: CandlestickBar[]
   ): Promise<{ inserted: number; updated: number; errors: number }> {
     let inserted = 0;
@@ -93,7 +92,7 @@ export class MarketDataService {
               count = EXCLUDED.count
             RETURNING id
           `;
-          
+
           const params = [
             contractId,
             bar.timestamp,
@@ -104,11 +103,11 @@ export class MarketDataService {
             bar.close,
             bar.volume,
             bar.wap || null,
-            bar.count || null
+            bar.count || null,
           ];
-          
+
           const result = await client.query(query, params);
-          
+
           if (result.rowCount === 1) {
             inserted++;
           } else {
@@ -140,11 +139,17 @@ export class MarketDataService {
       SELECT id FROM candlestick_data 
       WHERE contract_id = $1 AND timeframe = $2 AND timestamp = $3
     `;
-    
-    const candlestickResult = await dbService.query(candlestickQuery, [contractId, timeframe, timestamp]);
-    
+
+    const candlestickResult = await dbService.query(candlestickQuery, [
+      contractId,
+      timeframe,
+      timestamp,
+    ]);
+
     if (candlestickResult.rows.length === 0) {
-      console.warn(`No candlestick data found for contract ${contractId}, timeframe ${timeframe}, timestamp ${timestamp}`);
+      console.warn(
+        `No candlestick data found for contract ${contractId}, timeframe ${timeframe}, timestamp ${timestamp}`
+      );
       return { inserted: 0, updated: 0, errors: indicators.length };
     }
 
@@ -162,7 +167,7 @@ export class MarketDataService {
               additional_data = EXCLUDED.additional_data
             RETURNING id
           `;
-          
+
           const params = [
             candlestickId,
             contractId,
@@ -171,11 +176,11 @@ export class MarketDataService {
             indicator.name,
             indicator.period,
             indicator.value,
-            indicator.additionalData ? JSON.stringify(indicator.additionalData) : null
+            indicator.additionalData ? JSON.stringify(indicator.additionalData) : null,
           ];
-          
+
           const result = await client.query(query, params);
-          
+
           if (result.rowCount === 1) {
             inserted++;
           } else {
@@ -209,7 +214,9 @@ export class MarketDataService {
         cd.volume,
         cd.wap,
         cd.count
-        ${includeIndicators ? `
+        ${
+          includeIndicators
+            ? `
         , MAX(CASE WHEN ti.indicator_name = 'SMA' AND ti.period = 20 THEN ti.value END) as sma_20
         , MAX(CASE WHEN ti.indicator_name = 'SMA' AND ti.period = 50 THEN ti.value END) as sma_50
         , MAX(CASE WHEN ti.indicator_name = 'EMA' AND ti.period = 12 THEN ti.value END) as ema_12
@@ -220,7 +227,9 @@ export class MarketDataService {
         , MAX(CASE WHEN ti.indicator_name = 'BB_UPPER' AND ti.period = 20 THEN ti.value END) as bb_upper
         , MAX(CASE WHEN ti.indicator_name = 'BB_MIDDLE' AND ti.period = 20 THEN ti.value END) as bb_middle
         , MAX(CASE WHEN ti.indicator_name = 'BB_LOWER' AND ti.period = 20 THEN ti.value END) as bb_lower
-        ` : ''}
+        `
+            : ''
+        }
       FROM candlestick_data cd
       JOIN contracts c ON cd.contract_id = c.id
       ${includeIndicators ? 'LEFT JOIN technical_indicators ti ON cd.id = ti.candlestick_id' : ''}
@@ -231,11 +240,11 @@ export class MarketDataService {
       ${includeIndicators ? 'GROUP BY cd.id, cd.timestamp, cd.open, cd.high, cd.low, cd.close, cd.volume, cd.wap, cd.count' : ''}
       ORDER BY cd.timestamp ASC
     `;
-    
+
     const params = [symbol, timeframe, startDate, endDate];
     const result = await dbService.query(query, params);
-    
-    return result.rows.map(row => ({
+
+    return result.rows.map((row) => ({
       timestamp: new Date(row.timestamp),
       open: parseFloat(row.open),
       high: parseFloat(row.high),
@@ -255,12 +264,16 @@ export class MarketDataService {
         bb_upper: row.bb_upper ? parseFloat(row.bb_upper) : undefined,
         bb_middle: row.bb_middle ? parseFloat(row.bb_middle) : undefined,
         bb_lower: row.bb_lower ? parseFloat(row.bb_lower) : undefined,
-      })
+      }),
     }));
   }
 
   // Get latest data for a symbol
-  async getLatestData(symbol: string, timeframe: string, limit: number = 100): Promise<CandlestickBar[]> {
+  async getLatestData(
+    symbol: string,
+    timeframe: string,
+    limit: number = 100
+  ): Promise<CandlestickBar[]> {
     const query = `
       SELECT 
         cd.timestamp,
@@ -277,11 +290,11 @@ export class MarketDataService {
       ORDER BY cd.timestamp DESC
       LIMIT $3
     `;
-    
+
     const params = [symbol, timeframe, limit];
     const result = await dbService.query(query, params);
-    
-    return result.rows.reverse().map(row => ({
+
+    return result.rows.reverse().map((row) => ({
       timestamp: new Date(row.timestamp),
       open: parseFloat(row.open),
       high: parseFloat(row.high),
@@ -300,19 +313,24 @@ export class MarketDataService {
       VALUES ($1, $2, NOW(), 'active')
       RETURNING id
     `;
-    
+
     const result = await dbService.query(query, [contractId, timeframe]);
     return result.rows[0].id;
   }
 
   // End a data collection session
-  async endDataCollectionSession(sessionId: number, status: string, recordsCollected: number, errorMessage?: string): Promise<void> {
+  async endDataCollectionSession(
+    sessionId: number,
+    status: string,
+    recordsCollected: number,
+    errorMessage?: string
+  ): Promise<void> {
     const query = `
       UPDATE data_collection_sessions 
       SET end_time = NOW(), status = $2, records_collected = $3, error_message = $4
       WHERE id = $1
     `;
-    
+
     await dbService.query(query, [sessionId, status, recordsCollected, errorMessage]);
   }
 
@@ -326,8 +344,9 @@ export class MarketDataService {
     duplicateBars: number,
     invalidBars: number
   ): Promise<void> {
-    const qualityScore = totalBars > 0 ? (totalBars - missingBars - duplicateBars - invalidBars) / totalBars : 0;
-    
+    const qualityScore =
+      totalBars > 0 ? (totalBars - missingBars - duplicateBars - invalidBars) / totalBars : 0;
+
     const query = `
       INSERT INTO data_quality_metrics (contract_id, timeframe, date, total_bars, missing_bars, duplicate_bars, invalid_bars, data_quality_score)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -340,9 +359,16 @@ export class MarketDataService {
         data_quality_score = EXCLUDED.data_quality_score,
         last_updated = NOW()
     `;
-    
+
     await dbService.query(query, [
-      contractId, timeframe, date, totalBars, missingBars, duplicateBars, invalidBars, qualityScore
+      contractId,
+      timeframe,
+      date,
+      totalBars,
+      missingBars,
+      duplicateBars,
+      invalidBars,
+      qualityScore,
     ]);
   }
 
@@ -360,16 +386,16 @@ export class MarketDataService {
       LEFT JOIN candlestick_data cd ON c.id = cd.contract_id
       LEFT JOIN data_quality_metrics dqm ON c.id = dqm.contract_id AND cd.timeframe = dqm.timeframe
     `;
-    
+
     const params: any[] = [];
-    
+
     if (symbol) {
       query += ' WHERE c.symbol = $1';
       params.push(symbol);
     }
-    
+
     query += ' GROUP BY c.symbol, cd.timeframe ORDER BY c.symbol, cd.timeframe';
-    
+
     const result = await dbService.query(query, params);
     return result.rows;
   }
@@ -378,7 +404,7 @@ export class MarketDataService {
   async cleanOldData(): Promise<{ deleted: number }> {
     const query = 'SELECT clean_old_data()';
     await dbService.query(query);
-    
+
     // Get count of deleted records (this would need to be implemented in the function)
     return { deleted: 0 };
   }
@@ -393,20 +419,20 @@ export class MarketDataService {
     exchange: string;
     currency: string;
   }): Promise<{ uploaded_count: number; skipped_count: number }> {
-    const { symbol, timeframe, bars, account_mode, secType, exchange, currency } = data;
-    
+    const { symbol, timeframe, bars, secType, exchange, currency } = data;
+
     console.log(`Uploading ${bars.length} bars for ${symbol} ${timeframe} to database`);
-    
+
     // Get or create contract
     const contractId = await this.getOrCreateContract({
       symbol,
       secType,
       exchange,
-      currency
+      currency,
     });
-    
+
     // Convert bars to CandlestickBar format
-    const candlestickBars: CandlestickBar[] = bars.map(bar => ({
+    const candlestickBars: CandlestickBar[] = bars.map((bar) => ({
       timestamp: new Date(bar.timestamp * 1000), // Convert Unix timestamp to Date
       open: parseFloat(bar.open),
       high: parseFloat(bar.high),
@@ -414,17 +440,19 @@ export class MarketDataService {
       close: parseFloat(bar.close),
       volume: parseInt(bar.volume),
       wap: bar.wap ? parseFloat(bar.wap) : undefined,
-      count: bar.count ? parseInt(bar.count) : undefined
+      count: bar.count ? parseInt(bar.count) : undefined,
     }));
-    
+
     // Store candlestick data
     const result = await this.storeCandlestickData(contractId, timeframe, candlestickBars);
-    
-    console.log(`Upload completed: ${result.inserted} inserted, ${result.updated} updated, ${result.errors} errors`);
-    
+
+    console.log(
+      `Upload completed: ${result.inserted} inserted, ${result.updated} updated, ${result.errors} errors`
+    );
+
     return {
       uploaded_count: result.inserted + result.updated,
-      skipped_count: result.errors
+      skipped_count: result.errors,
     };
   }
 }
