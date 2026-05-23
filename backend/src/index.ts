@@ -8,6 +8,7 @@ import settingsRoutes from './routes/settings.js';
 import axios from 'axios';
 import { dbService } from './services/database.js';
 import { cacheService } from './services/cache.js';
+import { createStreamingBridge } from './services/streamingBridge.js';
 import { createAuthMiddleware, checkSocketAuth } from './middleware/auth.js';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 4000;
@@ -125,6 +126,7 @@ app.get('/api/health', async (_req, res) => {
         port: cacheStatus.port,
         last_error: cacheStatus.last_error,
       },
+      streaming: streamingBridge.status(),
     },
   });
 });
@@ -184,19 +186,40 @@ io.use((socket, next) => {
   next();
 });
 
+// Real-time streaming bridge: subscribes to Redis (where the IB
+// service publishes ticks) and fans messages out to Socket.IO rooms
+// of the form `market-data:<SYMBOL>`. Each Socket.IO client may call
+// subscribe-market-data multiple times for different symbols; the
+// bridge refcounts IB-side subscriptions so we only one-shot each
+// symbol against the IB service.
+const streamingBridge = createStreamingBridge(io);
+
 io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
 
   socket.on('subscribe-market-data', async (data) => {
-    const { symbol, timeframe } = data || {};
-    console.log(`Client ${socket.id} subscribing to ${symbol} - ${timeframe}`);
+    const { symbol, secType, exchange, currency, timeframe } = data || {};
+    if (!symbol || typeof symbol !== 'string') {
+      socket.emit('subscription-error', { error: 'symbol is required' });
+      return;
+    }
+    console.log(
+      `[socket ${socket.id}] subscribing to ${symbol}` + (timeframe ? ` (${timeframe})` : '')
+    );
     try {
-      await axios.post(`${IB_SERVICE_URL}/market-data/subscribe`, {
+      const result = await streamingBridge.subscribe(socket.id, {
         symbol,
-        timeframe,
+        secType,
+        exchange,
+        currency,
       });
-      socket.join(`market-data-${symbol}`);
-      socket.emit('subscription-confirmed', { symbol, timeframe });
+      socket.join(result.room);
+      socket.emit('subscription-confirmed', {
+        symbol: result.symbol,
+        timeframe,
+        room: result.room,
+        ref_count: result.refCount,
+      });
     } catch (error) {
       console.error('Subscription error:', error);
       socket.emit('subscription-error', {
@@ -208,11 +231,18 @@ io.on('connection', (socket) => {
 
   socket.on('unsubscribe-market-data', async (data) => {
     const { symbol } = data || {};
-    console.log(`Client ${socket.id} unsubscribing from ${symbol}`);
+    if (!symbol || typeof symbol !== 'string') {
+      socket.emit('unsubscription-error', { error: 'symbol is required' });
+      return;
+    }
+    console.log(`[socket ${socket.id}] unsubscribing from ${symbol}`);
     try {
-      await axios.post(`${IB_SERVICE_URL}/market-data/unsubscribe`, { symbol });
-      socket.leave(`market-data-${symbol}`);
-      socket.emit('unsubscription-confirmed', { symbol });
+      const result = await streamingBridge.unsubscribe(socket.id, { symbol });
+      socket.leave(`market-data:${result.symbol}`);
+      socket.emit('unsubscription-confirmed', {
+        symbol: result.symbol,
+        ref_count: result.refCount,
+      });
     } catch (error) {
       console.error('Unsubscription error:', error);
       socket.emit('unsubscription-error', {
@@ -222,8 +252,13 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     console.log(`Client disconnected: ${socket.id}`);
+    try {
+      await streamingBridge.releaseSocket(socket.id);
+    } catch (err) {
+      console.warn(`[socket] disconnect cleanup for ${socket.id} failed:`, err);
+    }
   });
 });
 
@@ -240,7 +275,12 @@ async function shutdown(signal: string) {
   try {
     await cacheService.close();
   } catch (err) {
-    console.warn('Error closing Redis:', err);
+    console.warn('Error closing Redis (cache):', err);
+  }
+  try {
+    await streamingBridge.stop();
+  } catch (err) {
+    console.warn('Error stopping streaming bridge:', err);
   }
   server.close(() => {
     console.log('Server closed');
@@ -257,6 +297,10 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Backend server running on port ${PORT}`);
   console.log(`IB Service URL: ${IB_SERVICE_URL}`);
+
+  void streamingBridge.start().catch((err) => {
+    console.warn('Streaming bridge failed to start:', err);
+  });
 
   void dbService
     .testConnection()
