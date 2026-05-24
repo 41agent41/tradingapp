@@ -79,6 +79,14 @@ Data is stored in the following PostgreSQL tables:
 
 ## API Endpoints
 
+> **Authentication.** Both endpoints below are protected by the backend's
+> bearer-token middleware (Phase 2). The web UI sends the token automatically
+> via `apiFetch`; if you call them directly, include
+> `Authorization: Bearer <API_TOKEN>` (or `X-API-Token`). See
+> [`DEPLOYMENT.md`](DEPLOYMENT.md#authentication--cors). `GET /history` reads
+> the database first and falls back to a live IB request when rows aren't
+> cached.
+
 ### Download Data
 ```
 GET /api/market-data/history

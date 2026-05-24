@@ -132,7 +132,7 @@ docker compose logs --tail=200 backend
 # Health
 curl -fs http://<server-ip>:4000/api/health
 
-# Database health (Phase 2 work — see GAP_ANALYSIS.md)
+# Database health (probes the external Postgres connection)
 curl -fs http://<server-ip>:4000/api/database/health
 ```
 

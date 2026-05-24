@@ -7,7 +7,7 @@ A simplified trading application with TradingView lightweight charts and reliabl
 ### **Single Command Setup**
 ```bash
 # Clone repository
-git clone https://github.com/your-username/tradingapp.git
+git clone https://github.com/41agent41/tradingapp.git
 cd tradingapp
 
 # Make script executable (Linux/Mac)
@@ -63,6 +63,19 @@ chmod +x tradingapp.sh
 - **Simplified Services**: Reduced complexity, improved reliability
 - **Fast Deployment**: Clean redeploy in under 2 minutes
 - **Easy Troubleshooting**: Built-in diagnostics and auto-fix
+
+### **Security & Quality**
+- **Bearer-token auth**: Every backend route (and the Socket.IO handshake)
+  requires `API_TOKEN`; comparisons use `crypto.timingSafeEqual`.
+- **Strict CORS**: Bound to `CORS_ORIGINS` rather than a wildcard.
+- **Whitelisted settings**: `GET /api/settings` returns only allow-listed,
+  non-credential environment variables.
+- **Redis read-through cache**: Backs the high-traffic realtime / indicator
+  endpoints, degrading gracefully to a cache miss on a Redis outage.
+- **CI per service**: GitHub Actions runs lint, format-check, type-check and
+  tests for the backend (ESLint/Prettier/Jest), frontend
+  (ESLint/Prettier/Vitest) and IB service (Ruff/Black/pytest) on every push
+  to `master`.
 
 ## 🔧 **Configuration**
 
