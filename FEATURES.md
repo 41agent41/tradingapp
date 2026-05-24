@@ -16,13 +16,17 @@ capabilities never get conflated with aspirational plans.
    - [Market data search](#market-data-search)
    - [Historical charts](#historical-charts)
    - [Real-time MSFT view](#real-time-msft-view)
+   - [Real-time streaming pipeline](#real-time-streaming-pipeline)
    - [Technical indicators](#technical-indicators)
    - [Backtesting (API only)](#backtesting-api-only)
    - [Historical data download](#historical-data-download)
    - [Account read endpoints](#account-read-endpoints)
    - [REST & WebSocket API](#rest--websocket-api)
+   - [Authentication & CORS](#authentication--cors)
+   - [Redis caching](#redis-caching)
    - [Interactive Brokers integration](#interactive-brokers-integration)
    - [Deployment & operations](#deployment--operations)
+   - [Testing, linting & CI](#testing-linting--ci)
 2. [Planned / Roadmap](#planned--roadmap)
 
 ---
@@ -77,6 +81,35 @@ the backend forwards each tick into a Socket.IO room, and the page's
 `useRealtimeStream` hook updates the price display as ticks arrive.
 A one-shot REST call seeds the badge before the first tick lands and
 acts as a fallback when streaming is disabled.
+
+### Real-time streaming pipeline
+
+A genuine end-to-end tick stream backs the real-time views (no polling):
+
+```
+IB Gateway ──reqMktData──▶ ib_service ──redis.publish──▶ Redis
+                            (StreamingManager)            │ pSUBSCRIBE
+                                                          ▼
+                       frontend  ◀── Socket.IO room ◀── backend StreamingBridge
+                  (useRealtimeStream)
+```
+
+- **Publisher:** `ib_service/streaming.py` runs an in-process
+  `StreamingManager` that opens `reqMktData` subscriptions and publishes
+  every tick to `marketdata:tick:<SYMBOL>` on Redis.
+- **Bridge:** `backend/src/services/streamingBridge.ts` holds a second
+  Redis client in subscribe mode and forwards each tick to the
+  `market-data:<SYMBOL>` Socket.IO room.
+- **Consumer:** the frontend `useRealtimeStream` hook
+  (`frontend/app/lib/useRealtimeStream.ts`) joins the room and updates the
+  price display as ticks arrive.
+- **Refcounting & cleanup:** both sides refcount per symbol, so multiple
+  browsers on one symbol create a single IB subscription; on disconnect the
+  bridge `releaseSocket()`s and `cancelMktData`s anything that hits zero.
+- **Controls:** set `STREAMING_ENABLED=false` to disable the bridge (charts
+  fall back to one-shot REST seeding). Health is reported under
+  `services.streaming` in `/api/health` and at the IB service's
+  `GET /market-data/stream/status`.
 
 ### Technical indicators
 
@@ -147,14 +180,48 @@ frontend:
 | `/api/market-data/database/clean` | POST | Run retention cleanup |
 | `/api/settings` | GET | Echo back the loaded `.env` (see security note in `GAP_ANALYSIS.md`) |
 
-Socket.IO is mounted on the backend at the default path. Clients can call
-`subscribe-market-data` / `unsubscribe-market-data` for a given symbol +
-timeframe; the backend forwards these to the IB service's subscription
-endpoints. (Streaming tick fan-out back to the client is on the roadmap.)
+Socket.IO is mounted on the backend at the default path and its handshake
+is authenticated (see [Authentication & CORS](#authentication--cors)).
+Clients call `subscribe-market-data` / `unsubscribe-market-data` for a
+given symbol; the backend's streaming bridge refcounts the subscription,
+joins the socket to the `market-data:<SYMBOL>` room and fans every Redis
+tick out to that room. The full pipeline is described under
+[Real-time streaming pipeline](#real-time-streaming-pipeline).
 
 All endpoints return JSON. Errors carry an `error`, `message` and
 `timestamp` payload. Common HTTP statuses are `400` for validation, `503`
 when the IB service is unreachable, `504` on IB timeouts.
+
+### Authentication & CORS
+
+- **Bearer-token auth** (`backend/src/middleware/auth.ts`): every backend
+  route except `/api/health` and `/api/database/health` requires
+  `Authorization: Bearer <API_TOKEN>` (or `X-API-Token`). The frontend's
+  `apiFetch` helper attaches the header automatically; comparisons run
+  through `crypto.timingSafeEqual`.
+- **Authenticated Socket.IO handshake**: the token is read from
+  `auth.token`, the `Authorization` header or a `?token=` query parameter.
+- **Strict CORS**: origins are validated against `CORS_ORIGINS` instead of a
+  blanket wildcard.
+- **Whitelisted `/api/settings`**: only allow-listed, non-credential
+  environment variables are returned, with deny patterns that strip
+  anything matching `*_SECRET`, `*_PASSWORD`, `*_TOKEN`, `*_KEY`, etc.
+- **Dev escape hatch**: leaving `API_TOKEN` empty (or `CORS_ORIGINS=*`)
+  prints a loud startup warning and accepts unauthenticated / any-origin
+  requests — convenient locally, never for production.
+
+### Redis caching
+
+The bundled Redis container is wired into the backend
+(`backend/src/services/cache.ts`) as a read-through cache:
+
+- `/api/market-data/realtime` — `CACHE_TTL_REALTIME` seconds (default `2`).
+- `/api/market-data/indicators/available` — long-lived, refreshed through
+  the cache wrapper.
+
+A Redis outage degrades to a cache miss — every endpoint keeps working.
+Cache health surfaces in `/api/health` under `services.cache`. Set
+`REDIS_ENABLED=false` to bypass caching entirely.
 
 ### Interactive Brokers integration
 
@@ -171,9 +238,24 @@ when the IB service is unreachable, `504` on IB timeouts.
 
 - Docker Compose stack: `frontend`, `backend`, `ib_service`, `redis`.
 - One unified management script: `./tradingapp.sh`
-  (`setup`, `deploy`, `redeploy`, `config`, `start`, `stop`, `restart`,
-  `status`, `logs`, `test`, `diagnose`, `fix`, `ib-help`, `clean`).
+  (`setup`, `deploy`, `redeploy`, `config`, `env`, `start`, `stop`,
+  `restart`, `status`, `logs`, `test`, `diagnose`, `fix`, `ib-help`,
+  `clean`).
+- Optional bundled TimescaleDB via the `--with-db` flag (layers
+  `docker-compose.db.yml` and applies `timescaledb-schema.sql` on first
+  run). Without it, the backend points at an external Postgres.
 - See [`DEPLOYMENT.md`](DEPLOYMENT.md) for the full reference.
+
+### Testing, linting & CI
+
+- **Backend:** ESLint + Prettier + Jest/Supertest
+  (`npm run lint` / `format:check` / `type-check` / `test`).
+- **Frontend:** ESLint + Prettier + Vitest (`apiFetch` test suite).
+- **IB service:** Ruff + Black + pytest (indicator math + streaming tests
+  under `ib_service/tests/`).
+- **CI:** `.github/workflows/ci.yml` runs lint, format-check, type-check,
+  tests and build for all three services on every push / PR to `master`
+  (and `main`).
 
 ---
 
@@ -182,6 +264,12 @@ when the IB service is unreachable, `504` on IB timeouts.
 The items below are described in the existing documentation set or
 implied by the codebase but are **not yet implemented**. They are the
 forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
+
+> **Recently shipped (no longer roadmap).** Bearer-token auth, strict CORS,
+> the whitelisted `/api/settings`, Redis caching, the `--with-db`
+> TimescaleDB override and the real-time streaming pipeline all landed in
+> Phases 2–4 and now live under
+> [Currently Available](#currently-available).
 
 ### Backtesting UI
 
@@ -194,29 +282,22 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 - `POST /api/orders` to place / cancel / modify orders through IB.
 - Frontend order ticket and blotter.
 
-### Authentication, authorisation & secrets
+### Authentication, authorisation & secrets (advanced)
 
-- Token-based auth middleware on the backend (currently every route is
-  open).
-- Tightened CORS (currently `*`).
-- Authenticated Socket.IO handshake.
-- Whitelisted `GET /api/settings` response so secrets cannot leak.
-- Optional MFA, RBAC, audit logging.
+- Optional MFA, RBAC and audit logging on top of the existing
+  bearer-token auth.
 
 ### Database & data lifecycle
 
-- A `docker-compose.db.yml` override that brings up TimescaleDB locally
-  and applies the canonical schema automatically.
 - Scheduled backfill of missing bars driven by `data_collection_config`.
-- Population of `data_quality_metrics` from the upload path.
+- Population of `data_quality_metrics` — `updateDataQualityMetrics()`
+  exists in `marketDataService.ts` but nothing calls it yet.
 - Real row counts returned from `clean_old_data()` rather than the current
   hard-coded `0`.
-
-### Caching
-
-- Wire the existing Redis container into the backend (quote cache,
-  per-symbol rate-limit windows, real-time pub/sub).
-- Or drop Redis from the stack if we keep deferring this work.
+- Reconcile the indicator persistence path: `storeTechnicalIndicators()`
+  still writes to a `technical_indicators` table that the canonical
+  TimescaleDB schema intentionally omits (see
+  [`backend/src/database/README.md`](backend/src/database/README.md)).
 
 ### Observability
 
@@ -237,14 +318,18 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 - Watchlists and alerts.
 - Sector / scanner browsing.
 
-### Testing, linting, CI
+### Test coverage expansion
 
-- Jest + Supertest on the backend.
-- Vitest + React Testing Library on the frontend.
-- `pytest` on the IB service (the indicator math in `indicators.py` is the
-  easiest first target).
-- ESLint + Prettier, Ruff + Black, plus a real CI workflow gated on
-  `master`.
+The lint / format / type-check / test scaffolding and a CI workflow gated
+on `master` have **shipped** (see
+[Testing, linting & CI](#testing-linting--ci)). What remains is breadth:
+
+- Frontend component tests (React Testing Library) beyond the current
+  `apiFetch` suite.
+- Backend route/integration coverage beyond the initial validation tests.
+- IB-service tests around the historical-data assembly path (a fake
+  `EClient` / `EWrapper`), on top of the existing indicator and streaming
+  tests.
 
 ### Refactors
 
@@ -297,5 +382,6 @@ curl -s -X POST 'http://<server-ip>:8000/backtesting/run' \
 ---
 
 If you spot a feature here that should be in *Available* but isn't, or
-vice-versa, please open an issue. Keeping this document honest is part of
-the Phase 1 hygiene work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
+vice-versa, please open an issue. Keeping this split honest is ongoing
+hygiene — the current gap list and roadmap live in
+[`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).

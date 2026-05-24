@@ -1,14 +1,22 @@
 # TradingApp - Gap Analysis, Enhancements & Next Steps
 
-_Last reviewed: 2026-05-23 against commit `ca34726` on `master`._
+_Last reviewed: 2026-05-24 against commit `c258a9d` on `master`._
 
 This document captures the result of a structured review of the TradingApp
-codebase and its existing documentation set (`README.md`, `DEPLOYMENT.md`,
-`FEATURES.md`, `TROUBLESHOOTING.md`, `DOWNLOAD_FEATURE.md`, the database
-READMEs and the `tradingapp.sh` management script). It is intended to be a
-living planning document — items below are **observed gaps** between what the
-documentation claims, what the code implements, and what a quant trading
-platform sourcing data from IB Gateway should provide.
+codebase and its documentation set (`README.md`, `DEPLOYMENT.md`,
+`FEATURES.md`, `TROUBLESHOOTING.md`, `DOWNLOAD_FEATURE.md`,
+`DEVELOPMENT_ITERATION_GUIDANCE.md`, the database README and the
+`tradingapp.sh` management script). It is a **living planning document** —
+items below are observed gaps between what the documentation claims, what
+the code implements, and what a quant trading platform sourcing data from IB
+Gateway should provide.
+
+> **What changed since the previous review.** Phases 1–4 of the roadmap have
+> landed. Documentation drift, the missing test/lint/CI scaffolding, the
+> ambiguous database story, the polling-not-streaming "real-time" path and
+> the open security posture have all been addressed. This review re-baselines
+> the document around the work that **remains** (Phases 5–6 plus a few code
+> mismatches).
 
 ---
 
@@ -17,441 +25,303 @@ platform sourcing data from IB Gateway should provide.
 The application is a Next.js + Express + FastAPI stack that connects to an
 Interactive Brokers Gateway (`ibapi`) and surfaces market data via TradingView
 `lightweight-charts`. Core capabilities (contract search, historical bars,
-basic real-time quotes, indicator calculation, manual download-to-Postgres)
-are implemented. However, there is a meaningful drift between the
-documentation and the code, several aspirational features are described as
-delivered, and a number of foundational concerns (tests, auth, observability,
-streaming, data lifecycle) have not been addressed.
+real-time tick streaming, indicator calculation, manual download-to-Postgres,
+read-only account endpoints, an API-only backtesting engine) are implemented
+and now sit behind bearer-token auth with a Redis read-through cache.
 
-The single biggest risks today are:
+The platform is in materially better shape than at the previous review:
 
-1. **Documentation drift** — multiple guides reference scripts that no longer
-   exist in the repo (`deploy-tradingapp.sh`, `fix-ib-config.sh`,
-   `fix-ib-connection.sh`, `diagnose-connection.sh`).
-2. **No tests, no linting, no real CI** — the GitHub Actions job is a stub.
-3. **Database story is ambiguous** — PostgreSQL is required by the backend
-   but is not provisioned by `docker-compose.yml`; three competing schemas
-   exist (`schema.sql`, `init.sql`, `timescaledb-schema.sql`).
-4. **"Real-time" is mostly polling** — there is no IB streaming subscription
-   actually piped through Socket.IO to the chart.
-5. **Security posture is unfinished** — `FEATURES.md` claims JWT/MFA/RBAC but
-   no auth middleware exists in the backend and default secrets are
-   committed.
+- **Documentation and reality now agree.** `DEPLOYMENT.md` and
+  `TROUBLESHOOTING.md` reference only `tradingapp.sh`; `FEATURES.md` is split
+  into *Currently Available* vs *Planned*; `.env` is no longer tracked.
+- **There is a real quality bar.** ESLint/Prettier/Jest (backend),
+  ESLint/Prettier/Vitest (frontend) and Ruff/Black/pytest (IB service) all
+  run in CI on `master`.
+- **"Real-time" is real.** `ib_service` publishes `reqMktData` ticks to
+  Redis; the backend bridge fans them out over Socket.IO rooms; the frontend
+  consumes them via `useRealtimeStream`.
+- **Security baseline exists.** Bearer-token auth on every route and the
+  Socket.IO handshake, CORS bound to `CORS_ORIGINS`, and a whitelisted
+  `/api/settings`.
+- **One canonical schema.** `timescaledb-schema.sql` is authoritative; the
+  legacy SQL/docs are archived; `--with-db` brings up TimescaleDB locally.
 
----
+The remaining risks are now smaller and mostly about **breadth and polish**:
 
-## 2. Documentation vs. Reality Gaps
-
-### 2.1 Stale / contradictory deployment instructions
-
-| Doc | Claims | Reality |
-|---|---|---|
-| `README.md` | One unified script: `./tradingapp.sh` | ✅ Present and authoritative |
-| `DEPLOYMENT.md` | `./deploy-tradingapp.sh install/deploy/...`, `./fix-ib-config.sh`, `./fix-ib-connection.sh`, `./diagnose-connection.sh` | ❌ None of these scripts exist in the repo |
-| `TROUBLESHOOTING.md` | Same stale scripts as above | ❌ Same issue |
-| `DEPLOYMENT.md` | Uses `your-username/tradingapp.git` placeholder | Real repo is `41agent41/tradingapp` |
-| `env.template` vs `.env` vs `.env.example` | Three env files | All three exist with different shapes; `.env` is committed and contains a corrupted token (`\`nTZ=UTC`) that looks like a botched PowerShell edit |
-| `DEPLOYMENT.md` "Database Configuration" | Says `POSTGRES_PASSWORD=your_secure_password` in `.env` | `docker-compose.yml` no longer provisions Postgres (commit `0bcb437`); backend points at an *external* DB |
-
-**Action:** Either delete the stale scripts from `DEPLOYMENT.md` /
-`TROUBLESHOOTING.md` and consolidate everything around `tradingapp.sh`, or
-re-introduce the legacy scripts as thin wrappers. The first option is
-strongly preferred to match what `README.md` already says.
-
-### 2.2 `FEATURES.md` over-promises
-
-`FEATURES.md` is written as marketing copy and lists capabilities that are
-**not** in the code. The following are described as features but are not
-implemented (or only partially):
-
-- Dark / light theme toggle (not present — Tailwind only ships one theme).
-- Custom watchlists, alerts, sharing.
-- Portfolio P&L analytics, position-sizing risk metrics.
-- Multi-factor authentication, JWT/RBAC, GDPR controls.
-- Order placement (UI is read-only; backend has no `placeOrder` flow even
-  though `ib_service` exposes positions/orders read endpoints).
-- Connection pooling / failover for IB Gateway (README explicitly says the
-  service was simplified to a single synchronous connection).
-- Market scanners, sector browsing, search history.
-- CSV / JSON / PDF export — only the in-page DataframeViewer exists.
-- Keyboard shortcuts and right-click context menus.
-- Screen-reader / accessibility / high-contrast modes.
-
-**Action:** Re-baseline `FEATURES.md` into two clearly labelled sections —
-*"Currently Available"* and *"Planned / Roadmap"* — so users do not assume
-the platform is more featureful than it is.
-
-### 2.3 Database documentation fragmentation
-
-Three SQL schemas + three docs all describe overlapping intent:
-
-- `backend/src/database/schema.sql`
-- `backend/src/database/init.sql`
-- `backend/src/database/timescaledb-schema.sql`
-- `backend/src/database/migrate-to-timescaledb.sql`
-- `backend/src/database/README.md`
-- `backend/src/database/README_TIMESCALEDB.md`
-- `backend/src/database/TIMESCALEDB_SETUP.md`
-
-There is no single "this is the schema we run in production" file. The
-backend code (`MarketDataService`) references tables that exist in both
-schemas but uses plain Postgres semantics (no hypertable awareness, no
-continuous aggregates).
-
-**Action:** Pick one schema (recommend TimescaleDB), delete the others or
-move them to an `archive/` folder, update `README.md` to point at it, and
-add a Postgres+TimescaleDB service into a separate `docker-compose.db.yml`
-override so local dev does not need an external DB.
+1. **Data lifecycle is still manual.** No backfill scheduler;
+   `data_quality_metrics` is never populated; `clean_old_data()` returns a
+   hard-coded `0`.
+2. **An indicator-persistence mismatch lingers.** `storeTechnicalIndicators()`
+   writes to a `technical_indicators` table the canonical schema omits.
+3. **No observability.** No structured logging, metrics endpoint or
+   request-id propagation; the home-page IB status is still static text.
+4. **Single-feature UI gaps.** Backtesting and order management have no
+   frontend; the four chart components remain unconsolidated.
 
 ---
 
-## 3. Architectural & Code Gaps
+## 2. Completed Since the Previous Review (Phases 1–4)
 
-### 3.1 Data store provisioning
+These items were open gaps in earlier revisions of this document and are now
+**done**. They are recorded here so the history of the platform is legible.
 
-- `docker-compose.yml` declares only `frontend`, `backend`, `ib_service` and
-  `redis`. There is **no** `postgres` service.
-- Backend defaults `POSTGRES_HOST=localhost`, so out-of-the-box a fresh
-  Docker deployment cannot reach a database. The DB health check at
-  `/api/database/health` will fail until the operator hand-rolls a Postgres.
-- Redis is provisioned but **not used** — `backend` lists `redis` as a
-  dependency but `rg redis backend/src` finds zero references in the code.
+### Phase 1 — Documentation & repo hygiene ✅
+- Stale script references (`deploy-tradingapp.sh`, `fix-ib-config.sh`,
+  `fix-ib-connection.sh`, `diagnose-connection.sh`) removed; everything
+  routes through `tradingapp.sh`.
+- `FEATURES.md` rewritten into *Currently Available* vs *Planned / Roadmap*.
+- `.env` removed from version control; `.gitignore` added; `.env.example` is
+  the single documented reference (the duplicate `env.template` is gone).
+- Single canonical SQL schema (`timescaledb-schema.sql`); `schema.sql`,
+  `init.sql`, `migrate-to-timescaledb.sql` and the legacy TimescaleDB docs
+  moved to `backend/src/database/archive/`.
 
-**Action:**
-- Provide an optional `docker-compose.db.yml` that brings up TimescaleDB and
-  applies `timescaledb-schema.sql` automatically.
-- Either wire Redis into the backend (cache for IB quotes, pub/sub for
-  real-time fanout) or remove it from `docker-compose.yml` and from the
-  backend's `package.json`.
+### Phase 2 — Safe to run (security + DB) ✅
+- `docker-compose.db.yml` override + `--with-db` flag bring up TimescaleDB
+  locally and apply the schema on first run.
+- `routes/settings.ts` rewritten to an allow-list with credential deny
+  patterns; it reads `process.env`, not `/app/.env`.
+- CORS bound to `CORS_ORIGINS`; bearer-token auth middleware on every route
+  (except the health checks) and on the Socket.IO handshake, using
+  `crypto.timingSafeEqual`.
+- Redis wired into the backend as a read-through cache (`services/cache.ts`)
+  with graceful degradation and a `services.cache` health block.
 
-### 3.2 "Real-time" is not really streaming
+### Phase 3 — Quality bar (tests, lint, CI) ✅
+- ESLint + Prettier configs and `lint` / `format:check` / `type-check`
+  scripts for backend and frontend; Ruff + Black via `pyproject.toml` for the
+  IB service.
+- Initial test suites: Jest/Supertest (backend), Vitest (`apiFetch`,
+  frontend), pytest (`indicators`, `streaming`) for the IB service.
+- `.github/workflows/ci.yml` rewritten to trigger on `master`/`main` and run
+  lint → format-check → type-check → test → build per service.
 
-- `MSFTRealtimeChart.tsx` is large (916 LoC) but its real-time path appears
-  to be: REST poll → Socket.IO subscribe → backend forwards to
-  `/market-data/subscribe` on `ib_service` → no actual `emit` of tick data
-  back to clients in `backend/src/index.ts`.
-- `ib_service` has tick endpoints (`/market-data/tick`) but they are
-  request/response — there is no IB `reqMktData` subscription whose ticks
-  are pushed back out over a WebSocket.
+### Phase 4 — Real-time pipeline ✅
+- `ib_service/streaming.py` `StreamingManager` publishes `reqMktData` ticks
+  to `marketdata:tick:<SYMBOL>` on Redis.
+- `backend/src/services/streamingBridge.ts` subscribes and emits into
+  `market-data:<SYMBOL>` Socket.IO rooms with per-symbol refcounting and
+  disconnect cleanup.
+- `frontend/app/lib/useRealtimeStream.ts` consumes the stream; the MSFT page
+  no longer polls. A one-shot REST call seeds the price before the first
+  tick and acts as a fallback when `STREAMING_ENABLED=false`.
 
-**Action:**
-- Implement an IB `reqMktData` / `reqRealTimeBars` worker in `ib_service`
-  that publishes onto a Redis pub/sub channel.
-- Have `backend` consume the channel and `io.to('market-data-MSFT').emit()`
-  to subscribed clients.
-- Throttle/batch on the server side so 100ms tick storms don't melt the
-  frontend.
+---
+
+## 3. Remaining Architectural & Code Gaps
+
+### 3.1 Data lifecycle & storage (Phase 5)
+
+- **No backfill scheduler.** Users must click the *Download* page for every
+  symbol/timeframe; nothing drives collection from `data_collection_config`.
+- **`data_quality_metrics` is never written.** `updateDataQualityMetrics()`
+  exists in `marketDataService.ts` but has no caller, so the table stays
+  empty and the `data_quality_score` view columns are always null.
+- **`clean_old_data()` lies.** `marketDataService.cleanOldData()` runs
+  `SELECT clean_old_data()` but returns a hard-coded `{ deleted: 0 }`; the
+  retention policies in the schema run independently of this call.
+
+**Action:** add an APScheduler (or `asyncio`) backfill loop in `ib_service`
+driven by `data_collection_config`; call `updateDataQualityMetrics()` from
+the upload/store path; promote `clean_old_data()` to return real row counts.
+
+### 3.2 Indicator persistence mismatch
+
+`storeTechnicalIndicators()` (called from `routes/marketData.ts:491`)
+`INSERT`s into a `technical_indicators` table. The canonical
+`timescaledb-schema.sql` **intentionally omits** that table — indicators are
+computed on demand in `ib_service/indicators.py` and rendered client-side.
+Against a fresh canonical database these inserts error.
+
+**Action:** either drop the persistence path entirely (indicators stay
+compute-on-demand) or add a hypertable for `technical_indicators` to the
+canonical schema. The decision is documented in
+[`backend/src/database/README.md`](backend/src/database/README.md#known-schema--code-mismatch).
 
 ### 3.3 IB connection model
 
-- The service intentionally uses a single synchronous IB client (per
-  `README.md`). At scale this caps concurrent requests at 1 and any slow
-  historical request will starve interactive lookups.
-- `IB_TIMEOUT=15` in `.env` but `30` in `tradingapp.sh`. Inconsistent.
-- No `clientId` strategy for multiple workers — every container/replica
-  shares `IB_CLIENT_ID=1`, which IB rejects.
+- The service intentionally uses a single synchronous IB client. At scale
+  this caps concurrent requests at 1; a slow historical request can starve
+  interactive lookups and the streaming worker.
+- Every container/replica shares `IB_CLIENT_ID=1`, which IB rejects for a
+  second concurrent connection.
 
-**Action:**
-- Introduce a small connection pool per worker, parameterised by a
-  `clientId` range (`1..N`), so historical/contract/account flows can run
-  in parallel.
-- Move retry/backoff logic into a dedicated `ib_session.py` module instead
-  of inlined in `main.py` (which is now 2,587 lines).
+**Action:** introduce a small connection pool parameterised by a `clientId`
+range (`1..N`) so historical / contract / account / streaming flows can run
+in parallel; move retry/backoff into a dedicated `ib_session.py`.
 
 ### 3.4 Monolithic modules
 
-| File | LoC | Concern |
+| File | LoC (approx) | Concern |
 |---|---:|---|
-| `ib_service/main.py` | 2,587 | Mixes HTTP, IB client, threading, caching, indicators wiring and account handling |
-| `frontend/app/components/MSFTRealtimeChart.tsx` | 916 | Chart + data fetch + state + UI controls all in one |
-| `frontend/app/components/MarketDataFilter.tsx` | 822 | Filter UI + chart trigger + state |
-| `backend/src/routes/marketData.ts` | 773 | All market-data endpoints, validation, DB write-through |
+| `ib_service/main.py` | ~2,700 | HTTP routes, IB client, threading, caching, indicators wiring, account handling |
+| `frontend/app/components/MSFTRealtimeChart.tsx` | ~900 | Chart + data fetch + state + UI controls |
+| `frontend/app/components/MarketDataFilter.tsx` | ~820 | Filter UI + chart trigger + state |
+| `backend/src/routes/marketData.ts` | ~870 | All market-data endpoints, validation, DB write-through |
 
-**Action:** Carve `main.py` into `routes/`, `ib_client/`, `cache/` and
-`models/` packages. On the frontend, split `MSFTRealtimeChart` into a data
-hook (`useRealtimeBars`), a chart presenter and a control bar.
+**Action:** carve `main.py` into `routes/`, `ib_client/`, `cache/`,
+`streaming/` and `models/` packages; split `MSFTRealtimeChart` into a data
+hook, a chart presenter and a control bar.
 
 ### 3.5 Overlapping chart components
 
 `HistoricalChart.tsx`, `TradingChart.tsx`, `EnhancedTradingChart.tsx` and
-`MSFTRealtimeChart.tsx` all create their own `lightweight-charts` instance
-with subtly different feature sets (timeframes, periods, indicator overlays).
-This guarantees divergence as features are added.
+`MSFTRealtimeChart.tsx` each create their own `lightweight-charts` instance
+with subtly different feature sets, guaranteeing divergence.
 
-**Action:** Collapse into a single configurable `<Chart>` component that
-accepts: data source (`useHistorical` / `useRealtime`), timeframe list,
-indicator list and a `mode: 'live' | 'static'` prop.
-
-### 3.6 Settings endpoint reads `/app/.env` directly
-
-`backend/src/routes/settings.ts` reads the container's `.env` file and
-returns its parsed contents to whoever calls `GET /api/settings`. Today
-that includes `JWT_SECRET`, `SESSION_SECRET`, `POSTGRES_PASSWORD`,
-`REDIS_PASSWORD`, `IB_HOST`, etc.
-
-**Action:** Whitelist the keys that are safe to expose (server IP, public
-ports, IB host *without* credentials) and never serialise secrets. Add an
-explicit `denyList` for `*_SECRET`, `*_PASSWORD`, `*_KEY`.
-
-### 3.7 No authentication / authorisation
-
-- Express app has `app.use(cors())` with no origin restriction (despite
-  `CORS_ORIGINS` env var being defined).
-- No middleware enforces auth on any route.
-- Account, positions, orders, contract search and historical download are
-  all open to any caller that can reach the backend port.
-- Socket.IO `cors.origin: '*'` — anyone can subscribe to any symbol.
-
-**Action:** Add a token-based auth middleware (header bearer token from the
-existing `JWT_SECRET`), tighten CORS to `CORS_ORIGINS`, and require the same
-token for Socket.IO `handshake.auth`.
-
-### 3.8 Secrets in repo
-
-- `.env` is committed and contains a corrupted token (`SERVER_IP=localhost\`nTZ=UTC`)
-  — looks like a Windows PowerShell escape that landed verbatim in the file.
-- `JWT_SECRET=trading_app_jwt_secret_2025` is committed.
-- `docker-compose.yml` falls back to `changeme_jwt_secret` /
-  `changeme_session_secret`.
-
-**Action:** Delete `.env` from the repository, add it to `.gitignore`,
-rotate the leaked secrets, and rely on `.env.example` + `env.template` for
-documentation. Consolidate the two example files into one.
+**Action:** collapse into one configurable `<Chart>` that accepts a data
+source (`useHistorical` / `useRealtimeStream`), timeframe list, indicator
+list and a `mode: 'live' | 'static'` prop. Make `/msft` a thin wrapper with
+`symbol="MSFT"` prefilled.
 
 ---
 
-## 4. Testing, CI/CD & Quality
+## 4. Observability (Phase 6)
 
-### 4.1 No tests anywhere
-
-- `backend/package.json` has no test script.
-- `frontend/package.json` has no test script.
-- `ib_service` has no `pytest`, `tests/` directory or fixtures.
-- `.github/workflows/ci.yml` ends with `run: echo "Add your tests here"`.
-
-**Action:**
-- Backend: Jest + Supertest covering the validation paths in
-  `routes/marketData.ts` and `routes/account.ts`.
-- Frontend: Vitest + React Testing Library for `MarketDataFilter`,
-  `MSFTRealtimeChart` data hooks and `IndicatorSelector`.
-- IB service: `pytest` with a fake `EClient` / `EWrapper` to exercise the
-  historical-data assembly logic and indicators math (`indicators.py` is
-  pure and a great first target).
-
-### 4.2 CI mismatches the repo
-
-- Workflow triggers on `branches: [main]` but the repo's default branch is
-  `master`.
-- No linting step (ESLint, Prettier, Ruff, mypy, black are all absent).
-- No type-check step for the frontend.
-- No Docker build / push step.
+- No structured logging — everything is `console.log` / `print`.
+- No `/metrics` endpoint, no Prometheus scraping target.
+- No `x-request-id` propagation across `frontend → backend → ib_service`
+  (the header is allow-listed in CORS but nothing generates or threads it).
+- The home page still renders a **static** "Connected to IB Gateway" label
+  rather than reflecting live `/api/health` state.
 
 **Action:**
-- Switch triggers to `master` (or rename the default branch to `main`).
-- Add `npm run lint`, `npm run type-check`, `ruff check`, `mypy` and a
-  `docker buildx build` smoke test per service.
-- Cache `~/.npm` and the pip wheel cache to keep CI fast.
-
-### 4.3 No linting / formatting configuration
-
-There is no `.eslintrc`, no Prettier config, no `pyproject.toml` for Ruff
-or Black. `TROUBLESHOOTING.md` references `npm run lint:fix` / `npm run
-format` but those scripts do not exist in `frontend/package.json`.
-
-**Action:** Add `eslint-config-next`, Prettier (with `.prettierrc`), Ruff
-and Black, plus matching `package.json` / `pyproject.toml` scripts.
-
-### 4.4 No observability
-
-- No structured logging (everything is `console.log` / `print`).
-- No metrics endpoint, no Prometheus scraping target.
-- No request-id propagation between `frontend → backend → ib_service`.
-- No alerting on IB disconnects (the service silently retries).
-
-**Action:**
-- Backend: `pino` with `pino-http`, expose `/metrics` via `prom-client`.
+- Backend: `pino` + `pino-http`, expose `/metrics` via `prom-client`.
 - IB service: `structlog` + `prometheus-fastapi-instrumentator`.
-- Propagate `x-request-id` end-to-end.
-- Add a `/api/health` summary on the frontend status bar that reflects
-  IB connection state instead of the hard-coded "Connected to IB Gateway"
-  label currently on the home page.
+- Generate and propagate `x-request-id` end-to-end.
+- Add a `<HealthBadge />` polling `/api/health` (including the new
+  `services.streaming` / `services.cache` blocks).
 
 ---
 
-## 5. Functional Gaps Against the `.cursorrules` Brief
+## 5. Backtesting (Phase 5)
 
-The repo-level `.cursorrules` states:
+`ib_service/backtesting.py` and `AVAILABLE_STRATEGIES` are wired into FastAPI
+(`GET /backtesting/strategies`, `POST /backtesting/run`). There is **no
+frontend UI** and no backend proxy route, so the feature is reachable only by
+hitting the IB service directly.
 
-> Implement tradingview lightweight charts to display realtime data for the
-> stock MSFT, allowing to show 12 months of data across the
-> 5minute,15m,30m,1hour,4hour,8hour and 1day timeframes.
-
-Today:
-
-- ✅ Timeframes available: 1m / 5m / 15m / 30m / 1h / 4h / 8h / 1d (the spec
-  did not include 1m, but it is implemented anyway — fine).
-- ✅ 12-month period selectable (`1Y` option present).
-- ⚠️ "Realtime" is not actually streaming (see §3.2).
-- ⚠️ MSFT is hard-coded into one page (`/msft`) but the rest of the app is
-  generic. The dedicated MSFT page duplicates the generic chart code rather
-  than reusing it.
-
-**Action:**
-- Make `/msft` a thin wrapper around the generic chart with `symbol="MSFT"`
-  prefilled.
-- Persist the user's last symbol/timeframe in `localStorage` so the realtime
-  view reopens to where they left off.
+**Action:** add a `backend/src/routes/backtesting.ts` proxy with validation;
+build a `/backtest` page (strategy picker, parameter form, equity-curve
+chart, trade-list table); persist runs into Postgres for comparison.
 
 ---
 
-## 6. Data Lifecycle & Storage
+## 6. Order Management (Phase 5)
 
-- No retention policy is enforced in code, only declared in the schema doc.
-- `cleanOldData()` in `marketDataService.ts` calls `SELECT clean_old_data()`
-  but returns a hard-coded `{ deleted: 0 }` — the count is never read.
-- No backfill scheduler. Users must manually click the *Download* page for
-  every symbol / timeframe combination.
-- No deduplication / repair job for missing bars (`data_quality_metrics`
-  table exists but nothing writes to it).
+The IB service exposes read-only account/positions/orders endpoints and the
+backend proxies them. There is **no order placement** anywhere — no
+`placeOrder` flow in `ib_service`, no `POST /api/orders`, no order ticket in
+the UI.
 
-**Action:**
-- Implement a small backfill scheduler in `ib_service` (APScheduler or
-  `asyncio.create_task` loop) driven by `data_collection_config` rows.
-- Wire `data_quality_metrics` from the actual upload/store path.
-- Promote `clean_old_data()` to return row counts so the API isn't lying.
+**Action:** add a guarded `placeOrder` path in `ib_service`, a validated
+`POST /api/orders` (create/cancel/modify), and a frontend order ticket +
+blotter. Keep it behind an explicit config flag given the live-trading risk.
 
 ---
 
-## 7. Backtesting
+## 7. Frontend UX Gaps (Phases 5–6)
 
-`ib_service/backtesting.py` (434 LoC) and `AVAILABLE_STRATEGIES` are wired
-into FastAPI (`GET /backtesting/strategies`, `POST /backtesting/run`). There
-is **no frontend UI** for any of this and no backend proxy route, so the
-feature is invisible to end users and undocumented in `FEATURES.md`.
-
-**Action:**
-- Add `backend/src/routes/backtesting.ts` proxy with input validation.
-- Build a `/backtest` page with strategy picker, parameter form, equity
-  curve chart and trade-list table.
-- Persist backtest results into Postgres so they can be compared
-  side-by-side.
-
----
-
-## 8. Frontend UX Gaps
-
-- The home page reports "Connected to IB Gateway" as static text — there is
-  no live indicator wired to `/api/health`.
-- No global error boundary; an exception in any chart unmounts the page.
+- Static IB status text on the home page (see §4).
+- No global `error.tsx` boundary; an exception in a chart unmounts the page.
 - No loading skeletons; charts pop in once data arrives.
-- No keyboard handling on the symbol search (Enter triggers a form submit
-  inside `MarketDataFilter` but Escape does not clear, arrow keys do not
-  cycle results).
-- Mobile layout works (Tailwind responsive classes are everywhere) but the
-  TradingView chart container does not resize cleanly on viewport change.
+- Charts do not re-fit cleanly on viewport change (no `ResizeObserver`).
+- Last-used symbol/timeframe is not persisted to `localStorage`.
+- No CSV / Parquet export from the DataframeViewer.
+- No watchlists, alerts, scanners or sector browsing.
 
-**Action:**
-- Add a `<HealthBadge />` that polls `/api/health` every 10 s.
-- Add a top-level `error.tsx` boundary (Next.js App Router supports this).
-- Hook `ResizeObserver` into every chart container.
+**Action:** add the `error.tsx` boundary and `ResizeObserver` wiring;
+persist last symbol/timeframe; add export from the DataframeViewer; treat
+watchlists/alerts/scanners as larger follow-on features.
 
 ---
 
-## 9. Operational / Deployment Gaps
+## 8. Operational / Deployment Gaps
 
-- `tradingapp.sh` is the only deployment path and is documented as the
-  authoritative one in `README.md`, but `DEPLOYMENT.md` still tells users
-  to run scripts that no longer exist.
-- The script edits `.env` with `cat > .env` and overwrites any user-added
-  keys (e.g. `POSTGRES_HOST`, `JWT_SECRET`). Custom keys are silently lost
-  on `./tradingapp.sh config`.
-- No support for non-Linux hosts (script uses `apt`, `usermod`,
-  `systemctl`). README mentions macOS; the script will fail on it.
-- `verify_timestamp_config.sh` exists but is not referenced from any doc.
+- `tradingapp.sh` rewrites `.env` with `cat > .env` on `config`/`env`,
+  overwriting any hand-added keys (`POSTGRES_HOST`, `API_TOKEN`, …). This is
+  documented as a caveat in `DEPLOYMENT.md` but is still a footgun.
+- The installer is Linux/Ubuntu-only (`apt`, `usermod`, `systemctl`); the
+  README's macOS mention does not hold for `setup`.
+- `verify_timestamp_config.sh` exists at the repo root but is not referenced
+  from any doc or folded into `./tradingapp.sh diagnose`.
 
-**Action:**
-- Make `setup_environment` merge into the existing `.env` rather than
-  overwrite it. Or write to `.env.local` and let docker-compose load both.
-- Add a `--non-interactive` mode for CI use.
-- Reference `verify_timestamp_config.sh` from `TROUBLESHOOTING.md` or
-  fold it into `./tradingapp.sh diagnose`.
+**Action:** make environment generation **merge** into the existing `.env`
+(or write `.env.local`); add a `--non-interactive` mode for CI; reference
+`verify_timestamp_config.sh` from `TROUBLESHOOTING.md` or fold it into
+`diagnose`.
+
+---
+
+## 9. Functional Status Against the `.cursorrules` Brief
+
+The repo-level `.cursorrules` asks for TradingView lightweight charts showing
+**real-time MSFT** across the 5m/15m/30m/1h/4h/8h/1d timeframes with 12
+months of history, sourced from IB Gateway, running remotely.
+
+- ✅ Timeframes available (plus `1m` and `tick`).
+- ✅ 12-month period selectable (`1Y`).
+- ✅ Real-time is now a genuine IB → Redis → Socket.IO → chart stream.
+- ✅ Runs entirely via Docker on a remote host (no local deps).
+- ⚠️ `/msft` still duplicates generic chart code instead of reusing a shared
+  `<Chart>` (see §3.5).
 
 ---
 
 ## 10. Suggested Roadmap (Prioritised)
 
-Phases are ordered by dependency, not by calendar time.
-
-### Phase 1 — Stabilise documentation & repo hygiene (low risk, high signal)
-1. Delete references to non-existent scripts from `DEPLOYMENT.md` and
-   `TROUBLESHOOTING.md`; point everything at `tradingapp.sh`.
-2. Rewrite `FEATURES.md` into *Available* vs *Planned* sections.
-3. Remove `.env` from the repo, rotate leaked secrets, consolidate
-   `.env.example` + `env.template`.
-4. Pick a single SQL schema (TimescaleDB), archive the others, update the
-   database README to match.
-
-### Phase 2 — Make the platform safe to run (security + DB)
-5. Add Postgres/TimescaleDB to a `docker-compose.db.yml` override that the
-   `tradingapp.sh deploy` flow can opt into.
-6. Lock down `routes/settings.ts` to a whitelisted view.
-7. Tighten CORS to `CORS_ORIGINS`; require a bearer token on backend routes
-   and Socket.IO handshakes.
-8. Either delete Redis from the stack or wire it into the backend cache /
-   pub-sub paths.
-
-### Phase 3 — Quality bar (tests, lint, CI)
-9. Add ESLint + Prettier + Ruff + Black configs and matching npm/pip
-   scripts.
-10. Replace the placeholder CI step with type-check, lint and a small
-    initial test suite (indicators math, request validation).
-11. Switch CI triggers from `main` to `master`.
-
-### Phase 4 — Real-time pipeline
-12. Implement IB `reqMktData` / `reqRealTimeBars` in `ib_service` publishing
-    to Redis.
-13. Have backend consume Redis and emit ticks via Socket.IO rooms.
-14. Refactor `MSFTRealtimeChart` to consume the streaming feed instead of
-    polling.
+Phases 1–4 are complete (see §2). Remaining work, ordered by dependency:
 
 ### Phase 5 — Feature expansion
-15. Surface the existing backtesting engine in the frontend.
-16. Add a scheduled backfill worker and wire `data_quality_metrics`.
-17. Persist last-used symbol/timeframe per session.
-18. Add CSV/Parquet export from the DataframeViewer.
+1. Add a `backend/src/routes/backtesting.ts` proxy and a `/backtest` UI;
+   persist runs.
+2. Add a scheduled backfill worker in `ib_service` driven by
+   `data_collection_config`.
+3. Wire `updateDataQualityMetrics()` from the upload/store path; return real
+   counts from `clean_old_data()`.
+4. Resolve the `technical_indicators` persistence mismatch (§3.2).
+5. Persist last-used symbol/timeframe; add CSV/Parquet export from the
+   DataframeViewer.
+6. (Stretch) Order management behind an explicit live-trading flag.
 
 ### Phase 6 — Operational polish
-19. Structured logging, request IDs, Prometheus metrics, health badges.
-20. Connection-pool the IB client with a `clientId` range.
-21. Split the monolithic `main.py` and the largest frontend components.
-22. Add an `error.tsx` boundary and resize observers on charts.
+7. Structured logging, `x-request-id` propagation, `/metrics` endpoints.
+8. Live `<HealthBadge />` reflecting IB / DB / cache / streaming state.
+9. Connection-pool the IB client across a `clientId` range.
+10. Split the monolithic `main.py` and the largest frontend components;
+    consolidate the four chart components into one `<Chart>`.
+11. Add an `error.tsx` boundary and `ResizeObserver`s on chart containers.
+12. Expand test breadth (frontend component tests, backend integration,
+    IB-service historical-assembly tests).
 
 ---
 
 ## 11. Concrete "Definition of Done" Checklist
 
-A future PR closes out this gap analysis when **all** of the following are
-true:
+Carried forward from the original analysis; checked items have landed.
 
-- [ ] `DEPLOYMENT.md` and `TROUBLESHOOTING.md` reference only scripts that
+- [x] `DEPLOYMENT.md` and `TROUBLESHOOTING.md` reference only scripts that
       exist in the repo.
-- [ ] `FEATURES.md` accurately reflects what ships today; aspirational items
+- [x] `FEATURES.md` accurately reflects what ships today; aspirational items
       live under a clearly-labelled *Planned* heading.
-- [ ] `.env` is no longer tracked; `.env.example` is the single source of
+- [x] `.env` is no longer tracked; `.env.example` is the single source of
       truth for documented environment variables.
-- [ ] A single canonical SQL schema is shipped and applied by the default
-      deployment.
-- [ ] `docker compose up` from a fresh clone produces a working frontend,
-      backend, IB service and database — without manual schema bootstrap.
-- [ ] `npm run lint`, `npm run type-check`, `ruff check`, `pytest` and
-      `npm test` all run in CI and gate merges.
-- [ ] Backend has authentication middleware and CORS is bound to
+- [x] A single canonical SQL schema is shipped; legacy schemas archived.
+- [x] `docker compose` from a fresh clone (with `--with-db`) produces a
+      working frontend, backend, IB service and database — without manual
+      schema bootstrap.
+- [x] `npm run lint`, `type-check`, `ruff check`, `pytest` and `npm test`
+      all run in CI and gate merges.
+- [x] Backend has authentication middleware and CORS is bound to
       `CORS_ORIGINS`.
-- [ ] Real-time chart receives ticks via Socket.IO emitted from a
-      backend-side subscription, not browser polling.
+- [x] Real-time chart receives ticks via Socket.IO emitted from a
+      backend-side Redis subscription, not browser polling.
 - [ ] Backtesting is exposed in the UI.
-- [ ] A health badge on the home page reflects live IB Gateway and database
-      state.
+- [ ] A health badge on the home page reflects live IB Gateway, database,
+      cache and streaming state.
+- [ ] `data_quality_metrics` is populated and `clean_old_data()` returns real
+      counts.
+- [ ] The `technical_indicators` schema/code mismatch is resolved.
 
 ---
 

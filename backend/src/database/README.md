@@ -59,9 +59,11 @@ external instance.
 | **Self-hosted Docker** | `docker run -d --name timescaledb -e POSTGRES_PASSWORD=... -e POSTGRES_DB=tradingapp -p 5432:5432 timescale/timescaledb:latest-pg15` |
 | **Apt install on Ubuntu** | https://docs.timescale.com/install/latest/self-hosted/installation-debian/ |
 
-A Phase-2 task in [`GAP_ANALYSIS.md`](../../../GAP_ANALYSIS.md) is to add an
-optional `docker-compose.db.yml` override that brings up TimescaleDB
-locally and applies this schema automatically.
+For local / self-hosted dev you can skip the external instance entirely:
+`./tradingapp.sh deploy --with-db` layers the `docker-compose.db.yml`
+override (shipped at the repo root) that brings up TimescaleDB locally and
+applies this schema automatically on first run. See
+[`DEPLOYMENT.md`](../../../DEPLOYMENT.md#external-database-recommended-for-production).
 
 ## Applying the Schema
 
