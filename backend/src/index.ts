@@ -9,6 +9,7 @@ import axios from 'axios';
 import { dbService } from './services/database.js';
 import { cacheService } from './services/cache.js';
 import { createStreamingBridge } from './services/streamingBridge.js';
+import { createBackfillScheduler } from './services/backfillScheduler.js';
 import { createAuthMiddleware, checkSocketAuth } from './middleware/auth.js';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 4000;
@@ -127,6 +128,7 @@ app.get('/api/health', async (_req, res) => {
         last_error: cacheStatus.last_error,
       },
       streaming: streamingBridge.status(),
+      backfill: backfillScheduler.status(),
     },
   });
 });
@@ -193,6 +195,11 @@ io.use((socket, next) => {
 // bridge refcounts IB-side subscriptions so we only one-shot each
 // symbol against the IB service.
 const streamingBridge = createStreamingBridge(io);
+
+// Backfill scheduler (Phase 5): periodically tops up the local store with
+// recent bars for every enabled `auto_collect` row in data_collection_config.
+// Opt-in via BACKFILL_ENABLED — see services/backfillScheduler.ts.
+const backfillScheduler = createBackfillScheduler();
 
 io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
@@ -282,6 +289,11 @@ async function shutdown(signal: string) {
   } catch (err) {
     console.warn('Error stopping streaming bridge:', err);
   }
+  try {
+    backfillScheduler.stop();
+  } catch (err) {
+    console.warn('Error stopping backfill scheduler:', err);
+  }
   server.close(() => {
     console.log('Server closed');
     process.exit(0);
@@ -301,6 +313,8 @@ server.listen(PORT, '0.0.0.0', () => {
   void streamingBridge.start().catch((err) => {
     console.warn('Streaming bridge failed to start:', err);
   });
+
+  backfillScheduler.start();
 
   void dbService
     .testConnection()

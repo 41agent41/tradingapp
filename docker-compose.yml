@@ -29,6 +29,11 @@ services:
       - CACHE_TTL_SEARCH=${CACHE_TTL_SEARCH:-300}
       # Phase 4 real-time streaming bridge
       - STREAMING_ENABLED=${STREAMING_ENABLED:-true}
+      # Phase 5 backfill scheduler (opt-in; drives data_collection_config)
+      - BACKFILL_ENABLED=${BACKFILL_ENABLED:-false}
+      - BACKFILL_INTERVAL_MINUTES=${BACKFILL_INTERVAL_MINUTES:-15}
+      - BACKFILL_PERIOD=${BACKFILL_PERIOD:-5D}
+      - BACKFILL_INITIAL_DELAY_MS=${BACKFILL_INITIAL_DELAY_MS:-30000}
     ports:
       - "${BACKEND_PORT:-4000}:${BACKEND_PORT:-4000}"
     depends_on:
