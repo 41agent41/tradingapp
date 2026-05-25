@@ -432,8 +432,14 @@ router.get('/history', async (req: Request, res: Response) => {
 
     console.log(`Retrieved ${response.data?.data?.length || 0} bars from IB service for ${symbol}`);
 
-    // Store data in database if we have valid data
-    if (response.data?.data && Array.isArray(response.data.data) && response.data.data.length > 0) {
+    // Store data in database if we have valid data.
+    //
+    // The IB service returns its bars under `bars` with a numeric `timestamp`
+    // (unix seconds) — see ib_service `HistoricalDataResponse`. A previous
+    // version of this block read `response.data.data` / `bar.time`, which
+    // never matched, so the read-path cache-on-fetch was silently dead.
+    const ibBars = Array.isArray(response.data?.bars) ? response.data.bars : [];
+    if (ibBars.length > 0) {
       try {
         // Get or create contract
         const contractData: Contract = {
@@ -446,8 +452,8 @@ router.get('/history', async (req: Request, res: Response) => {
         const contractId = await marketDataService.getOrCreateContract(contractData);
 
         // Convert data format and store
-        const bars: CandlestickBar[] = response.data.data.map((bar: any) => ({
-          timestamp: new Date(bar.time * 1000), // Convert Unix timestamp to Date
+        const bars: CandlestickBar[] = ibBars.map((bar: any) => ({
+          timestamp: new Date(bar.timestamp * 1000), // Convert Unix timestamp to Date
           open: bar.open,
           high: bar.high,
           low: bar.low,
@@ -466,10 +472,25 @@ router.get('/history', async (req: Request, res: Response) => {
           `Stored ${storeResult.inserted} new bars, updated ${storeResult.updated} bars for ${symbol} ${timeframe}`
         );
 
-        // Store technical indicators if included
+        // Record data-quality metrics for the batch (best-effort).
+        try {
+          await marketDataService.recordDataQuality(contractId, timeframe, bars);
+        } catch (qualityError) {
+          console.warn(
+            `Failed to record data-quality metrics for ${symbol} ${timeframe}:`,
+            qualityError
+          );
+        }
+
+        // Store technical indicators if included. NOTE: the IB service
+        // returns indicators inline on each bar rather than under a separate
+        // `indicators` key, so this block is currently dormant. It also
+        // targets the `technical_indicators` table, which the canonical
+        // schema omits (see GAP_ANALYSIS.md §3.2) — left gated until that
+        // mismatch is resolved.
         if (includeIndicators && response.data?.indicators) {
-          for (const bar of response.data.data) {
-            const timestamp = new Date(bar.time * 1000);
+          for (const bar of ibBars) {
+            const timestamp = new Date(bar.timestamp * 1000);
             const indicators: TechnicalIndicator[] = [];
 
             if (bar.sma_20) indicators.push({ name: 'SMA', period: 20, value: bar.sma_20 });

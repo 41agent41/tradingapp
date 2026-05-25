@@ -20,6 +20,7 @@ capabilities never get conflated with aspirational plans.
    - [Technical indicators](#technical-indicators)
    - [Backtesting (API only)](#backtesting-api-only)
    - [Historical data download](#historical-data-download)
+   - [Automated data collection & retention](#automated-data-collection--retention)
    - [Account read endpoints](#account-read-endpoints)
    - [REST & WebSocket API](#rest--websocket-api)
    - [Authentication & CORS](#authentication--cors)
@@ -150,6 +151,30 @@ for the full walk-through.
 - Preview the result in an in-page DataFrame viewer.
 - Push to Postgres via `POST /api/market-data/upload` with upsert
   semantics.
+
+### Automated data collection & retention
+
+Beyond the manual *Download* page, the backend can keep the database
+topped up and pruned on its own:
+
+- **Scheduled backfill (opt-in).** With `BACKFILL_ENABLED=true`, the
+  backend periodically reads every enabled `auto_collect` row from the
+  `data_collection_config` table, fetches the recent `BACKFILL_PERIOD`
+  window from the IB service and upserts it — respecting each row's
+  `collection_interval_minutes` so slow-moving data isn't refetched every
+  tick. Progress is visible under `services.backfill` in `/api/health`.
+- **Data-quality metrics.** Every store path (manual upload, the
+  `/history` cache-on-fetch and the backfill worker) records per-day
+  total / missing / duplicate / invalid bar counts and a quality score
+  into `data_quality_metrics`. They surface through
+  `GET /api/market-data/database/stats`.
+- **Retention cleanup with real counts.** `POST /api/market-data/database/clean`
+  deletes bars older than each row's `retention_days` and reports the
+  actual number removed (per config). This complements TimescaleDB's own
+  chunk-dropping retention policy.
+
+See [`DEPLOYMENT.md`](DEPLOYMENT.md#data-collection--retention-phase-5) for
+how to populate `data_collection_config` and tune the scheduler.
 
 ### Account read endpoints
 
@@ -289,15 +314,15 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 
 ### Database & data lifecycle
 
-- Scheduled backfill of missing bars driven by `data_collection_config`.
-- Population of `data_quality_metrics` — `updateDataQualityMetrics()`
-  exists in `marketDataService.ts` but nothing calls it yet.
-- Real row counts returned from `clean_old_data()` rather than the current
-  hard-coded `0`.
 - Reconcile the indicator persistence path: `storeTechnicalIndicators()`
   still writes to a `technical_indicators` table that the canonical
   TimescaleDB schema intentionally omits (see
   [`backend/src/database/README.md`](backend/src/database/README.md)).
+
+> The scheduled backfill worker, `data_quality_metrics` population and
+> real `clean_old_data()` counts have **shipped** — see
+> [Automated data collection & retention](#automated-data-collection--retention)
+> under *Currently Available*.
 
 ### Observability
 
