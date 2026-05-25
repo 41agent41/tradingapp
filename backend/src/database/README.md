@@ -163,32 +163,24 @@ The canonical schema ships the following objects:
 The schema inserts a handful of common contracts (`MSFT`, `AAPL`, `GOOGL`,
 `SPY`, `QQQ`) so you can sanity-check the install with `SELECT * FROM contracts;`.
 
-## Known Schema / Code Mismatch
+## Indicators are not persisted (by design)
 
-The canonical schema **intentionally omits** the `technical_indicators`
-table — the project decided to compute and display indicators in the
-frontend (`lightweight-charts`) rather than persist them.
+The canonical schema **intentionally omits** a `technical_indicators`
+table — indicators are computed on demand in `ib_service/indicators.py`
+and rendered client-side by `lightweight-charts` rather than stored.
 
-However, `backend/src/services/marketDataService.ts` still issues
-`INSERT INTO technical_indicators ...` and `LEFT JOIN technical_indicators`
-queries inherited from the old plain-Postgres schema. Those calls error
-against the canonical schema today.
+The backend code matches this: `marketDataService.getHistoricalData()`
+returns raw OHLCV only, and there is no `technical_indicators` write
+path. Requests for indicators (`/api/market-data/indicators`, or
+`/api/market-data/history?include_indicators=true`) are served straight
+from the IB service, which calculates them.
 
-This is tracked as a follow-up in
-[`GAP_ANALYSIS.md`](../../../GAP_ANALYSIS.md). Until it lands the
-practical effect is that requests with `include_indicators=true` will
-fall back to the IB-service code path that computes indicators in
-`ib_service/indicators.py`. If you need persistence in the meantime, run
-the archived `init.sql` after the TimescaleDB schema so the table exists
-in your database:
-
-```bash
-psql ... -f backend/src/database/archive/init.sql
-```
-
-(That file ships the legacy `technical_indicators` table without
-hypertable conversion. It is **not** part of the supported deployment path
-and will be replaced when the code is reworked.)
+> Historical note: earlier revisions issued `INSERT INTO
+> technical_indicators` / `LEFT JOIN technical_indicators` queries
+> inherited from the old plain-Postgres schema, which errored against the
+> canonical schema. That persistence path was removed in the §3.2 cleanup
+> (see [`GAP_ANALYSIS.md`](../../../GAP_ANALYSIS.md)). The legacy table
+> definition still lives in `archive/init.sql` for reference only.
 
 ## Operational SQL Snippets
 
