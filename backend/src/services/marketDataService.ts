@@ -33,6 +33,34 @@ export interface TechnicalIndicator {
   additionalData?: Record<string, any>;
 }
 
+/**
+ * A row from `data_collection_config` joined to its contract. Drives both
+ * the backfill scheduler (which symbols/timeframes to auto-collect) and the
+ * retention-aware `cleanOldData()` deletion.
+ */
+export interface CollectionConfig {
+  contractId: number;
+  timeframe: string;
+  enabled: boolean;
+  autoCollect: boolean;
+  collectionIntervalMinutes: number;
+  retentionDays: number;
+  symbol: string;
+  secType: string;
+  exchange: string | null;
+  currency: string | null;
+}
+
+/** Per-UTC-day data-quality counts derived from a batch of stored bars. */
+export interface DailyQualityMetric {
+  /** UTC midnight of the day the metrics describe. */
+  date: Date;
+  totalBars: number;
+  missingBars: number;
+  duplicateBars: number;
+  invalidBars: number;
+}
+
 // Market Data Service Class
 export class MarketDataService {
   // Get or create contract in database
@@ -344,8 +372,12 @@ export class MarketDataService {
     duplicateBars: number,
     invalidBars: number
   ): Promise<void> {
-    const qualityScore =
+    const rawScore =
       totalBars > 0 ? (totalBars - missingBars - duplicateBars - invalidBars) / totalBars : 0;
+    // The score column is DECIMAL(5,4) in [0,1]; clamp so a day with more
+    // missing/duplicate/invalid than total bars can never overflow or go
+    // negative.
+    const qualityScore = Math.max(0, Math.min(1, rawScore));
 
     const query = `
       INSERT INTO data_quality_metrics (contract_id, timeframe, date, total_bars, missing_bars, duplicate_bars, invalid_bars, data_quality_score)
@@ -400,13 +432,250 @@ export class MarketDataService {
     return result.rows;
   }
 
-  // Clean old data based on retention policy
-  async cleanOldData(): Promise<{ deleted: number }> {
-    const query = 'SELECT clean_old_data()';
-    await dbService.query(query);
+  // -------------------------------------------------------------------
+  // Data-collection configuration
+  // -------------------------------------------------------------------
 
-    // Get count of deleted records (this would need to be implemented in the function)
-    return { deleted: 0 };
+  /**
+   * Return the `data_collection_config` rows (joined to their contract)
+   * that should drive automated work.
+   *
+   * @param opts.autoCollectOnly when true, only rows with `auto_collect = true`
+   *   are returned (used by the backfill scheduler). When false (the
+   *   default) every enabled row is returned (used by retention cleanup).
+   */
+  async getActiveCollectionConfigs(
+    opts: { autoCollectOnly?: boolean } = {}
+  ): Promise<CollectionConfig[]> {
+    const where = opts.autoCollectOnly
+      ? 'WHERE dcc.enabled = true AND dcc.auto_collect = true'
+      : 'WHERE dcc.enabled = true';
+
+    const query = `
+      SELECT
+        dcc.contract_id,
+        dcc.timeframe,
+        dcc.enabled,
+        dcc.auto_collect,
+        dcc.collection_interval_minutes,
+        dcc.retention_days,
+        c.symbol,
+        c.sec_type,
+        c.exchange,
+        c.currency
+      FROM data_collection_config dcc
+      JOIN contracts c ON c.id = dcc.contract_id
+      ${where}
+      ORDER BY c.symbol, dcc.timeframe
+    `;
+
+    const result = await dbService.query(query);
+    return result.rows.map((row) => ({
+      contractId: Number(row.contract_id),
+      timeframe: row.timeframe,
+      enabled: row.enabled,
+      autoCollect: row.auto_collect,
+      collectionIntervalMinutes: Number(row.collection_interval_minutes ?? 5),
+      retentionDays: Number(row.retention_days ?? 365),
+      symbol: row.symbol,
+      secType: row.sec_type,
+      exchange: row.exchange,
+      currency: row.currency,
+    }));
+  }
+
+  /** Most recent stored bar timestamp for a (contract, timeframe), or null. */
+  async getLatestStoredTimestamp(contractId: number, timeframe: string): Promise<Date | null> {
+    const result = await dbService.query(
+      'SELECT MAX(timestamp) AS latest FROM candlestick_data WHERE contract_id = $1 AND timeframe = $2',
+      [contractId, timeframe]
+    );
+    const latest = result.rows[0]?.latest;
+    return latest ? new Date(latest) : null;
+  }
+
+  // -------------------------------------------------------------------
+  // Data-quality metrics
+  // -------------------------------------------------------------------
+
+  /** Seconds between consecutive bars for a timeframe (0 = unknown / tick). */
+  static timeframeSeconds(timeframe: string): number {
+    switch (timeframe) {
+      case '1min':
+        return 60;
+      case '5min':
+        return 300;
+      case '15min':
+        return 900;
+      case '30min':
+        return 1800;
+      case '1hour':
+        return 3600;
+      case '4hour':
+        return 14400;
+      case '8hour':
+        return 28800;
+      case '1day':
+        return 86400;
+      default:
+        return 0; // tick / unknown — no gap analysis possible
+    }
+  }
+
+  /** Epoch seconds for a bar whose timestamp may be a Date or a number. */
+  private static barEpochSeconds(bar: CandlestickBar): number {
+    const ts = bar.timestamp;
+    const ms = ts instanceof Date ? ts.getTime() : new Date(ts as any).getTime();
+    return Math.round(ms / 1000);
+  }
+
+  /** A bar is invalid if its OHLCV fails basic sanity checks. */
+  static isInvalidBar(bar: CandlestickBar): boolean {
+    const prices = [bar.open, bar.high, bar.low, bar.close];
+    if (prices.some((v) => typeof v !== 'number' || !Number.isFinite(v) || v <= 0)) {
+      return true;
+    }
+    if (typeof bar.volume !== 'number' || !Number.isFinite(bar.volume) || bar.volume < 0) {
+      return true;
+    }
+    const eps = 1e-9;
+    if (bar.high + eps < bar.low) return true;
+    if (bar.high + eps < Math.max(bar.open, bar.close)) return true;
+    if (bar.low - eps > Math.min(bar.open, bar.close)) return true;
+    return false;
+  }
+
+  /**
+   * Compute per-UTC-day data-quality metrics for a batch of bars. Pure and
+   * side-effect free so it is unit-testable without a database.
+   *
+   * - `duplicateBars` — rows sharing a timestamp with another row that day.
+   * - `invalidBars`   — rows failing {@link isInvalidBar}.
+   * - `missingBars`   — interior gaps between consecutive distinct bars,
+   *                     estimated from the timeframe interval. This counts
+   *                     only holes *between* observed bars (it makes no
+   *                     assumption about market hours), so an empty day reads
+   *                     as zero missing rather than a full session.
+   * - `totalBars`     — distinct timestamps observed that day.
+   */
+  static computeDailyQualityMetrics(
+    bars: CandlestickBar[],
+    timeframe: string
+  ): DailyQualityMetric[] {
+    if (!bars || bars.length === 0) return [];
+
+    const interval = this.timeframeSeconds(timeframe);
+    const byDay = new Map<string, CandlestickBar[]>();
+
+    for (const bar of bars) {
+      const seconds = this.barEpochSeconds(bar);
+      if (!Number.isFinite(seconds)) continue;
+      // UTC calendar day, e.g. "2026-01-02" (toISOString is always UTC).
+      const key = new Date(seconds * 1000).toISOString().slice(0, 10);
+      const list = byDay.get(key);
+      if (list) list.push(bar);
+      else byDay.set(key, [bar]);
+    }
+
+    const out: DailyQualityMetric[] = [];
+    for (const [key, dayBars] of byDay) {
+      const seconds = dayBars.map((b) => this.barEpochSeconds(b));
+      const distinct = Array.from(new Set(seconds)).sort((a, b) => a - b);
+      const duplicateBars = seconds.length - distinct.length;
+      let invalidBars = 0;
+      for (const b of dayBars) if (this.isInvalidBar(b)) invalidBars++;
+
+      let missingBars = 0;
+      if (interval > 0) {
+        for (let i = 1; i < distinct.length; i++) {
+          const gap = Math.round((distinct[i] - distinct[i - 1]) / interval) - 1;
+          if (gap > 0) missingBars += gap;
+        }
+      }
+
+      out.push({
+        date: new Date(`${key}T00:00:00.000Z`),
+        totalBars: distinct.length,
+        missingBars,
+        duplicateBars,
+        invalidBars,
+      });
+    }
+
+    return out.sort((a, b) => a.date.getTime() - b.date.getTime());
+  }
+
+  /**
+   * Compute and persist data-quality metrics for a batch of stored bars.
+   * Best-effort: callers wrap this in their own try/catch so a metrics
+   * failure never aborts the underlying store.
+   */
+  async recordDataQuality(
+    contractId: number,
+    timeframe: string,
+    bars: CandlestickBar[]
+  ): Promise<void> {
+    const metrics = MarketDataService.computeDailyQualityMetrics(bars, timeframe);
+    for (const m of metrics) {
+      await this.updateDataQualityMetrics(
+        contractId,
+        timeframe,
+        m.date,
+        m.totalBars,
+        m.missingBars,
+        m.duplicateBars,
+        m.invalidBars
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------
+  // Retention cleanup
+  // -------------------------------------------------------------------
+
+  /**
+   * Delete bars older than each (contract, timeframe)'s configured
+   * `retention_days`, driven by `data_collection_config`. Returns the real
+   * number of rows deleted (the previous implementation called a
+   * `clean_old_data()` SQL function that does not exist in the canonical
+   * TimescaleDB schema and always reported `0`).
+   *
+   * Note: this complements — it does not replace — TimescaleDB's own
+   * `add_retention_policy` chunk-dropping. It exists so an operator can
+   * enforce a tighter, per-symbol retention than the coarse global policy.
+   */
+  async cleanOldData(): Promise<{
+    deleted: number;
+    byConfig: Array<{ symbol: string; timeframe: string; retentionDays: number; deleted: number }>;
+  }> {
+    const configs = await this.getActiveCollectionConfigs();
+    let deleted = 0;
+    const byConfig: Array<{
+      symbol: string;
+      timeframe: string;
+      retentionDays: number;
+      deleted: number;
+    }> = [];
+
+    for (const cfg of configs) {
+      const result = await dbService.query(
+        `DELETE FROM candlestick_data
+         WHERE contract_id = $1
+           AND timeframe = $2
+           AND timestamp < NOW() - make_interval(days => $3::int)`,
+        [cfg.contractId, cfg.timeframe, cfg.retentionDays]
+      );
+      const n = result.rowCount ?? 0;
+      deleted += n;
+      byConfig.push({
+        symbol: cfg.symbol,
+        timeframe: cfg.timeframe,
+        retentionDays: cfg.retentionDays,
+        deleted: n,
+      });
+    }
+
+    return { deleted, byConfig };
   }
 
   // Upload historical data to database
@@ -445,6 +714,16 @@ export class MarketDataService {
 
     // Store candlestick data
     const result = await this.storeCandlestickData(contractId, timeframe, candlestickBars);
+
+    // Record data-quality metrics for the batch (best-effort).
+    try {
+      await this.recordDataQuality(contractId, timeframe, candlestickBars);
+    } catch (qualityError) {
+      console.warn(
+        `Failed to record data-quality metrics for ${symbol} ${timeframe}:`,
+        qualityError
+      );
+    }
 
     console.log(
       `Upload completed: ${result.inserted} inserted, ${result.updated} updated, ${result.errors} errors`

@@ -48,14 +48,11 @@ The platform is in materially better shape than at the previous review:
 
 The remaining risks are now smaller and mostly about **breadth and polish**:
 
-1. **Data lifecycle is still manual.** No backfill scheduler;
-   `data_quality_metrics` is never populated; `clean_old_data()` returns a
-   hard-coded `0`.
-2. **An indicator-persistence mismatch lingers.** `storeTechnicalIndicators()`
+1. **An indicator-persistence mismatch lingers.** `storeTechnicalIndicators()`
    writes to a `technical_indicators` table the canonical schema omits.
-3. **No observability.** No structured logging, metrics endpoint or
+2. **No observability.** No structured logging, metrics endpoint or
    request-id propagation; the home-page IB status is still static text.
-4. **Single-feature UI gaps.** Backtesting and order management have no
+3. **Single-feature UI gaps.** Backtesting and order management have no
    frontend; the four chart components remain unconsolidated.
 
 ---
@@ -110,20 +107,35 @@ These items were open gaps in earlier revisions of this document and are now
 
 ## 3. Remaining Architectural & Code Gaps
 
-### 3.1 Data lifecycle & storage (Phase 5)
+### 3.1 Data lifecycle & storage (Phase 5) ✅ resolved
 
-- **No backfill scheduler.** Users must click the *Download* page for every
-  symbol/timeframe; nothing drives collection from `data_collection_config`.
-- **`data_quality_metrics` is never written.** `updateDataQualityMetrics()`
-  exists in `marketDataService.ts` but has no caller, so the table stays
-  empty and the `data_quality_score` view columns are always null.
-- **`clean_old_data()` lies.** `marketDataService.cleanOldData()` runs
-  `SELECT clean_old_data()` but returns a hard-coded `{ deleted: 0 }`; the
-  retention policies in the schema run independently of this call.
+This section's three gaps have been closed:
 
-**Action:** add an APScheduler (or `asyncio`) backfill loop in `ib_service`
-driven by `data_collection_config`; call `updateDataQualityMetrics()` from
-the upload/store path; promote `clean_old_data()` to return real row counts.
+- **Backfill scheduler.** `backend/src/services/backfillScheduler.ts` runs an
+  opt-in (`BACKFILL_ENABLED`) timer that reads every enabled `auto_collect`
+  row from `data_collection_config`, fetches the recent `BACKFILL_PERIOD`
+  window from the IB service and upserts it via `marketDataService`,
+  respecting each row's `collection_interval_minutes`. It writes a
+  `data_collection_sessions` row per attempt and reports under
+  `services.backfill` in `/api/health`. It lives in the **backend**, not
+  `ib_service` as originally proposed, because only the backend has database
+  access — the IB service can neither read `data_collection_config` nor write
+  `candlestick_data`.
+- **`data_quality_metrics` is populated.** `MarketDataService.recordDataQuality()`
+  computes per-UTC-day total / missing / duplicate / invalid counts (pure and
+  unit-tested in `tests/dataQuality.test.ts`) and is called from the upload
+  path, the `/history` IB-fallback store path and the backfill scheduler. The
+  quality score is clamped to `[0,1]`.
+- **`clean_old_data()` returns real counts.** `cleanOldData()` no longer calls
+  the non-existent `clean_old_data()` SQL function (it lived only in the
+  archived schemas). It now deletes per `data_collection_config.retention_days`
+  and returns the actual rows removed, with a per-config breakdown.
+
+> While fixing the store path it emerged that the `/history` route's
+> cache-on-fetch was silently dead — it read `response.data.data[].time`
+> whereas the IB service returns `bars[].timestamp`. That mapping is fixed, so
+> the read path now persists fetched bars (and records their quality) as
+> intended.
 
 ### 3.2 Indicator persistence mismatch
 
@@ -275,10 +287,10 @@ Phases 1–4 are complete (see §2). Remaining work, ordered by dependency:
 ### Phase 5 — Feature expansion
 1. Add a `backend/src/routes/backtesting.ts` proxy and a `/backtest` UI;
    persist runs.
-2. Add a scheduled backfill worker in `ib_service` driven by
-   `data_collection_config`.
-3. Wire `updateDataQualityMetrics()` from the upload/store path; return real
-   counts from `clean_old_data()`.
+2. ✅ Add a scheduled backfill worker (in the **backend**) driven by
+   `data_collection_config`. (See §3.1.)
+3. ✅ Wire `updateDataQualityMetrics()` from the upload/store path; return real
+   counts from `clean_old_data()`. (See §3.1.)
 4. Resolve the `technical_indicators` persistence mismatch (§3.2).
 5. Persist last-used symbol/timeframe; add CSV/Parquet export from the
    DataframeViewer.
@@ -319,7 +331,7 @@ Carried forward from the original analysis; checked items have landed.
 - [ ] Backtesting is exposed in the UI.
 - [ ] A health badge on the home page reflects live IB Gateway, database,
       cache and streaming state.
-- [ ] `data_quality_metrics` is populated and `clean_old_data()` returns real
+- [x] `data_quality_metrics` is populated and `clean_old_data()` returns real
       counts.
 - [ ] The `technical_indicators` schema/code mismatch is resolved.
 

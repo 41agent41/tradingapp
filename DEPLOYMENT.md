@@ -299,6 +299,81 @@ Operational notes:
     - IB service `GET /market-data/stream/status` shows the same view
       from the publisher side.
 
+## Data collection & retention (Phase 5)
+
+The backend can keep the database topped up and pruned automatically,
+driven by rows in the `data_collection_config` table. Both the backfill
+worker and the retention cleanup read that table, so nothing happens
+until you add rows to it.
+
+### 1. Tell the backend what to collect
+
+Insert a config row per `(contract, timeframe)` you want managed. The
+contract must already exist in `contracts` (the schema seeds a few; the
+*Download* page and contract search create more):
+
+```sql
+-- Collect MSFT 1-hour bars every 15 minutes, keep 365 days.
+INSERT INTO data_collection_config
+  (contract_id, timeframe, enabled, auto_collect, collection_interval_minutes, retention_days)
+SELECT id, '1hour', true, true, 15, 365
+FROM contracts
+WHERE symbol = 'MSFT' AND sec_type = 'STK'
+ON CONFLICT (contract_id, timeframe) DO UPDATE
+  SET enabled = EXCLUDED.enabled,
+      auto_collect = EXCLUDED.auto_collect,
+      collection_interval_minutes = EXCLUDED.collection_interval_minutes,
+      retention_days = EXCLUDED.retention_days;
+```
+
+- `auto_collect = true` → eligible for the backfill scheduler.
+- `enabled = true` → eligible for retention cleanup (`retention_days`).
+- `collection_interval_minutes` → minimum age before a row is refetched,
+  so a fast global tick doesn't hammer IB for slow-moving data.
+
+### 2. Enable the scheduler
+
+The scheduler is **off by default** because it makes live IB requests on
+a timer. Turn it on in `.env` and redeploy:
+
+```bash
+BACKFILL_ENABLED=true
+BACKFILL_INTERVAL_MINUTES=15   # how often the scheduler ticks
+BACKFILL_PERIOD=5D             # window fetched per run (any IB period)
+BACKFILL_INITIAL_DELAY_MS=30000
+```
+
+```bash
+./tradingapp.sh redeploy
+```
+
+Each pass fetches the recent window for every eligible row and upserts it
+(existing bars update, new bars insert, holes inside the window
+self-heal). It records a `data_collection_sessions` row per attempt and
+per-day quality counts into `data_quality_metrics`.
+
+### 3. Retention cleanup
+
+Retention is enforced two ways:
+
+- **TimescaleDB retention policy** (in the schema) drops whole chunks
+  older than 2 years for `candlestick_data` and 30 days for `tick_data`.
+- **`POST /api/market-data/database/clean`** deletes bars older than each
+  config row's `retention_days` and returns the real number removed —
+  use this for a tighter, per-symbol retention than the coarse global
+  policy. Run it from cron against the authenticated endpoint.
+
+### Diagnostics
+
+```bash
+# Scheduler state: enabled flag, last run, per-run totals.
+curl -fs http://<server-ip>:4000/api/health | jq .services.backfill
+
+# Per-symbol storage + average quality score.
+curl -fs -H "Authorization: Bearer $API_TOKEN" \
+  http://<server-ip>:4000/api/market-data/database/stats | jq
+```
+
 ## Service Verification
 
 ```bash
