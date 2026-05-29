@@ -1,6 +1,6 @@
 # TradingApp - Gap Analysis, Enhancements & Next Steps
 
-_Last reviewed: 2026-05-24 against commit `c258a9d` on `master`._
+_Last reviewed: 2026-05-29 against commit `6897a57` on `master`._
 
 This document captures the result of a structured review of the TradingApp
 codebase and its documentation set (`README.md`, `DEPLOYMENT.md`,
@@ -11,12 +11,12 @@ items below are observed gaps between what the documentation claims, what
 the code implements, and what a quant trading platform sourcing data from IB
 Gateway should provide.
 
-> **What changed since the previous review.** Phases 1–4 of the roadmap have
-> landed. Documentation drift, the missing test/lint/CI scaffolding, the
-> ambiguous database story, the polling-not-streaming "real-time" path and
-> the open security posture have all been addressed. This review re-baselines
-> the document around the work that **remains** (Phases 5–6 plus a few code
-> mismatches).
+> **What changed since the previous review.** Phases 1–4 of the roadmap and
+> the bulk of Phase 5 have now landed: the data-lifecycle gaps (§3.1), the
+> indicator-persistence mismatch (§3.2), the `marketData.ts` split (§3.4) and
+> the backtesting UI (§5) are all in `master`. This review re-baselines the
+> document around the work that **remains** (Phase 6 observability + refactors,
+> plus a handful of single-feature gaps).
 
 ---
 
@@ -26,8 +26,9 @@ The application is a Next.js + Express + FastAPI stack that connects to an
 Interactive Brokers Gateway (`ibapi`) and surfaces market data via TradingView
 `lightweight-charts`. Core capabilities (contract search, historical bars,
 real-time tick streaming, indicator calculation, manual download-to-Postgres,
-read-only account endpoints, an API-only backtesting engine) are implemented
-and now sit behind bearer-token auth with a Redis read-through cache.
+scheduled backfill + retention, read-only account endpoints, and a backtesting
+engine fronted by a `/backtest` page) are implemented and now sit behind
+bearer-token auth with a Redis read-through cache.
 
 The platform is in materially better shape than at the previous review:
 
@@ -50,8 +51,10 @@ The remaining risks are now smaller and mostly about **breadth and polish**:
 
 1. **No observability.** No structured logging, metrics endpoint or
    request-id propagation; the home-page IB status is still static text.
-2. **Single-feature UI gaps.** Backtesting and order management have no
-   frontend; the four chart components remain unconsolidated (§3.5).
+2. **Single-feature UI gaps.** Order management has no frontend
+   (backtesting now does — `/backtest`); the four OHLCV chart components
+   remain unconsolidated (§3.5); the home-page IB status badge is still
+   static text.
 3. **IB concurrency is capped at one.** The single synchronous IB client
    serialises every request (§3.3); `ib_service/main.py` is still monolithic
    (§3.4).

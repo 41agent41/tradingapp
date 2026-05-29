@@ -47,22 +47,44 @@ chmod +x tradingapp.sh
 
 ### **Market Data & Charts**
 - **TradingView Integration**: Professional lightweight charts
-- **Real-time Data**: Live MSFT data from Interactive Brokers
+- **Real-time streaming**: IB `reqMktData` → Redis → Socket.IO → chart, with
+  per-symbol refcounting and a one-shot REST seed (no polling).
 - **Multiple Timeframes**: 5min, 15min, 30min, 1hour, 4hour, 8hour, 1day
-- **12 Months History**: Complete historical data access
-- **Responsive Design**: Works on desktop and mobile
+  (plus `tick` and `1min`).
+- **12 Months History**: Complete historical data access.
+- **Indicators**: SMA / EMA / WMA / MACD / RSI / Stochastic / Williams %R /
+  Bollinger / ATR / Keltner / OBV / VWAP, computed on demand.
 
 ### **Interactive Brokers Integration**
-- **Simplified Connection**: Reliable synchronous IB Gateway connection
-- **Market Data**: Real-time quotes and historical data
-- **Contract Search**: Find stocks, options, futures, forex
-- **Error Handling**: Robust error recovery and reconnection
+- **Simplified Connection**: Reliable synchronous IB Gateway connection.
+- **Market Data**: Real-time quotes and historical data.
+- **Contract Search**: Find stocks, options, futures, forex.
+- **Account read endpoints**: Summary, positions, orders, connection status.
+- **Error Handling**: Robust error recovery and reconnection.
+
+### **Backtesting**
+- **`/backtest` page** with strategy picker, parameter form, metrics
+  summary, equity-curve chart and trade-list table.
+- **Strategies shipped**: `ma_crossover`, `rsi_mean_reversion` — engine
+  is event-driven (`ib_service/backtesting.py`).
+- **Backend proxy** (`/api/backtesting/*`) validates inputs and caches the
+  strategy catalogue.
+
+### **Automated data lifecycle**
+- **Manual download** to PostgreSQL via the `/download` page.
+- **Scheduled backfill** (opt-in via `BACKFILL_ENABLED`) driven by
+  `data_collection_config`; respects per-row collection intervals.
+- **Data-quality metrics** recorded on every store path
+  (`data_quality_metrics`).
+- **Retention cleanup** with real per-config row counts
+  (`POST /api/market-data/database/clean`), on top of TimescaleDB's
+  chunk-dropping policy.
 
 ### **Streamlined Architecture**
-- **Single Script Management**: One script handles everything
-- **Simplified Services**: Reduced complexity, improved reliability
-- **Fast Deployment**: Clean redeploy in under 2 minutes
-- **Easy Troubleshooting**: Built-in diagnostics and auto-fix
+- **Single Script Management**: One script handles everything.
+- **Simplified Services**: Reduced complexity, improved reliability.
+- **Fast Deployment**: Clean redeploy in under 2 minutes.
+- **Easy Troubleshooting**: Built-in diagnostics and auto-fix.
 
 ### **Security & Quality**
 - **Bearer-token auth**: Every backend route (and the Socket.IO handshake)
