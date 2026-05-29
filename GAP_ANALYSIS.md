@@ -213,16 +213,34 @@ list and a `mode: 'live' | 'static'` prop. Make `/msft` a thin wrapper with
 
 ---
 
-## 5. Backtesting (Phase 5)
+## 5. Backtesting (Phase 5) ✅ exposed in the UI
 
 `ib_service/backtesting.py` and `AVAILABLE_STRATEGIES` are wired into FastAPI
-(`GET /backtesting/strategies`, `POST /backtesting/run`). There is **no
-frontend UI** and no backend proxy route, so the feature is reachable only by
-hitting the IB service directly.
+(`GET /backtesting/strategies`, `POST /backtesting/run`). These are now
+fronted by:
 
-**Action:** add a `backend/src/routes/backtesting.ts` proxy with validation;
-build a `/backtest` page (strategy picker, parameter form, equity-curve
-chart, trade-list table); persist runs into Postgres for comparison.
+- **A backend proxy** (`backend/src/routes/backtesting.ts`, mounted at
+  `/api/backtesting`) that validates inputs (symbol/strategy required,
+  timeframe whitelist, positive capital, commission in `[0,1]`), caches the
+  strategy catalogue for an hour, and forwards run requests to the IB service
+  as query params on a bodyless POST.
+- **A `/backtest` page** (`frontend/app/backtest/page.tsx`) with a strategy
+  picker, parameter form, a metrics summary, an equity-curve chart
+  (`components/EquityCurveChart.tsx`) and a trade-list table (reusing
+  `DataframeViewer`), linked from the home page.
+
+While wiring this up, `BacktestResults.to_dict()` was made JSON-safe — it now
+emits the `equity_curve` the chart needs and coerces non-finite metrics (e.g.
+`profit_factor` with zero losing trades) to `null`, which Starlette's
+`allow_nan=False` encoder would otherwise reject. Covered by
+`ib_service/tests/test_backtesting.py`.
+
+> ⚠️ Implemented but **not yet runtime-validated** against a live IB Gateway —
+> the authoring environment has no Node/Python, so type-check, lint and pytest
+> must still pass in CI before this is considered done.
+
+**Remaining (stretch):** persist runs into Postgres for comparison across
+configurations.
 
 ---
 
@@ -292,8 +310,9 @@ months of history, sourced from IB Gateway, running remotely.
 Phases 1–4 are complete (see §2). Remaining work, ordered by dependency:
 
 ### Phase 5 — Feature expansion
-1. Add a `backend/src/routes/backtesting.ts` proxy and a `/backtest` UI;
-   persist runs.
+1. ✅ Add a `backend/src/routes/backtesting.ts` proxy and a `/backtest` UI
+   (§5). Persisting runs to Postgres remains a stretch follow-on; pending
+   CI / live-IB validation.
 2. ✅ Add a scheduled backfill worker (in the **backend**) driven by
    `data_collection_config`. (See §3.1.)
 3. ✅ Wire `updateDataQualityMetrics()` from the upload/store path; return real
@@ -337,7 +356,8 @@ Carried forward from the original analysis; checked items have landed.
       `CORS_ORIGINS`.
 - [x] Real-time chart receives ticks via Socket.IO emitted from a
       backend-side Redis subscription, not browser polling.
-- [ ] Backtesting is exposed in the UI.
+- [x] Backtesting is exposed in the UI (proxy + `/backtest` page; pending
+      runtime validation in CI / against a live IB Gateway).
 - [ ] A health badge on the home page reflects live IB Gateway, database,
       cache and streaming state.
 - [x] `data_quality_metrics` is populated and `clean_old_data()` returns real

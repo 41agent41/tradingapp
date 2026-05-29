@@ -103,6 +103,13 @@ class BacktestResults:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert results to dictionary for JSON serialization"""
+
+        # Starlette's JSONResponse encodes with allow_nan=False, so any inf/NaN
+        # (e.g. profit_factor when there are no losing trades) would raise on
+        # serialization. Coerce non-finite floats to None instead.
+        def _finite(value: float) -> float | None:
+            return value if np.isfinite(value) else None
+
         return {
             "symbol": self.symbol,
             "start_date": self.start_date.isoformat(),
@@ -112,14 +119,18 @@ class BacktestResults:
             "total_trades": self.total_trades,
             "winning_trades": self.winning_trades,
             "losing_trades": self.losing_trades,
-            "total_return": self.total_return,
-            "total_return_percent": self.total_return_percent,
-            "max_drawdown": self.max_drawdown,
-            "sharpe_ratio": self.sharpe_ratio,
-            "win_rate": self.win_rate,
-            "average_win": self.average_win,
-            "average_loss": self.average_loss,
-            "profit_factor": self.profit_factor,
+            "total_return": _finite(self.total_return),
+            "total_return_percent": _finite(self.total_return_percent),
+            "max_drawdown": _finite(self.max_drawdown),
+            "sharpe_ratio": _finite(self.sharpe_ratio),
+            "win_rate": _finite(self.win_rate),
+            "average_win": _finite(self.average_win),
+            "average_loss": _finite(self.average_loss),
+            "profit_factor": _finite(self.profit_factor),
+            "equity_curve": [
+                {"time": int(pd.Timestamp(ts).timestamp()), "value": float(value)}
+                for ts, value in self.equity_curve.items()
+            ],
             "trades_summary": [
                 {
                     "entry_time": trade.entry_time.isoformat(),

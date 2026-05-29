@@ -5,6 +5,7 @@ import { Server as SocketIOServer } from 'socket.io';
 import marketDataRoutes from './routes/marketData.js';
 import accountRoutes from './routes/account.js';
 import settingsRoutes from './routes/settings.js';
+import backtestingRoutes from './routes/backtesting.js';
 import axios from 'axios';
 import { dbService } from './services/database.js';
 import { cacheService } from './services/cache.js';
@@ -157,6 +158,7 @@ app.get('/api/database/health', async (_req, res) => {
 app.use('/api/market-data', marketDataRoutes);
 app.use('/api/account', accountRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/backtesting', backtestingRoutes);
 
 app.get('/', (_req, res) => {
   res.json({
@@ -168,6 +170,7 @@ app.get('/', (_req, res) => {
       market_data: '/api/market-data',
       account: '/api/account',
       settings: '/api/settings',
+      backtesting: '/api/backtesting',
     },
   });
 });
