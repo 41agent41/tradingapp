@@ -48,12 +48,13 @@ The platform is in materially better shape than at the previous review:
 
 The remaining risks are now smaller and mostly about **breadth and polish**:
 
-1. **An indicator-persistence mismatch lingers.** `storeTechnicalIndicators()`
-   writes to a `technical_indicators` table the canonical schema omits.
-2. **No observability.** No structured logging, metrics endpoint or
+1. **No observability.** No structured logging, metrics endpoint or
    request-id propagation; the home-page IB status is still static text.
-3. **Single-feature UI gaps.** Backtesting and order management have no
-   frontend; the four chart components remain unconsolidated.
+2. **Single-feature UI gaps.** Backtesting and order management have no
+   frontend; the four chart components remain unconsolidated (§3.5).
+3. **IB concurrency is capped at one.** The single synchronous IB client
+   serialises every request (§3.3); `ib_service/main.py` is still monolithic
+   (§3.4).
 
 ---
 
@@ -137,18 +138,16 @@ This section's three gaps have been closed:
 > the read path now persists fetched bars (and records their quality) as
 > intended.
 
-### 3.2 Indicator persistence mismatch
+### 3.2 Indicator persistence mismatch ✅ resolved
 
-`storeTechnicalIndicators()` (called from `routes/marketData.ts:491`)
-`INSERT`s into a `technical_indicators` table. The canonical
-`timescaledb-schema.sql` **intentionally omits** that table — indicators are
-computed on demand in `ib_service/indicators.py` and rendered client-side.
-Against a fresh canonical database these inserts error.
-
-**Action:** either drop the persistence path entirely (indicators stay
-compute-on-demand) or add a hypertable for `technical_indicators` to the
-canonical schema. The decision is documented in
-[`backend/src/database/README.md`](backend/src/database/README.md#known-schema--code-mismatch).
+Resolved by **dropping the persistence path** (indicators stay
+compute-on-demand). `storeTechnicalIndicators()` and the `technical_indicators`
+`LEFT JOIN` in `getHistoricalData()` are gone; `getHistoricalData()` now
+returns raw OHLCV only, and `/api/market-data/indicators` proxies straight to
+the IB service (`ib_service/indicators.py`). No backend code references the
+`technical_indicators` table anymore, so a fresh canonical database no longer
+errors. See
+[`backend/src/database/README.md`](backend/src/database/README.md#indicators-are-not-persisted-by-design).
 
 ### 3.3 IB connection model
 
@@ -162,18 +161,26 @@ canonical schema. The decision is documented in
 range (`1..N`) so historical / contract / account / streaming flows can run
 in parallel; move retry/backoff into a dedicated `ib_session.py`.
 
-### 3.4 Monolithic modules
+### 3.4 Monolithic modules (partially resolved)
 
-| File | LoC (approx) | Concern |
-|---|---:|---|
-| `ib_service/main.py` | ~2,700 | HTTP routes, IB client, threading, caching, indicators wiring, account handling |
-| `frontend/app/components/MSFTRealtimeChart.tsx` | ~900 | Chart + data fetch + state + UI controls |
-| `frontend/app/components/MarketDataFilter.tsx` | ~820 | Filter UI + chart trigger + state |
-| `backend/src/routes/marketData.ts` | ~870 | All market-data endpoints, validation, DB write-through |
+| File | LoC (approx) | Concern | Status |
+|---|---:|---|---|
+| `backend/src/routes/marketData.ts` | ~870 | All market-data endpoints, validation, DB write-through | ✅ split into `routes/marketData/{shared,search,history,realtime,indicators,database}.ts`; the old file is now a ~25-line aggregator |
+| `ib_service/main.py` | ~2,700 | HTTP routes, IB client, threading, caching, indicators wiring, account handling | ⬜ pending |
+| `frontend/app/components/MSFTRealtimeChart.tsx` | ~900 | Chart + data fetch + state + UI controls | ⬜ pending (see §3.5) |
+| `frontend/app/components/MarketDataFilter.tsx` | ~820 | Filter UI + chart trigger + state | ⬜ pending |
 
-**Action:** carve `main.py` into `routes/`, `ib_client/`, `cache/`,
-`streaming/` and `models/` packages; split `MSFTRealtimeChart` into a data
-hook, a chart presenter and a control bar.
+**Remaining action:** carve `main.py` into `routes/`, `ib_client/`, `cache/`,
+`streaming/` and `models/` packages (entangled with §3.3 — the IB connection
+global becomes the pool); split `MSFTRealtimeChart` into a data hook, a chart
+presenter and a control bar (see §3.5).
+
+> **Why `main.py` / the charts are not in this PR.** They are large refactors
+> whose correctness depends on runtime behavior (live IB Gateway; the browser
+> chart) that the thin pytest/vitest suites do not cover. They are best landed
+> as their own runtime-validated PRs rather than bundled with the
+> type-checked backend changes above. The `marketData.ts` split was included
+> here because TypeScript's type-checker gives a strong correctness signal.
 
 ### 3.5 Overlapping chart components
 
@@ -206,16 +213,34 @@ list and a `mode: 'live' | 'static'` prop. Make `/msft` a thin wrapper with
 
 ---
 
-## 5. Backtesting (Phase 5)
+## 5. Backtesting (Phase 5) ✅ exposed in the UI
 
 `ib_service/backtesting.py` and `AVAILABLE_STRATEGIES` are wired into FastAPI
-(`GET /backtesting/strategies`, `POST /backtesting/run`). There is **no
-frontend UI** and no backend proxy route, so the feature is reachable only by
-hitting the IB service directly.
+(`GET /backtesting/strategies`, `POST /backtesting/run`). These are now
+fronted by:
 
-**Action:** add a `backend/src/routes/backtesting.ts` proxy with validation;
-build a `/backtest` page (strategy picker, parameter form, equity-curve
-chart, trade-list table); persist runs into Postgres for comparison.
+- **A backend proxy** (`backend/src/routes/backtesting.ts`, mounted at
+  `/api/backtesting`) that validates inputs (symbol/strategy required,
+  timeframe whitelist, positive capital, commission in `[0,1]`), caches the
+  strategy catalogue for an hour, and forwards run requests to the IB service
+  as query params on a bodyless POST.
+- **A `/backtest` page** (`frontend/app/backtest/page.tsx`) with a strategy
+  picker, parameter form, a metrics summary, an equity-curve chart
+  (`components/EquityCurveChart.tsx`) and a trade-list table (reusing
+  `DataframeViewer`), linked from the home page.
+
+While wiring this up, `BacktestResults.to_dict()` was made JSON-safe — it now
+emits the `equity_curve` the chart needs and coerces non-finite metrics (e.g.
+`profit_factor` with zero losing trades) to `null`, which Starlette's
+`allow_nan=False` encoder would otherwise reject. Covered by
+`ib_service/tests/test_backtesting.py`.
+
+> ⚠️ Implemented but **not yet runtime-validated** against a live IB Gateway —
+> the authoring environment has no Node/Python, so type-check, lint and pytest
+> must still pass in CI before this is considered done.
+
+**Remaining (stretch):** persist runs into Postgres for comparison across
+configurations.
 
 ---
 
@@ -285,13 +310,15 @@ months of history, sourced from IB Gateway, running remotely.
 Phases 1–4 are complete (see §2). Remaining work, ordered by dependency:
 
 ### Phase 5 — Feature expansion
-1. Add a `backend/src/routes/backtesting.ts` proxy and a `/backtest` UI;
-   persist runs.
+1. ✅ Add a `backend/src/routes/backtesting.ts` proxy and a `/backtest` UI
+   (§5). Persisting runs to Postgres remains a stretch follow-on; pending
+   CI / live-IB validation.
 2. ✅ Add a scheduled backfill worker (in the **backend**) driven by
    `data_collection_config`. (See §3.1.)
 3. ✅ Wire `updateDataQualityMetrics()` from the upload/store path; return real
    counts from `clean_old_data()`. (See §3.1.)
-4. Resolve the `technical_indicators` persistence mismatch (§3.2).
+4. ✅ Resolve the `technical_indicators` persistence mismatch (§3.2 —
+   persistence dropped).
 5. Persist last-used symbol/timeframe; add CSV/Parquet export from the
    DataframeViewer.
 6. (Stretch) Order management behind an explicit live-trading flag.
@@ -299,9 +326,10 @@ Phases 1–4 are complete (see §2). Remaining work, ordered by dependency:
 ### Phase 6 — Operational polish
 7. Structured logging, `x-request-id` propagation, `/metrics` endpoints.
 8. Live `<HealthBadge />` reflecting IB / DB / cache / streaming state.
-9. Connection-pool the IB client across a `clientId` range.
-10. Split the monolithic `main.py` and the largest frontend components;
-    consolidate the four chart components into one `<Chart>`.
+9. Connection-pool the IB client across a `clientId` range (§3.3).
+10. Split the monolithic modules (§3.4) — ✅ `marketData.ts` done; `main.py`
+    and the largest frontend components still pending — and consolidate the
+    four chart components into one `<Chart>` (§3.5).
 11. Add an `error.tsx` boundary and `ResizeObserver`s on chart containers.
 12. Expand test breadth (frontend component tests, backend integration,
     IB-service historical-assembly tests).
@@ -328,12 +356,14 @@ Carried forward from the original analysis; checked items have landed.
       `CORS_ORIGINS`.
 - [x] Real-time chart receives ticks via Socket.IO emitted from a
       backend-side Redis subscription, not browser polling.
-- [ ] Backtesting is exposed in the UI.
+- [x] Backtesting is exposed in the UI (proxy + `/backtest` page; pending
+      runtime validation in CI / against a live IB Gateway).
 - [ ] A health badge on the home page reflects live IB Gateway, database,
       cache and streaming state.
 - [x] `data_quality_metrics` is populated and `clean_old_data()` returns real
       counts.
-- [ ] The `technical_indicators` schema/code mismatch is resolved.
+- [x] The `technical_indicators` schema/code mismatch is resolved (§3.2 —
+      persistence dropped; indicators stay compute-on-demand).
 
 ---
 
