@@ -18,7 +18,7 @@ capabilities never get conflated with aspirational plans.
    - [Real-time MSFT view](#real-time-msft-view)
    - [Real-time streaming pipeline](#real-time-streaming-pipeline)
    - [Technical indicators](#technical-indicators)
-   - [Backtesting (API only)](#backtesting-api-only)
+   - [Backtesting](#backtesting)
    - [Historical data download](#historical-data-download)
    - [Automated data collection & retention](#automated-data-collection--retention)
    - [Account read endpoints](#account-read-endpoints)
@@ -126,7 +126,7 @@ These are exposed via `GET /api/market-data/indicators` (backend) and
 `IndicatorSelector` and `TechnicalIndicatorsFilter` components let users
 toggle them on the chart.
 
-### Backtesting (API only)
+### Backtesting
 
 `ib_service/backtesting.py` ships an event-driven backtest engine and two
 sample strategies:
@@ -134,9 +134,17 @@ sample strategies:
 - `ma_crossover` (simple moving-average crossover)
 - `rsi_mean_reversion`
 
-Exposed via `GET /backtesting/strategies` and `POST /backtesting/run` on the
-IB service. There is **no frontend UI** for backtesting yet — the feature
-is reachable only via the API.
+Reachable two ways:
+
+- **API:** `GET /backtesting/strategies` and `POST /backtesting/run` on the
+  IB service, or the validating backend proxy at `GET /api/backtesting/strategies`
+  and `POST /api/backtesting/run` (`backend/src/routes/backtesting.ts`).
+- **UI:** the `/backtest` page (`frontend/app/backtest/page.tsx`) with a
+  strategy picker, parameter form, metrics summary, equity-curve chart
+  (`EquityCurveChart`) and a trade-list table.
+
+Persisting runs into Postgres for cross-configuration comparison is the
+only piece still on the roadmap.
 
 ### Historical data download
 
@@ -203,7 +211,9 @@ frontend:
 | `/api/market-data/upload` | POST | Persist downloaded bars to Postgres |
 | `/api/market-data/database/stats` | GET | Per-symbol storage statistics |
 | `/api/market-data/database/clean` | POST | Run retention cleanup |
-| `/api/settings` | GET | Echo back the loaded `.env` (see security note in `GAP_ANALYSIS.md`) |
+| `/api/settings` | GET | Allow-listed, non-credential environment variables (see [Authentication & CORS](#authentication--cors)) |
+| `/api/backtesting/strategies` | GET | Available backtest strategies (cached 1h) |
+| `/api/backtesting/run` | POST | Run a backtest via the IB service |
 
 Socket.IO is mounted on the backend at the default path and its handshake
 is authenticated (see [Authentication & CORS](#authentication--cors)).
@@ -292,15 +302,15 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 
 > **Recently shipped (no longer roadmap).** Bearer-token auth, strict CORS,
 > the whitelisted `/api/settings`, Redis caching, the `--with-db`
-> TimescaleDB override and the real-time streaming pipeline all landed in
-> Phases 2–4 and now live under
-> [Currently Available](#currently-available).
+> TimescaleDB override, the real-time streaming pipeline, the scheduled
+> backfill worker, `data_quality_metrics` population, real
+> `clean_old_data()` counts and the `/backtest` UI all landed in Phases 2–5
+> and now live under [Currently Available](#currently-available).
 
-### Backtesting UI
+### Backtesting persistence
 
-- Frontend `/backtest` page with strategy picker, parameter form, equity
-  curve and trade-list table.
-- Persistence of backtest runs into Postgres for comparison.
+- Persist backtest runs (parameters + metrics + equity curve) into Postgres
+  so multiple configurations can be compared side-by-side from the UI.
 
 ### Order management
 
@@ -311,18 +321,6 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 
 - Optional MFA, RBAC and audit logging on top of the existing
   bearer-token auth.
-
-### Database & data lifecycle
-
-- Reconcile the indicator persistence path: `storeTechnicalIndicators()`
-  still writes to a `technical_indicators` table that the canonical
-  TimescaleDB schema intentionally omits (see
-  [`backend/src/database/README.md`](backend/src/database/README.md)).
-
-> The scheduled backfill worker, `data_quality_metrics` population and
-> real `clean_old_data()` counts have **shipped** — see
-> [Automated data collection & retention](#automated-data-collection--retention)
-> under *Currently Available*.
 
 ### Observability
 
@@ -358,8 +356,10 @@ on `master` have **shipped** (see
 
 ### Refactors
 
-- Split the 2,587-line `ib_service/main.py` into `routes/`, `ib_client/`,
-  `cache/` and `models/`.
+- Split the ~2,700-line `ib_service/main.py` into `routes/`, `ib_client/`,
+  `cache/` and `models/`. (The equivalent backend split has shipped —
+  `backend/src/routes/marketData.ts` is now the 6-file
+  `routes/marketData/` package.)
 - Collapse the four overlapping chart components
   (`HistoricalChart`, `TradingChart`, `EnhancedTradingChart`,
   `MSFTRealtimeChart`) into one configurable `<Chart>` component.
@@ -391,7 +391,17 @@ on `master` have **shipped** (see
 6. Future chart loads will read from the database (faster, no IB rate
    limits) until you redeploy with `use_database=false`.
 
-### Workflow: run a backtest (API)
+### Workflow: run a backtest
+
+From the UI:
+
+1. Open `/backtest` (linked from the home page).
+2. Pick a strategy from the dropdown (`ma_crossover`, `rsi_mean_reversion`).
+3. Set the symbol, timeframe, period, starting capital and commission, then
+   click **Run backtest**.
+4. Review the metrics summary, equity-curve chart and trade-list table.
+
+Or hit the API directly:
 
 ```bash
 curl -s http://<server-ip>:8000/backtesting/strategies | jq
@@ -401,8 +411,6 @@ curl -s -X POST 'http://<server-ip>:8000/backtesting/run' \
   --data-urlencode 'strategy=ma_crossover' \
   --data-urlencode 'timeframe=1day'
 ```
-
-(The UI for this lives on the roadmap — see [Planned / Roadmap](#planned--roadmap).)
 
 ---
 
