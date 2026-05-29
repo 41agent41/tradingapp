@@ -266,8 +266,8 @@ If `/api/database/health` returns `unhealthy`:
 1. Confirm credentials in `.env` match the actual database.
 2. Confirm `POSTGRES_SSL` matches what the server requires.
 3. Confirm the user owns the `contracts`, `candlestick_data`,
-   `technical_indicators`, `data_collection_sessions`,
-   `data_collection_config` and `data_quality_metrics` tables.
+   `tick_data`, `data_collection_sessions`, `data_collection_config`
+   and `data_quality_metrics` tables.
 4. Apply the schema as shown above.
 
 ## Development Issues

@@ -2,9 +2,9 @@
 
 ## Codebase Review Summary
 
-**Date**: May 24, 2026
-**Branch**: `master`
-**Base commit**: `c258a9d` (Phase 4 real-time pipeline merged)
+**Date**: 2026-05-29
+**Branch**: `feat/backtesting-ui`
+**Base commit**: `6d84f9f` (backtesting proxy + `/backtest` UI)
 
 > This is a point-in-time engineering snapshot. For the full prioritised
 > gap list and roadmap see [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md); for the
@@ -18,9 +18,9 @@
 
 | Component | Status | Details |
 |-----------|--------|---------|
-| **Backend (TypeScript)** | PASS | `tsc --noEmit` clean; ESLint + Prettier + Jest/Supertest wired and green in CI |
-| **Frontend (Next.js 14)** | PASS | `next build` compiles all routes (`/`, `/account`, `/download`, `/historical`, `/msft`); ESLint + Prettier + Vitest in CI |
-| **IB Service (Python/FastAPI)** | PASS | Ruff + Black + pytest (`tests/test_indicators.py`, `tests/test_streaming.py`) in CI |
+| **Backend (TypeScript)** | PASS | `tsc --noEmit` clean; ESLint + Prettier + Jest/Supertest wired and green in CI; `routes/marketData/` split into a 6-file package |
+| **Frontend (Next.js 14)** | PASS | `next build` compiles all routes (`/`, `/account`, `/backtest`, `/download`, `/historical`, `/msft`); ESLint + Prettier + Vitest in CI |
+| **IB Service (Python/FastAPI)** | PASS | Ruff + Black + pytest (`tests/test_indicators.py`, `tests/test_streaming.py`, `tests/test_backtesting.py`) in CI |
 | **CI Pipeline (GitHub Actions)** | ACTIVE | `.github/workflows/ci.yml` runs lint → format-check → type-check → test → build per service on push/PR to `master`/`main` |
 | **Docker Compose** | DEFINED | 4 base services (frontend, backend, ib_service, redis); optional TimescaleDB via `docker-compose.db.yml` + `--with-db` |
 
@@ -40,14 +40,16 @@
 - Timeframes: `tick`, `1m`, `5m`, `15m`, `30m`, `1h`, `4h`, `8h`, `1d`.
 - Periods: `1D`, `5D`, `1M`, `3M`, `6M`, `1Y`, plus custom date ranges.
 - Chart components: `HistoricalChart`, `TradingChart`, `EnhancedTradingChart`,
-  `MSFTRealtimeChart` (not yet consolidated — see §3).
+  `MSFTRealtimeChart`, `EquityCurveChart` (the four OHLCV charts are still
+  unconsolidated — see §3).
 
 ### Interactive Brokers integration
 - TWS API client (`EClient`/`EWrapper`) in `ib_service/main.py`.
 - Contract search (basic + advanced) and 3-phase symbol discovery.
 - Historical data retrieval with UTC timestamp handling.
-- Technical indicators (`indicators.py`) and an API-only backtesting engine
-  (`backtesting.py`).
+- Technical indicators (`indicators.py`) — compute-on-demand, not persisted.
+- Backtesting engine (`backtesting.py`) — exposed via the IB service, the
+  backend proxy (`routes/backtesting.ts`) and the `/backtest` page.
 - **Real-time streaming** (`streaming.py`): `reqMktData` → Redis publish.
 
 ### Data & backend services
@@ -57,6 +59,13 @@
 - Redis read-through cache (`services/cache.ts`).
 - Real-time bridge (`services/streamingBridge.ts`): Redis subscribe →
   Socket.IO room fan-out with per-symbol refcounting.
+- **Scheduled backfill worker** (`services/backfillScheduler.ts`): opt-in
+  via `BACKFILL_ENABLED`, driven by `data_collection_config`, reports under
+  `services.backfill` in `/api/health`.
+- **`data_quality_metrics` populated** on every store path (manual upload,
+  `/history` cache-on-fetch and the backfill worker).
+- **Real retention counts** from `POST /api/market-data/database/clean`
+  (deletes per `retention_days`; returns the actual rows removed).
 - Bearer-token auth (`middleware/auth.ts`) on REST + Socket.IO; strict CORS;
   allow-listed `routes/settings.ts`.
 
@@ -66,6 +75,8 @@
   overlays, dataframe viewer.
 - **Download** (`/download`): IB download → PostgreSQL upload pipeline.
 - **MSFT Real-time** (`/msft`): streaming chart via `useRealtimeStream`.
+- **Backtest** (`/backtest`): strategy picker, parameter form, metrics
+  summary, equity-curve chart, trade-list table.
 - **Account** (`/account`): summary, positions, orders, connection status.
 
 ### Quality & hygiene
@@ -77,56 +88,60 @@
 
 ## 3. Current Issues & Gaps
 
-The Phase 1–4 issues from the previous snapshot (committed `.env`, malformed
+The Phase 1–5 issues from the previous snapshot — committed `.env`, malformed
 env values, CI-on-`main`, unused Redis, no real-time push, no tests,
-aspirational `FEATURES.md`, stale deploy scripts, no linting) are **resolved**.
-What remains:
+aspirational `FEATURES.md`, stale deploy scripts, no linting, the
+`data_quality_metrics` / `clean_old_data()` / `technical_indicators`
+mismatches, the missing backfill scheduler and the API-only backtesting — are
+**resolved**. What remains:
 
 ### P1 — Functional gaps
 | # | Issue | Location | Impact |
 |---|-------|----------|--------|
-| 1 | **`data_quality_metrics` never populated** | `services/marketDataService.ts` | `updateDataQualityMetrics()` has no caller; the table and quality scores stay empty |
-| 2 | **`clean_old_data()` returns hard-coded `0`** | `services/marketDataService.ts:404` | `POST /api/market-data/database/clean` always reports `{ deleted: 0 }` |
-| 3 | **Indicator persistence mismatch** | `services/marketDataService.ts:127`, `routes/marketData.ts:491` | `INSERT INTO technical_indicators` targets a table the canonical schema omits → errors on a fresh DB |
-| 4 | **No backfill scheduler** | `ib_service` | Data collection is fully manual via the Download page |
-| 5 | **Backtesting & order placement have no UI** | frontend, `backend/src/routes` | Backtesting is API-only; order placement is unimplemented end to end |
+| 1 | **No order placement** | `ib_service`, `backend/src/routes`, frontend | Account endpoints are read-only end to end; no `placeOrder` path, no `POST /api/orders`, no order ticket UI |
+| 2 | **Backtesting runs are not persisted** | `backend`, schema | Each run is recompute-only; no cross-configuration comparison |
+| 3 | **Static IB status on the home page** | `frontend/app/page.tsx` | Label is hard-coded rather than driven by `/api/health` |
 
 ### P2 — Architecture / quality
 | # | Issue | Location | Impact |
 |---|-------|----------|--------|
-| 6 | **`ib_service/main.py` is ~2,700 lines** | `ib_service/main.py` | Routes, IB client, threading, caching, indicators and accounts in one file |
-| 7 | **Four overlapping chart components** | `frontend/app/components` | `HistoricalChart` / `TradingChart` / `EnhancedTradingChart` / `MSFTRealtimeChart` diverge |
-| 8 | **No observability** | all services | No structured logging, `/metrics`, or `x-request-id` propagation |
-| 9 | **Static IB status on the home page** | `frontend/app/page.tsx` | Label is hard-coded rather than driven by `/api/health` |
-| 10 | **No global `error.tsx` / `ResizeObserver`** | `frontend/app` | Chart exceptions unmount the page; charts don't re-fit on resize |
-| 11 | **Single synchronous IB client** | `ib_service/main.py` | Caps concurrency at 1; shared `IB_CLIENT_ID=1` blocks replicas |
+| 4 | **`ib_service/main.py` is ~2,700 lines** | `ib_service/main.py` | Routes, IB client, threading, caching, indicators and accounts in one file |
+| 5 | **Four overlapping chart components** | `frontend/app/components` | `HistoricalChart` / `TradingChart` / `EnhancedTradingChart` / `MSFTRealtimeChart` diverge (the new `EquityCurveChart` is intentionally separate) |
+| 6 | **No observability** | all services | No structured logging, `/metrics`, or `x-request-id` propagation |
+| 7 | **No global `error.tsx` / `ResizeObserver`** | `frontend/app` | Chart exceptions unmount the page; charts don't re-fit on resize |
+| 8 | **Single synchronous IB client** | `ib_service/main.py` | Caps concurrency at 1; shared `IB_CLIENT_ID=1` blocks replicas |
 
 ---
 
 ## 4. Recommended Next Iteration
 
-### Tier 1 — Close the data-lifecycle gaps (high value, contained)
-1. Call `updateDataQualityMetrics()` from the upload/store path.
-2. Make `clean_old_data()` return real row counts.
-3. Resolve the `technical_indicators` mismatch (drop the persistence path or
-   add the table to the canonical schema).
+### Tier 1 — Surface remaining engines
+1. Live `<HealthBadge />` on the home page, polling `/api/health`
+   (includes `services.streaming`, `services.cache`, `services.backfill`).
+2. Persist backtest runs into Postgres (new table + a list view on
+   `/backtest`).
 
-### Tier 2 — Surface existing engines
-4. Add `backend/src/routes/backtesting.ts` proxy + a `/backtest` page.
-5. Add a scheduled backfill worker in `ib_service` driven by
-   `data_collection_config`.
+### Tier 2 — Operational polish
+3. Structured logging (`pino` / `structlog`), `/metrics`, `x-request-id`
+   propagation end to end.
+4. Frontend `error.tsx` boundary + `ResizeObserver`s on chart containers.
+5. Persist last-used symbol/timeframe to `localStorage`; CSV / Parquet
+   export from `DataframeViewer`.
 
-### Tier 3 — Operational polish
-6. Structured logging (`pino` / `structlog`), `/metrics`, `x-request-id`.
-7. `<HealthBadge />` reflecting IB / DB / cache / streaming state.
-8. `error.tsx` boundary + `ResizeObserver`s on chart containers.
+### Tier 3 — Refactors
+6. Split `ib_service/main.py` into `routes/` / `ib_client/` / `streaming/` /
+   `models/` (mirrors the `routes/marketData/` split already shipped on the
+   backend).
+7. Consolidate the four OHLCV chart components into one configurable
+   `<Chart>` driven by a `useHistorical` / `useRealtimeStream` data hook;
+   make `/msft` a thin wrapper.
+8. Connection-pool the IB client across a `clientId` range (entangled with
+   §6).
 
-### Tier 4 — Refactors
-9. Split `ib_service/main.py` into `routes/` / `ib_client/` / `streaming/` /
-   `models/`.
-10. Consolidate the four chart components into one configurable `<Chart>`;
-    make `/msft` a thin wrapper.
-11. Connection-pool the IB client across a `clientId` range.
+### Tier 4 — Live trading (gated)
+9. `placeOrder` path in `ib_service`, validated `POST /api/orders`
+   (create / cancel / modify), order ticket + blotter UI — behind an
+   explicit `LIVE_TRADING_ENABLED` flag.
 
 ---
 
@@ -135,17 +150,16 @@ What remains:
 ```
 Priority  Task                                                Effort
 ────────  ──────────────────────────────────────────────────  ──────
-  1       Wire updateDataQualityMetrics() into upload path     Small
-  2       Return real counts from clean_old_data()             Small
-  3       Resolve technical_indicators schema/code mismatch    Small
-  4       Backend backtesting proxy + /backtest UI             Medium
-  5       Scheduled backfill worker (APScheduler)              Medium
-  6       Structured logging + /metrics + x-request-id         Medium
-  7       Live HealthBadge on the home page                    Small
-  8       error.tsx boundary + ResizeObserver on charts        Small
-  9       Split ib_service/main.py into modules                Medium
- 10       Consolidate chart components into one <Chart>        Medium
- 11       IB client connection pool (clientId range)           Large
+  1       Live HealthBadge on the home page                    Small
+  2       error.tsx boundary + ResizeObserver on charts        Small
+  3       Persist last symbol/timeframe + DataframeViewer      Small
+            export
+  4       Persist backtest runs + comparison view              Medium
+  5       Structured logging + /metrics + x-request-id         Medium
+  6       Split ib_service/main.py into modules                Medium
+  7       Consolidate OHLCV chart components into one <Chart>  Medium
+  8       IB client connection pool (clientId range)           Large
+  9       Order management (gated behind LIVE_TRADING_ENABLED) Large
 ```
 
 ---
@@ -159,6 +173,12 @@ Browser ──REST (apiFetch + bearer token)──▶ Express backend ──▶ 
    │  Socket.IO (market-data:<SYMBOL> room)       │  │ read-through       │ reqMktData
    └──────────── StreamingBridge ◀── Redis ◀──────┘  └── PostgreSQL/      └── publish ticks
                                   pub/sub               TimescaleDB           to Redis
+                                                              ▲
+                                                              │ upsert + quality
+                                                              │
+                                                       BackfillScheduler
+                                                       (opt-in, driven by
+                                                        data_collection_config)
 ```
 
 - REST: every route except the health checks requires a bearer token; the
@@ -168,14 +188,19 @@ Browser ──REST (apiFetch + bearer token)──▶ Express backend ──▶ 
 - Caching: `/api/market-data/realtime` and `/indicators/available` are served
   through the Redis read-through cache, degrading to a miss on outage.
 - Storage: historical bars read DB-first (`use_database=true`) with a live IB
-  fallback.
+  fallback. The backfill scheduler keeps the DB topped up; every store path
+  records per-day quality counts.
+- Indicators: computed on demand in `ib_service/indicators.py` and proxied
+  through `/api/market-data/indicators` — **not persisted**.
+- Backtesting: the IB service runs the engine; the backend proxies and
+  validates; the `/backtest` page consumes the result. Runs are not yet
+  persisted across requests.
 
 ### Remaining technical decisions
-1. **Indicator persistence**: compute-on-demand only, or add a
-   `technical_indicators` hypertable to the canonical schema.
-2. **IB concurrency**: keep the single synchronous client, or pool across a
+1. **IB concurrency**: keep the single synchronous client, or pool across a
    `clientId` range for parallel historical / streaming / account flows.
-3. **Order management**: whether to implement live order placement at all,
+2. **Order management**: whether to implement live order placement at all,
    and if so, behind what safeguard.
-```
-
+3. **Backtest persistence shape**: a single `backtest_runs` table keyed on
+   `(strategy, symbol, timeframe, params_hash)`, or a `runs` + `trades`
+   pair for trade-level drill-down.

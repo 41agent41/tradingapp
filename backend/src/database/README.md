@@ -25,7 +25,7 @@ retention policies.
 3. [Applying the Schema](#applying-the-schema)
 4. [Backend Configuration](#backend-configuration)
 5. [Schema Overview](#schema-overview)
-6. [Known Schema / Code Mismatch](#known-schema--code-mismatch)
+6. [Indicators are not persisted (by design)](#indicators-are-not-persisted-by-design)
 7. [Operational SQL Snippets](#operational-sql-snippets)
 8. [Backups](#backups)
 9. [Security Notes](#security-notes)
@@ -284,6 +284,8 @@ possible.
 4. **Audit logging.** Enable `log_statement = 'ddl'` (or stricter) on the
    database and ship logs to your central log store.
 
-For broader security gaps (auth middleware on the backend, the
-unintentional `/api/settings` secret leak, etc.) see
+For the broader security posture (bearer-token auth, strict CORS, the
+allow-listed `/api/settings`) see
+[`FEATURES.md`](../../../FEATURES.md#authentication--cors). Remaining
+hardening items (MFA, RBAC, audit logging) are tracked in
 [`GAP_ANALYSIS.md`](../../../GAP_ANALYSIS.md).
