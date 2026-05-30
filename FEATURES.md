@@ -141,10 +141,15 @@ Reachable two ways:
   and `POST /api/backtesting/run` (`backend/src/routes/backtesting.ts`).
 - **UI:** the `/backtest` page (`frontend/app/backtest/page.tsx`) with a
   strategy picker, parameter form, metrics summary, equity-curve chart
-  (`EquityCurveChart`) and a trade-list table.
+  (`EquityCurveChart`), trade-list table and a **Previous Runs** panel
+  that click-to-loads any prior run without re-running the engine.
 
-Persisting runs into Postgres for cross-configuration comparison is the
-only piece still on the roadmap.
+**Persistence** ships now: every successful run is upserted into
+`backtest_runs` (canonical schema). The slim list endpoint
+`GET /api/backtesting/runs` (filter by symbol / strategy, paginated)
+feeds the panel; `GET /api/backtesting/runs/:id` returns the full record.
+A SHA-256 `params_hash` over the canonical input lets the UI deduplicate
+identical re-runs.
 
 ### Historical data download
 
@@ -311,11 +316,13 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > a global `error.tsx` boundary, `ResizeObserver`-driven chart refits,
 > `localStorage`-backed last-symbol/timeframe persistence, and an
 > RFC 4180-correct CSV export from the DataFrame viewer.
-
-### Backtesting persistence
-
-- Persist backtest runs (parameters + metrics + equity curve) into Postgres
-  so multiple configurations can be compared side-by-side from the UI.
+>
+> **Also recently shipped (backtest persistence + observability).**
+> A `backtest_runs` table with a Previous Runs UI; backend `pino` +
+> `prom-client` + `/metrics`; IB-service `structlog` +
+> `prometheus_fastapi_instrumentator` + `/metrics`; and end-to-end
+> `X-Request-Id` propagation from `apiFetch` → backend axios →
+> ib_service.
 
 ### Order management
 
@@ -327,12 +334,17 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 - Optional MFA, RBAC and audit logging on top of the existing
   bearer-token auth.
 
-### Observability
+### Observability (next pass)
 
-- Structured logging (`pino` / `pino-http` for Node, `structlog` for
-  Python).
-- `/metrics` Prometheus endpoint on backend and IB service.
-- End-to-end `x-request-id` propagation.
+The first observability pass shipped — `pino` on the backend, `structlog`
+on the IB service, `/metrics` on both, and end-to-end `X-Request-Id`
+propagation. What is still open:
+
+- Replace residual `console.log` / `print` calls in heavier modules
+  (`marketDataService.ts`, `ib_service/main.py` routes) with the
+  structured logger as those files are touched.
+- Ship a Grafana dashboard JSON in the repo and reference it from
+  `DEPLOYMENT.md`.
 
 ### Frontend UX
 

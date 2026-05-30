@@ -1,8 +1,9 @@
 # TradingApp - Gap Analysis, Enhancements & Next Steps
 
-_Last reviewed: 2026-05-30 against branch `feat/home-ux-polish`
-(home-page UX polish: HealthBadge, error.tsx, ResizeObserver,
-localStorage persistence, hardened CSV export)._
+_Last reviewed: 2026-05-30 against branch
+`feat/backtest-persistence-and-obs` (Sprint 2 = backtest run persistence
++ Previous Runs UI; Sprint 3 = pino / structlog / `/metrics` /
+end-to-end X-Request-Id)._
 
 This document captures the result of a structured review of the TradingApp
 codebase and its documentation set (`README.md`, `DEPLOYMENT.md`,
@@ -202,21 +203,40 @@ list and a `mode: 'live' | 'static'` prop. Make `/msft` a thin wrapper with
 
 ---
 
-## 4. Observability (Phase 6)
+## 4. Observability (Phase 6) ✅ shipped
 
-- No structured logging — everything is `console.log` / `print`.
-- No `/metrics` endpoint, no Prometheus scraping target.
-- No `x-request-id` propagation across `frontend → backend → ib_service`
-  (the header is allow-listed in CORS but nothing generates or threads it).
-- The home page still renders a **static** "Connected to IB Gateway" label
-  rather than reflecting live `/api/health` state.
+The first observability pass has landed:
 
-**Action:**
-- Backend: `pino` + `pino-http`, expose `/metrics` via `prom-client`.
-- IB service: `structlog` + `prometheus-fastapi-instrumentator`.
-- Generate and propagate `x-request-id` end-to-end.
-- Add a `<HealthBadge />` polling `/api/health` (including the new
-  `services.streaming` / `services.cache` blocks).
+- **Backend:** `pino` root logger
+  ([`backend/src/services/logger.ts`](backend/src/services/logger.ts))
+  with auth-header redaction and an `AsyncLocalStorage` request context;
+  `prom-client` default metrics + `http_request_duration_seconds`
+  histogram + `backtest_runs_persisted_total` counter
+  ([`backend/src/services/metrics.ts`](backend/src/services/metrics.ts))
+  scraped at `GET /metrics` (added to the auth allow-list).
+- **`observabilityMiddleware`**
+  ([`backend/src/middleware/observability.ts`](backend/src/middleware/observability.ts))
+  accepts or mints `X-Request-Id`, echoes it on the response, pushes it
+  into ALS, times the request, and emits one structured log line on
+  finish.
+- An axios request interceptor auto-attaches `X-Request-Id` on every
+  backend → ib_service hop so the trace flows end-to-end.
+- **IB service:** `structlog` + `prometheus_fastapi_instrumentator` wired
+  in [`ib_service/observability.py`](ib_service/observability.py); a
+  `RequestIdMiddleware` binds the id to `contextvars` so every log record
+  in the request carries it, and `/metrics` is exposed on the FastAPI
+  app.
+- **Frontend:** `apiFetch` mints `X-Request-Id` (uuid4) when the caller
+  doesn't supply one, so the trace starts in the browser.
+- **Home-page status:** ✅ live `<HealthBadge />` (shipped in the
+  previous branch) — see §7.
+
+**Remaining (stretch):**
+- Replace the residual `console.log` / `print` calls in the heavier
+  modules (`marketDataService.ts`, the `ib_service/main.py` routes) with
+  the structured logger as those files are touched.
+- Add a Grafana dashboard JSON to the repo and reference it from
+  `DEPLOYMENT.md`.
 
 ---
 
@@ -246,8 +266,12 @@ emits the `equity_curve` the chart needs and coerces non-finite metrics (e.g.
 > the authoring environment has no Node/Python, so type-check, lint and pytest
 > must still pass in CI before this is considered done.
 
-**Remaining (stretch):** persist runs into Postgres for comparison across
-configurations.
+**Persistence:** ✅ a `backtest_runs` table is now part of the canonical
+TimescaleDB schema and every successful run is written to it
+(`backend/src/services/backtestRunRepository.ts`). The `/backtest` page
+gained a "Previous Runs" panel that lists prior runs and rehydrates the
+metrics summary, equity-curve chart and trade-list table from
+`GET /api/backtesting/runs/:id` without re-running the engine.
 
 ---
 
@@ -329,8 +353,8 @@ Phases 1–4 are complete (see §2). Remaining work, ordered by dependency:
 
 ### Phase 5 — Feature expansion
 1. ✅ Add a `backend/src/routes/backtesting.ts` proxy and a `/backtest` UI
-   (§5). Persisting runs to Postgres remains a stretch follow-on; pending
-   CI / live-IB validation.
+   (§5). ✅ Persistence shipped: `backtest_runs` table + Previous Runs
+   panel.
 2. ✅ Add a scheduled backfill worker (in the **backend**) driven by
    `data_collection_config`. (See §3.1.)
 3. ✅ Wire `updateDataQualityMetrics()` from the upload/store path; return real
@@ -342,7 +366,10 @@ Phases 1–4 are complete (see §2). Remaining work, ordered by dependency:
 6. (Stretch) Order management behind an explicit live-trading flag.
 
 ### Phase 6 — Operational polish
-7. Structured logging, `x-request-id` propagation, `/metrics` endpoints.
+7. ✅ Structured logging (`pino` backend, `structlog` ib_service),
+   `x-request-id` propagation browser → backend → ib_service, `/metrics`
+   endpoints on both services. (Replacing residual `console.log` / `print`
+   calls in heavier modules is a follow-on as those files are touched.)
 8. ✅ Live `<HealthBadge />` reflecting IB / DB / cache / streaming /
    backfill state on the home page.
 9. Connection-pool the IB client across a `clientId` range (§3.3).

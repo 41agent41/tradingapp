@@ -3,10 +3,12 @@
 ## Codebase Review Summary
 
 **Date**: 2026-05-30
-**Branch**: `feat/home-ux-polish`
-**Base commit**: `89ff0be` (post Phase 5 docs sync; this branch adds the
-Tier-1 home-page UX polish: HealthBadge, error.tsx, ResizeObserver,
-localStorage persistence, hardened CSV export)
+**Branch**: `feat/backtest-persistence-and-obs`
+**Base commit**: `8e91d51` (master, post-home-ux-polish merge). This
+branch ships Sprints 2 + 3 from the previous snapshot: backtest run
+persistence with a Previous Runs UI, plus the first observability pass
+(pino backend, structlog ib_service, /metrics on both, end-to-end
+X-Request-Id).
 
 > This is a point-in-time engineering snapshot. For the full prioritised
 > gap list and roadmap see [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md); for the
@@ -101,16 +103,16 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
 | # | Issue | Location | Impact |
 |---|-------|----------|--------|
 | 1 | **No order placement** | `ib_service`, `backend/src/routes`, frontend | Account endpoints are read-only end to end; no `placeOrder` path, no `POST /api/orders`, no order ticket UI |
-| 2 | **Backtesting runs are not persisted** | `backend`, schema | Each run is recompute-only; no cross-configuration comparison |
-| 3 | ~~Static IB status on the home page~~ | — | ✅ Replaced by `HealthBadge` (this branch). |
+| 2 | ~~Backtesting runs are not persisted~~ | — | ✅ `backtest_runs` + Previous Runs panel shipped on this branch. |
+| 3 | ~~Static IB status on the home page~~ | — | ✅ Replaced by `HealthBadge` (previous branch). |
 
 ### P2 — Architecture / quality
 | # | Issue | Location | Impact |
 |---|-------|----------|--------|
 | 4 | **`ib_service/main.py` is ~2,700 lines** | `ib_service/main.py` | Routes, IB client, threading, caching, indicators and accounts in one file |
 | 5 | **Four overlapping chart components** | `frontend/app/components` | `HistoricalChart` / `TradingChart` / `EnhancedTradingChart` / `MSFTRealtimeChart` diverge (the new `EquityCurveChart` is intentionally separate) |
-| 6 | **No observability** | all services | No structured logging, `/metrics`, or `x-request-id` propagation |
-| 7 | ~~No global `error.tsx` / `ResizeObserver`~~ | — | ✅ `error.tsx` + shared `useChartResize` shipped on this branch. |
+| 6 | ~~No observability~~ | — | ✅ First pass shipped on this branch (pino backend, structlog ib_service, /metrics on both, end-to-end X-Request-Id). Residual `console.log` / `print` cleanup is a touch-as-you-go follow-on. |
+| 7 | ~~No global `error.tsx` / `ResizeObserver`~~ | — | ✅ `error.tsx` + shared `useChartResize` shipped (previous branch). |
 | 8 | **Single synchronous IB client** | `ib_service/main.py` | Caps concurrency at 1; shared `IB_CLIENT_ID=1` blocks replicas |
 
 ---
@@ -120,12 +122,12 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
 ### Tier 1 — Surface remaining engines
 1. ✅ Live `<HealthBadge />` on the home page, polling `/api/health`
    (covers `database`, `ib_service`, `cache`, `streaming`, `backfill`).
-2. Persist backtest runs into Postgres (new table + a list view on
-   `/backtest`).
+2. ✅ Persist backtest runs into Postgres + Previous Runs panel on
+   `/backtest`.
 
 ### Tier 2 — Operational polish
-3. Structured logging (`pino` / `structlog`), `/metrics`, `x-request-id`
-   propagation end to end.
+3. ✅ Structured logging (`pino` backend, `structlog` ib_service),
+   `/metrics` on both, end-to-end `X-Request-Id` propagation.
 4. ✅ Frontend `error.tsx` boundary + `ResizeObserver`s on chart containers
    (all five charts now share `useChartResize`).
 5. ✅ Persist last-used symbol/timeframe to `localStorage` (via
@@ -157,13 +159,14 @@ Priority  Task                                                Effort
   ✅      Live HealthBadge on the home page                    (done)
   ✅      error.tsx boundary + ResizeObserver on charts        (done)
   ✅      Persist last symbol/timeframe + RFC 4180 CSV export  (done)
-  1       Persist backtest runs + comparison view              Medium
-  2       Structured logging + /metrics + x-request-id         Medium
-  3       Loading skeletons on chart pages                     Small
-  4       Split ib_service/main.py into modules                Medium
-  5       Consolidate OHLCV chart components into one <Chart>  Medium
-  6       IB client connection pool (clientId range)           Large
-  7       Order management (gated behind LIVE_TRADING_ENABLED) Large
+  ✅      Persist backtest runs + Previous Runs panel          (done)
+  ✅      Structured logging + /metrics + x-request-id         (done)
+  1       Loading skeletons on chart pages                     Small
+  2       Grafana dashboard JSON + DEPLOYMENT.md reference     Small
+  3       Split ib_service/main.py into modules                Medium
+  4       Consolidate OHLCV chart components into one <Chart>  Medium
+  5       IB client connection pool (clientId range)           Large
+  6       Order management (gated behind LIVE_TRADING_ENABLED) Large
 ```
 
 ---
