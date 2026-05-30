@@ -3,12 +3,12 @@
 ## Codebase Review Summary
 
 **Date**: 2026-05-30
-**Branch**: `feat/backtest-persistence-and-obs`
-**Base commit**: `8e91d51` (master, post-home-ux-polish merge). This
-branch ships Sprints 2 + 3 from the previous snapshot: backtest run
-persistence with a Previous Runs UI, plus the first observability pass
-(pino backend, structlog ib_service, /metrics on both, end-to-end
-X-Request-Id).
+**Branch**: `feat/tier-2-polish`
+**Base commit**: `7d09d1f` (master, post Sprints 2+3 merge). This branch
+ships all four Tier 2 items: loading skeletons on the chart pages, a
+structured-logger sweep across the heavy backend services, a pre-built
+Grafana dashboard + DEPLOYMENT.md *Monitoring & Maintenance* section,
+and a Parquet export round-trip from `DataframeViewer`.
 
 > This is a point-in-time engineering snapshot. For the full prioritised
 > gap list and roadmap see [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md); for the
@@ -132,7 +132,14 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
    (all five charts now share `useChartResize`).
 5. ✅ Persist last-used symbol/timeframe to `localStorage` (via
    `usePersistentState`); CSV export from `DataframeViewer` rewritten as an
-   RFC 4180-correct encoder. Parquet export is still open.
+   RFC 4180-correct encoder. ✅ Parquet export now ships too (via
+   `POST /api/export/parquet` backed by `@dsnp/parquetjs`).
+6. ✅ Loading skeletons on `/historical`, `/msft` and `/backtest`
+   (shared `ChartSkeleton` component).
+7. ✅ Grafana dashboard ([`ops/grafana/tradingapp-dashboard.json`](ops/grafana/tradingapp-dashboard.json))
+   and DEPLOYMENT.md *Monitoring & Maintenance* section.
+8. ✅ Structured-logger sweep across `services/` (marketDataService,
+   streamingBridge, backfillScheduler, cache, database).
 
 ### Tier 3 — Refactors
 6. Split `ib_service/main.py` into `routes/` / `ib_client/` / `streaming/` /
@@ -161,11 +168,14 @@ Priority  Task                                                Effort
   ✅      Persist last symbol/timeframe + RFC 4180 CSV export  (done)
   ✅      Persist backtest runs + Previous Runs panel          (done)
   ✅      Structured logging + /metrics + x-request-id         (done)
-  1       Loading skeletons on chart pages                     Small
-  2       Grafana dashboard JSON + DEPLOYMENT.md reference     Small
-  3       Split ib_service/main.py into modules                Medium
-  4       Consolidate OHLCV chart components into one <Chart>  Medium
-  5       IB client connection pool (clientId range)           Large
+  ✅      Loading skeletons on chart pages                     (done)
+  ✅      Grafana dashboard JSON + DEPLOYMENT.md reference     (done)
+  ✅      Parquet export + service-layer logger sweep          (done)
+  1       Split ib_service/main.py into modules                Medium
+  2       Consolidate OHLCV chart components into one <Chart>  Medium
+  3       IB client connection pool (clientId range)           Large
+  4       Prometheus alerting rules                            Small
+  5       Watchlists / alerts / scanners                       Large
   6       Order management (gated behind LIVE_TRADING_ENABLED) Large
 ```
 

@@ -31,6 +31,7 @@
 import axios from 'axios';
 import type { Server as SocketIOServer } from 'socket.io';
 import { createClient } from 'redis';
+import { logger } from './logger.js';
 
 const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
 
@@ -144,7 +145,7 @@ export class StreamingBridge {
   // -------------------------------------------------------------------
   async start(): Promise<void> {
     if (!STREAMING_ENABLED) {
-      console.log('[stream] disabled via STREAMING_ENABLED=false');
+      logger.info('streaming disabled via STREAMING_ENABLED=false');
       return;
     }
     if (this.started) return;
@@ -166,14 +167,15 @@ export class StreamingBridge {
         this.subscriber = client;
         this.started = true;
         this.lastError = null;
-        console.log(
-          `[stream] subscribed to ${TICK_PATTERN} on redis://${REDIS_HOST}:${REDIS_PORT}`
+        logger.info(
+          { pattern: TICK_PATTERN, redis_host: REDIS_HOST, redis_port: REDIS_PORT },
+          'streaming bridge subscribed to redis',
         );
       } catch (err) {
         this.lastError = err instanceof Error ? err.message : String(err);
-        console.warn(
-          `[stream] could not connect to Redis at ${REDIS_HOST}:${REDIS_PORT}: ${this.lastError} ` +
-            '— streaming will be degraded'
+        logger.warn(
+          { redis_host: REDIS_HOST, redis_port: REDIS_PORT, err: this.lastError },
+          'streaming bridge could not connect to redis — streaming will be degraded',
         );
       } finally {
         this.connecting = null;
@@ -272,7 +274,7 @@ export class StreamingBridge {
         // Keep the room torn down even if the IB call fails — the IB
         // service has its own refcount and will catch up on the next
         // healthcheck.
-        console.warn(`[stream] ib_service unsubscribe of ${symbol} failed:`, err);
+        logger.warn({ symbol, err: String(err) }, 'ib_service unsubscribe failed');
       }
     }
 
@@ -292,7 +294,10 @@ export class StreamingBridge {
       try {
         await this.unsubscribe(socketId, { symbol });
       } catch (err) {
-        console.warn(`[stream] releaseSocket(${socketId}) unsubscribe of ${symbol} failed:`, err);
+        logger.warn(
+          { socket_id: socketId, symbol, err: String(err) },
+          'releaseSocket unsubscribe failed',
+        );
       }
     }
   }
@@ -311,7 +316,7 @@ export class StreamingBridge {
       payload = JSON.parse(message) as TickPayload;
     } catch (err) {
       this.ticksDropped++;
-      console.warn('[stream] invalid JSON tick payload:', err);
+      logger.warn({ err: String(err) }, 'invalid JSON tick payload');
       return;
     }
 
@@ -345,7 +350,7 @@ export class StreamingBridge {
         this.io.emit(STATUS_EVENT, payload);
       }
     } catch (err) {
-      console.warn('[stream] invalid JSON status payload:', err);
+      logger.warn({ err: String(err) }, 'invalid JSON status payload');
     }
   }
 

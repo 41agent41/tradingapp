@@ -1,9 +1,9 @@
 # TradingApp - Gap Analysis, Enhancements & Next Steps
 
-_Last reviewed: 2026-05-30 against branch
-`feat/backtest-persistence-and-obs` (Sprint 2 = backtest run persistence
-+ Previous Runs UI; Sprint 3 = pino / structlog / `/metrics` /
-end-to-end X-Request-Id)._
+_Last reviewed: 2026-05-30 against branch `feat/tier-2-polish`
+(loading skeletons, structured-logger sweep across services, Grafana
+dashboard + DEPLOYMENT.md monitoring section, Parquet export from
+DataframeViewer)._
 
 This document captures the result of a structured review of the TradingApp
 codebase and its documentation set (`README.md`, `DEPLOYMENT.md`,
@@ -232,11 +232,18 @@ The first observability pass has landed:
   previous branch) — see §7.
 
 **Remaining (stretch):**
-- Replace the residual `console.log` / `print` calls in the heavier
-  modules (`marketDataService.ts`, the `ib_service/main.py` routes) with
-  the structured logger as those files are touched.
-- Add a Grafana dashboard JSON to the repo and reference it from
-  `DEPLOYMENT.md`.
+- ✅ The heavy `services/` files (`marketDataService.ts`,
+  `streamingBridge.ts`, `backfillScheduler.ts`, `cache.ts`,
+  `database.ts`) now route every log through pino with structured
+  payloads (this branch). Route handlers' `console.*` calls are
+  intentionally left alone — the observability middleware already emits
+  a structured "request completed" line per request. `ib_service` has no
+  `print()` calls; its stdlib `logger` is transparently reconfigured by
+  `ib_service/observability.py` to emit through `structlog`.
+- ✅ Grafana dashboard
+  ([`ops/grafana/tradingapp-dashboard.json`](ops/grafana/tradingapp-dashboard.json))
+  + README + DEPLOYMENT.md *Monitoring & Maintenance* section now
+  document the full Prometheus / Grafana / X-Request-Id story.
 
 ---
 
@@ -306,12 +313,16 @@ blotter. Keep it behind an explicit config flag given the live-trading risk.
 - ✅ CSV export from `DataframeViewer` is now RFC 4180-correct
   (CRLF terminators, double-quote escaping, comma/CR/LF quoting); JSON
   export was already present.
-- No loading skeletons; charts pop in once data arrives.
+- ✅ Parquet export ships via a backend `POST /api/export/parquet` route
+  built on `@dsnp/parquetjs`; the viewer gains an *Export Parquet*
+  button next to CSV / JSON.
+- ✅ Loading skeletons (`frontend/app/components/ChartSkeleton.tsx`)
+  show on `/historical`, `/msft` and `/backtest` while data is in
+  flight; the layout no longer jumps when the chart canvas mounts.
 - No watchlists, alerts, scanners or sector browsing.
-- Parquet export is still unimplemented (CSV/JSON cover the immediate need).
 
-**Remaining action:** add loading skeletons on the chart pages; treat
-watchlists / alerts / scanners as larger follow-on features.
+**Remaining action:** treat watchlists / alerts / scanners as larger
+follow-on features.
 
 ---
 

@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import BackToHome from '../components/BackToHome';
+import ChartSkeleton from '../components/ChartSkeleton';
 import DataframeViewer from '../components/DataframeViewer';
 import EquityCurveChart, { EquityPoint } from '../components/EquityCurveChart';
 import { apiFetch } from '../lib/api';
@@ -478,6 +479,22 @@ export default function BacktestPage() {
             </div>
           )}
         </div>
+
+        {/* In-flight skeleton — shown while a backtest is running and we don't have
+            results yet to render. The Previous Runs panel stays visible above. */}
+        {running && !results && (
+          <div className="bg-white p-6 rounded-lg shadow space-y-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} className="bg-gray-50 p-4 rounded">
+                  <div className="h-3 w-16 rounded bg-gray-200 animate-pulse" />
+                  <div className="mt-2 h-5 w-24 rounded bg-gray-200 animate-pulse" />
+                </div>
+              ))}
+            </div>
+            <ChartSkeleton height={320} label={`Running ${strategy || 'strategy'} on ${symbol}…`} />
+          </div>
+        )}
 
         {/* Results */}
         {results && (

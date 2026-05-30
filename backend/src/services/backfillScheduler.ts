@@ -41,6 +41,7 @@ import {
   type CandlestickBar,
   type CollectionConfig,
 } from './marketDataService.js';
+import { logger } from './logger.js';
 
 const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
 
@@ -191,14 +192,18 @@ export class BackfillScheduler {
   // -------------------------------------------------------------------
   start(): void {
     if (!this.enabled) {
-      console.log('[backfill] disabled via BACKFILL_ENABLED (set BACKFILL_ENABLED=true to enable)');
+      logger.info('backfill disabled via BACKFILL_ENABLED (set BACKFILL_ENABLED=true to enable)');
       return;
     }
     if (this.started) return;
     this.started = true;
-    console.log(
-      `[backfill] enabled — every ${this.intervalMs / 60_000}m, period=${this.period}, ` +
-        `first run in ${Math.round(this.initialDelayMs / 1000)}s`
+    logger.info(
+      {
+        interval_minutes: this.intervalMs / 60_000,
+        period: this.period,
+        first_run_seconds: Math.round(this.initialDelayMs / 1000),
+      },
+      'backfill scheduler enabled',
     );
 
     this.initialTimer = setTimeout(() => {
@@ -228,7 +233,7 @@ export class BackfillScheduler {
    */
   async runOnce(): Promise<void> {
     if (this.running) {
-      console.warn('[backfill] previous run still in progress — skipping this tick');
+      logger.warn('previous backfill run still in progress — skipping this tick');
       return;
     }
     this.running = true;
@@ -236,7 +241,7 @@ export class BackfillScheduler {
     try {
       const configs = await this.deps.listConfigs();
       if (configs.length === 0) {
-        console.log('[backfill] no enabled auto_collect rows in data_collection_config');
+        logger.info('no enabled auto_collect rows in data_collection_config');
         return;
       }
       for (const cfg of configs) {
@@ -245,7 +250,7 @@ export class BackfillScheduler {
     } catch (err) {
       this.errors++;
       this.lastError = err instanceof Error ? err.message : String(err);
-      console.error('[backfill] run failed:', this.lastError);
+      logger.error({ err: this.lastError }, 'backfill run failed');
     } finally {
       this.lastRunAt = this.deps.now();
       this.running = false;
@@ -266,9 +271,13 @@ export class BackfillScheduler {
       }
     } catch (err) {
       // A freshness-check failure shouldn't block the fetch; log and proceed.
-      console.warn(
-        `[backfill] freshness check failed for ${cfg.symbol} ${cfg.timeframe}:`,
-        err instanceof Error ? err.message : err
+      logger.warn(
+        {
+          symbol: cfg.symbol,
+          timeframe: cfg.timeframe,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        'backfill freshness check failed',
       );
     }
 
@@ -304,23 +313,36 @@ export class BackfillScheduler {
       try {
         await this.deps.recordDataQuality(cfg.contractId, cfg.timeframe, bars);
       } catch (qualityError) {
-        console.warn(
-          `[backfill] quality metrics failed for ${cfg.symbol} ${cfg.timeframe}:`,
-          qualityError instanceof Error ? qualityError.message : qualityError
+        logger.warn(
+          {
+            symbol: cfg.symbol,
+            timeframe: cfg.timeframe,
+            err: qualityError instanceof Error ? qualityError.message : String(qualityError),
+          },
+          'backfill quality metrics failed',
         );
       }
 
       if (sessionId != null) {
         await this.deps.endSession(sessionId, 'completed', stored);
       }
-      console.log(
-        `[backfill] ${cfg.symbol} ${cfg.timeframe}: ${result.inserted} inserted, ` +
-          `${result.updated} updated, ${result.errors} errors`
+      logger.info(
+        {
+          symbol: cfg.symbol,
+          timeframe: cfg.timeframe,
+          inserted: result.inserted,
+          updated: result.updated,
+          errors: result.errors,
+        },
+        'backfill row completed',
       );
     } catch (err) {
       this.errors++;
       this.lastError = err instanceof Error ? err.message : String(err);
-      console.error(`[backfill] ${cfg.symbol} ${cfg.timeframe} failed:`, this.lastError);
+      logger.error(
+        { symbol: cfg.symbol, timeframe: cfg.timeframe, err: this.lastError },
+        'backfill row failed',
+      );
       if (sessionId != null) {
         await this.deps.endSession(sessionId, 'failed', 0, this.lastError).catch(() => undefined);
       }

@@ -9,6 +9,7 @@ import { useTradingAccount } from '../contexts/TradingAccountContext';
 import { apiFetch } from '../lib/api';
 import { useRealtimeStream, TickPayload } from '../lib/useRealtimeStream';
 import { useChartResize } from '../lib/useChartResize';
+import ChartSkeleton from './ChartSkeleton';
 
 interface RealtimeData {
   symbol: string;
@@ -892,6 +893,12 @@ export default function MSFTRealtimeChart() {
         </div>
 
         <div ref={chartContainerRef} className="w-full border border-gray-200 rounded" />
+
+        {isLoadingHistorical && chartData.length === 0 && (
+          <div className="mt-2">
+            <ChartSkeleton height={360} label="Loading MSFT history…" />
+          </div>
+        )}
 
         {chartData.length > 0 && (
           <div className="mt-2 text-xs text-gray-500 space-y-1">
