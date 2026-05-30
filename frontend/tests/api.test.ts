@@ -138,6 +138,49 @@ describe('apiFetch', () => {
     const headers = new Headers(init.headers);
     expect(headers.get('Authorization')).toBe('Bearer caller-supplied');
   });
+
+  it('attaches a generated X-Request-Id when the caller did not supply one', async () => {
+    process.env.NEXT_PUBLIC_API_URL = 'https://api.test';
+    const fetchMock = mockFetch();
+
+    const mod = await import('../app/lib/api');
+    await mod.apiFetch('/x');
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const headers = new Headers(init.headers);
+    expect(headers.get('X-Request-Id')).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+  });
+
+  it('preserves a caller-supplied X-Request-Id', async () => {
+    process.env.NEXT_PUBLIC_API_URL = 'https://api.test';
+    const fetchMock = mockFetch();
+
+    const mod = await import('../app/lib/api');
+    await mod.apiFetch('/x', { headers: { 'X-Request-Id': 'rid-caller' } });
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const headers = new Headers(init.headers);
+    expect(headers.get('X-Request-Id')).toBe('rid-caller');
+  });
+});
+
+describe('newRequestId', () => {
+  it('returns a uuid-shaped string', async () => {
+    const mod = await import('../app/lib/api');
+    const id = mod.newRequestId();
+    expect(id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+  });
+
+  it('returns distinct ids across calls', async () => {
+    const mod = await import('../app/lib/api');
+    const a = mod.newRequestId();
+    const b = mod.newRequestId();
+    expect(a).not.toBe(b);
+  });
 });
 
 describe('socketAuth', () => {

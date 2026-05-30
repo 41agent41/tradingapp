@@ -12,6 +12,9 @@ import { cacheService } from './services/cache.js';
 import { createStreamingBridge } from './services/streamingBridge.js';
 import { createBackfillScheduler } from './services/backfillScheduler.js';
 import { createAuthMiddleware, checkSocketAuth } from './middleware/auth.js';
+import { observabilityMiddleware } from './middleware/observability.js';
+import { logger, currentRequestId } from './services/logger.js';
+import { registry } from './services/metrics.js';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 4000;
 const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
@@ -79,10 +82,35 @@ const io = new SocketIOServer(server, {
 app.use(cors(corsOptions));
 app.use(express.json());
 
+// Observability runs first so every request — including those rejected by
+// auth — gets a request-id, a log line and a metric observation.
+app.use(observabilityMiddleware());
+
 // Bearer-token auth. The middleware is a no-op (with a startup warning)
 // when API_TOKEN is not set, so existing deployments keep working until
 // they roll out a token.
 app.use(createAuthMiddleware());
+
+// Propagate the per-request id into every axios call (mostly: the backend
+// → ib_service hops). The interceptor reads the current AsyncLocalStorage
+// store, so it works whether axios is called directly in a route or buried
+// inside a service.
+axios.interceptors.request.use((config) => {
+  const id = currentRequestId();
+  if (id && !config.headers?.['X-Request-Id']) {
+    config.headers = config.headers ?? {};
+    (config.headers as Record<string, string>)['X-Request-Id'] = id;
+  }
+  return config;
+});
+
+// Prometheus scrape endpoint. Intentionally unauthenticated so the scraper
+// can hit it without a bearer token; if you expose this beyond the docker
+// network, front it with a firewall rule.
+app.get('/metrics', async (_req, res) => {
+  res.setHeader('Content-Type', registry.contentType);
+  res.end(await registry.metrics());
+});
 
 // ---------------------------------------------------------------------------
 // Health checks
@@ -310,11 +338,10 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 // Start
 // ---------------------------------------------------------------------------
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Backend server running on port ${PORT}`);
-  console.log(`IB Service URL: ${IB_SERVICE_URL}`);
+  logger.info({ port: PORT, ib_service: IB_SERVICE_URL }, 'backend listening');
 
   void streamingBridge.start().catch((err) => {
-    console.warn('Streaming bridge failed to start:', err);
+    logger.warn({ err: String(err) }, 'streaming bridge failed to start');
   });
 
   backfillScheduler.start();
@@ -323,26 +350,26 @@ server.listen(PORT, '0.0.0.0', () => {
     .testConnection()
     .then((connected) => {
       if (connected) {
-        console.log('Database connection established');
+        logger.info('database connection established');
       } else {
-        console.warn('Database connection failed - some features may be limited');
+        logger.warn('database connection failed - some features may be limited');
       }
     })
-    .catch((error) => console.error('Database connection error:', error));
+    .catch((error) => logger.error({ err: String(error) }, 'database connection error'));
 
   void cacheService
     .ping()
     .then((ok) => {
       if (ok) {
-        console.log('Redis cache reachable');
+        logger.info('redis cache reachable');
       } else if (cacheService.status().enabled) {
-        console.warn(
-          'Redis cache unreachable — caching disabled at runtime, ' +
-            'requests will pass through directly'
+        logger.warn(
+          'redis cache unreachable — caching disabled at runtime, ' +
+            'requests will pass through directly',
         );
       }
     })
-    .catch((err) => console.warn('Redis cache check error:', err));
+    .catch((err) => logger.warn({ err: String(err) }, 'redis cache check error'));
 });
 
 export default app;

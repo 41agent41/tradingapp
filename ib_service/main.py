@@ -32,12 +32,13 @@ from indicators import calculator as indicator_calculator
 # Backtesting support
 from backtesting import backtest_engine, AVAILABLE_STRATEGIES
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Observability (structured logging + /metrics + X-Request-Id middleware)
+from observability import attach_observability, get_logger
+
+# Configure logging — the structlog config in observability.py also wires
+# stdlib logging so existing `logger.info("...")` calls keep working but emit
+# structured JSON in production.
+logger = get_logger(__name__)
 
 # Configuration from environment
 IB_HOST = os.getenv('IB_HOST')
@@ -981,6 +982,10 @@ app = FastAPI(
     version="4.0.0",
     lifespan=lifespan
 )
+
+# Observability wiring (X-Request-Id middleware, /metrics, structlog).
+# Attach BEFORE CORS so X-Request-Id is set even on preflight responses.
+attach_observability(app)
 
 # CORS middleware
 app.add_middleware(

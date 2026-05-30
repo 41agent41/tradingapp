@@ -24,7 +24,7 @@ import crypto from 'crypto';
  *     unauthenticated health endpoints remain reachable.
  */
 
-const OPEN_PATHS = new Set<string>(['/', '/api/health', '/api/database/health']);
+const OPEN_PATHS = new Set<string>(['/', '/api/health', '/api/database/health', '/metrics']);
 
 let warned = false;
 
