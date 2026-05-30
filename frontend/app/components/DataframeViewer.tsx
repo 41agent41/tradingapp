@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
+import { apiFetch } from '../lib/api';
 
 /**
  * RFC 4180-style CSV serialisation. Values that contain a comma, double
@@ -207,6 +208,41 @@ export default function DataframeViewer({
     window.URL.revokeObjectURL(url);
   };
 
+  const [parquetBusy, setParquetBusy] = useState(false);
+  const [parquetError, setParquetError] = useState<string | null>(null);
+  const exportToParquet = async () => {
+    if (!filteredAndSortedData.length || parquetBusy) return;
+    const filename = `${title.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.parquet`;
+    setParquetBusy(true);
+    setParquetError(null);
+    try {
+      const res = await apiFetch('/api/export/parquet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename,
+          columns: columns.map((c) => ({ key: c.key, label: c.label, type: c.type })),
+          rows: filteredAndSortedData,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || body.error || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setParquetError(err instanceof Error ? err.message : 'Parquet export failed');
+    } finally {
+      setParquetBusy(false);
+    }
+  };
+
   if (!data || data.length === 0) {
     return (
       <div className={`bg-white rounded-lg shadow-sm border p-4 ${className}`}>
@@ -229,19 +265,33 @@ export default function DataframeViewer({
           </div>
 
           {showExport && (
-            <div className="flex items-center space-x-2">
-              <button
-                onClick={exportToCSV}
-                className="px-3 py-1 text-xs sm:text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-              >
-                Export CSV
-              </button>
-              <button
-                onClick={exportToJSON}
-                className="px-3 py-1 text-xs sm:text-sm bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
-              >
-                Export JSON
-              </button>
+            <div className="flex flex-col items-end sm:items-stretch">
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={exportToCSV}
+                  className="px-3 py-1 text-xs sm:text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                >
+                  Export CSV
+                </button>
+                <button
+                  onClick={exportToJSON}
+                  className="px-3 py-1 text-xs sm:text-sm bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
+                >
+                  Export JSON
+                </button>
+                <button
+                  onClick={exportToParquet}
+                  disabled={parquetBusy}
+                  className="px-3 py-1 text-xs sm:text-sm bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-400 transition-colors"
+                >
+                  {parquetBusy ? 'Encoding…' : 'Export Parquet'}
+                </button>
+              </div>
+              {parquetError && (
+                <p className="mt-1 text-xs text-red-600 max-w-xs truncate" title={parquetError}>
+                  {parquetError}
+                </p>
+              )}
             </div>
           )}
         </div>

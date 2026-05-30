@@ -6,6 +6,7 @@ import marketDataRoutes from './routes/marketData.js';
 import accountRoutes from './routes/account.js';
 import settingsRoutes from './routes/settings.js';
 import backtestingRoutes from './routes/backtesting.js';
+import exportRoutes from './routes/export.js';
 import axios from 'axios';
 import { dbService } from './services/database.js';
 import { cacheService } from './services/cache.js';
@@ -80,7 +81,10 @@ const io = new SocketIOServer(server, {
 });
 
 app.use(cors(corsOptions));
-app.use(express.json());
+// JSON body parser. The default 100kb limit is fine for everything except
+// the Parquet export, which posts the full dataframe back from the
+// browser. 25 MB is plenty for the 200k-row cap enforced in routes/export.ts.
+app.use(express.json({ limit: '25mb' }));
 
 // Observability runs first so every request — including those rejected by
 // auth — gets a request-id, a log line and a metric observation.
@@ -187,6 +191,7 @@ app.use('/api/market-data', marketDataRoutes);
 app.use('/api/account', accountRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/backtesting', backtestingRoutes);
+app.use('/api/export', exportRoutes);
 
 app.get('/', (_req, res) => {
   res.json({
@@ -199,6 +204,7 @@ app.get('/', (_req, res) => {
       account: '/api/account',
       settings: '/api/settings',
       backtesting: '/api/backtesting',
+      export: '/api/export',
     },
   });
 });
