@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
 import DataframeViewer from './DataframeViewer';
 import { apiFetch } from '../lib/api';
+import { useChartResize } from '../lib/useChartResize';
 
 interface CandlestickData {
   time: Time;
@@ -124,24 +125,14 @@ export default function EnhancedTradingChart({
       },
     });
 
-    // Handle resize
-    const handleResize = () => {
-      if (chart.current && chartContainerRef.current) {
-        chart.current.applyOptions({
-          width: chartContainerRef.current.clientWidth,
-        });
-      }
-    };
-
-    window.addEventListener('resize', handleResize);
-
     return () => {
-      window.removeEventListener('resize', handleResize);
       if (chart.current) {
         chart.current.remove();
       }
     };
   }, []);
+
+  useChartResize(chartContainerRef, chart);
 
   // Fetch historical data when contract or timeframe changes
   useEffect(() => {

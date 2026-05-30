@@ -306,6 +306,11 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > backfill worker, `data_quality_metrics` population, real
 > `clean_old_data()` counts and the `/backtest` UI all landed in Phases 2–5
 > and now live under [Currently Available](#currently-available).
+>
+> **Also recently shipped (home-page UX polish).** A live `HealthBadge`,
+> a global `error.tsx` boundary, `ResizeObserver`-driven chart refits,
+> `localStorage`-backed last-symbol/timeframe persistence, and an
+> RFC 4180-correct CSV export from the DataFrame viewer.
 
 ### Backtesting persistence
 
@@ -328,16 +333,11 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
   Python).
 - `/metrics` Prometheus endpoint on backend and IB service.
 - End-to-end `x-request-id` propagation.
-- Live IB connection badge on the home page (currently the status text is
-  static).
 
 ### Frontend UX
 
-- Persist last-used symbol and timeframe in `localStorage`.
-- Global Next.js `error.tsx` boundary.
 - Loading skeletons on the chart pages.
-- Resize observers so charts re-fit on viewport changes.
-- CSV / Parquet export from the DataFrame viewer.
+- Parquet export from the DataFrame viewer (CSV and JSON ship today).
 - Watchlists and alerts.
 - Sector / scanner browsing.
 

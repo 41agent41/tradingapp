@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import EnhancedTradingChart from './EnhancedTradingChart';
 import { useTradingAccount } from '../contexts/TradingAccountContext';
 import { apiFetch } from '../lib/api';
+import { usePersistentState, STORAGE_KEYS } from '../lib/usePersistentState';
 
 interface SecurityType {
   value: string;
@@ -145,11 +146,15 @@ export default function MarketDataFilter() {
   const { accountMode, dataType } = useTradingAccount();
 
   // Basic filter state
-  const [symbol, setSymbol] = useState('');
+  const [symbol, setSymbol] = usePersistentState(STORAGE_KEYS.lastSymbol, '');
   const [securityType, setSecurityType] = useState('STK');
   const [exchange, setExchange] = useState('SMART');
   const [currency, setCurrency] = useState('USD');
-  const [timeframe, setTimeframe] = useState('1hour');
+  const [timeframe, setTimeframe] = usePersistentState(
+    STORAGE_KEYS.lastTimeframe,
+    '1hour',
+    (v) => TIMEFRAMES.some((tf) => tf.value === v),
+  );
   const [searchByName, setSearchByName] = useState(false);
 
   // Advanced filter state

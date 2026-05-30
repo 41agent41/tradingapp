@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import { createChart, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
+import { useChartResize } from '../lib/useChartResize';
 
 export interface EquityPoint {
   time: number; // unix seconds
@@ -52,20 +53,14 @@ export default function EquityCurveChart({ data, height = 320 }: EquityCurveChar
     chartRef.current = chart;
     seriesRef.current = series;
 
-    const handleResize = () => {
-      if (chartRef.current && containerRef.current) {
-        chartRef.current.applyOptions({ width: containerRef.current.clientWidth });
-      }
-    };
-    window.addEventListener('resize', handleResize);
-
     return () => {
-      window.removeEventListener('resize', handleResize);
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
     };
   }, [height]);
+
+  useChartResize(containerRef, chartRef);
 
   useEffect(() => {
     if (!seriesRef.current || !data?.length) return;

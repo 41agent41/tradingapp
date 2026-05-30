@@ -3,6 +3,7 @@
 import React, { useEffect, useRef } from 'react';
 import { createChart, IChartApi, ISeriesApi, CandlestickData, Time } from 'lightweight-charts';
 import DataframeViewer from './DataframeViewer';
+import { useChartResize } from '../lib/useChartResize';
 
 interface ProcessedBar {
   time: number;
@@ -87,24 +88,14 @@ export default function HistoricalChart({ data, symbol, timeframe }: HistoricalC
       },
     });
 
-    // Handle resize
-    const handleResize = () => {
-      if (chart && chartContainerRef.current) {
-        chart.applyOptions({
-          width: chartContainerRef.current.clientWidth,
-        });
-      }
-    };
-
-    window.addEventListener('resize', handleResize);
-
     return () => {
-      window.removeEventListener('resize', handleResize);
       if (chart) {
         chart.remove();
       }
     };
   }, []);
+
+  useChartResize(chartContainerRef, chartRef);
 
   // Update chart data when data changes
   useEffect(() => {

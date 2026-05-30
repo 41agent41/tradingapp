@@ -2,9 +2,11 @@
 
 ## Codebase Review Summary
 
-**Date**: 2026-05-29
-**Branch**: `feat/backtesting-ui`
-**Base commit**: `6d84f9f` (backtesting proxy + `/backtest` UI)
+**Date**: 2026-05-30
+**Branch**: `feat/home-ux-polish`
+**Base commit**: `89ff0be` (post Phase 5 docs sync; this branch adds the
+Tier-1 home-page UX polish: HealthBadge, error.tsx, ResizeObserver,
+localStorage persistence, hardened CSV export)
 
 > This is a point-in-time engineering snapshot. For the full prioritised
 > gap list and roadmap see [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md); for the
@@ -100,7 +102,7 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
 |---|-------|----------|--------|
 | 1 | **No order placement** | `ib_service`, `backend/src/routes`, frontend | Account endpoints are read-only end to end; no `placeOrder` path, no `POST /api/orders`, no order ticket UI |
 | 2 | **Backtesting runs are not persisted** | `backend`, schema | Each run is recompute-only; no cross-configuration comparison |
-| 3 | **Static IB status on the home page** | `frontend/app/page.tsx` | Label is hard-coded rather than driven by `/api/health` |
+| 3 | ~~Static IB status on the home page~~ | — | ✅ Replaced by `HealthBadge` (this branch). |
 
 ### P2 — Architecture / quality
 | # | Issue | Location | Impact |
@@ -108,7 +110,7 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
 | 4 | **`ib_service/main.py` is ~2,700 lines** | `ib_service/main.py` | Routes, IB client, threading, caching, indicators and accounts in one file |
 | 5 | **Four overlapping chart components** | `frontend/app/components` | `HistoricalChart` / `TradingChart` / `EnhancedTradingChart` / `MSFTRealtimeChart` diverge (the new `EquityCurveChart` is intentionally separate) |
 | 6 | **No observability** | all services | No structured logging, `/metrics`, or `x-request-id` propagation |
-| 7 | **No global `error.tsx` / `ResizeObserver`** | `frontend/app` | Chart exceptions unmount the page; charts don't re-fit on resize |
+| 7 | ~~No global `error.tsx` / `ResizeObserver`~~ | — | ✅ `error.tsx` + shared `useChartResize` shipped on this branch. |
 | 8 | **Single synchronous IB client** | `ib_service/main.py` | Caps concurrency at 1; shared `IB_CLIENT_ID=1` blocks replicas |
 
 ---
@@ -116,17 +118,19 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
 ## 4. Recommended Next Iteration
 
 ### Tier 1 — Surface remaining engines
-1. Live `<HealthBadge />` on the home page, polling `/api/health`
-   (includes `services.streaming`, `services.cache`, `services.backfill`).
+1. ✅ Live `<HealthBadge />` on the home page, polling `/api/health`
+   (covers `database`, `ib_service`, `cache`, `streaming`, `backfill`).
 2. Persist backtest runs into Postgres (new table + a list view on
    `/backtest`).
 
 ### Tier 2 — Operational polish
 3. Structured logging (`pino` / `structlog`), `/metrics`, `x-request-id`
    propagation end to end.
-4. Frontend `error.tsx` boundary + `ResizeObserver`s on chart containers.
-5. Persist last-used symbol/timeframe to `localStorage`; CSV / Parquet
-   export from `DataframeViewer`.
+4. ✅ Frontend `error.tsx` boundary + `ResizeObserver`s on chart containers
+   (all five charts now share `useChartResize`).
+5. ✅ Persist last-used symbol/timeframe to `localStorage` (via
+   `usePersistentState`); CSV export from `DataframeViewer` rewritten as an
+   RFC 4180-correct encoder. Parquet export is still open.
 
 ### Tier 3 — Refactors
 6. Split `ib_service/main.py` into `routes/` / `ib_client/` / `streaming/` /
@@ -150,16 +154,16 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
 ```
 Priority  Task                                                Effort
 ────────  ──────────────────────────────────────────────────  ──────
-  1       Live HealthBadge on the home page                    Small
-  2       error.tsx boundary + ResizeObserver on charts        Small
-  3       Persist last symbol/timeframe + DataframeViewer      Small
-            export
-  4       Persist backtest runs + comparison view              Medium
-  5       Structured logging + /metrics + x-request-id         Medium
-  6       Split ib_service/main.py into modules                Medium
-  7       Consolidate OHLCV chart components into one <Chart>  Medium
-  8       IB client connection pool (clientId range)           Large
-  9       Order management (gated behind LIVE_TRADING_ENABLED) Large
+  ✅      Live HealthBadge on the home page                    (done)
+  ✅      error.tsx boundary + ResizeObserver on charts        (done)
+  ✅      Persist last symbol/timeframe + RFC 4180 CSV export  (done)
+  1       Persist backtest runs + comparison view              Medium
+  2       Structured logging + /metrics + x-request-id         Medium
+  3       Loading skeletons on chart pages                     Small
+  4       Split ib_service/main.py into modules                Medium
+  5       Consolidate OHLCV chart components into one <Chart>  Medium
+  6       IB client connection pool (clientId range)           Large
+  7       Order management (gated behind LIVE_TRADING_ENABLED) Large
 ```
 
 ---

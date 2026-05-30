@@ -2,6 +2,23 @@
 
 import React, { useState, useMemo } from 'react';
 
+/**
+ * RFC 4180-style CSV serialisation. Values that contain a comma, double
+ * quote, CR or LF are double-quoted, and embedded double quotes are
+ * doubled. Null/undefined collapse to an empty cell.
+ */
+export function toCsv(rows: Record<string, unknown>[], columns: { key: string; label: string }[]): string {
+  const esc = (v: unknown): string => {
+    if (v === null || v === undefined) return '';
+    const s = typeof v === 'string' ? v : String(v);
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+
+  const header = columns.map((c) => esc(c.label)).join(',');
+  const body = rows.map((r) => columns.map((c) => esc(r[c.key])).join(',')).join('\r\n');
+  return body ? `${header}\r\n${body}\r\n` : `${header}\r\n`;
+}
+
 interface DataframeViewerProps {
   data: any[];
   title?: string;
@@ -169,18 +186,8 @@ export default function DataframeViewer({
   const exportToCSV = () => {
     if (!filteredAndSortedData.length) return;
 
-    const headers = columns.map((col) => col.label).join(',');
-    const rows = filteredAndSortedData.map((row) =>
-      columns
-        .map((col) => {
-          const value = row[col.key];
-          return typeof value === 'string' && value.includes(',') ? `"${value}"` : value;
-        })
-        .join(',')
-    );
-
-    const csv = [headers, ...rows].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
+    const csv = toCsv(filteredAndSortedData, columns);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

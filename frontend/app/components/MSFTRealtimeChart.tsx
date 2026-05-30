@@ -8,6 +8,7 @@ import DataframeViewer from './DataframeViewer';
 import { useTradingAccount } from '../contexts/TradingAccountContext';
 import { apiFetch } from '../lib/api';
 import { useRealtimeStream, TickPayload } from '../lib/useRealtimeStream';
+import { useChartResize } from '../lib/useChartResize';
 
 interface RealtimeData {
   symbol: string;
@@ -221,24 +222,14 @@ export default function MSFTRealtimeChart() {
       },
     });
 
-    // Handle resize
-    const handleResize = () => {
-      if (chart.current && chartContainerRef.current) {
-        chart.current.applyOptions({
-          width: chartContainerRef.current.clientWidth,
-        });
-      }
-    };
-
-    window.addEventListener('resize', handleResize);
-
     return () => {
-      window.removeEventListener('resize', handleResize);
       if (chart.current) {
         chart.current.remove();
       }
     };
   }, []);
+
+  useChartResize(chartContainerRef, chart);
 
   // Update indicator series on chart
   const updateIndicatorSeries = (data: CandlestickData[]) => {

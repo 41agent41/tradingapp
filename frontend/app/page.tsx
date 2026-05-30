@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import HealthBadge from './components/HealthBadge';
 import MarketDataFilter from './components/MarketDataFilter';
 import TradingAccountSwitch from './components/TradingAccountSwitch';
 import { useTradingAccount } from './contexts/TradingAccountContext';
@@ -23,7 +24,7 @@ export default function HomePage() {
               </p>
             </div>
             <div className="flex items-center space-x-2 sm:space-x-4">
-              <div className="text-xs sm:text-sm text-gray-500">Connected to IB Gateway</div>
+              <HealthBadge />
             </div>
           </div>
         </div>

@@ -1,6 +1,8 @@
 # TradingApp - Gap Analysis, Enhancements & Next Steps
 
-_Last reviewed: 2026-05-29 against commit `6897a57` on `master`._
+_Last reviewed: 2026-05-30 against branch `feat/home-ux-polish`
+(home-page UX polish: HealthBadge, error.tsx, ResizeObserver,
+localStorage persistence, hardened CSV export)._
 
 This document captures the result of a structured review of the TradingApp
 codebase and its documentation set (`README.md`, `DEPLOYMENT.md`,
@@ -50,11 +52,13 @@ The platform is in materially better shape than at the previous review:
 The remaining risks are now smaller and mostly about **breadth and polish**:
 
 1. **No observability.** No structured logging, metrics endpoint or
-   request-id propagation; the home-page IB status is still static text.
+   request-id propagation. (The home-page IB status is now a live
+   `HealthBadge` driven by `/api/health` — that gap is closed.)
 2. **Single-feature UI gaps.** Order management has no frontend
    (backtesting now does — `/backtest`); the four OHLCV chart components
-   remain unconsolidated (§3.5); the home-page IB status badge is still
-   static text.
+   remain unconsolidated (§3.5). The home-page status, `error.tsx`
+   boundary, `ResizeObserver` wiring, last-symbol/timeframe persistence and
+   CSV export have shipped (§7).
 3. **IB concurrency is capped at one.** The single synchronous IB client
    serialises every request (§3.3); `ib_service/main.py` is still monolithic
    (§3.4).
@@ -262,17 +266,28 @@ blotter. Keep it behind an explicit config flag given the live-trading risk.
 
 ## 7. Frontend UX Gaps (Phases 5–6)
 
-- Static IB status text on the home page (see §4).
-- No global `error.tsx` boundary; an exception in a chart unmounts the page.
+- ✅ Static IB status text on the home page — replaced by `HealthBadge`
+  (`frontend/app/components/HealthBadge.tsx`, polled against `/api/health`).
+- ✅ Global `error.tsx` boundary now in place
+  ([`frontend/app/error.tsx`](frontend/app/error.tsx)) — a thrown chart
+  exception no longer unmounts the rest of the page.
+- ✅ `ResizeObserver` wiring — all five lightweight-charts surfaces share
+  [`useChartResize`](frontend/app/lib/useChartResize.ts), which observes
+  the container itself (not just the viewport) and keeps a `window.resize`
+  fallback.
+- ✅ Last-used symbol/timeframe is persisted via
+  [`usePersistentState`](frontend/app/lib/usePersistentState.ts) under
+  the `tradingapp.lastSymbol` / `tradingapp.lastTimeframe` keys; the
+  home filter and `/historical` share them.
+- ✅ CSV export from `DataframeViewer` is now RFC 4180-correct
+  (CRLF terminators, double-quote escaping, comma/CR/LF quoting); JSON
+  export was already present.
 - No loading skeletons; charts pop in once data arrives.
-- Charts do not re-fit cleanly on viewport change (no `ResizeObserver`).
-- Last-used symbol/timeframe is not persisted to `localStorage`.
-- No CSV / Parquet export from the DataframeViewer.
 - No watchlists, alerts, scanners or sector browsing.
+- Parquet export is still unimplemented (CSV/JSON cover the immediate need).
 
-**Action:** add the `error.tsx` boundary and `ResizeObserver` wiring;
-persist last symbol/timeframe; add export from the DataframeViewer; treat
-watchlists/alerts/scanners as larger follow-on features.
+**Remaining action:** add loading skeletons on the chart pages; treat
+watchlists / alerts / scanners as larger follow-on features.
 
 ---
 
@@ -322,18 +337,20 @@ Phases 1–4 are complete (see §2). Remaining work, ordered by dependency:
    counts from `clean_old_data()`. (See §3.1.)
 4. ✅ Resolve the `technical_indicators` persistence mismatch (§3.2 —
    persistence dropped).
-5. Persist last-used symbol/timeframe; add CSV/Parquet export from the
-   DataframeViewer.
+5. ✅ Persist last-used symbol/timeframe; CSV export from the
+   DataframeViewer (Parquet still open).
 6. (Stretch) Order management behind an explicit live-trading flag.
 
 ### Phase 6 — Operational polish
 7. Structured logging, `x-request-id` propagation, `/metrics` endpoints.
-8. Live `<HealthBadge />` reflecting IB / DB / cache / streaming state.
+8. ✅ Live `<HealthBadge />` reflecting IB / DB / cache / streaming /
+   backfill state on the home page.
 9. Connection-pool the IB client across a `clientId` range (§3.3).
 10. Split the monolithic modules (§3.4) — ✅ `marketData.ts` done; `main.py`
     and the largest frontend components still pending — and consolidate the
     four chart components into one `<Chart>` (§3.5).
-11. Add an `error.tsx` boundary and `ResizeObserver`s on chart containers.
+11. ✅ Global `error.tsx` boundary and `ResizeObserver`s on all chart
+    containers.
 12. Expand test breadth (frontend component tests, backend integration,
     IB-service historical-assembly tests).
 
@@ -361,8 +378,10 @@ Carried forward from the original analysis; checked items have landed.
       backend-side Redis subscription, not browser polling.
 - [x] Backtesting is exposed in the UI (proxy + `/backtest` page; pending
       runtime validation in CI / against a live IB Gateway).
-- [ ] A health badge on the home page reflects live IB Gateway, database,
-      cache and streaming state.
+- [x] A health badge on the home page reflects live IB Gateway, database,
+      cache and streaming state (`frontend/app/components/HealthBadge.tsx`,
+      polled every 10s against `/api/health`; includes the
+      `services.backfill` block too).
 - [x] `data_quality_metrics` is populated and `clean_old_data()` returns real
       counts.
 - [x] The `technical_indicators` schema/code mismatch is resolved (§3.2 —

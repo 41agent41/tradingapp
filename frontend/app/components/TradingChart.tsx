@@ -5,6 +5,7 @@ import { createChart, ColorType, IChartApi, ISeriesApi, Time } from 'lightweight
 import { io, Socket } from 'socket.io-client';
 import IndicatorSelector from './IndicatorSelector';
 import { apiFetch, apiBaseUrl, socketAuth } from '../lib/api';
+import { useChartResize } from '../lib/useChartResize';
 
 interface CandlestickData {
   time: Time;
@@ -120,24 +121,14 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
       visible: true,
     });
 
-    // Handle resize
-    const handleResize = () => {
-      if (chart.current && chartContainerRef.current) {
-        chart.current.applyOptions({
-          width: chartContainerRef.current.clientWidth,
-        });
-      }
-    };
-
-    window.addEventListener('resize', handleResize);
-
     return () => {
-      window.removeEventListener('resize', handleResize);
       if (chart.current) {
         chart.current.remove();
       }
     };
   }, []);
+
+  useChartResize(chartContainerRef, chart);
 
   // Set up Socket.io connection for real-time data
   useEffect(() => {
