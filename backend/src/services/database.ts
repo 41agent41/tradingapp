@@ -1,5 +1,6 @@
 import { Pool, PoolClient, QueryResult } from 'pg';
 import dotenv from 'dotenv';
+import { logger } from './logger.js';
 
 dotenv.config();
 
@@ -21,11 +22,11 @@ const pool = new Pool(dbConfig);
 
 // Test database connection
 pool.on('connect', (_client: PoolClient) => {
-  console.log('Connected to PostgreSQL database');
+  logger.debug('postgres pool: client connected');
 });
 
 pool.on('error', (err: Error, _client: PoolClient) => {
-  console.error('Unexpected error on idle client', err);
+  logger.error({ err: err.message }, 'unexpected error on idle postgres client');
 });
 
 // Database service class
@@ -42,10 +43,10 @@ export class DatabaseService {
       const client = await this.pool.connect();
       const result = await client.query('SELECT NOW()');
       client.release();
-      console.log('Database connection test successful:', result.rows[0]);
+      logger.debug({ now: result.rows[0]?.now }, 'database connection test successful');
       return true;
     } catch (error) {
-      console.error('Database connection test failed:', error);
+      logger.error({ err: String(error) }, 'database connection test failed');
       return false;
     }
   }

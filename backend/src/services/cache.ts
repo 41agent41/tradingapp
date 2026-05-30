@@ -1,4 +1,5 @@
 import { createClient, RedisClientType } from 'redis';
+import { logger } from './logger.js';
 
 /**
  * Thin Redis cache wrapper.
@@ -32,7 +33,7 @@ export class CacheService {
 
   constructor() {
     if (!ENABLED) {
-      console.log('[cache] Redis disabled via REDIS_ENABLED=false');
+      logger.info('redis cache disabled via REDIS_ENABLED=false');
     }
   }
 
@@ -65,7 +66,7 @@ export class CacheService {
         await client.connect();
         this.client = client;
         this.lastError = null;
-        console.log(`[cache] connected to redis://${HOST}:${PORT}`);
+        logger.info({ host: HOST, port: PORT }, 'redis cache connected');
       } catch (err) {
         this.lastError = err instanceof Error ? err.message : String(err);
         this.client = null;

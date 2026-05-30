@@ -1,4 +1,5 @@
 import { dbService } from './database.js';
+import { logger } from './logger.js';
 import { PoolClient } from 'pg';
 
 // Interfaces for market data
@@ -135,7 +136,7 @@ export class MarketDataService {
             updated++;
           }
         } catch (error) {
-          console.error('Error storing candlestick data:', error);
+          logger.error({ err: String(error) }, 'error storing candlestick bar');
           errors++;
         }
       }
@@ -585,7 +586,7 @@ export class MarketDataService {
   }): Promise<{ uploaded_count: number; skipped_count: number }> {
     const { symbol, timeframe, bars, secType, exchange, currency } = data;
 
-    console.log(`Uploading ${bars.length} bars for ${symbol} ${timeframe} to database`);
+    logger.info({ symbol, timeframe, bars: bars.length }, 'uploading bars to database');
 
     // Get or create contract
     const contractId = await this.getOrCreateContract({
@@ -614,14 +615,21 @@ export class MarketDataService {
     try {
       await this.recordDataQuality(contractId, timeframe, candlestickBars);
     } catch (qualityError) {
-      console.warn(
-        `Failed to record data-quality metrics for ${symbol} ${timeframe}:`,
-        qualityError
+      logger.warn(
+        { symbol, timeframe, err: String(qualityError) },
+        'failed to record data-quality metrics',
       );
     }
 
-    console.log(
-      `Upload completed: ${result.inserted} inserted, ${result.updated} updated, ${result.errors} errors`
+    logger.info(
+      {
+        symbol,
+        timeframe,
+        inserted: result.inserted,
+        updated: result.updated,
+        errors: result.errors,
+      },
+      'upload completed',
     );
 
     return {
