@@ -484,12 +484,14 @@ sudo systemctl enable --now tradingapp
 
 ## Monitoring & Maintenance
 
+### Health, logs, resources
+
 ```bash
 # Service health
 ./tradingapp.sh status
 ./tradingapp.sh test
 
-# Logs
+# Logs (structured JSON in non-TTY contexts — see Prometheus / Grafana below)
 ./tradingapp.sh logs           # last 20 lines per service
 ./tradingapp.sh logs follow    # stream all services
 
@@ -497,6 +499,44 @@ sudo systemctl enable --now tradingapp
 docker stats
 docker system df
 ```
+
+### Prometheus / Grafana
+
+Both the backend (Express + `prom-client`) and the IB service (FastAPI +
+`prometheus_fastapi_instrumentator`) expose a `GET /metrics` endpoint
+that returns the standard Prometheus text format. The backend endpoint
+is on the auth allow-list so the scraper does not need a bearer token.
+
+Minimal Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: tradingapp-backend
+    static_configs: [{ targets: ['backend:4000'] }]
+    metrics_path: /metrics
+  - job_name: tradingapp-ib_service
+    static_configs: [{ targets: ['ib_service:8000'] }]
+    metrics_path: /metrics
+```
+
+A pre-built Grafana dashboard ships in
+[`ops/grafana/tradingapp-dashboard.json`](ops/grafana/tradingapp-dashboard.json) —
+three rows (Backend / IB Service / Process) covering request rate, p95
+latency, error rate, persisted backtest runs and process metrics
+(RSS, CPU, event-loop lag). Import via Grafana **Dashboards → New →
+Import** and pick your Prometheus datasource for the `DS_PROMETHEUS`
+template variable. The companion
+[`ops/grafana/README.md`](ops/grafana/README.md) lists every metric the
+panels rely on and where in the code it is emitted.
+
+### Request correlation
+
+Every backend response carries an `X-Request-Id` header (the value is
+echoed back from the caller's request or minted as a uuid4 on the way
+in). The same id is propagated into every backend → ib_service axios
+hop, so a single grep across both services' structured logs reconstructs
+the trace. The frontend `apiFetch` mints the id browser-side, so traces
+start from the click.
 
 ### Updates
 
