@@ -3,12 +3,12 @@
 ## Codebase Review Summary
 
 **Date**: 2026-05-30
-**Branch**: `feat/tier-2-polish`
-**Base commit**: `7d09d1f` (master, post Sprints 2+3 merge). This branch
-ships all four Tier 2 items: loading skeletons on the chart pages, a
-structured-logger sweep across the heavy backend services, a pre-built
-Grafana dashboard + DEPLOYMENT.md *Monitoring & Maintenance* section,
-and a Parquet export round-trip from `DataframeViewer`.
+**Branch**: `feat/tier-3-refactors`
+**Base commit**: `c0b5476` (master, post Tier 2 merge). This branch
+ships all four Tier 3 items: the `ib_service/main.py` module split, an
+opt-in IB connection pool keyed by `clientId` range, a shared `<Chart>`
+primitive + `useHistoricalData` hook, and a test-breadth expansion
+across all three services.
 
 > This is a point-in-time engineering snapshot. For the full prioritised
 > gap list and roadmap see [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md); for the
@@ -109,11 +109,11 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
 ### P2 — Architecture / quality
 | # | Issue | Location | Impact |
 |---|-------|----------|--------|
-| 4 | **`ib_service/main.py` is ~2,700 lines** | `ib_service/main.py` | Routes, IB client, threading, caching, indicators and accounts in one file |
-| 5 | **Four overlapping chart components** | `frontend/app/components` | `HistoricalChart` / `TradingChart` / `EnhancedTradingChart` / `MSFTRealtimeChart` diverge (the new `EquityCurveChart` is intentionally separate) |
+| 4 | ~~`ib_service/main.py` is ~2,700 lines~~ | — | ✅ Split into models / ib_client / ib_helpers / bars_processing on this branch (main.py is now 1,840 LoC and only owns FastAPI wiring + route handlers). Carving the routes into a routes/ subpackage is the remaining follow-on. |
+| 5 | **Four overlapping chart components** | `frontend/app/components` | ✅ Shared `<Chart>` primitive + `useHistoricalData` hook shipped on this branch. `HistoricalChart` adopts them; `TradingChart` / `EnhancedTradingChart` / `MSFTRealtimeChart` rewrites still pending browser-validation. |
 | 6 | ~~No observability~~ | — | ✅ First pass shipped on this branch (pino backend, structlog ib_service, /metrics on both, end-to-end X-Request-Id). Residual `console.log` / `print` cleanup is a touch-as-you-go follow-on. |
 | 7 | ~~No global `error.tsx` / `ResizeObserver`~~ | — | ✅ `error.tsx` + shared `useChartResize` shipped (previous branch). |
-| 8 | **Single synchronous IB client** | `ib_service/main.py` | Caps concurrency at 1; shared `IB_CLIENT_ID=1` blocks replicas |
+| 8 | ~~Single synchronous IB client~~ | — | ✅ Opt-in pool shipped this branch (`ib_pool.IBPool` keyed by `IB_CLIENT_POOL_SIZE`, defaults to 1 = unchanged behaviour). |
 
 ---
 
@@ -142,14 +142,17 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
    streamingBridge, backfillScheduler, cache, database).
 
 ### Tier 3 — Refactors
-6. Split `ib_service/main.py` into `routes/` / `ib_client/` / `streaming/` /
-   `models/` (mirrors the `routes/marketData/` split already shipped on the
-   backend).
-7. Consolidate the four OHLCV chart components into one configurable
-   `<Chart>` driven by a `useHistorical` / `useRealtimeStream` data hook;
-   make `/msft` a thin wrapper.
-8. Connection-pool the IB client across a `clientId` range (entangled with
-   §6).
+6. ✅ Split `ib_service/main.py` — models / ib_client / ib_helpers /
+   bars_processing landed. Carving the routes into a dedicated
+   `routes/` subpackage is the remaining slice; the rest of the
+   handlers stay in `main.py` for now.
+7. ✅ Shared `<Chart>` primitive + `useHistoricalData` hook landed;
+   `HistoricalChart` adopts them. `TradingChart` /
+   `EnhancedTradingChart` / `MSFTRealtimeChart` still embed their own
+   lightweight-charts instances — these rewrites need browser
+   verification before they can land.
+8. ✅ Opt-in IB connection pool (`IB_CLIENT_POOL_SIZE`,
+   [`ib_service/ib_pool.py`](ib_service/ib_pool.py)).
 
 ### Tier 4 — Live trading (gated)
 9. `placeOrder` path in `ib_service`, validated `POST /api/orders`
@@ -171,12 +174,19 @@ Priority  Task                                                Effort
   ✅      Loading skeletons on chart pages                     (done)
   ✅      Grafana dashboard JSON + DEPLOYMENT.md reference     (done)
   ✅      Parquet export + service-layer logger sweep          (done)
-  1       Split ib_service/main.py into modules                Medium
-  2       Consolidate OHLCV chart components into one <Chart>  Medium
-  3       IB client connection pool (clientId range)           Large
-  4       Prometheus alerting rules                            Small
-  5       Watchlists / alerts / scanners                       Large
-  6       Order management (gated behind LIVE_TRADING_ENABLED) Large
+  ✅      Split ib_service/main.py (models / ib_client /        (done)
+            ib_helpers / bars_processing) — routes still in main
+  ✅      Shared <Chart> + useHistoricalData (HistoricalChart   (done)
+            adopts; other three charts pending browser-validation)
+  ✅      Opt-in IB connection pool (IB_CLIENT_POOL_SIZE)      (done)
+  ✅      Test breadth expansion across all three services     (done)
+  1       Rewrite TradingChart / EnhancedTradingChart /        Medium
+            MSFTRealtimeChart on top of <Chart> (needs browser
+            verification)
+  2       Carve ib_service routes/ subpackage out of main.py   Medium
+  3       Prometheus alerting rules                            Small
+  4       Watchlists / alerts / scanners                       Large
+  5       Order management (gated behind LIVE_TRADING_ENABLED) Large
 ```
 
 ---
