@@ -9,6 +9,7 @@ import ExchangeDrivenFilters from '../components/ExchangeDrivenFilters';
 import PeriodDateFilters from '../components/PeriodDateFilters';
 import TechnicalIndicatorsFilter from '../components/TechnicalIndicatorsFilter';
 import { apiFetch } from '../lib/api';
+import { STORAGE_KEYS } from '../lib/usePersistentState';
 
 interface HistoricalData {
   symbol: string;
@@ -70,6 +71,42 @@ export default function HistoricalChartPage() {
     }
     return true; // Default to true (enabled)
   });
+
+  // Hydrate symbol/timeframe from the shared last-used localStorage keys on mount.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const savedSymbol = window.localStorage.getItem(STORAGE_KEYS.lastSymbol);
+      if (savedSymbol) {
+        setExchangeFilters((prev) =>
+          prev.symbol === savedSymbol ? prev : { ...prev, symbol: savedSymbol },
+        );
+      }
+      const savedTf = window.localStorage.getItem(STORAGE_KEYS.lastTimeframe);
+      if (savedTf) setTimeframe(savedTf);
+    } catch {
+      /* storage disabled */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist last-used symbol/timeframe whenever they change.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !exchangeFilters.symbol) return;
+    try {
+      window.localStorage.setItem(STORAGE_KEYS.lastSymbol, exchangeFilters.symbol);
+    } catch {
+      /* storage disabled */
+    }
+  }, [exchangeFilters.symbol]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(STORAGE_KEYS.lastTimeframe, timeframe);
+    } catch {
+      /* storage disabled */
+    }
+  }, [timeframe]);
 
   // Updated timeframes to match backend API expectations
   const timeframes = [
