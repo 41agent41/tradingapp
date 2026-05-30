@@ -53,6 +53,30 @@ interface BacktestResponse {
   data_points: number;
   timeframe: string;
   period: string;
+  persisted_id?: number | null;
+}
+
+interface PersistedRunSummary {
+  id: number;
+  strategy: string;
+  symbol: string;
+  timeframe: string;
+  period: string | null;
+  initial_capital: string | number;
+  commission: string | number;
+  trade_count: number;
+  final_equity: string | number | null;
+  metrics: Record<string, unknown>;
+  created_at: string;
+}
+
+interface PersistedRunFull extends PersistedRunSummary {
+  start_date: string | null;
+  end_date: string | null;
+  params: Record<string, unknown>;
+  params_hash: string;
+  equity_curve: EquityPoint[];
+  trades: TradeSummary[];
 }
 
 const TIMEFRAMES = ['5min', '15min', '30min', '1hour', '4hour', '8hour', '1day'];
@@ -86,6 +110,76 @@ export default function BacktestPage() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<BacktestResponse | null>(null);
+
+  const [previousRuns, setPreviousRuns] = useState<PersistedRunSummary[]>([]);
+  const [runsError, setRunsError] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
+
+  const loadPreviousRuns = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/backtesting/runs?limit=20');
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || body.error || `HTTP ${res.status}`);
+      }
+      const body = await res.json();
+      setPreviousRuns(body.runs ?? []);
+      setRunsError(null);
+    } catch (err) {
+      setRunsError(err instanceof Error ? err.message : 'Failed to load previous runs');
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPreviousRuns();
+  }, [loadPreviousRuns]);
+
+  const replayRun = useCallback(async (runId: number) => {
+    try {
+      const res = await apiFetch(`/api/backtesting/runs/${runId}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || body.error || `HTTP ${res.status}`);
+      }
+      const row = (await res.json()) as PersistedRunFull;
+
+      // Project the persisted row back into the same BacktestResponse shape the
+      // form produces, so the existing results UI just works.
+      const m = row.metrics as Record<string, number | string>;
+      const replayed: BacktestResponse = {
+        success: true,
+        timeframe: row.timeframe,
+        period: row.period ?? 'CUSTOM',
+        data_points: Number((row.params as { data_points?: number })?.data_points) || 0,
+        persisted_id: row.id,
+        results: {
+          symbol: row.symbol,
+          start_date: String(m.start_date ?? row.start_date ?? ''),
+          end_date: String(m.end_date ?? row.end_date ?? ''),
+          initial_capital: Number(m.initial_capital ?? row.initial_capital),
+          final_capital: Number(m.final_capital ?? row.final_equity ?? 0),
+          total_trades: Number(m.total_trades ?? row.trade_count),
+          winning_trades: Number(m.winning_trades ?? 0),
+          losing_trades: Number(m.losing_trades ?? 0),
+          total_return: Number(m.total_return ?? 0),
+          total_return_percent: Number(m.total_return_percent ?? 0),
+          max_drawdown: Number(m.max_drawdown ?? 0),
+          sharpe_ratio: Number(m.sharpe_ratio ?? 0),
+          win_rate: Number(m.win_rate ?? 0),
+          average_win: Number(m.average_win ?? 0),
+          average_loss: Number(m.average_loss ?? 0),
+          profit_factor: Number(m.profit_factor ?? 0),
+          equity_curve: row.equity_curve ?? [],
+          trades_summary: row.trades ?? [],
+        },
+      };
+      setResponse(replayed);
+      setSelectedRunId(runId);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load run');
+    }
+  }, []);
 
   // Load available strategies once.
   useEffect(() => {
@@ -144,13 +238,16 @@ export default function BacktestPage() {
       if (!res.ok) {
         throw new Error(body.detail || body.error || `HTTP ${res.status}`);
       }
-      setResponse(body as BacktestResponse);
+      const next = body as BacktestResponse;
+      setResponse(next);
+      setSelectedRunId(next.persisted_id ?? null);
+      loadPreviousRuns();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to run backtest');
     } finally {
       setRunning(false);
     }
-  }, [symbol, strategy, timeframe, period, initialCapital, commission]);
+  }, [symbol, strategy, timeframe, period, initialCapital, commission, loadPreviousRuns]);
 
   const results = response?.results;
   const returnPositive = (results?.total_return_percent ?? 0) >= 0;
@@ -302,6 +399,82 @@ export default function BacktestPage() {
           {error && (
             <div className="mt-4 text-sm text-red-700 bg-red-50 p-3 rounded border border-red-200">
               ❌ {error}
+            </div>
+          )}
+        </div>
+
+        {/* Previous Runs */}
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex items-baseline justify-between mb-3">
+            <h2 className="text-lg font-semibold">Previous Runs</h2>
+            <button
+              onClick={loadPreviousRuns}
+              className="text-xs text-blue-600 hover:text-blue-800"
+              type="button"
+            >
+              Refresh
+            </button>
+          </div>
+          {runsError && (
+            <div className="mb-3 text-sm text-amber-700 bg-amber-50 p-3 rounded border border-amber-200">
+              Could not load previous runs: {runsError}
+            </div>
+          )}
+          {previousRuns.length === 0 && !runsError ? (
+            <p className="text-sm text-gray-500">No runs persisted yet. Run a backtest to populate this list.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs sm:text-sm">
+                <thead className="text-left text-gray-600 border-b">
+                  <tr>
+                    <th className="py-2 pr-3 font-medium">When</th>
+                    <th className="py-2 pr-3 font-medium">Strategy</th>
+                    <th className="py-2 pr-3 font-medium">Symbol</th>
+                    <th className="py-2 pr-3 font-medium">TF</th>
+                    <th className="py-2 pr-3 font-medium">Period</th>
+                    <th className="py-2 pr-3 font-medium text-right">Return %</th>
+                    <th className="py-2 pr-3 font-medium text-right">Sharpe</th>
+                    <th className="py-2 pr-3 font-medium text-right">Trades</th>
+                    <th className="py-2 font-medium" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {previousRuns.map((run) => {
+                    const ret = Number(
+                      (run.metrics as { total_return_percent?: number })?.total_return_percent ?? 0,
+                    );
+                    const sharpe = Number((run.metrics as { sharpe_ratio?: number })?.sharpe_ratio ?? 0);
+                    const isSelected = selectedRunId === run.id;
+                    return (
+                      <tr
+                        key={run.id}
+                        className={`hover:bg-blue-50 cursor-pointer ${isSelected ? 'bg-blue-50' : ''}`}
+                        onClick={() => replayRun(run.id)}
+                      >
+                        <td className="py-2 pr-3 text-gray-700 whitespace-nowrap">
+                          {new Date(run.created_at).toLocaleString()}
+                        </td>
+                        <td className="py-2 pr-3">{run.strategy}</td>
+                        <td className="py-2 pr-3 font-medium">{run.symbol}</td>
+                        <td className="py-2 pr-3 text-gray-700">{run.timeframe}</td>
+                        <td className="py-2 pr-3 text-gray-700">{run.period ?? '—'}</td>
+                        <td
+                          className={`py-2 pr-3 text-right ${ret >= 0 ? 'text-green-600' : 'text-red-600'}`}
+                        >
+                          {formatNumber(ret)}%
+                        </td>
+                        <td className="py-2 pr-3 text-right text-gray-700">
+                          {Number.isFinite(sharpe) ? formatNumber(sharpe) : '—'}
+                        </td>
+                        <td className="py-2 pr-3 text-right text-gray-700">{run.trade_count}</td>
+                        <td className="py-2 text-right">
+                          <span className="text-xs text-blue-600">Load →</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </div>

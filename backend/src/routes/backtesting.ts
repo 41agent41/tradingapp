@@ -144,6 +144,13 @@ router.post('/run', async (req: Request, res: Response) => {
     });
 
     const payload = response.data ?? {};
+    const results = payload.results ?? {};
+
+    // The IB service returns the equity curve + trade list inline inside
+    // `results` (see `BacktestResults.to_dict` in `ib_service/backtesting.py`).
+    // Split them out for storage so they can be queried independently of the
+    // scalar metrics — the metrics blob keeps everything else from `results`.
+    const { equity_curve, trades_summary, ...metrics } = results as Record<string, unknown>;
 
     // Persist the run. We intentionally do not fail the request if the
     // insert errors — the run itself succeeded; the persistence is a side
@@ -159,10 +166,10 @@ router.post('/run', async (req: Request, res: Response) => {
         end_date: hasRange ? end_date : null,
         initial_capital: capital,
         commission: comm,
-        params: payload.params ?? {},
-        metrics: payload.metrics ?? {},
-        equity_curve: payload.equity_curve ?? [],
-        trades: payload.trades ?? [],
+        params: { data_points: payload.data_points ?? null },
+        metrics,
+        equity_curve: Array.isArray(equity_curve) ? equity_curve : [],
+        trades: Array.isArray(trades_summary) ? trades_summary : [],
       });
       persisted_id = row.id;
     } catch (persistError: any) {
