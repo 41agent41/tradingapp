@@ -1,14 +1,27 @@
 """
-TWS API Service - Using official Interactive Brokers TWS API for reliable IB Gateway connections
+TWS API Service — FastAPI wiring and route handlers.
+
+This file is the *thin shell* after the GAP_ANALYSIS §3.4 module split:
+
+  - Pydantic schemas live in ``models.py``.
+  - The ``IBApp`` class + connection-management helpers live in ``ib_client.py``.
+  - Stateless converters (timeframe / period / account-mode), the symbol-
+    discovery cache and the contract factory live in ``ib_helpers.py``.
+  - The four ``process_bars*`` transformations live in ``bars_processing.py``.
+
+Everything below imports those symbols and wires the FastAPI route
+handlers around them. New routes should live in their own ``routes/``
+submodules — these existing ones are kept here byte-for-byte to keep the
+split mechanical and reviewable.
 """
 
 import os
 import time
-import logging
+import logging  # noqa: F401  (kept for backward-compat — handlers reference logging modules)
 import asyncio
-import math
-import threading
-import calendar
+import math  # noqa: F401  (used by some handlers below)
+import threading  # noqa: F401  (used by some handlers below)
+import calendar  # noqa: F401  (used by some handlers below)
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
@@ -16,949 +29,80 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from ibapi.client import EClient
-from ibapi.wrapper import EWrapper
+from ibapi.client import EClient  # noqa: F401  (transitively re-exported)
+from ibapi.wrapper import EWrapper  # noqa: F401  (transitively re-exported)
 from ibapi.contract import Contract
-from ibapi.order import Order
-from ibapi.common import *
-from ibapi.ticktype import *
+from ibapi.order import Order  # noqa: F401
+from ibapi.common import *  # noqa: F401, F403
+from ibapi.ticktype import *  # noqa: F401, F403
 import uvicorn
 
-# Technical indicators support
+# Technical indicators + backtesting
 import pandas as pd
-import numpy as np
+import numpy as np  # noqa: F401  (used by some handlers below)
 from indicators import calculator as indicator_calculator
-
-# Backtesting support
 from backtesting import backtest_engine, AVAILABLE_STRATEGIES
 
 # Observability (structured logging + /metrics + X-Request-Id middleware)
 from observability import attach_observability, get_logger
 
-# Configure logging — the structlog config in observability.py also wires
-# stdlib logging so existing `logger.info("...")` calls keep working but emit
-# structured JSON in production.
+# Extracted modules — these now own what used to live at the top of this file.
+from models import (
+    MarketDataRequest,
+    CandlestickBar,
+    HistoricalDataResponse,
+    RealTimeQuote,
+    SearchRequest,
+    AdvancedSearchRequest,
+    SymbolDiscoveryRequest,
+    AccountSummary,
+    Position,
+    Order as OrderModel,
+    AccountData,
+    ConnectionInfo,
+    # StreamSubscribeRequest / StreamSymbolRequest are defined locally below
+    # with stricter Field() validation than the models.py versions.
+)
+from ib_client import (
+    IBApp,
+    IB_HOST,
+    IB_PORT,
+    IB_CLIENT_ID,
+    IB_TIMEOUT,
+    get_ib_connection,
+    get_connection_status as _get_connection_status_dict,
+    disconnect_ib,
+    verify_connection_health,
+)
+from ib_helpers import (
+    get_data_type_for_account_mode,
+    get_market_data_source,
+    convert_timeframe,
+    convert_period,
+    create_contract,
+    get_cache_key,
+    is_cache_valid,
+    get_cached_symbols,
+    cache_symbols,
+    get_cache_stats as _symbol_cache_stats,
+    clear_symbol_cache as _clear_symbol_cache,
+)
+from bars_processing import (
+    process_bars,
+    process_bars_with_date_range,
+    process_bars_with_indicators,
+    process_bars_with_date_range_and_indicators,
+)
+
 logger = get_logger(__name__)
 
-# Configuration from environment
-IB_HOST = os.getenv('IB_HOST')
-if not IB_HOST:
-    raise ValueError("IB_HOST environment variable is required")
+CORS_ORIGINS = os.getenv("IB_CORS_ORIGINS", "").split(",") if os.getenv("IB_CORS_ORIGINS") else []
+DEFAULT_ACCOUNT_MODE = os.getenv("DEFAULT_ACCOUNT_MODE", "paper")
 
-IB_PORT = int(os.getenv('IB_PORT', '4002'))
-IB_CLIENT_ID = int(os.getenv('IB_CLIENT_ID', '1'))
-IB_TIMEOUT = int(os.getenv('IB_TIMEOUT', '15'))
-CORS_ORIGINS = os.getenv('IB_CORS_ORIGINS', '').split(',') if os.getenv('IB_CORS_ORIGINS') else []
-
-# Trading account configuration
-DEFAULT_ACCOUNT_MODE = os.getenv('DEFAULT_ACCOUNT_MODE', 'paper')  # 'paper' or 'live'
-
-# Global IB connection
-ib_client = None
-connection_status = {
-    'connected': False,
-    'last_connected': None,
-    'last_error': None,
-    'connection_count': 0
-}
-
-# Data storage for async operations
-historical_data = {}
-real_time_data = {}
-account_data = {}
-positions_data = []
-orders_data = []
-
-# Symbol discovery cache with TTL
-symbol_cache = {}
-cache_ttl = 3600  # 1 hour cache TTL
-max_cache_size = 10000  # Maximum cache entries
-
-class MarketDataRequest(BaseModel):
-    symbol: str = Field(..., min_length=1, max_length=10)
-    timeframe: str = Field(..., pattern=r'^(tick|1min|5min|15min|30min|1hour|4hour|8hour|1day)$')
-    period: str = Field(default="1Y", pattern=r'^(1D|1W|1M|3M|6M|1Y)$')
-
-class CandlestickBar(BaseModel):
-    timestamp: float
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: int
-    
-    # Technical Indicators (optional fields)
-    sma_20: Optional[float] = None
-    sma_50: Optional[float] = None
-    ema_12: Optional[float] = None
-    ema_26: Optional[float] = None
-    rsi: Optional[float] = None
-    macd: Optional[float] = None
-    macd_signal: Optional[float] = None
-    macd_histogram: Optional[float] = None
-    bb_upper: Optional[float] = None
-    bb_middle: Optional[float] = None
-    bb_lower: Optional[float] = None
-    stoch_k: Optional[float] = None
-    stoch_d: Optional[float] = None
-    atr: Optional[float] = None
-    obv: Optional[float] = None
-    vwap: Optional[float] = None
-    volume_sma: Optional[float] = None
-
-class HistoricalDataResponse(BaseModel):
-    symbol: str
-    timeframe: str
-    period: str
-    bars: List[CandlestickBar]
-    count: int
-    last_updated: str
-
-class RealTimeQuote(BaseModel):
-    symbol: str
-    bid: Optional[float] = None
-    ask: Optional[float] = None
-    last: Optional[float] = None
-    volume: Optional[int] = None
-    timestamp: str
-
-class SearchRequest(BaseModel):
-    symbol: str
-    secType: str = "STK"
-    exchange: str = "SMART"
-    currency: str = "USD"
-    name: bool = False
-    account_mode: str = "paper"
-
-class AdvancedSearchRequest(BaseModel):
-    symbol: str = ""
-    secType: str = "STK"
-    exchange: str = "SMART"
-    currency: str = "USD"
-    expiry: str = ""
-    strike: float = 0
-    right: str = ""
-    multiplier: str = ""
-    includeExpired: bool = False
-    name: bool = False
-    account_mode: str = "paper"
-
-class SymbolDiscoveryRequest(BaseModel):
-    pattern: str  # Search pattern (partial symbol)
-    secType: str = "STK"
-    exchange: str = "SMART"
-    currency: str = "USD"
-    max_results: int = 50
-    use_fallback: bool = True  # Whether to use reqMatchingSymbols as fallback
-    account_mode: str = "paper"
-
-# Account-related models
-class AccountSummary(BaseModel):
-    account_id: str
-    net_liquidation: Optional[float] = None
-    currency: str = "USD"
-    last_updated: str
-    
-    # Optional fields
-    total_cash_value: Optional[float] = None
-    buying_power: Optional[float] = None
-    maintenance_margin: Optional[float] = None
-
-class Position(BaseModel):
-    symbol: str
-    position: float
-    market_price: Optional[float] = None
-    market_value: Optional[float] = None
-    average_cost: Optional[float] = None
-    unrealized_pnl: Optional[float] = None
-    currency: str = "USD"
-
-class Order(BaseModel):
-    order_id: int
-    symbol: str
-    action: str  # BUY/SELL
-    quantity: float
-    order_type: str
-    status: str
-    filled_quantity: Optional[float] = None
-    remaining_quantity: Optional[float] = None
-    avg_fill_price: Optional[float] = None
-
-class AccountData(BaseModel):
-    account: AccountSummary
-    positions: List[Position]
-    orders: List[Order]
-    last_updated: str
-
-class ConnectionInfo(BaseModel):
-    connected: bool
-    host: str
-    port: int
-    client_id: int
-    last_connected: Optional[str] = None
-    last_error: Optional[str] = None
-    connection_count: int
-
-class IBApp(EWrapper, EClient):
-    """TWS API Application class"""
-    
-    def __init__(self):
-        EClient.__init__(self, self)
-        self.data = {}
-        self.contracts = []
-        self.historical_data = []
-        self.account_summary = {}
-        self.positions = []
-        self.orders = []
-        self.managed_accounts = []
-        self.next_order_id = None
-        self.connection_ready = threading.Event()
-        
-    def error(self, reqId, errorCode, errorString):
-        """Handle TWS API errors"""
-        logger.error(f"TWS API Error {errorCode}: {errorString} (reqId: {reqId})")
-        
-    def connectAck(self):
-        """Called when connection is acknowledged"""
-        logger.info("TWS API connection acknowledged")
-        
-    def nextValidId(self, orderId):
-        """Called when next valid order ID is received"""
-        self.next_order_id = orderId
-        logger.info(f"Next valid order ID: {orderId}")
-        
-    def managedAccounts(self, accountsList):
-        """Called when managed accounts are received"""
-        self.managed_accounts = accountsList.split(',')
-        logger.info(f"Managed accounts: {self.managed_accounts}")
-        
-    def contractDetails(self, reqId, contractDetails):
-        """Called when contract details are received"""
-        self.contracts.append(contractDetails.contract)
-        logger.info(f"Contract details received for reqId {reqId}: {contractDetails.contract.symbol}")
-        
-    def contractDetailsEnd(self, reqId):
-        """Called when contract details request is complete"""
-        logger.info(f"Contract details request completed for reqId {reqId}")
-        
-    def historicalData(self, reqId, bar):
-        """Called when historical data is received"""
-        self.historical_data.append(bar)
-        logger.debug(f"Historical data received for reqId {reqId}: {bar}")
-        
-    def historicalDataEnd(self, reqId, start, end):
-        """Called when historical data request is complete"""
-        logger.info(f"Historical data request completed for reqId {reqId}")
-        
-    def tickPrice(self, reqId, tickType, price, attrib):
-        """Called when tick price is received"""
-        if reqId not in self.data:
-            self.data[reqId] = {}
-        self.data[reqId]['price'] = price
-        self.data[reqId]['tickType'] = tickType
-        logger.debug(f"Tick price for reqId {reqId}: {tickType} = {price}")
-        
-    def tickSize(self, reqId, tickType, size):
-        """Called when tick size is received"""
-        if reqId not in self.data:
-            self.data[reqId] = {}
-        self.data[reqId]['size'] = size
-        self.data[reqId]['tickType'] = tickType
-        logger.debug(f"Tick size for reqId {reqId}: {tickType} = {size}")
-        
-    def accountSummary(self, reqId, account, tag, value, currency):
-        """Called when account summary is received"""
-        if account not in self.account_summary:
-            self.account_summary[account] = {}
-        self.account_summary[account][tag] = value
-        logger.debug(f"Account summary for {account}: {tag} = {value}")
-        
-    def accountSummaryEnd(self, reqId):
-        """Called when account summary request is complete"""
-        logger.info(f"Account summary request completed for reqId {reqId}")
-        
-    def position(self, account, contract, position, avgCost):
-        """Called when position is received"""
-        self.positions.append({
-            'account': account,
-            'contract': contract,
-            'position': position,
-            'avgCost': avgCost
-        })
-        logger.debug(f"Position received: {contract.symbol} = {position}")
-        
-    def positionEnd(self):
-        """Called when position request is complete"""
-        logger.info("Position request completed")
-        
-    def openOrder(self, orderId, contract, order, orderState):
-        """Called when open order is received"""
-        self.orders.append({
-            'orderId': orderId,
-            'contract': contract,
-            'order': order,
-            'orderState': orderState
-        })
-        logger.debug(f"Open order received: {orderId} - {contract.symbol}")
-        
-    def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice):
-        """Called when order status is updated"""
-        logger.debug(f"Order status: {orderId} - {status}")
-
-def get_ib_connection():
-    """Get or create IB connection with intelligent client ID retry"""
-    global ib_client, connection_status
-    
-    try:
-        # Check if we have a valid connection
-        if ib_client and ib_client.isConnected():
-            return ib_client
-        
-        # Clean up any existing connection first
-        if ib_client:
-            try:
-                ib_client.disconnect()
-                logger.info("Cleaned up previous connection")
-            except:
-                pass
-            ib_client = None
-        
-        # Try multiple client IDs if the primary one is in use
-        import random
-        base_id = IB_CLIENT_ID
-        client_ids_to_try = [base_id, base_id + 1, base_id + 2, base_id + 3, base_id + 4, base_id + 5]
-        random.shuffle(client_ids_to_try[1:])
-        last_error = None
-        
-        for client_id in client_ids_to_try:
-            try:
-                logger.info(f"Attempting connection to IB Gateway at {IB_HOST}:{IB_PORT} (Client ID: {client_id})")
-                ib_client = IBApp()
-                
-                # Connect to TWS API
-                ib_client.connect(IB_HOST, IB_PORT, client_id)
-                
-                # Start the message processing thread
-                api_thread = threading.Thread(target=ib_client.run, daemon=True)
-                api_thread.start()
-                
-                # Wait for connection to be established
-                logger.info("Waiting for connection to stabilize...")
-                time.sleep(5)
-                
-                # Verify connection
-                connection_verified = False
-                for verify_attempt in range(5):
-                    if ib_client.isConnected():
-                        connection_verified = True
-                        logger.info(f"✅ Connection verified on attempt {verify_attempt + 1}")
-                        break
-                    else:
-                        logger.warning(f"Connection verification attempt {verify_attempt + 1}/5 - not yet connected, waiting...")
-                        time.sleep(3)
-                
-                if connection_verified:
-                    connection_status.update({
-                        'connected': True,
-                        'last_connected': datetime.now().isoformat(),
-                        'last_error': None,
-                        'connection_count': connection_status['connection_count'] + 1
-                    })
-                    logger.info(f"✅ Successfully connected and verified IB Gateway at {IB_HOST}:{IB_PORT} (Client ID: {client_id})")
-                    return ib_client
-                else:
-                    raise Exception("Connection call succeeded but connection verification failed after retries")
-                    
-            except Exception as e:
-                error_msg = str(e)
-                last_error = error_msg
-                
-                if "client id is already in use" in error_msg.lower() or "326" in error_msg:
-                    logger.warning(f"⚠️  Client ID {client_id} is already in use, trying next ID...")
-                    if ib_client:
-                        try:
-                            ib_client.disconnect()
-                        except:
-                            pass
-                        ib_client = None
-                    continue
-                elif "peer closed" in error_msg.lower() or "connection established but" in error_msg.lower():
-                    logger.warning(f"⚠️  Connection issue with Client ID {client_id}: {error_msg}. Trying next ID...")
-                    if ib_client:
-                        try:
-                            ib_client.disconnect()
-                        except:
-                            pass
-                        ib_client = None
-                    time.sleep(2)
-                    continue
-                else:
-                    logger.error(f"Connection error with Client ID {client_id}: {error_msg}")
-                    if ib_client:
-                        try:
-                            ib_client.disconnect()
-                        except:
-                            pass
-                        ib_client = None
-                    break
-        
-        # If we get here, all client IDs failed
-        logger.error(f"❌ Failed to connect with any client ID. Last error: {last_error}")
-        
-        # Provide helpful error message based on error type
-        if "timeout" in str(last_error).lower():
-            helpful_msg = f"IB Gateway connection timeout. Please check: 1) IB Gateway is running on {IB_HOST}, 2) API is enabled in IB Gateway settings, 3) Port {IB_PORT} is correct, 4) Network connectivity to {IB_HOST}"
-        elif "refused" in str(last_error).lower():
-            helpful_msg = f"IB Gateway refused connection. Please check: 1) IB Gateway API settings are enabled, 2) Port {IB_PORT} is correct, 3) Trusted IPs include this server, 4) IB Gateway is not in offline mode"
-        elif "unreachable" in str(last_error).lower() or "no route to host" in str(last_error).lower():
-            helpful_msg = f"Cannot reach {IB_HOST}. Please check: 1) IP address {IB_HOST} is correct, 2) Network connectivity, 3) Firewall settings"
-        elif "client id is already in use" in str(last_error).lower():
-            helpful_msg = f"All client IDs ({base_id}-{base_id+5}) are in use. Please: 1) Close other trading applications, 2) Restart IB Gateway, 3) Wait a few minutes for connections to timeout, 4) Check if multiple trading services are running"
-        else:
-            helpful_msg = f"IB Gateway connection failed: {last_error}"
-        
-        connection_status.update({
-            'connected': False,
-            'last_error': helpful_msg
-        })
-        
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=helpful_msg
-        )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        error_msg = f"Unexpected connection error: {str(e)}"
-        logger.error(error_msg)
-        
-        connection_status.update({
-            'connected': False,
-            'last_error': error_msg
-        })
-        
-        if ib_client:
-            try:
-                ib_client.disconnect()
-            except:
-                pass
-        ib_client = None
-        
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=error_msg
-        )
-
-def verify_connection_health(ib_client):
-    """Verify that an IB connection is healthy and responsive"""
-    try:
-        if not ib_client or not ib_client.isConnected():
-            return False
-        
-        logger.debug("Connection health check passed - basic state verified")
-        return True
-            
-    except Exception as e:
-        logger.warning(f"Connection health check failed: {e}")
-        return False
-
-def disconnect_ib():
-    """Disconnect from IB Gateway with improved cleanup"""
-    global ib_client, connection_status
-    
-    if ib_client:
-        try:
-            if ib_client.isConnected():
-                logger.info("Disconnecting from IB Gateway...")
-                ib_client.disconnect()
-                logger.info("✅ Successfully disconnected from IB Gateway")
-            else:
-                logger.info("IB Gateway already disconnected")
-        except Exception as e:
-            logger.error(f"Error during disconnection: {e}")
-        finally:
-            ib_client = None
-            connection_status.update({
-                'connected': False,
-                'last_error': None
-            })
-            logger.info("Connection cleanup completed")
-
-# Cache utility functions
-def get_cache_key(pattern: str, secType: str, exchange: str, currency: str) -> str:
-    """Generate cache key for symbol search"""
-    return f"{pattern.upper()}:{secType}:{exchange}:{currency}"
-
-def is_cache_valid(cache_entry: dict) -> bool:
-    """Check if cache entry is still valid"""
-    if not cache_entry:
-        return False
-    return (time.time() - cache_entry.get('timestamp', 0)) < cache_ttl
-
-def get_cached_symbols(cache_key: str) -> Optional[List[Dict]]:
-    """Get symbols from cache if valid"""
-    if cache_key in symbol_cache:
-        cache_entry = symbol_cache[cache_key]
-        if is_cache_valid(cache_entry):
-            logger.info(f"Cache hit for {cache_key}")
-            return cache_entry['data']
-        else:
-            # Remove expired entry
-            del symbol_cache[cache_key]
-            logger.info(f"Cache expired for {cache_key}")
-    return None
-
-def cache_symbols(cache_key: str, data: List[Dict]) -> None:
-    """Cache symbol search results"""
-    # Implement simple LRU by removing oldest entries when cache is full
-    if len(symbol_cache) >= max_cache_size:
-        # Remove 10% of oldest entries
-        sorted_cache = sorted(symbol_cache.items(), key=lambda x: x[1]['timestamp'])
-        for i in range(len(sorted_cache) // 10):
-            del symbol_cache[sorted_cache[i][0]]
-    
-    symbol_cache[cache_key] = {
-        'data': data,
-        'timestamp': time.time()
-    }
-    logger.info(f"Cached {len(data)} symbols for {cache_key}")
-
-def create_contract(symbol: str, sec_type: str = 'STK', exchange: str = 'SMART', currency: str = 'USD'):
-    """Create IB contract using TWS API"""
-    contract = Contract()
-    contract.symbol = symbol.upper()
-    contract.secType = sec_type
-    contract.exchange = exchange
-    contract.currency = currency
-    return contract
-
-def get_data_type_for_account_mode(account_mode: str = 'paper') -> str:
-    """Determine data type based on account mode"""
-    if account_mode.lower() == 'live':
-        return 'real-time'
-    else:
-        return 'delayed'  # Default to delayed for paper trading
-
-def get_market_data_source(account_mode: str = 'paper') -> str:
-    """Get market data source description based on account mode"""
-    if account_mode.lower() == 'live':
-        return 'Live Market Data (Real-time)'
-    else:
-        return 'Paper Trading Data (Delayed 15-20 min)'
-
-def convert_timeframe(timeframe: str) -> str:
-    """Convert timeframe to IB format"""
-    timeframe_map = {
-        'tick': '1 secs',  # Tick data - use 1 second as closest approximation
-        '1min': '1 min',
-        '5min': '5 mins',
-        '15min': '15 mins',
-        '30min': '30 mins',
-        '1hour': '1 hour',
-        '4hour': '4 hours',
-        '8hour': '8 hours',
-        '1day': '1 day'
-    }
-    return timeframe_map.get(timeframe, '1 hour')
-
-def convert_period(period: str) -> str:
-    """Convert period to IB format (integer{SPACE}unit)"""
-    period_map = {
-        '1D': '1 D',
-        '1W': '1 W', 
-        '1M': '1 M',
-        '3M': '3 M',
-        '6M': '6 M',
-        '1Y': '1 Y'
-    }
-    return period_map.get(period, '1 Y')
-
-def process_bars(bars, symbol: str, timeframe: str, period: str) -> HistoricalDataResponse:
-    """Process IB bars into candlestick data with simple timestamp handling"""
-    candlesticks = []
-    
-    for bar in bars:
-        try:
-            # Robust timestamp parsing for IB Gateway string format
-            if isinstance(bar.date, str):
-                # Clean and normalize the date string
-                date_str = bar.date.strip()
-                
-                # Handle various IB Gateway string formats
-                if ' ' in date_str:
-                    # Format: "20250804  19:16:21" or "20250804 19:16:21" (multiple spaces)
-                    # Clean up multiple spaces and normalize
-                    date_str = ' '.join(date_str.split())
-                    try:
-                        bar_datetime = datetime.strptime(date_str, "%Y%m%d %H:%M:%S")
-                    except ValueError:
-                        try:
-                            # Try alternative format with dashes
-                            bar_datetime = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-                        except ValueError:
-                            # Last resort: try with seconds
-                            bar_datetime = datetime.strptime(date_str, "%Y%m%d %H:%M:%S.%f")
-                else:
-                    # Date only format: "20250804"
-                    bar_datetime = datetime.strptime(date_str, "%Y%m%d")
-                
-                # Convert to UTC timestamp using calendar.timegm for reliability
-                # This avoids timezone conversion issues with datetime.timestamp()
-                timestamp = calendar.timegm(bar_datetime.timetuple())
-                
-            elif isinstance(bar.date, (int, float)):
-                # If it's already a Unix timestamp, use it directly
-                timestamp = int(bar.date)
-                
-            else:
-                # If it's a datetime object, convert to timestamp
-                if hasattr(bar.date, 'timestamp'):
-                    timestamp = int(bar.date.timestamp())
-                else:
-                    # Fallback: try to parse as string
-                    date_str = str(bar.date).strip()
-                    bar_datetime = datetime.strptime(date_str, "%Y%m%d %H:%M:%S")
-                    timestamp = calendar.timegm(bar_datetime.timetuple())
-            
-            # Enhanced logging for first few bars
-            if len(candlesticks) < 5:
-                logger.info(f"Processing bar {len(candlesticks)+1}:")
-                logger.info(f"  Raw bar.date: '{bar.date}' (type: {type(bar.date)})")
-                logger.info(f"  Converted timestamp: {timestamp}")
-                logger.info(f"  Timestamp as UTC date: {datetime.fromtimestamp(timestamp, tz=timezone.utc)}")
-                logger.info(f"  Timestamp validation - Expected range: 1700000000-1800000000 (2023-2027)")
-                logger.info(f"  Timestamp validation - Current value: {timestamp} ({'VALID' if 1700000000 <= timestamp <= 1800000000 else 'INVALID - MAJOR ISSUE'})")
-                logger.info(f"  Bar values: O={bar.open}, H={bar.high}, L={bar.low}, C={bar.close}, V={bar.volume}")
-            
-            candlestick = CandlestickBar(
-                timestamp=timestamp,
-                open=float(bar.open),
-                high=float(bar.high),
-                low=float(bar.low),
-                close=float(bar.close),
-                volume=int(bar.volume)
-            )
-            candlesticks.append(candlestick)
-            
-        except Exception as e:
-            logger.warning(f"Failed to process bar: {e}")
-            logger.warning(f"Bar data: date='{bar.date}' (type: {type(bar.date)}), open={bar.open}, high={bar.high}, low={bar.low}, close={bar.close}, volume={bar.volume}")
-            # Continue processing other bars instead of failing completely
-            continue
-    
-    # Sort bars by timestamp in descending order (newest first)
-    candlesticks.sort(key=lambda x: x.timestamp, reverse=True)
-    
-    logger.info(f"Successfully processed {len(candlesticks)} out of {len(bars)} bars for {symbol} {timeframe} {period}")
-    if candlesticks:
-        logger.info(f"Date range: {datetime.fromtimestamp(candlesticks[-1].timestamp, tz=timezone.utc)} to {datetime.fromtimestamp(candlesticks[0].timestamp, tz=timezone.utc)}")
-        logger.info(f"Sample timestamps: {candlesticks[0].timestamp} (newest), {candlesticks[-1].timestamp} (oldest)")
-        logger.info(f"Sample dates: {datetime.fromtimestamp(candlesticks[0].timestamp, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} (newest), {datetime.fromtimestamp(candlesticks[-1].timestamp, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} (oldest)")
-    else:
-        logger.error(f"No bars were successfully processed! Check timestamp format and IB Gateway configuration.")
-    
-    return HistoricalDataResponse(
-        symbol=symbol,
-        timeframe=timeframe,
-        period=period,
-        bars=candlesticks,
-        count=len(candlesticks),
-        last_updated=datetime.now().isoformat()
-    )
-
-def process_bars_with_date_range(bars, symbol: str, timeframe: str, start_date_str: str, end_date_str: str) -> HistoricalDataResponse:
-    """Process IB bars with date range filtering - simple timestamp handling"""
-    candlesticks = []
-    
-    start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
-    end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
-    end_dt = end_dt.replace(hour=23, minute=59, second=59)
-    
-    for bar in bars:
-        try:
-            # Simple approach: parse date without timezone conversion
-            if isinstance(bar.date, str):
-                if ' ' in bar.date:
-                    bar_datetime = datetime.strptime(bar.date.strip(), "%Y%m%d %H:%M:%S")
-                else:
-                    bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
-                timestamp = int(bar_datetime.timestamp())
-                
-            elif isinstance(bar.date, (int, float)):
-                timestamp = int(bar.date)
-                bar_datetime = datetime.fromtimestamp(timestamp)
-                
-            else:
-                if hasattr(bar.date, 'timestamp'):
-                    timestamp = int(bar.date.timestamp())
-                    bar_datetime = bar.date
-                else:
-                    bar_datetime = datetime.strptime(str(bar.date), "%Y%m%d %H:%M:%S")
-                    timestamp = int(bar_datetime.timestamp())
-            
-            # Check if bar is within date range
-            if start_dt <= bar_datetime <= end_dt:
-                candlestick = CandlestickBar(
-                    timestamp=timestamp,
-                    open=float(bar.open),
-                    high=float(bar.high),
-                    low=float(bar.low),
-                    close=float(bar.close),
-                    volume=int(bar.volume)
-                )
-                candlesticks.append(candlestick)
-                
-        except Exception as e:
-            logger.error(f"Error processing bar for date range: {e}, bar.date={bar.date}")
-            continue
-    
-    # Sort bars by timestamp in descending order (newest first)
-    candlesticks.sort(key=lambda x: x.timestamp, reverse=True)
-    
-    logger.info(f"Processed {len(candlesticks)} bars for {symbol} {timeframe} date range {start_date_str} to {end_date_str}")
-    if candlesticks:
-        logger.info(f"Date range: {datetime.fromtimestamp(candlesticks[-1].timestamp)} to {datetime.fromtimestamp(candlesticks[0].timestamp)}")
-    
-    return HistoricalDataResponse(
-        symbol=symbol,
-        timeframe=timeframe,
-        period="CUSTOM",  # Indicate it's a custom date range
-        bars=candlesticks,
-        count=len(candlesticks),
-        last_updated=datetime.now().isoformat()
-    )
-
-def process_bars_with_indicators(bars, symbol: str, timeframe: str, period: str, indicators: List[str] = None) -> HistoricalDataResponse:
-    """Process IB bars into candlestick data with technical indicators"""
-    try:
-        logger.info(f"process_bars_with_indicators called with {len(bars)} bars, indicators: {indicators}")
-        
-        # Convert bars to DataFrame for indicator calculations
-        bars_data = []
-        for i, bar in enumerate(bars):
-            try:
-                if i == 0:  # Log first bar details for debugging
-                    logger.info(f"Processing first bar: date={bar.date}, open={bar.open}, high={bar.high}, low={bar.low}, close={bar.close}, volume={bar.volume}")
-                
-                # Simple timestamp handling - no timezone conversion
-                if isinstance(bar.date, str):
-                    if ' ' in bar.date:
-                        bar_datetime = datetime.strptime(bar.date.strip(), "%Y%m%d %H:%M:%S")
-                    else:
-                        bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
-                    timestamp = int(bar_datetime.timestamp())
-                    
-                elif isinstance(bar.date, (int, float)):
-                    timestamp = int(bar.date)
-                    
-                else:
-                    if hasattr(bar.date, 'timestamp'):
-                        timestamp = int(bar.date.timestamp())
-                    else:
-                        bar_datetime = datetime.strptime(str(bar.date), "%Y%m%d %H:%M:%S")
-                        timestamp = int(bar_datetime.timestamp())
-                
-                bars_data.append({
-                    'timestamp': timestamp,
-                    'open': float(bar.open),
-                    'high': float(bar.high),
-                    'low': float(bar.low),
-                    'close': float(bar.close),
-                    'volume': int(bar.volume)
-                })
-            except Exception as e:
-                logger.warning(f"Error processing bar {i}: {e}, bar={bar}")
-                continue
-        
-        logger.info(f"Successfully processed {len(bars_data)} bars from {len(bars)} raw bars")
-        
-        if not bars_data:
-            return HistoricalDataResponse(
-                symbol=symbol,
-                timeframe=timeframe,
-                period=period,
-                bars=[],
-                count=0,
-                last_updated=datetime.now().isoformat()
-            )
-        
-        # Calculate indicators if requested
-        if indicators and len(indicators) > 0:
-            # Convert to DataFrame for indicator calculations
-            df = pd.DataFrame(bars_data)
-            
-            # Calculate indicators
-            df_with_indicators = indicator_calculator.calculate_indicators(df, indicators)
-            
-            # Convert back to CandlestickBar objects
-            candlesticks = []
-            for _, row in df_with_indicators.iterrows():
-                # Create base candlestick data
-                candlestick_data = {
-                    'timestamp': float(row['timestamp']),
-                    'open': float(row['open']),
-                    'high': float(row['high']),
-                    'low': float(row['low']),
-                    'close': float(row['close']),
-                    'volume': int(row['volume'])
-                }
-                
-                # Add indicator values if they exist and are not NaN
-                indicator_fields = [
-                    'sma_20', 'sma_50', 'ema_12', 'ema_26', 'rsi', 
-                    'macd', 'macd_signal', 'macd_histogram',
-                    'bb_upper', 'bb_middle', 'bb_lower',
-                    'stoch_k', 'stoch_d', 'atr', 'obv', 'vwap', 'volume_sma'
-                ]
-                
-                for field in indicator_fields:
-                    if field in row and pd.notna(row[field]):
-                        candlestick_data[field] = float(row[field])
-                
-                candlestick = CandlestickBar(**candlestick_data)
-                candlesticks.append(candlestick)
-        else:
-            # No indicators requested, use standard processing
-            candlesticks = []
-            for bar_data in bars_data:
-                candlestick = CandlestickBar(**bar_data)
-                candlesticks.append(candlestick)
-        
-        # Sort bars by timestamp in descending order (newest first)
-        candlesticks.sort(key=lambda x: x.timestamp, reverse=True)
-        
-        logger.info(f"Processed {len(candlesticks)} bars with indicators for {symbol} {timeframe} {period}")
-        if candlesticks:
-            logger.info(f"Date range: {datetime.fromtimestamp(candlesticks[-1].timestamp)} to {datetime.fromtimestamp(candlesticks[0].timestamp)}")
-        
-        return HistoricalDataResponse(
-            symbol=symbol,
-            timeframe=timeframe,
-            period=period,
-            bars=candlesticks,
-            count=len(candlesticks),
-            last_updated=datetime.now().isoformat()
-        )
-        
-    except Exception as e:
-        logger.error(f"Error processing bars with indicators: {e}")
-        # Fallback to standard processing
-        return process_bars(bars, symbol, timeframe, period)
-
-def process_bars_with_date_range_and_indicators(bars, symbol: str, timeframe: str, start_date_str: str, end_date_str: str, indicators: List[str] = None) -> HistoricalDataResponse:
-    """Process IB bars with date range filtering and technical indicators"""
-    try:
-        start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
-        end_dt = end_dt.replace(hour=23, minute=59, second=59)
-        
-        # Filter bars by date range and convert to DataFrame format
-        bars_data = []
-        for bar in bars:
-            try:
-                # Simple timestamp handling - no timezone conversion
-                if isinstance(bar.date, str):
-                    if ' ' in bar.date:
-                        bar_datetime = datetime.strptime(bar.date.strip(), "%Y%m%d %H:%M:%S")
-                    else:
-                        bar_datetime = datetime.strptime(bar.date, "%Y%m%d")
-                    timestamp = int(bar_datetime.timestamp())
-                    
-                elif isinstance(bar.date, (int, float)):
-                    timestamp = int(bar.date)
-                    bar_datetime = datetime.fromtimestamp(timestamp)
-                    
-                else:
-                    if hasattr(bar.date, 'timestamp'):
-                        timestamp = int(bar.date.timestamp())
-                        bar_datetime = bar.date
-                    else:
-                        bar_datetime = datetime.strptime(str(bar.date), "%Y%m%d %H:%M:%S")
-                        timestamp = int(bar_datetime.timestamp())
-                
-                # Check if bar is within our date range
-                if start_dt <= bar_datetime <= end_dt:
-                    bars_data.append({
-                        'timestamp': timestamp,
-                        'open': float(bar.open),
-                        'high': float(bar.high),
-                        'low': float(bar.low),
-                        'close': float(bar.close),
-                        'volume': int(bar.volume)
-                    })
-            except Exception as e:
-                logger.warning(f"Error processing bar for date range: {e}, bar.date={bar.date}")
-                continue
-        
-        if not bars_data:
-            return HistoricalDataResponse(
-                symbol=symbol,
-                timeframe=timeframe,
-                period="CUSTOM",
-                bars=[],
-                count=0,
-                last_updated=datetime.now().isoformat()
-            )
-        
-        # Calculate indicators if requested
-        if indicators and len(indicators) > 0:
-            df = pd.DataFrame(bars_data)
-            df_with_indicators = indicator_calculator.calculate_indicators(df, indicators)
-            
-            # Convert back to CandlestickBar objects
-            candlesticks = []
-            for _, row in df_with_indicators.iterrows():
-                candlestick_data = {
-                    'timestamp': float(row['timestamp']),
-                    'open': float(row['open']),
-                    'high': float(row['high']),
-                    'low': float(row['low']),
-                    'close': float(row['close']),
-                    'volume': int(row['volume'])
-                }
-                
-                # Add indicator values if they exist and are not NaN
-                indicator_fields = [
-                    'sma_20', 'sma_50', 'ema_12', 'ema_26', 'rsi', 
-                    'macd', 'macd_signal', 'macd_histogram',
-                    'bb_upper', 'bb_middle', 'bb_lower',
-                    'stoch_k', 'stoch_d', 'atr', 'obv', 'vwap', 'volume_sma'
-                ]
-                
-                for field in indicator_fields:
-                    if field in row and pd.notna(row[field]):
-                        candlestick_data[field] = float(row[field])
-                
-                candlestick = CandlestickBar(**candlestick_data)
-                candlesticks.append(candlestick)
-        else:
-            # No indicators requested
-            candlesticks = []
-            for bar_data in bars_data:
-                candlestick = CandlestickBar(**bar_data)
-                candlesticks.append(candlestick)
-        
-        # Sort bars by timestamp in descending order (newest first)
-        candlesticks.sort(key=lambda x: x.timestamp, reverse=True)
-        
-        logger.info(f"Processed {len(candlesticks)} bars with date range and indicators for {symbol} {timeframe}")
-        if candlesticks:
-            logger.info(f"Date range: {datetime.fromtimestamp(candlesticks[-1].timestamp)} to {datetime.fromtimestamp(candlesticks[0].timestamp)}")
-        
-        return HistoricalDataResponse(
-            symbol=symbol,
-            timeframe=timeframe,
-            period="CUSTOM",
-            bars=candlesticks,
-            count=len(candlesticks),
-            last_updated=datetime.now().isoformat()
-        )
-        
-    except Exception as e:
-        logger.error(f"Error processing bars with date range and indicators: {e}")
-        # Fallback to standard date range processing
-        return process_bars_with_date_range(bars, symbol, timeframe, start_date_str, end_date_str)
+# The route handlers below reference `connection_status` as a mutable dict
+# (mutated by ib_client.get_ib_connection). Bind the same dict reference
+# here so existing handler bodies keep working without rewrites.
+connection_status: Dict[str, Any] = _get_connection_status_dict()
 
 # Startup and shutdown
 @asynccontextmanager
@@ -2305,7 +1449,7 @@ def get_orders_sync():
         
         order_list = []
         for order_data in ib.orders:
-            order_list.append(Order(
+            order_list.append(OrderModel(
                 order_id=order_data['orderId'],
                 symbol=order_data['contract'].symbol,
                 action=order_data['order'].action,
@@ -2367,7 +1511,7 @@ async def get_account_positions():
             detail=f"Failed to get account positions: {error_str}"
         )
 
-@app.get("/account/orders", response_model=List[Order])
+@app.get("/account/orders", response_model=List[OrderModel])
 async def get_account_orders():
     """Get current account orders"""
     try:
@@ -2670,26 +1814,22 @@ async def discover_symbols(request: SymbolDiscoveryRequest):
 @app.get("/symbols/cache/stats")
 async def get_cache_stats():
     """Get cache statistics"""
-    total_entries = len(symbol_cache)
-    valid_entries = sum(1 for entry in symbol_cache.values() if is_cache_valid(entry))
-    expired_entries = total_entries - valid_entries
-    
+    stats = _symbol_cache_stats()
     return {
-        "total_entries": total_entries,
-        "valid_entries": valid_entries,
-        "expired_entries": expired_entries,
-        "cache_size_limit": max_cache_size,
-        "ttl_seconds": cache_ttl
+        "total_entries": stats["size"],
+        "valid_entries": stats["valid_entries"],
+        "expired_entries": stats["expired_entries"],
+        "cache_size_limit": stats["max_size"],
+        "ttl_seconds": stats["ttl_seconds"],
     }
+
 
 @app.post("/symbols/cache/clear")
 async def clear_cache():
     """Clear symbol cache"""
-    global symbol_cache
-    cache_size = len(symbol_cache)
-    symbol_cache = {}
-    logger.info(f"Symbol cache cleared. Removed {cache_size} entries.")
-    return {"message": f"Cache cleared. Removed {cache_size} entries."}
+    removed = _clear_symbol_cache()
+    logger.info("symbol_cache_cleared", removed=removed)
+    return {"message": f"Cache cleared. Removed {removed} entries."}
 
 if __name__ == "__main__":
     logger.info("Starting TWS API Service...")
