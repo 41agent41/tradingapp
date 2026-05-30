@@ -289,6 +289,42 @@ CREATE TRIGGER update_config_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ==============================================
+-- BACKTEST RUNS (GAP_ANALYSIS §5 — persistence)
+-- ==============================================
+-- One row per backtest invocation. The full input set is kept (so a run
+-- can be reproduced) alongside the engine output (metrics + equity curve
+-- + trade list) as JSONB so additions in `ib_service/backtesting.py` do
+-- not require a schema migration. A `params_hash` lets the UI suppress
+-- duplicate re-runs of the same configuration cheaply.
+
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    id BIGSERIAL PRIMARY KEY,
+    strategy VARCHAR(64) NOT NULL,
+    symbol VARCHAR(32) NOT NULL,
+    timeframe VARCHAR(16) NOT NULL,
+    period VARCHAR(16),                  -- '1Y', '3M', 'CUSTOM', etc.
+    start_date DATE,                     -- populated only for CUSTOM range
+    end_date DATE,
+    initial_capital NUMERIC(20,4) NOT NULL,
+    commission NUMERIC(10,6) NOT NULL,
+    params JSONB NOT NULL DEFAULT '{}'::jsonb,
+    params_hash CHAR(64) NOT NULL,       -- sha256 hex of canonical input
+    metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+    equity_curve JSONB NOT NULL DEFAULT '[]'::jsonb,
+    trades JSONB NOT NULL DEFAULT '[]'::jsonb,
+    trade_count INTEGER NOT NULL DEFAULT 0,
+    final_equity NUMERIC(20,4),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_desc
+    ON backtest_runs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy_symbol
+    ON backtest_runs (strategy, symbol, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_params_hash
+    ON backtest_runs (params_hash);
+
+-- ==============================================
 -- INITIAL DATA
 -- ==============================================
 

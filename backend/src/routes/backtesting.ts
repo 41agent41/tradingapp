@@ -8,11 +8,15 @@
  *
  *   GET  /api/backtesting/strategies — list available strategies (cached)
  *   POST /api/backtesting/run        — run a backtest over historical data
+ *   GET  /api/backtesting/runs       — list persisted runs (slim rows)
+ *   GET  /api/backtesting/runs/:id   — full record for one persisted run
  */
 import express from 'express';
 import type { Request, Response } from 'express';
 import axios from 'axios';
 import { cacheService } from '../services/cache.js';
+import { dbService } from '../services/database.js';
+import { BacktestRunRepository } from '../services/backtestRunRepository.js';
 
 const router = express.Router();
 const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
@@ -28,6 +32,8 @@ const VALID_TIMEFRAMES = [
   '8hour',
   '1day',
 ];
+
+const runs = new BacktestRunRepository(dbService);
 
 // Translate an axios error from the IB service into a client response using
 // the same shape the other proxy routes use.
@@ -137,10 +143,74 @@ router.post('/run', async (req: Request, res: Response) => {
       headers: { Connection: 'close' },
     });
 
-    res.json(response.data);
+    const payload = response.data ?? {};
+
+    // Persist the run. We intentionally do not fail the request if the
+    // insert errors — the run itself succeeded; the persistence is a side
+    // effect, not the user's contract.
+    let persisted_id: number | null = null;
+    try {
+      const row = await runs.insert({
+        strategy,
+        symbol,
+        timeframe,
+        period: hasRange ? 'CUSTOM' : period,
+        start_date: hasRange ? start_date : null,
+        end_date: hasRange ? end_date : null,
+        initial_capital: capital,
+        commission: comm,
+        params: payload.params ?? {},
+        metrics: payload.metrics ?? {},
+        equity_curve: payload.equity_curve ?? [],
+        trades: payload.trades ?? [],
+      });
+      persisted_id = row.id;
+    } catch (persistError: any) {
+      console.error('Failed to persist backtest run:', persistError?.message ?? persistError);
+    }
+
+    res.json({ ...payload, persisted_id });
   } catch (error: any) {
     console.error('Error running backtest:', error);
     sendProxyError(res, error, 'Failed to run backtest');
+  }
+});
+
+router.get('/runs', async (req: Request, res: Response) => {
+  try {
+    const rows = await runs.list({
+      symbol: typeof req.query.symbol === 'string' ? req.query.symbol : undefined,
+      strategy: typeof req.query.strategy === 'string' ? req.query.strategy : undefined,
+      limit: typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined,
+      offset: typeof req.query.offset === 'string' ? Number(req.query.offset) : undefined,
+    });
+    res.json({ runs: rows, count: rows.length });
+  } catch (error: any) {
+    console.error('Error listing backtest runs:', error);
+    res.status(500).json({
+      error: 'Failed to list backtest runs',
+      detail: error?.message ?? 'unknown',
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+router.get('/runs/:id', async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: 'Invalid run id' });
+  }
+  try {
+    const row = await runs.findById(id);
+    if (!row) return res.status(404).json({ error: 'Backtest run not found', id });
+    res.json(row);
+  } catch (error: any) {
+    console.error('Error fetching backtest run:', error);
+    res.status(500).json({
+      error: 'Failed to fetch backtest run',
+      detail: error?.message ?? 'unknown',
+      timestamp: new Date().toISOString(),
+    });
   }
 });
 
