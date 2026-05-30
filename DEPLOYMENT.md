@@ -405,6 +405,43 @@ For a fuller list, see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
 
 ## Production Setup
 
+### Enabling live trading
+
+The order-placement path (`POST /api/orders` → `POST /orders` on the IB
+service) is gated by an env var that is **off by default**. Without it
+the backend and the IB service both reject any `account_mode=live`
+request with HTTP 403 — paper orders work, live orders don't.
+
+To enable live trading:
+
+1. Set on **both** services in your `.env`:
+
+   ```bash
+   LIVE_TRADING_ENABLED=true
+   ```
+
+2. Restart so both containers pick the new value up:
+
+   ```bash
+   ./tradingapp.sh redeploy
+   ```
+
+3. Verify the gate is fully open:
+
+   ```bash
+   curl -s -H "Authorization: Bearer $API_TOKEN" http://<host>:4000/api/orders/config | jq
+   ```
+
+   `live_trading_enabled` must be `true`. If only one side has the flag
+   set, you'll see `backend_live_enabled` and `ib_live_enabled` disagree
+   — fix that before sending any live order.
+
+The `ORDER_MAX_QUANTITY` (default 100k) and `ORDER_MAX_PRICE` (default
+$1M) caps are applied by the backend validator on every submission;
+raise them only if your real-world order sizes exceed them. Every
+attempt is persisted in `order_audit` (visible in the `/trade` blotter
+and via `GET /api/orders/audit`).
+
 ### Reverse proxy + TLS
 
 ```bash

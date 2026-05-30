@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import DataSwitch from '../components/DataSwitch';
 import BackToHome from '../components/BackToHome';
 import DataframeViewer from '../components/DataframeViewer';
+import OrderTicket from '../components/OrderTicket';
 import { apiFetch } from '../lib/api';
 
 interface ConnectionStatus {
@@ -457,6 +458,8 @@ export default function AccountPage() {
 
   const renderOrdersTab = () => (
     <div className="space-y-6">
+      <OrderTicket compact onPlaced={() => fetchAccountData()} />
+
       <div className="bg-white p-6 rounded-lg shadow">
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-lg font-semibold">Active Orders</h3>

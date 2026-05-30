@@ -203,7 +203,37 @@ frontend:
 - `GET /api/account/all` — all of the above in one call.
 - `GET /api/account/connection` — IB connection state.
 
-> The order endpoint is read-only. Order placement is not implemented.
+> The `/api/account/orders` endpoint is read-only. The write path lives
+> under `/api/orders/*` and requires `LIVE_TRADING_ENABLED=true` for any
+> live order — see the *Order management* section below.
+
+### Order management
+
+Place, cancel and modify orders against IB Gateway from the UI:
+
+- **Components:** [`OrderTicket`](frontend/app/components/OrderTicket.tsx)
+  and [`OrderBlotter`](frontend/app/components/OrderBlotter.tsx).
+- **Pages:** a full surface at `/trade` (ticket + blotter), plus a
+  compact ticket on the Orders tab of `/account`.
+- **Order types:** MKT, LMT, STP, STP_LMT. **TIF:** DAY, GTC, IOC,
+  FOK. The ticket reveals limit / stop inputs only when the order
+  type needs them.
+- **Backend proxy:** `POST /api/orders` (create),
+  `DELETE /api/orders/:id` (cancel), `PUT /api/orders/:id` (modify),
+  `GET /api/orders/audit` (blotter feed), `GET /api/orders/config`
+  (surface the gate + enums to the UI).
+- **Audit log:** every attempt — paper or live — writes a row to
+  `order_audit` with the input set, the IB order id once known, the
+  `X-Request-Id`, status transitions and raw IB response. The
+  backend refuses to forward an order if the audit insert fails.
+- **Defence-in-depth gate:** `LIVE_TRADING_ENABLED=true` must be set
+  on **both** the backend and the IB service. Setting it on only one
+  rejects every live submission with HTTP 403. Paper orders work
+  regardless. The Live option is also greyed out in the UI when the
+  config probe reports the gate as off, and a confirmation modal
+  protects every live submission.
+- **Fat-finger caps:** `ORDER_MAX_QUANTITY` (default 100k) and
+  `ORDER_MAX_PRICE` (default $1M) are enforced by the validator.
 
 ### REST & WebSocket API
 
@@ -225,6 +255,11 @@ frontend:
 | `/api/backtesting/runs` | GET | List persisted runs (filterable, paginated) |
 | `/api/backtesting/runs/:id` | GET | Full record for a persisted run |
 | `/api/export/parquet` | POST | Convert `{ columns, rows }` to a Parquet download |
+| `/api/orders` | POST | Place an order (validation + audit; gated by `LIVE_TRADING_ENABLED` for live) |
+| `/api/orders/:id` | DELETE | Cancel a working order |
+| `/api/orders/:id` | PUT | Modify a working order |
+| `/api/orders/audit` | GET | Persisted order attempts (blotter feed) |
+| `/api/orders/config` | GET | Live-trading gate + supported enums |
 | `/metrics` | GET | Prometheus scrape endpoint (backend) |
 
 Socket.IO is mounted on the backend at the default path and its handshake
@@ -349,11 +384,14 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > [`useHistoricalData`](frontend/app/lib/useHistoricalData.ts) hook
 > (HistoricalChart now delegates to them); test breadth expanded across
 > all three services.
-
-### Order management
-
-- `POST /api/orders` to place / cancel / modify orders through IB.
-- Frontend order ticket and blotter.
+>
+> **Also recently shipped (Tier 4 item 9 — order management).**
+> Full place / cancel / modify path gated by `LIVE_TRADING_ENABLED`,
+> with [`OrderTicket`](frontend/app/components/OrderTicket.tsx) /
+> [`OrderBlotter`](frontend/app/components/OrderBlotter.tsx)
+> components, a new [`/trade`](frontend/app/trade/page.tsx) page,
+> backend validation + `order_audit` persistence and IB-service routes
+> mirroring the gate.
 
 ### Authentication, authorisation & secrets (advanced)
 

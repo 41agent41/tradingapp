@@ -140,6 +140,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Order management (Tier 4 item 9). Mounting at the app root mirrors the
+# pattern used by the read-only /account endpoints. Every route in
+# orders.py double-checks the LIVE_TRADING_ENABLED gate.
+from orders import router as orders_router  # noqa: E402  (intentional after app config)
+app.include_router(orders_router)
+
 # Health check endpoint - no IB connection test
 @app.get("/health")
 async def health_check():

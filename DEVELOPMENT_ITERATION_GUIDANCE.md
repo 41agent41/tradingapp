@@ -3,12 +3,12 @@
 ## Codebase Review Summary
 
 **Date**: 2026-05-30
-**Branch**: `feat/tier-3-refactors`
-**Base commit**: `c0b5476` (master, post Tier 2 merge). This branch
-ships all four Tier 3 items: the `ib_service/main.py` module split, an
-opt-in IB connection pool keyed by `clientId` range, a shared `<Chart>`
-primitive + `useHistoricalData` hook, and a test-breadth expansion
-across all three services.
+**Branch**: `feat/order-management`
+**Base commit**: `0d58652` (master, post Tier 3 merge). This branch
+ships **Tier 4 item 9** — env-gated order placement end to end: IB
+service `POST/DELETE/PUT /orders`, backend `/api/orders/*` with
+validation and an `order_audit` table, OrderTicket + OrderBlotter
+components, a new `/trade` page, and a compact ticket on `/account`.
 
 > This is a point-in-time engineering snapshot. For the full prioritised
 > gap list and roadmap see [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md); for the
@@ -102,7 +102,7 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
 ### P1 — Functional gaps
 | # | Issue | Location | Impact |
 |---|-------|----------|--------|
-| 1 | **No order placement** | `ib_service`, `backend/src/routes`, frontend | Account endpoints are read-only end to end; no `placeOrder` path, no `POST /api/orders`, no order ticket UI |
+| 1 | ~~No order placement~~ | — | ✅ Env-gated place / cancel / modify shipped on this branch (`ib_service/orders.py`, `backend/src/routes/orders.ts`, `OrderTicket` + `OrderBlotter` + `/trade`). |
 | 2 | ~~Backtesting runs are not persisted~~ | — | ✅ `backtest_runs` + Previous Runs panel shipped on this branch. |
 | 3 | ~~Static IB status on the home page~~ | — | ✅ Replaced by `HealthBadge` (previous branch). |
 
@@ -155,9 +155,12 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
    [`ib_service/ib_pool.py`](ib_service/ib_pool.py)).
 
 ### Tier 4 — Live trading (gated)
-9. `placeOrder` path in `ib_service`, validated `POST /api/orders`
-   (create / cancel / modify), order ticket + blotter UI — behind an
-   explicit `LIVE_TRADING_ENABLED` flag.
+9. ✅ `placeOrder` path in `ib_service`, validated
+   `POST/DELETE/PUT /api/orders`, order ticket + blotter UI — all
+   gated by `LIVE_TRADING_ENABLED` on both services. Every attempt
+   is persisted in `order_audit`; the live submission flow is
+   protected by a confirmation modal. Fat-finger caps via
+   `ORDER_MAX_QUANTITY` / `ORDER_MAX_PRICE`.
 
 ---
 
@@ -180,13 +183,15 @@ Priority  Task                                                Effort
             adopts; other three charts pending browser-validation)
   ✅      Opt-in IB connection pool (IB_CLIENT_POOL_SIZE)      (done)
   ✅      Test breadth expansion across all three services     (done)
+  ✅      Order management gated by LIVE_TRADING_ENABLED       (done)
   1       Rewrite TradingChart / EnhancedTradingChart /        Medium
             MSFTRealtimeChart on top of <Chart> (needs browser
             verification)
   2       Carve ib_service routes/ subpackage out of main.py   Medium
   3       Prometheus alerting rules                            Small
   4       Watchlists / alerts / scanners                       Large
-  5       Order management (gated behind LIVE_TRADING_ENABLED) Large
+  5       Position-limit guards on top of order_audit          Small
+  6       MFA / RBAC on /api/orders (live-trading hardening)   Medium
 ```
 
 ---
