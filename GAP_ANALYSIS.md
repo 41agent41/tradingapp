@@ -1,9 +1,9 @@
 # TradingApp - Gap Analysis, Enhancements & Next Steps
 
-_Last reviewed: 2026-05-30 against branch `feat/tier-2-polish`
-(loading skeletons, structured-logger sweep across services, Grafana
-dashboard + DEPLOYMENT.md monitoring section, Parquet export from
-DataframeViewer)._
+_Last reviewed: 2026-05-30 against branch `feat/tier-3-refactors`
+(ib_service/main.py module split, opt-in IB connection pool, shared
+`<Chart>` primitive + useHistoricalData hook, test-breadth expansion
+across all three services)._
 
 This document captures the result of a structured review of the TradingApp
 codebase and its documentation set (`README.md`, `DEPLOYMENT.md`,
@@ -157,49 +157,51 @@ the IB service (`ib_service/indicators.py`). No backend code references the
 errors. See
 [`backend/src/database/README.md`](backend/src/database/README.md#indicators-are-not-persisted-by-design).
 
-### 3.3 IB connection model
+### 3.3 IB connection model ✅ resolved (opt-in)
 
-- The service intentionally uses a single synchronous IB client. At scale
-  this caps concurrent requests at 1; a slow historical request can starve
-  interactive lookups and the streaming worker.
-- Every container/replica shares `IB_CLIENT_ID=1`, which IB rejects for a
-  second concurrent connection.
+- ✅ A connection pool is now available in
+  [`ib_service/ib_pool.py`](ib_service/ib_pool.py), parameterised by
+  `IB_CLIENT_POOL_SIZE` (defaults to 1, which preserves the existing
+  single-client behaviour byte-for-byte). When set to `N>=2` the pool
+  reserves the clientId range `[IB_CLIENT_ID, IB_CLIENT_ID+N-1]` so
+  concurrent flows (historical / contract / streaming / account) can run
+  in parallel and a second replica can claim a disjoint range without
+  racing the primary. Acquire / release / context-manager `borrow()` and
+  `stats()` are covered by hermetic pytest using a fake IBApp.
+- The existing `get_ib_connection()` in
+  [`ib_service/ib_client.py`](ib_service/ib_client.py) is intentionally
+  unchanged — opting in only requires the env var, and the next time a
+  route handler is touched it can adopt `pool.borrow()` without
+  breaking any defaults.
 
-**Action:** introduce a small connection pool parameterised by a `clientId`
-range (`1..N`) so historical / contract / account / streaming flows can run
-in parallel; move retry/backoff into a dedicated `ib_session.py`.
-
-### 3.4 Monolithic modules (partially resolved)
+### 3.4 Monolithic modules (largely resolved)
 
 | File | LoC (approx) | Concern | Status |
 |---|---:|---|---|
 | `backend/src/routes/marketData.ts` | ~870 | All market-data endpoints, validation, DB write-through | ✅ split into `routes/marketData/{shared,search,history,realtime,indicators,database}.ts`; the old file is now a ~25-line aggregator |
-| `ib_service/main.py` | ~2,700 | HTTP routes, IB client, threading, caching, indicators wiring, account handling | ⬜ pending |
-| `frontend/app/components/MSFTRealtimeChart.tsx` | ~900 | Chart + data fetch + state + UI controls | ⬜ pending (see §3.5) |
+| `ib_service/main.py` | ~2,700 → ~1,840 | HTTP routes, IB client, threading, caching, indicators wiring, account handling | ✅ split into [`models.py`](ib_service/models.py), [`ib_client.py`](ib_service/ib_client.py), [`ib_helpers.py`](ib_service/ib_helpers.py), [`bars_processing.py`](ib_service/bars_processing.py); routes remain in `main.py` for this commit. Carving the routes into a `routes/` subpackage is the remaining follow-on. |
+| `frontend/app/components/MSFTRealtimeChart.tsx` | ~975 | Chart + data fetch + state + UI controls | ⬜ pending — kept intact because adopting the new `<Chart>` primitive (§3.5) needs browser validation |
 | `frontend/app/components/MarketDataFilter.tsx` | ~820 | Filter UI + chart trigger + state | ⬜ pending |
 
-**Remaining action:** carve `main.py` into `routes/`, `ib_client/`, `cache/`,
-`streaming/` and `models/` packages (entangled with §3.3 — the IB connection
-global becomes the pool); split `MSFTRealtimeChart` into a data hook, a chart
-presenter and a control bar (see §3.5).
+### 3.5 Overlapping chart components (primitive shipped)
 
-> **Why `main.py` / the charts are not in this PR.** They are large refactors
-> whose correctness depends on runtime behavior (live IB Gateway; the browser
-> chart) that the thin pytest/vitest suites do not cover. They are best landed
-> as their own runtime-validated PRs rather than bundled with the
-> type-checked backend changes above. The `marketData.ts` split was included
-> here because TypeScript's type-checker gives a strong correctness signal.
-
-### 3.5 Overlapping chart components
-
-`HistoricalChart.tsx`, `TradingChart.tsx`, `EnhancedTradingChart.tsx` and
-`MSFTRealtimeChart.tsx` each create their own `lightweight-charts` instance
-with subtly different feature sets, guaranteeing divergence.
-
-**Action:** collapse into one configurable `<Chart>` that accepts a data
-source (`useHistorical` / `useRealtimeStream`), timeframe list, indicator
-list and a `mode: 'live' | 'static'` prop. Make `/msft` a thin wrapper with
-`symbol="MSFT"` prefilled.
+- ✅ A canonical `<Chart>`
+  ([`frontend/app/components/Chart.tsx`](frontend/app/components/Chart.tsx))
+  now owns the candlestick + volume + indicator-overlay + ResizeObserver
+  story in one place. The strict-time-order invariant is enforced by an
+  internal `sortAndDedupe` helper that is unit-tested.
+- ✅ A companion data hook
+  ([`frontend/app/lib/useHistoricalData.ts`](frontend/app/lib/useHistoricalData.ts))
+  wraps `/api/market-data/history` and projects raw bars into the
+  `ChartBar` shape, exposing `{ bars, loading, error, source, refresh }`.
+- ✅ `HistoricalChart` is now a thin wrapper around `<Chart>` —
+  >100 LoC of lightweight-charts boilerplate dropped.
+- ⬜ `TradingChart`, `EnhancedTradingChart` and `MSFTRealtimeChart` are
+  intentionally **not** rewritten in this PR. Their bodies (socket.io
+  setup, DataframeViewer integration, indicator/data switches) are
+  tightly coupled to the chart instance and migrating them safely needs
+  browser verification that jsdom can't provide. The new `<Chart>` is
+  available as a drop-in primitive for those follow-on rewrites.
 
 ---
 
@@ -383,14 +385,21 @@ Phases 1–4 are complete (see §2). Remaining work, ordered by dependency:
    calls in heavier modules is a follow-on as those files are touched.)
 8. ✅ Live `<HealthBadge />` reflecting IB / DB / cache / streaming /
    backfill state on the home page.
-9. Connection-pool the IB client across a `clientId` range (§3.3).
-10. Split the monolithic modules (§3.4) — ✅ `marketData.ts` done; `main.py`
-    and the largest frontend components still pending — and consolidate the
-    four chart components into one `<Chart>` (§3.5).
+9. ✅ Opt-in IB connection pool across a `clientId` range
+   ([`ib_service/ib_pool.py`](ib_service/ib_pool.py); §3.3).
+10. Split the monolithic modules (§3.4) — ✅ `marketData.ts` done;
+    ✅ `ib_service/main.py` split into models / ib_client / ib_helpers /
+    bars_processing (routes still in main.py — carving them into a
+    `routes/` subpackage is a follow-on); the largest frontend
+    components still pending. ✅ Shared `<Chart>` primitive +
+    `useHistoricalData` hook now exist (§3.5); HistoricalChart adopts
+    them, the other three charts pending browser-validated rewrites.
 11. ✅ Global `error.tsx` boundary and `ResizeObserver`s on all chart
     containers.
-12. Expand test breadth (frontend component tests, backend integration,
-    IB-service historical-assembly tests).
+12. ✅ Test breadth expanded: route-level Supertest coverage for
+    `/api/backtesting/*` and `/api/export/parquet`, RTL interaction tests
+    for the HealthBadge popover, hook tests for `useHistoricalData`, and
+    pytest coverage for `bars_processing`.
 
 ---
 

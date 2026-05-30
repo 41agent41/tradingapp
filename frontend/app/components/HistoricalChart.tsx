@@ -1,9 +1,8 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
-import { createChart, IChartApi, ISeriesApi, CandlestickData, Time } from 'lightweight-charts';
+import React from 'react';
+import Chart, { ChartBar } from './Chart';
 import DataframeViewer from './DataframeViewer';
-import { useChartResize } from '../lib/useChartResize';
 
 interface ProcessedBar {
   time: number;
@@ -20,115 +19,26 @@ interface HistoricalChartProps {
   timeframe: string;
 }
 
+/**
+ * Thin wrapper around the shared `<Chart>` primitive. Previously held its
+ * own lightweight-charts instance + resize wiring; now delegates the
+ * candlestick/volume rendering to Chart.tsx so the four overlapping chart
+ * components share one canonical implementation (GAP_ANALYSIS §3.5).
+ */
 export default function HistoricalChart({ data, symbol, timeframe }: HistoricalChartProps) {
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
-  const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
-
-  useEffect(() => {
-    if (!chartContainerRef.current) return;
-
-    // Create chart
-    const chart = createChart(chartContainerRef.current, {
-      width: chartContainerRef.current.clientWidth,
-      height: 400,
-      layout: {
-        background: { color: '#ffffff' },
-        textColor: '#333',
-      },
-      grid: {
-        vertLines: { color: '#f0f0f0' },
-        horzLines: { color: '#f0f0f0' },
-      },
-      crosshair: {
-        mode: 1,
-      },
-      rightPriceScale: {
-        borderColor: '#cccccc',
-      },
-      timeScale: {
-        borderColor: '#cccccc',
-        timeVisible: true,
-        secondsVisible: false,
-      },
-    });
-
-    chartRef.current = chart;
-
-    // Create candlestick series
-    const candlestickSeries = chart.addCandlestickSeries({
-      upColor: '#26a69a',
-      downColor: '#ef5350',
-      borderDownColor: '#ef5350',
-      borderUpColor: '#26a69a',
-      wickDownColor: '#ef5350',
-      wickUpColor: '#26a69a',
-    });
-
-    candlestickSeriesRef.current = candlestickSeries;
-
-    // Create volume series
-    const volumeSeries = chart.addHistogramSeries({
-      color: '#64748b',
-      priceFormat: {
-        type: 'volume',
-      },
-      priceScaleId: '',
-      visible: true,
-    });
-
-    volumeSeriesRef.current = volumeSeries;
-
-    // Position volume series at the bottom
-    volumeSeries.priceScale().applyOptions({
-      scaleMargins: {
-        top: 0.8,
-        bottom: 0,
-      },
-    });
-
-    return () => {
-      if (chart) {
-        chart.remove();
-      }
-    };
-  }, []);
-
-  useChartResize(chartContainerRef, chartRef);
-
-  // Update chart data when data changes
-  useEffect(() => {
-    if (!candlestickSeriesRef.current || !volumeSeriesRef.current || !data.length) return;
-
-    // Convert data to TradingView format
-    const candlestickData: CandlestickData[] = data.map((bar) => ({
-      time: bar.time as Time,
-      open: bar.open,
-      high: bar.high,
-      low: bar.low,
-      close: bar.close,
-    }));
-
-    const volumeData = data.map((bar) => ({
-      time: bar.time as Time,
-      value: bar.volume,
-      color: bar.close >= bar.open ? '#26a69a' : '#ef5350',
-    }));
-
-    // Set data
-    candlestickSeriesRef.current.setData(candlestickData);
-    volumeSeriesRef.current.setData(volumeData);
-
-    // Fit content to view
-    if (chartRef.current) {
-      chartRef.current.timeScale().fitContent();
-    }
-  }, [data]);
+  const bars: ChartBar[] = data.map((bar) => ({
+    time: bar.time,
+    open: bar.open,
+    high: bar.high,
+    low: bar.low,
+    close: bar.close,
+    volume: bar.volume,
+  }));
 
   return (
-    <div className="w-full h-full">
-      <div ref={chartContainerRef} className="w-full h-full" />
+    <div className="w-full">
+      <Chart data={bars} height={400} />
+
       {data.length > 0 && (
         <div className="mt-2 text-xs text-gray-500 space-y-1">
           <div>
@@ -147,7 +57,6 @@ export default function HistoricalChart({ data, symbol, timeframe }: HistoricalC
         </div>
       )}
 
-      {/* Dataframe Display */}
       {data.length > 0 && (
         <div className="mt-6">
           <DataframeViewer

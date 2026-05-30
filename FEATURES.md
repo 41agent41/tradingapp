@@ -338,6 +338,17 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > ([`ops/grafana/tradingapp-dashboard.json`](ops/grafana/tradingapp-dashboard.json))
 > + Prometheus scrape config in `DEPLOYMENT.md`; and an *Export Parquet*
 > button in `DataframeViewer` backed by `POST /api/export/parquet`.
+>
+> **Also recently shipped (Tier 3 refactors).** `ib_service/main.py`
+> split into [`models.py`](ib_service/models.py), [`ib_client.py`](ib_service/ib_client.py),
+> [`ib_helpers.py`](ib_service/ib_helpers.py) and
+> [`bars_processing.py`](ib_service/bars_processing.py) (2,700 → 1,840
+> LoC); opt-in IB connection pool
+> ([`ib_service/ib_pool.py`](ib_service/ib_pool.py), parameterised by
+> `IB_CLIENT_POOL_SIZE`); shared `<Chart>` primitive +
+> [`useHistoricalData`](frontend/app/lib/useHistoricalData.ts) hook
+> (HistoricalChart now delegates to them); test breadth expanded across
+> all three services.
 
 ### Order management
 
