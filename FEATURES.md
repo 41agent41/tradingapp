@@ -164,6 +164,9 @@ for the full walk-through.
 - Preview the result in an in-page DataFrame viewer.
 - Push to Postgres via `POST /api/market-data/upload` with upsert
   semantics.
+- Export the visible (filtered + sorted) rows as **CSV** (RFC 4180,
+  client-side), **JSON** (client-side) or **Parquet** (encoded server-side
+  via `POST /api/export/parquet`, then streamed back as a download).
 
 ### Automated data collection & retention
 
@@ -219,6 +222,10 @@ frontend:
 | `/api/settings` | GET | Allow-listed, non-credential environment variables (see [Authentication & CORS](#authentication--cors)) |
 | `/api/backtesting/strategies` | GET | Available backtest strategies (cached 1h) |
 | `/api/backtesting/run` | POST | Run a backtest via the IB service |
+| `/api/backtesting/runs` | GET | List persisted runs (filterable, paginated) |
+| `/api/backtesting/runs/:id` | GET | Full record for a persisted run |
+| `/api/export/parquet` | POST | Convert `{ columns, rows }` to a Parquet download |
+| `/metrics` | GET | Prometheus scrape endpoint (backend) |
 
 Socket.IO is mounted on the backend at the default path and its handshake
 is authenticated (see [Authentication & CORS](#authentication--cors)).
@@ -323,6 +330,14 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > `prometheus_fastapi_instrumentator` + `/metrics`; and end-to-end
 > `X-Request-Id` propagation from `apiFetch` → backend axios →
 > ib_service.
+>
+> **Also recently shipped (Tier 2 polish).** Loading skeletons on
+> `/historical`, `/msft` and `/backtest`; the service-layer
+> `console.log` sweep now routes every backend log through pino with
+> structured payloads; a pre-built Grafana dashboard
+> ([`ops/grafana/tradingapp-dashboard.json`](ops/grafana/tradingapp-dashboard.json))
+> + Prometheus scrape config in `DEPLOYMENT.md`; and an *Export Parquet*
+> button in `DataframeViewer` backed by `POST /api/export/parquet`.
 
 ### Order management
 
@@ -334,17 +349,18 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 - Optional MFA, RBAC and audit logging on top of the existing
   bearer-token auth.
 
-### Observability (next pass)
+### Observability — open follow-ons
 
-The first observability pass shipped — `pino` on the backend, `structlog`
-on the IB service, `/metrics` on both, and end-to-end `X-Request-Id`
-propagation. What is still open:
+The first two observability passes have shipped (`pino` / `structlog` /
+`/metrics` / `X-Request-Id` / Grafana dashboard / service-layer log
+sweep). What is still open:
 
-- Replace residual `console.log` / `print` calls in heavier modules
-  (`marketDataService.ts`, `ib_service/main.py` routes) with the
-  structured logger as those files are touched.
-- Ship a Grafana dashboard JSON in the repo and reference it from
-  `DEPLOYMENT.md`.
+- Route handlers in `backend/src/routes/marketData/*` still use
+  `console.*` for one-line per-call logging — covered by the
+  observability middleware's structured "request completed" entry, but
+  worth converting on a touch-as-you-go basis.
+- An alerting rules file (`ops/prometheus/alerts.yml`) to pair with the
+  Grafana dashboard.
 
 ### Frontend UX
 
