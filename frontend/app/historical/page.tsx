@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { useTradingAccount } from '../contexts/TradingAccountContext';
 import DataSwitch from '../components/DataSwitch';
 import HistoricalChart from '../components/HistoricalChart';
+import ChartSkeleton from '../components/ChartSkeleton';
 import BackToHome from '../components/BackToHome';
 import ExchangeDrivenFilters from '../components/ExchangeDrivenFilters';
 import PeriodDateFilters from '../components/PeriodDateFilters';
@@ -496,7 +497,9 @@ export default function HistoricalChartPage() {
           </div>
 
           {/* Chart Display */}
-          {chartData && processedBars.length > 0 ? (
+          {isLoading ? (
+            <ChartSkeleton height={384} label={`Loading ${exchangeFilters.symbol}…`} />
+          ) : chartData && processedBars.length > 0 ? (
             <div>
               {/* Data Summary */}
               <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-md">
