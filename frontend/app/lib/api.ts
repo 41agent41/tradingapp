@@ -43,12 +43,37 @@ export interface ApiFetchInit extends RequestInit {
 }
 
 /**
+ * Browser-side request-id generator. Uses `crypto.randomUUID` when present
+ * (every browser shipped after early 2022 + Node 18+) and falls back to a
+ * lightweight Math.random-based composer so older runtimes don't break.
+ *
+ * The backend treats this as opaque — it only validates length — so any
+ * stable string works. Exporting it lets components hold their own id when
+ * they care to correlate multiple calls.
+ */
+export function newRequestId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // RFC 4122 v4-shaped fallback.
+  const tpl = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx';
+  return tpl.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+/**
  * Drop-in replacement for `fetch` that:
  *
  *   - Prefixes relative paths with `NEXT_PUBLIC_API_URL` (so callers can
  *     just pass `/api/market-data/history`).
  *   - Attaches `Authorization: Bearer <NEXT_PUBLIC_API_TOKEN>` when a
  *     token is configured.
+ *   - Attaches `X-Request-Id` (mints one if the caller didn't) so the
+ *     backend can correlate logs and metrics for this call and propagate
+ *     the id into the IB service.
  *   - Preserves any caller-supplied headers (including the existing
  *     `X-Data-Query-Enabled` toggle).
  */
@@ -60,6 +85,9 @@ export function apiFetch(pathOrUrl: string, init: ApiFetchInit = {}): Promise<Re
   const merged = new Headers(callerHeaders);
   if (!skipAuth && TOKEN && !merged.has('Authorization')) {
     merged.set('Authorization', `Bearer ${TOKEN}`);
+  }
+  if (!merged.has('X-Request-Id')) {
+    merged.set('X-Request-Id', newRequestId());
   }
 
   return fetch(url, { ...rest, headers: merged });
