@@ -1,9 +1,9 @@
 # TradingApp - Gap Analysis, Enhancements & Next Steps
 
-_Last reviewed: 2026-05-30 against branch `feat/tier-3-refactors`
-(ib_service/main.py module split, opt-in IB connection pool, shared
-`<Chart>` primitive + useHistoricalData hook, test-breadth expansion
-across all three services)._
+_Last reviewed: 2026-05-30 against branch `feat/order-management`
+(env-gated live order placement: IB service place / cancel / modify
+routes, backend validation + audit proxy, OrderTicket / OrderBlotter
+components, new `/trade` page)._
 
 This document captures the result of a structured review of the TradingApp
 codebase and its documentation set (`README.md`, `DEPLOYMENT.md`,
@@ -55,11 +55,12 @@ The remaining risks are now smaller and mostly about **breadth and polish**:
 1. **No observability.** No structured logging, metrics endpoint or
    request-id propagation. (The home-page IB status is now a live
    `HealthBadge` driven by `/api/health` — that gap is closed.)
-2. **Single-feature UI gaps.** Order management has no frontend
-   (backtesting now does — `/backtest`); the four OHLCV chart components
-   remain unconsolidated (§3.5). The home-page status, `error.tsx`
-   boundary, `ResizeObserver` wiring, last-symbol/timeframe persistence and
-   CSV export have shipped (§7).
+2. **Single-feature UI gaps.** Order management now ships
+   (`/trade` page + ticket on `/account`, env-gated via
+   `LIVE_TRADING_ENABLED` — §6); backtesting already shipped
+   (`/backtest`). Three of the four OHLCV chart components remain on
+   their pre-`<Chart>` implementations and pending browser-validated
+   rewrites (§3.5).
 3. **IB concurrency is capped at one.** The single synchronous IB client
    serialises every request (§3.3); `ib_service/main.py` is still monolithic
    (§3.4).
@@ -284,16 +285,45 @@ metrics summary, equity-curve chart and trade-list table from
 
 ---
 
-## 6. Order Management (Phase 5)
+## 6. Order Management (Tier 4 item 9) ✅ shipped
 
-The IB service exposes read-only account/positions/orders endpoints and the
-backend proxies them. There is **no order placement** anywhere — no
-`placeOrder` flow in `ib_service`, no `POST /api/orders`, no order ticket in
-the UI.
+Full place / cancel / modify path now lives behind the
+`LIVE_TRADING_ENABLED` env-var gate (defaulting to `false` so paper
+orders work but any `account_mode=live` request is rejected with 403):
 
-**Action:** add a guarded `placeOrder` path in `ib_service`, a validated
-`POST /api/orders` (create/cancel/modify), and a frontend order ticket +
-blotter. Keep it behind an explicit config flag given the live-trading risk.
+- **IB service** ([`ib_service/orders.py`](ib_service/orders.py)) —
+  `POST /orders`, `DELETE /orders/{id}`, `PUT /orders/{id}`,
+  `GET /orders/config`. Supports MKT / LMT / STP / STP_LMT and
+  DAY / GTC / IOC / FOK. The STP_LMT form is translated to IB's wire
+  format (`"STP LMT"`) at build time so the rest of the system uses
+  the underscored variant. `eTradeOnly` / `firmQuoteOnly` are forced
+  off to dodge IB error 10268, and `cancelOrder()` survives both the
+  9.81-style and newer signatures.
+- **Backend** ([`backend/src/routes/orders.ts`](backend/src/routes/orders.ts))
+  — same surface mounted at `/api/orders/*`. `validateOrder()`
+  ([`orderTypes.ts`](backend/src/services/orderTypes.ts)) runs first
+  (symbol uppercased, action / order_type / tif / account_mode
+  whitelisted, price-field cross-checks, fat-finger caps via
+  `ORDER_MAX_QUANTITY` / `ORDER_MAX_PRICE`), then the gate, then a
+  write to the new `order_audit` table ([schema](backend/src/database/timescaledb-schema.sql)).
+  Insert failure aborts the request — we refuse to send an unaudited
+  order to IB. The audit row is updated with the IB order id /
+  status / error after the IB hop.
+- **Frontend** — [`OrderTicket`](frontend/app/components/OrderTicket.tsx)
+  + [`OrderBlotter`](frontend/app/components/OrderBlotter.tsx) and a
+  new [`/trade`](frontend/app/trade/page.tsx) page. The compact
+  ticket is also mounted on `/account` under the existing Orders tab.
+  Live submissions require a confirmation modal that lists every
+  field. The Live option in the account-mode dropdown is greyed out
+  when the config probe reports the gate as off.
+
+**Defence in depth:** both the backend route and the IB service
+handler re-check `LIVE_TRADING_ENABLED` — setting it only on one
+service doesn't silently enable live orders on the other.
+
+**Not in scope (stretch):** position-limit guards beyond the
+fat-finger caps; MFA / RBAC on the order endpoints; an order-history
+chart overlay.
 
 ---
 
@@ -376,7 +406,8 @@ Phases 1–4 are complete (see §2). Remaining work, ordered by dependency:
    persistence dropped).
 5. ✅ Persist last-used symbol/timeframe; CSV export from the
    DataframeViewer (Parquet still open).
-6. (Stretch) Order management behind an explicit live-trading flag.
+6. ✅ Order management behind an explicit `LIVE_TRADING_ENABLED`
+   flag (§6).
 
 ### Phase 6 — Operational polish
 7. ✅ Structured logging (`pino` backend, `structlog` ib_service),
