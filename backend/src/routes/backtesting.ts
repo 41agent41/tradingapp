@@ -17,6 +17,7 @@ import axios from 'axios';
 import { cacheService } from '../services/cache.js';
 import { dbService } from '../services/database.js';
 import { BacktestRunRepository } from '../services/backtestRunRepository.js';
+import { backtestRunsPersisted } from '../services/metrics.js';
 
 const router = express.Router();
 const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
@@ -172,6 +173,7 @@ router.post('/run', async (req: Request, res: Response) => {
         trades: Array.isArray(trades_summary) ? trades_summary : [],
       });
       persisted_id = row.id;
+      backtestRunsPersisted.labels(strategy, String(symbol).toUpperCase()).inc();
     } catch (persistError: any) {
       console.error('Failed to persist backtest run:', persistError?.message ?? persistError);
     }
