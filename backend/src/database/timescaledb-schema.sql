@@ -284,8 +284,13 @@ CREATE TRIGGER update_sessions_updated_at
     BEFORE UPDATE ON data_collection_sessions 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-CREATE TRIGGER update_config_updated_at 
-    BEFORE UPDATE ON data_collection_config 
+CREATE TRIGGER update_config_updated_at
+    BEFORE UPDATE ON data_collection_config
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_order_audit_updated_at ON order_audit;
+CREATE TRIGGER update_order_audit_updated_at
+    BEFORE UPDATE ON order_audit
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ==============================================
@@ -323,6 +328,51 @@ CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy_symbol
     ON backtest_runs (strategy, symbol, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_params_hash
     ON backtest_runs (params_hash);
+
+-- ==============================================
+-- ORDER AUDIT (Tier 4 item 9 — live trading)
+-- ==============================================
+-- Every order submission attempt — paper or live — gets one row here. The
+-- table is an audit log, not a copy of IB's order book: status transitions
+-- are recorded as they propagate back through the IB service, but the
+-- authoritative state still lives at IB. Used by the blotter on the /trade
+-- page and by compliance / diagnostics.
+--
+-- Indexed by created_at DESC (most-recent-first listing) and by
+-- (account_mode, status) so it's cheap to surface "any LIVE orders still
+-- working" on the home page.
+
+CREATE TABLE IF NOT EXISTS order_audit (
+    id BIGSERIAL PRIMARY KEY,
+    submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    account_mode VARCHAR(8) NOT NULL,           -- 'paper' | 'live'
+    action VARCHAR(8) NOT NULL,                 -- 'BUY' | 'SELL'
+    symbol VARCHAR(32) NOT NULL,
+    sec_type VARCHAR(8) NOT NULL DEFAULT 'STK',
+    exchange VARCHAR(16) NOT NULL DEFAULT 'SMART',
+    currency VARCHAR(8) NOT NULL DEFAULT 'USD',
+    quantity NUMERIC(20,4) NOT NULL,
+    order_type VARCHAR(8) NOT NULL,             -- 'MKT' | 'LMT' | 'STP' | 'STP_LMT'
+    tif VARCHAR(8) NOT NULL DEFAULT 'DAY',      -- 'DAY' | 'GTC' | 'IOC' | 'FOK'
+    limit_price NUMERIC(20,4),                  -- required for LMT / STP_LMT
+    stop_price NUMERIC(20,4),                   -- required for STP / STP_LMT
+    operation VARCHAR(8) NOT NULL DEFAULT 'CREATE', -- 'CREATE' | 'CANCEL' | 'MODIFY'
+    ib_order_id INTEGER,                        -- IB's order id once we have it
+    request_id VARCHAR(128),                    -- X-Request-Id from the call
+    status VARCHAR(24) NOT NULL DEFAULT 'submitted',
+    last_error TEXT,
+    raw_response JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_order_audit_created_desc
+    ON order_audit (submitted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_order_audit_mode_status
+    ON order_audit (account_mode, status);
+CREATE INDEX IF NOT EXISTS idx_order_audit_ib_order_id
+    ON order_audit (ib_order_id) WHERE ib_order_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_order_audit_symbol_created
+    ON order_audit (symbol, submitted_at DESC);
 
 -- ==============================================
 -- INITIAL DATA
