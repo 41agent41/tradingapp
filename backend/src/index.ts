@@ -7,6 +7,7 @@ import accountRoutes from './routes/account.js';
 import settingsRoutes from './routes/settings.js';
 import backtestingRoutes from './routes/backtesting.js';
 import exportRoutes from './routes/export.js';
+import ordersRoutes from './routes/orders.js';
 import axios from 'axios';
 import { dbService } from './services/database.js';
 import { cacheService } from './services/cache.js';
@@ -192,6 +193,7 @@ app.use('/api/account', accountRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/backtesting', backtestingRoutes);
 app.use('/api/export', exportRoutes);
+app.use('/api/orders', ordersRoutes);
 
 app.get('/', (_req, res) => {
   res.json({
@@ -205,6 +207,7 @@ app.get('/', (_req, res) => {
       settings: '/api/settings',
       backtesting: '/api/backtesting',
       export: '/api/export',
+      orders: '/api/orders',
     },
   });
 });
