@@ -13,15 +13,19 @@ jest.mock('../src/services/database.js', () => ({
 }));
 jest.mock('../src/services/orderAuditRepository.js', () => {
   const create = jest.fn();
-  // update / list return promises in production; default them to resolved
-  // so the route's `audit.update(...).catch(...)` chains don't blow up on a
-  // bare jest.fn() returning undefined. (jest.clearAllMocks keeps these.)
+  // update / list / netExposure return promises in production; default them
+  // to resolved so the route's `audit.update(...).catch(...)` chains don't
+  // blow up on a bare jest.fn() returning undefined. (jest.clearAllMocks
+  // keeps these defaults.)
   const update = jest.fn().mockResolvedValue(undefined);
   const list = jest.fn().mockResolvedValue([]);
+  const netExposure = jest.fn().mockResolvedValue(0);
   return {
     __esModule: true,
-    OrderAuditRepository: jest.fn().mockImplementation(() => ({ create, update, list })),
-    __mocks: { create, update, list },
+    OrderAuditRepository: jest
+      .fn()
+      .mockImplementation(() => ({ create, update, list, netExposure })),
+    __mocks: { create, update, list, netExposure },
   };
 });
 
@@ -30,7 +34,7 @@ import ordersRouter from '../src/routes/orders.js';
 
 const axiosMock = axios as jest.Mocked<typeof axios>;
 const auditMock = jest.requireMock('../src/services/orderAuditRepository.js') as {
-  __mocks: { create: jest.Mock; update: jest.Mock; list: jest.Mock };
+  __mocks: { create: jest.Mock; update: jest.Mock; list: jest.Mock; netExposure: jest.Mock };
 };
 
 function buildApp() {
@@ -43,6 +47,7 @@ function buildApp() {
 beforeEach(() => {
   jest.clearAllMocks();
   delete process.env.LIVE_TRADING_ENABLED;
+  delete process.env.ORDER_MAX_POSITION;
 });
 
 describe('POST /api/orders — gate + validation', () => {
@@ -113,6 +118,56 @@ describe('POST /api/orders — gate + validation', () => {
     expect(auditMock.__mocks.update).toHaveBeenCalledWith(
       expect.objectContaining({ id: 9, status: 'rejected' }),
     );
+  });
+});
+
+describe('POST /api/orders — position-limit guard', () => {
+  it('skips the guard entirely when ORDER_MAX_POSITION is unset', async () => {
+    auditMock.__mocks.create.mockResolvedValueOnce({ id: 20 });
+    axiosMock.post.mockResolvedValueOnce({ data: { order_id: 50, status: 'submitted' } });
+    const res = await request(buildApp()).post('/api/orders').send({
+      symbol: 'MSFT', action: 'BUY', quantity: 10, order_type: 'MKT',
+    });
+    expect(res.status).toBe(201);
+    expect(auditMock.__mocks.netExposure).not.toHaveBeenCalled();
+  });
+
+  it('lets an order through when the projected net is within the cap', async () => {
+    process.env.ORDER_MAX_POSITION = '1000';
+    auditMock.__mocks.netExposure.mockResolvedValueOnce(100);
+    auditMock.__mocks.create.mockResolvedValueOnce({ id: 21 });
+    axiosMock.post.mockResolvedValueOnce({ data: { order_id: 51, status: 'submitted' } });
+    const res = await request(buildApp()).post('/api/orders').send({
+      symbol: 'MSFT', action: 'BUY', quantity: 50, order_type: 'MKT',
+    });
+    expect(res.status).toBe(201);
+    expect(auditMock.__mocks.netExposure).toHaveBeenCalledWith('MSFT', 'paper', expect.any(Number));
+  });
+
+  it('rejects with 422 when the order would breach the cap (no IB call, no audit)', async () => {
+    process.env.ORDER_MAX_POSITION = '1000';
+    auditMock.__mocks.netExposure.mockResolvedValueOnce(900);
+    const res = await request(buildApp()).post('/api/orders').send({
+      symbol: 'MSFT', action: 'BUY', quantity: 200, order_type: 'MKT',
+    });
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/Position limit/i);
+    expect(res.body.projected).toBe(1100);
+    expect(res.body.cap).toBe(1000);
+    expect(auditMock.__mocks.create).not.toHaveBeenCalled();
+    expect(axiosMock.post).not.toHaveBeenCalled();
+  });
+
+  it('fails closed (503) when the net cannot be computed', async () => {
+    process.env.ORDER_MAX_POSITION = '1000';
+    auditMock.__mocks.netExposure.mockRejectedValueOnce(new Error('db down'));
+    const res = await request(buildApp()).post('/api/orders').send({
+      symbol: 'MSFT', action: 'BUY', quantity: 10, order_type: 'MKT',
+    });
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatch(/Position-limit check failed/i);
+    expect(auditMock.__mocks.create).not.toHaveBeenCalled();
+    expect(axiosMock.post).not.toHaveBeenCalled();
   });
 });
 

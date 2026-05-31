@@ -11,7 +11,8 @@
  * `validateOrder` (orderTypes.ts), checks the live-trading gate, writes
  * an audit row before the IB-service call, then updates the audit row
  * with the outcome. The IB service repeats the gate check (see
- * `ib_service/orders.py`).
+ * `ib_service/orders.py`). Creates additionally pass an opt-in
+ * position-limit guard (`ORDER_MAX_POSITION`) computed from the audit log.
  */
 import express from 'express';
 import type { Request, Response } from 'express';
@@ -24,6 +25,9 @@ import {
   isLiveTradingEnabled,
   isAccountMode,
   validateOrder,
+  positionCap,
+  positionLookbackHours,
+  checkPositionLimit,
 } from '../services/orderTypes.js';
 
 const router = express.Router();
@@ -63,6 +67,8 @@ router.get('/config', async (_req: Request, res: Response) => {
       order_types: ib.data?.order_types ?? ['MKT', 'LMT', 'STP', 'STP_LMT'],
       tif: ib.data?.tif ?? ['DAY', 'GTC', 'IOC', 'FOK'],
       actions: ib.data?.actions ?? ['BUY', 'SELL'],
+      position_limit_enabled: positionCap() > 0,
+      position_cap: positionCap(),
     });
   } catch (error: any) {
     // Config doesn't need to fail loudly; fall back to the defaults so the
@@ -93,6 +99,40 @@ router.post('/', async (req: Request, res: Response) => {
       detail:
         'Set LIVE_TRADING_ENABLED=true on the backend AND the IB service to place live orders.',
     });
+  }
+
+  // Opt-in position-limit guard. Runs before we persist or forward — a
+  // limit breach never reaches IB and (like a validation failure) writes no
+  // audit row. Fails closed: if the net can't be computed we refuse, which
+  // is consistent with the audit-insert hard dependency below.
+  const cap = positionCap();
+  if (cap > 0) {
+    try {
+      const net = await audit.netExposure(
+        v.value.symbol,
+        v.value.account_mode,
+        positionLookbackHours(),
+      );
+      const decision = checkPositionLimit(net, v.value.action, v.value.quantity, cap);
+      if (!decision.ok) {
+        return res.status(422).json({
+          error: 'Position limit exceeded',
+          detail: decision.detail,
+          current_net: net,
+          projected: decision.projected,
+          cap,
+        });
+      }
+    } catch (limitErr: any) {
+      logger.error(
+        { err: String(limitErr?.message ?? limitErr) },
+        'position-limit check failed — refusing to place order',
+      );
+      return res.status(503).json({
+        error: 'Position-limit check failed',
+        detail: 'Could not evaluate the position limit; refusing to place an unchecked order',
+      });
+    }
   }
 
   const requestId = currentRequestId() ?? null;

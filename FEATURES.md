@@ -234,6 +234,12 @@ Place, cancel and modify orders against IB Gateway from the UI:
   protects every live submission.
 - **Fat-finger caps:** `ORDER_MAX_QUANTITY` (default 100k) and
   `ORDER_MAX_PRICE` (default $1M) are enforced by the validator.
+- **Position-limit guard (opt-in):** set `ORDER_MAX_POSITION` > 0 to cap
+  the net signed exposure per `(symbol, account_mode)` implied by the
+  audit log. A create whose projected net would breach the cap is
+  rejected with HTTP 422 before any IB call. Only orders within
+  `ORDER_POSITION_LOOKBACK_HOURS` (default 24) count. It is a soft guard
+  on submitted orders, not authoritative IB fills.
 
 ### REST & WebSocket API
 

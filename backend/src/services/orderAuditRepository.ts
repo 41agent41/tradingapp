@@ -111,6 +111,46 @@ export class OrderAuditRepository {
     await this.db.query(sql, params);
   }
 
+  /**
+   * Net signed exposure for a (symbol, account_mode) implied by the audit
+   * log, used by the opt-in position-limit guard.
+   *
+   * This is a *soft* estimate, not an authoritative IB position:
+   *   - Only rows that reached IB (`ib_order_id IS NOT NULL`) are counted;
+   *     an order in flight for a few seconds before its id is recorded does
+   *     not move the number.
+   *   - A modify writes a *new* MODIFY row sharing the original's
+   *     `ib_order_id`, so we keep only the latest row per `ib_order_id`
+   *     (`DISTINCT ON`) to avoid double-counting a modified order.
+   *   - Dead orders (rejected / cancelled / inactive) are excluded.
+   *   - Only orders submitted within `lookbackHours` count, so long-expired
+   *     DAY orders don't inflate the net.
+   *
+   * BUY contributes +quantity, SELL −quantity. Returns 0 when nothing matches.
+   */
+  async netExposure(symbol: string, accountMode: string, lookbackHours: number): Promise<number> {
+    const sql = `
+      WITH latest AS (
+        SELECT DISTINCT ON (ib_order_id) action, quantity, status
+        FROM order_audit
+        WHERE symbol = $1
+          AND account_mode = $2
+          AND ib_order_id IS NOT NULL
+          AND submitted_at >= NOW() - ($3 * INTERVAL '1 hour')
+        ORDER BY ib_order_id, submitted_at DESC
+      )
+      SELECT COALESCE(
+        SUM(CASE WHEN action = 'BUY' THEN quantity ELSE -quantity END), 0
+      ) AS net
+      FROM latest
+      WHERE status NOT IN (
+        'rejected', 'cancel_requested', 'cancelled', 'Cancelled', 'ApiCancelled', 'Inactive'
+      )
+    `;
+    const result = await this.db.query(sql, [symbol.toUpperCase(), accountMode, lookbackHours]);
+    return Number(result.rows[0]?.net ?? 0);
+  }
+
   async list(filter: {
     symbol?: string;
     account_mode?: string;
