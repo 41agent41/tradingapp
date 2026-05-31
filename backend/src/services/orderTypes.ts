@@ -49,6 +49,65 @@ export const ORDER_MAX_QUANTITY = Math.max(
 );
 export const ORDER_MAX_PRICE = Math.max(0.01, Number(process.env.ORDER_MAX_PRICE) || 1_000_000);
 
+/**
+ * Position-limit guard (opt-in). Caps the *net* signed exposure per
+ * (symbol, account_mode) that the order_audit log knows about, so a stuck
+ * automation or a fat-finger can't accumulate an unbounded position one
+ * order at a time. Read live from the environment (mirrors
+ * `isLiveTradingEnabled`) so tests can toggle them per-case.
+ *
+ *   ORDER_MAX_POSITION             — absolute net share cap; 0 (default)
+ *                                    disables the guard entirely.
+ *   ORDER_POSITION_LOOKBACK_HOURS  — only orders submitted within this
+ *                                    window count toward the net (default 24).
+ *
+ * This is a *soft* guard built on submitted orders, not authoritative IB
+ * fills — see `OrderAuditRepository.netExposure`.
+ */
+export function positionCap(): number {
+  return Math.max(0, Number(process.env.ORDER_MAX_POSITION) || 0);
+}
+
+export function positionLookbackHours(): number {
+  return Math.max(1, Number(process.env.ORDER_POSITION_LOOKBACK_HOURS) || 24);
+}
+
+export function isPositionLimitEnabled(): boolean {
+  return positionCap() > 0;
+}
+
+export interface PositionLimitDecision {
+  ok: boolean;
+  /** Net signed position the order would produce (BUY +, SELL −). */
+  projected: number;
+  cap: number;
+  detail?: string;
+}
+
+/**
+ * Pure decision: would adding `quantity` of `action` to `currentNet` push the
+ * absolute net beyond `cap`? A non-positive cap means the guard is disabled
+ * (always ok). Kept dependency-free so it is trivially unit-testable.
+ */
+export function checkPositionLimit(
+  currentNet: number,
+  action: OrderAction,
+  quantity: number,
+  cap: number = positionCap(),
+): PositionLimitDecision {
+  if (cap <= 0) return { ok: true, projected: currentNet, cap };
+  const projected = currentNet + (action === 'BUY' ? quantity : -quantity);
+  if (Math.abs(projected) > cap) {
+    return {
+      ok: false,
+      projected,
+      cap,
+      detail: `Order would move net position to ${projected} for this symbol (cap ±${cap}); current net ${currentNet}`,
+    };
+  }
+  return { ok: true, projected, cap };
+}
+
 export function isOrderType(v: unknown): v is OrderType {
   return typeof v === 'string' && (ORDER_TYPES as readonly string[]).includes(v);
 }

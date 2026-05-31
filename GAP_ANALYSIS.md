@@ -326,9 +326,19 @@ orders work but any `account_mode=live` request is rejected with 403):
 handler re-check `LIVE_TRADING_ENABLED` — setting it only on one
 service doesn't silently enable live orders on the other.
 
-**Not in scope (stretch):** position-limit guards beyond the
-fat-finger caps; MFA / RBAC on the order endpoints; an order-history
-chart overlay.
+**Position-limit guard:** ✅ an opt-in `ORDER_MAX_POSITION` cap now
+guards `POST /api/orders`. The backend computes the net signed exposure
+per `(symbol, account_mode)` from the `order_audit` log
+(`OrderAuditRepository.netExposure` — latest row per `ib_order_id`,
+dead orders excluded, within `ORDER_POSITION_LOOKBACK_HOURS`) and rejects
+a create whose projected net would exceed the cap with HTTP 422, before
+any IB call or audit write. It fails closed if the net can't be computed.
+It is a *soft* guard built on submitted orders, not authoritative IB
+fills — runaway-order protection rather than a hard risk limit.
+
+**Not in scope (stretch):** MFA / RBAC on the order endpoints; an
+order-history chart overlay; a position-limit guard sourced from live IB
+positions rather than the audit log.
 
 ---
 

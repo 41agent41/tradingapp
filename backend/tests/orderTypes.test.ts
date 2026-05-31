@@ -3,7 +3,13 @@
  * code in the orders flow that runs on every request, so it deserves
  * tight coverage.
  */
-import { validateOrder, isLiveTradingEnabled } from '../src/services/orderTypes.js';
+import {
+  validateOrder,
+  isLiveTradingEnabled,
+  checkPositionLimit,
+  positionCap,
+  isPositionLimitEnabled,
+} from '../src/services/orderTypes.js';
 
 describe('validateOrder — happy paths', () => {
   it('accepts a minimal MKT order with the default tif / account_mode', () => {
@@ -158,5 +164,69 @@ describe('isLiveTradingEnabled', () => {
     expect(isLiveTradingEnabled()).toBe(false);
     process.env.LIVE_TRADING_ENABLED = 'yes';
     expect(isLiveTradingEnabled()).toBe(false);
+  });
+});
+
+describe('checkPositionLimit', () => {
+  it('is always ok when the cap is disabled (<= 0)', () => {
+    expect(checkPositionLimit(999, 'BUY', 999, 0).ok).toBe(true);
+    expect(checkPositionLimit(999, 'BUY', 999, -5).ok).toBe(true);
+  });
+
+  it('adds quantity for BUY and subtracts for SELL', () => {
+    expect(checkPositionLimit(100, 'BUY', 50, 1000).projected).toBe(150);
+    expect(checkPositionLimit(100, 'SELL', 50, 1000).projected).toBe(50);
+  });
+
+  it('rejects when the projected absolute net exceeds the cap', () => {
+    const d = checkPositionLimit(900, 'BUY', 200, 1000);
+    expect(d.ok).toBe(false);
+    expect(d.projected).toBe(1100);
+    expect(d.detail).toMatch(/cap ±1000/);
+  });
+
+  it('allows reducing an over-cap position via the opposite side', () => {
+    // Already long 1500 (e.g. cap lowered later); a SELL that shrinks the
+    // net to 1100 is still over-cap and rejected...
+    expect(checkPositionLimit(1500, 'SELL', 400, 1000).ok).toBe(false);
+    // ...but a SELL that brings it within the cap is allowed.
+    expect(checkPositionLimit(1500, 'SELL', 600, 1000).ok).toBe(true);
+  });
+
+  it('treats the cap symmetrically for short positions', () => {
+    expect(checkPositionLimit(-900, 'SELL', 200, 1000).ok).toBe(false);
+    expect(checkPositionLimit(-900, 'SELL', 50, 1000).ok).toBe(true);
+  });
+
+  it('allows reaching exactly the cap', () => {
+    expect(checkPositionLimit(0, 'BUY', 1000, 1000).ok).toBe(true);
+    expect(checkPositionLimit(0, 'BUY', 1001, 1000).ok).toBe(false);
+  });
+});
+
+describe('positionCap / isPositionLimitEnabled', () => {
+  const orig = process.env.ORDER_MAX_POSITION;
+  afterEach(() => {
+    if (orig === undefined) delete process.env.ORDER_MAX_POSITION;
+    else process.env.ORDER_MAX_POSITION = orig;
+  });
+
+  it('defaults to 0 (disabled) when unset', () => {
+    delete process.env.ORDER_MAX_POSITION;
+    expect(positionCap()).toBe(0);
+    expect(isPositionLimitEnabled()).toBe(false);
+  });
+
+  it('reads a positive cap from the environment', () => {
+    process.env.ORDER_MAX_POSITION = '500';
+    expect(positionCap()).toBe(500);
+    expect(isPositionLimitEnabled()).toBe(true);
+  });
+
+  it('clamps a negative or non-numeric value to 0', () => {
+    process.env.ORDER_MAX_POSITION = '-10';
+    expect(positionCap()).toBe(0);
+    process.env.ORDER_MAX_POSITION = 'abc';
+    expect(positionCap()).toBe(0);
   });
 });

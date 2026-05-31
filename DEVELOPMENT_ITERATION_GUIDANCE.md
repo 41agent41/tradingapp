@@ -187,13 +187,14 @@ Priority  Task                                                Effort
   ✅      Order modify path now audited (parity with create /  (done)
             cancel) + order-route test suite repaired
   ✅      Prometheus alerting rules (ops/prometheus/alerts.yml) (done)
+  ✅      Position-limit guard (ORDER_MAX_POSITION) on creates  (done)
+            computed from order_audit net exposure
   1       Rewrite TradingChart / EnhancedTradingChart /        Medium
             MSFTRealtimeChart on top of <Chart> (needs browser
             verification)
   2       Carve ib_service routes/ subpackage out of main.py   Medium
   3       Watchlists / alerts / scanners                       Large
-  4       Position-limit guards on top of order_audit          Small
-  5       MFA / RBAC on /api/orders (live-trading hardening)   Medium
+  4       MFA / RBAC on /api/orders (live-trading hardening)   Medium
 ```
 
 ---
