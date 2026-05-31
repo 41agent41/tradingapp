@@ -210,6 +210,34 @@ router.put('/:id', async (req: Request, res: Response) => {
     return res.status(403).json({ error: 'Live trading is disabled' });
   }
 
+  const requestId = currentRequestId() ?? null;
+
+  // A modify rewrites the working order's parameters — capture the *new*
+  // parameters as their own audit row (operation=MODIFY) before we call
+  // IB, mirroring the create path. We already know the ib_order_id here
+  // (it's the path param), so tie the row to it immediately.
+  let auditId: number | null = null;
+  try {
+    const row = await audit.create({
+      ...v.value,
+      operation: 'MODIFY',
+      request_id: requestId,
+    });
+    auditId = row.id;
+    await audit
+      .update({ id: auditId, ib_order_id: orderId })
+      .catch((e) => logger.warn({ err: String(e) }, 'audit ib_order_id update on modify failed'));
+  } catch (auditErr: any) {
+    logger.error(
+      { err: String(auditErr?.message ?? auditErr) },
+      'order_audit insert failed — refusing to forward modify to IB',
+    );
+    return res.status(500).json({
+      error: 'Failed to record order modification',
+      detail: 'order_audit insert failed; refusing to modify an unaudited order',
+    });
+  }
+
   try {
     const ibResp = await axios.put(
       `${IB_SERVICE_URL}/orders/${orderId}`,
@@ -228,8 +256,23 @@ router.put('/:id', async (req: Request, res: Response) => {
       },
       { timeout: 30_000 },
     );
-    res.json(ibResp.data);
+    const ibBody = ibResp.data ?? {};
+    await audit
+      .update({
+        id: auditId,
+        status: ibBody.status ?? 'modify_requested',
+        raw_response: ibBody,
+      })
+      .catch((e) => logger.warn({ err: String(e) }, 'audit update after modify failed'));
+    res.json({ ...ibBody, audit_id: auditId });
   } catch (error: any) {
+    await audit
+      .update({
+        id: auditId,
+        status: 'rejected',
+        last_error: error?.response?.data?.detail ?? error?.message ?? 'unknown',
+      })
+      .catch((e) => logger.warn({ err: String(e) }, 'audit update after modify reject failed'));
     sendProxyError(res, error, 'Failed to modify order');
   }
 });
