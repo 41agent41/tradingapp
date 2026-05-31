@@ -247,6 +247,11 @@ The first observability pass has landed:
   ([`ops/grafana/tradingapp-dashboard.json`](ops/grafana/tradingapp-dashboard.json))
   + README + DEPLOYMENT.md *Monitoring & Maintenance* section now
   document the full Prometheus / Grafana / X-Request-Id story.
+- ✅ Prometheus alerting rules
+  ([`ops/prometheus/alerts.yml`](ops/prometheus/alerts.yml)) pair with
+  the dashboard: target-down (critical), 5xx error-rate, p95 latency and
+  Node event-loop-lag (warning), and an IB-service no-traffic info alert.
+  Wired into the DEPLOYMENT.md scrape config via `rule_files`.
 
 ---
 

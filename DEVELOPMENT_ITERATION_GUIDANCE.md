@@ -184,14 +184,16 @@ Priority  Task                                                Effort
   ✅      Opt-in IB connection pool (IB_CLIENT_POOL_SIZE)      (done)
   ✅      Test breadth expansion across all three services     (done)
   ✅      Order management gated by LIVE_TRADING_ENABLED       (done)
+  ✅      Order modify path now audited (parity with create /  (done)
+            cancel) + order-route test suite repaired
+  ✅      Prometheus alerting rules (ops/prometheus/alerts.yml) (done)
   1       Rewrite TradingChart / EnhancedTradingChart /        Medium
             MSFTRealtimeChart on top of <Chart> (needs browser
             verification)
   2       Carve ib_service routes/ subpackage out of main.py   Medium
-  3       Prometheus alerting rules                            Small
-  4       Watchlists / alerts / scanners                       Large
-  5       Position-limit guards on top of order_audit          Small
-  6       MFA / RBAC on /api/orders (live-trading hardening)   Medium
+  3       Watchlists / alerts / scanners                       Large
+  4       Position-limit guards on top of order_audit          Small
+  5       MFA / RBAC on /api/orders (live-trading hardening)   Medium
 ```
 
 ---

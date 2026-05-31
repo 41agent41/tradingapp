@@ -1,0 +1,160 @@
+# Prometheus alerting rules for TradingApp.
+#
+# Pairs with the Grafana dashboard in ops/grafana/tradingapp-dashboard.json:
+# every expression below reuses the same metrics and label conventions the
+# dashboard panels rely on, so an alert and its panel always agree.
+#
+# Wiring (prometheus.yml):
+#
+#   rule_files:
+#     - /etc/prometheus/alerts.yml
+#
+#   scrape_configs:
+#     - job_name: tradingapp-backend
+#       static_configs: [{ targets: ['backend:4000'] }]
+#       metrics_path: /metrics
+#     - job_name: tradingapp-ib_service
+#       static_configs: [{ targets: ['ib_service:8000'] }]
+#       metrics_path: /metrics
+#
+# Metric provenance:
+#   backend (prom-client)                 — http_request_duration_seconds_*,
+#                                            nodejs_eventloop_lag_p99_seconds,
+#                                            process_resident_memory_bytes,
+#                                            all carry the label service="backend".
+#   ib_service (prometheus_fastapi_instrumentator)
+#                                         — http_request_duration_seconds_* with
+#                                            labels method/handler/status.
+#
+# Note on the 5xx selector: status=~"5.." matches BOTH the backend's numeric
+# codes ("500") and the instrumentator's grouped codes ("5xx") because "." in
+# a PromQL regex matches any character.
+#
+# Thresholds and `for` windows below are deliberately conservative starting
+# points — tune them to your traffic before treating them as a hard SLO.
+
+groups:
+  # -----------------------------------------------------------------------
+  # Availability — is the scrape target up at all?
+  # -----------------------------------------------------------------------
+  - name: tradingapp-availability
+    rules:
+      - alert: TradingAppTargetDown
+        expr: up{job=~"tradingapp-.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is down"
+          description: >-
+            Prometheus has not been able to scrape {{ $labels.job }}
+            ({{ $labels.instance }}) for more than 2 minutes. /metrics is
+            unreachable — the service is likely crashed, unhealthy or
+            network-partitioned.
+
+  # -----------------------------------------------------------------------
+  # Backend (Express + prom-client)
+  # -----------------------------------------------------------------------
+  - name: tradingapp-backend
+    rules:
+      - alert: BackendHighErrorRate
+        # >5% of backend requests returning 5xx over the last 5m.
+        expr: >-
+          100 * sum(rate(http_request_duration_seconds_count{service="backend",status=~"5.."}[5m]))
+          / clamp_min(sum(rate(http_request_duration_seconds_count{service="backend"}[5m])), 0.001)
+          > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backend 5xx error rate above 5%"
+          description: >-
+            {{ printf "%.1f" $value }}% of backend requests have returned 5xx
+            over the last 5 minutes (sustained 10m). Check the backend
+            structured logs (grep the X-Request-Id) and the IB-service
+            dependency.
+
+      - alert: BackendHighLatencyP95
+        # p95 request latency over 1s for 10m.
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{service="backend"}[5m]))
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backend p95 latency above 1s"
+          description: >-
+            Backend p95 request latency is {{ printf "%.2f" $value }}s
+            (threshold 1s) over a sustained 10m window.
+
+      - alert: BackendEventLoopLagHigh
+        # Node event-loop p99 lag over 200ms signals blocking work on the
+        # main thread (sync IB-bound calls, large JSON, etc).
+        expr: nodejs_eventloop_lag_p99_seconds{service="backend"} > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backend event-loop lag (p99) above 200ms"
+          description: >-
+            nodejs_eventloop_lag_p99_seconds is {{ printf "%.3f" $value }}s.
+            The event loop is being blocked — latency and throughput will
+            suffer.
+
+  # -----------------------------------------------------------------------
+  # IB service (FastAPI + prometheus_fastapi_instrumentator)
+  # -----------------------------------------------------------------------
+  - name: tradingapp-ib_service
+    rules:
+      - alert: IBServiceHighErrorRate
+        # >5% 5xx over 5m, excluding the infra endpoints the dashboard also
+        # filters out.
+        expr: >-
+          100 * sum(rate(http_request_duration_seconds_count{handler!~"/metrics|/health",status=~"5.."}[5m]))
+          / clamp_min(sum(rate(http_request_duration_seconds_count{handler!~"/metrics|/health"}[5m])), 0.001)
+          > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "IB service 5xx error rate above 5%"
+          description: >-
+            {{ printf "%.1f" $value }}% of IB-service requests have returned
+            5xx over the last 5 minutes. Often the IB Gateway connection has
+            dropped — check `./tradingapp.sh status` and the ib_service logs.
+
+      - alert: IBServiceHighLatencyP95
+        # IB calls are inherently slower than backend-local work, so the
+        # threshold is higher (2s) than the backend's.
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{handler!~"/metrics|/health"}[5m]))
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "IB service p95 latency above 2s"
+          description: >-
+            IB-service p95 request latency is {{ printf "%.2f" $value }}s
+            (threshold 2s) over a sustained 10m window. The single synchronous
+            IB client serialises requests — sustained high latency may mean it
+            is saturated (consider IB_CLIENT_POOL_SIZE >= 2).
+
+      - alert: IBServiceNoTraffic
+        # The IB service is up (scraped) but has served zero non-infra
+        # requests for 30m. Either the backend stopped calling it or routing
+        # is broken. Info-level: legitimately quiet overnight, so non-paging.
+        expr: >-
+          sum(rate(http_request_duration_seconds_count{handler!~"/metrics|/health"}[15m])) == 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "IB service has served no application traffic for 30m"
+          description: >-
+            No non-infra requests have hit the IB service in 30 minutes.
+            Expected if the platform is idle; investigate if it should be
+            actively serving charts or streaming.

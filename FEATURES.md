@@ -402,14 +402,15 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 
 The first two observability passes have shipped (`pino` / `structlog` /
 `/metrics` / `X-Request-Id` / Grafana dashboard / service-layer log
-sweep). What is still open:
+sweep), and the Prometheus alerting rules now ship in
+[`ops/prometheus/alerts.yml`](ops/prometheus/alerts.yml) (target-down,
+5xx error-rate, p95 latency and event-loop-lag alerts that reuse the
+dashboard's metrics). What is still open:
 
 - Route handlers in `backend/src/routes/marketData/*` still use
   `console.*` for one-line per-call logging — covered by the
   observability middleware's structured "request completed" entry, but
   worth converting on a touch-as-you-go basis.
-- An alerting rules file (`ops/prometheus/alerts.yml`) to pair with the
-  Grafana dashboard.
 
 ### Frontend UX
 

@@ -547,6 +547,9 @@ is on the auth allow-list so the scraper does not need a bearer token.
 Minimal Prometheus scrape config:
 
 ```yaml
+rule_files:
+  - /etc/prometheus/alerts.yml   # ops/prometheus/alerts.yml (see below)
+
 scrape_configs:
   - job_name: tradingapp-backend
     static_configs: [{ targets: ['backend:4000'] }]
@@ -555,6 +558,28 @@ scrape_configs:
     static_configs: [{ targets: ['ib_service:8000'] }]
     metrics_path: /metrics
 ```
+
+### Alerting rules
+
+A ready-to-load rule file ships in
+[`ops/prometheus/alerts.yml`](ops/prometheus/alerts.yml). Mount it into
+the Prometheus container and reference it from `rule_files` (above). It
+reuses the exact metrics and label conventions the Grafana dashboard
+relies on, so each alert and its panel always agree. Rules cover:
+
+- **`TradingAppTargetDown`** (critical) — either service's `/metrics` is
+  unscrapeable for 2m.
+- **`BackendHighErrorRate` / `IBServiceHighErrorRate`** (warning) — 5xx
+  ratio above 5% over 5m.
+- **`BackendHighLatencyP95` / `IBServiceHighLatencyP95`** (warning) — p95
+  latency above 1s (backend) / 2s (IB service).
+- **`BackendEventLoopLagHigh`** (warning) — Node event-loop p99 lag above
+  200ms (main-thread blocking).
+- **`IBServiceNoTraffic`** (info) — the IB service is up but has served no
+  application traffic for 30m.
+
+Thresholds are conservative starting points — tune them to your traffic.
+Validate edits with `promtool check rules ops/prometheus/alerts.yml`.
 
 A pre-built Grafana dashboard ships in
 [`ops/grafana/tradingapp-dashboard.json`](ops/grafana/tradingapp-dashboard.json) —
