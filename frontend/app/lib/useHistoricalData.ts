@@ -70,38 +70,41 @@ export function useHistoricalData({
   const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<string | null>(null);
 
-  const fetchData = useCallback(async (signal: AbortSignal) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const qs = new URLSearchParams({
-        symbol: symbol.toUpperCase(),
-        timeframe,
-        period,
-        secType,
-        exchange,
-        currency,
-        account_mode: accountMode,
-      });
-      const res = await apiFetch(`/api/market-data/history?${qs.toString()}`, { signal });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(body.detail || body.error || `HTTP ${res.status}`);
+  const fetchData = useCallback(
+    async (signal: AbortSignal) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const qs = new URLSearchParams({
+          symbol: symbol.toUpperCase(),
+          timeframe,
+          period,
+          secType,
+          exchange,
+          currency,
+          account_mode: accountMode,
+        });
+        const res = await apiFetch(`/api/market-data/history?${qs.toString()}`, { signal });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(body.detail || body.error || `HTTP ${res.status}`);
+        }
+        const projected: ChartBar[] = [];
+        for (const raw of (body.bars ?? []) as RawBar[]) {
+          const out = toChartBar(raw);
+          if (out) projected.push(out);
+        }
+        setBars(projected);
+        setSource(body.source ?? null);
+      } catch (e) {
+        if ((e as DOMException)?.name === 'AbortError') return;
+        setError(e instanceof Error ? e.message : 'Failed to load history');
+      } finally {
+        setLoading(false);
       }
-      const projected: ChartBar[] = [];
-      for (const raw of (body.bars ?? []) as RawBar[]) {
-        const out = toChartBar(raw);
-        if (out) projected.push(out);
-      }
-      setBars(projected);
-      setSource(body.source ?? null);
-    } catch (e) {
-      if ((e as DOMException)?.name === 'AbortError') return;
-      setError(e instanceof Error ? e.message : 'Failed to load history');
-    } finally {
-      setLoading(false);
-    }
-  }, [symbol, timeframe, period, secType, exchange, currency, accountMode]);
+    },
+    [symbol, timeframe, period, secType, exchange, currency, accountMode]
+  );
 
   useEffect(() => {
     if (!enabled || !symbol) return;

@@ -41,7 +41,11 @@ export interface OrderTicketProps {
  * probe of `/api/orders/config`. A confirmation modal protects every
  * live submission.
  */
-export default function OrderTicket({ defaultSymbol = '', onPlaced, compact = false }: OrderTicketProps) {
+export default function OrderTicket({
+  defaultSymbol = '',
+  onPlaced,
+  compact = false,
+}: OrderTicketProps) {
   const [config, setConfig] = useState<OrderConfig>(DEFAULT_CONFIG);
   const [configError, setConfigError] = useState<string | null>(null);
 
@@ -90,7 +94,18 @@ export default function OrderTicket({ defaultSymbol = '', onPlaced, compact = fa
       stop_price: needsStop ? Number(stopPrice) : undefined,
       account_mode: accountMode,
     }),
-    [symbol, action, quantity, orderType, tif, limitPrice, stopPrice, needsLimit, needsStop, accountMode],
+    [
+      symbol,
+      action,
+      quantity,
+      orderType,
+      tif,
+      limitPrice,
+      stopPrice,
+      needsLimit,
+      needsStop,
+      accountMode,
+    ]
   );
 
   const submit = async () => {
@@ -108,7 +123,7 @@ export default function OrderTicket({ defaultSymbol = '', onPlaced, compact = fa
         throw new Error(body.detail || body.error || `HTTP ${res.status}`);
       }
       setSuccess(
-        `Order submitted (audit #${body.audit_id ?? '?'}${body.order_id ? `, IB id ${body.order_id}` : ''})`,
+        `Order submitted (audit #${body.audit_id ?? '?'}${body.order_id ? `, IB id ${body.order_id}` : ''})`
       );
       if (onPlaced) onPlaced(body);
     } catch (e) {
@@ -150,8 +165,8 @@ export default function OrderTicket({ defaultSymbol = '', onPlaced, compact = fa
 
       {!compact && (
         <p className="text-xs text-gray-600 mb-3">
-          Submitting an order sends it to Interactive Brokers via the configured account.
-          Validation runs both here and on the backend before anything reaches IB.
+          Submitting an order sends it to Interactive Brokers via the configured account. Validation
+          runs both here and on the backend before anything reaches IB.
           {configError && (
             <span className="block mt-1 text-amber-700">
               Config probe failed ({configError}) — live mode disabled until that recovers.
@@ -316,16 +331,30 @@ export default function OrderTicket({ defaultSymbol = '', onPlaced, compact = fa
               This will send a real order to Interactive Brokers. Double-check every field:
             </p>
             <dl className="text-sm space-y-1 mb-4">
-              <div><span className="font-medium">Side:</span> {payload.action}</div>
-              <div><span className="font-medium">Symbol:</span> {payload.symbol}</div>
-              <div><span className="font-medium">Quantity:</span> {payload.quantity}</div>
-              <div><span className="font-medium">Order type:</span> {payload.order_type}</div>
-              <div><span className="font-medium">TIF:</span> {payload.tif}</div>
+              <div>
+                <span className="font-medium">Side:</span> {payload.action}
+              </div>
+              <div>
+                <span className="font-medium">Symbol:</span> {payload.symbol}
+              </div>
+              <div>
+                <span className="font-medium">Quantity:</span> {payload.quantity}
+              </div>
+              <div>
+                <span className="font-medium">Order type:</span> {payload.order_type}
+              </div>
+              <div>
+                <span className="font-medium">TIF:</span> {payload.tif}
+              </div>
               {payload.limit_price !== undefined && (
-                <div><span className="font-medium">Limit:</span> {payload.limit_price}</div>
+                <div>
+                  <span className="font-medium">Limit:</span> {payload.limit_price}
+                </div>
               )}
               {payload.stop_price !== undefined && (
-                <div><span className="font-medium">Stop:</span> {payload.stop_price}</div>
+                <div>
+                  <span className="font-medium">Stop:</span> {payload.stop_price}
+                </div>
               )}
             </dl>
             <div className="flex justify-end gap-2">

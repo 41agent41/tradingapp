@@ -16,7 +16,7 @@ import type { IChartApi } from 'lightweight-charts';
 export function useChartResize(
   containerRef: React.RefObject<HTMLDivElement | null>,
   chartRef: React.MutableRefObject<IChartApi | null>,
-  options: { observeHeight?: boolean } = {},
+  options: { observeHeight?: boolean } = {}
 ): void {
   const { observeHeight = false } = options;
 

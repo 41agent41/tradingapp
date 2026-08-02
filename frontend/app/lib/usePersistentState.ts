@@ -15,7 +15,7 @@ import { useEffect, useRef, useState } from 'react';
 export function usePersistentState(
   key: string,
   initialValue: string,
-  validate?: (v: string) => boolean,
+  validate?: (v: string) => boolean
 ): [string, (next: string) => void] {
   const [value, setValue] = useState<string>(initialValue);
   const hydrated = useRef(false);

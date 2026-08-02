@@ -50,18 +50,22 @@ export default function TradePage() {
             <h3 className="text-base font-semibold text-gray-900 mb-2">Notes</h3>
             <ul className="text-xs text-gray-700 space-y-1 list-disc pl-5">
               <li>
-                <strong>Paper</strong> orders run against IB's paper account and never touch real funds.
+                <strong>Paper</strong> orders run against IB's paper account and never touch real
+                funds.
               </li>
               <li>
                 <strong>Live</strong> orders require both the backend and IB service to start with
-                <code className="mx-1 px-1 bg-gray-100 rounded">LIVE_TRADING_ENABLED=true</code>.
-                A confirmation modal will appear before submission.
+                <code className="mx-1 px-1 bg-gray-100 rounded">LIVE_TRADING_ENABLED=true</code>. A
+                confirmation modal will appear before submission.
               </li>
-              <li>Every attempt is recorded in <code>order_audit</code> (visible in the blotter below).</li>
               <li>
-                Order types: <strong>MKT</strong>, <strong>LMT</strong>, <strong>STP</strong>,
-                {' '}<strong>STP&nbsp;LMT</strong>. TIF: <strong>DAY</strong>, <strong>GTC</strong>,
-                {' '}<strong>IOC</strong>, <strong>FOK</strong>.
+                Every attempt is recorded in <code>order_audit</code> (visible in the blotter
+                below).
+              </li>
+              <li>
+                Order types: <strong>MKT</strong>, <strong>LMT</strong>, <strong>STP</strong>,{' '}
+                <strong>STP&nbsp;LMT</strong>. TIF: <strong>DAY</strong>, <strong>GTC</strong>,{' '}
+                <strong>IOC</strong>, <strong>FOK</strong>.
               </li>
               <li>
                 Fat-finger caps default to 100k quantity / $1M price; override with

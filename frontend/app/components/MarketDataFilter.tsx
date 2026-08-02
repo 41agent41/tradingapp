@@ -150,10 +150,8 @@ export default function MarketDataFilter() {
   const [securityType, setSecurityType] = useState('STK');
   const [exchange, setExchange] = useState('SMART');
   const [currency, setCurrency] = useState('USD');
-  const [timeframe, setTimeframe] = usePersistentState(
-    STORAGE_KEYS.lastTimeframe,
-    '1hour',
-    (v) => TIMEFRAMES.some((tf) => tf.value === v),
+  const [timeframe, setTimeframe] = usePersistentState(STORAGE_KEYS.lastTimeframe, '1hour', (v) =>
+    TIMEFRAMES.some((tf) => tf.value === v)
   );
   const [searchByName, setSearchByName] = useState(false);
 

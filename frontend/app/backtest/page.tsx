@@ -422,7 +422,9 @@ export default function BacktestPage() {
             </div>
           )}
           {previousRuns.length === 0 && !runsError ? (
-            <p className="text-sm text-gray-500">No runs persisted yet. Run a backtest to populate this list.</p>
+            <p className="text-sm text-gray-500">
+              No runs persisted yet. Run a backtest to populate this list.
+            </p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-xs sm:text-sm">
@@ -442,9 +444,11 @@ export default function BacktestPage() {
                 <tbody className="divide-y divide-gray-100">
                   {previousRuns.map((run) => {
                     const ret = Number(
-                      (run.metrics as { total_return_percent?: number })?.total_return_percent ?? 0,
+                      (run.metrics as { total_return_percent?: number })?.total_return_percent ?? 0
                     );
-                    const sharpe = Number((run.metrics as { sharpe_ratio?: number })?.sharpe_ratio ?? 0);
+                    const sharpe = Number(
+                      (run.metrics as { sharpe_ratio?: number })?.sharpe_ratio ?? 0
+                    );
                     const isSelected = selectedRunId === run.id;
                     return (
                       <tr

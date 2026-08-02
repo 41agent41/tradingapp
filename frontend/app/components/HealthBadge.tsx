@@ -50,11 +50,7 @@ function rowsFromPayload(p: HealthPayload | null, fetchError: string | null): Se
     svc.streaming?.enabled === false ? 'disabled' : svc.streaming?.connected ? 'ok' : 'warn';
 
   const backfillState: ServiceState =
-    svc.backfill?.enabled === false
-      ? 'disabled'
-      : svc.backfill?.last_error
-        ? 'warn'
-        : 'ok';
+    svc.backfill?.enabled === false ? 'disabled' : svc.backfill?.last_error ? 'warn' : 'ok';
 
   return [
     {
