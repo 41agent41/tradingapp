@@ -1,39 +1,9 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
-import { createChart, ColorType, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
-import { io, Socket } from 'socket.io-client';
-import IndicatorSelector from './IndicatorSelector';
-import { apiFetch, apiBaseUrl, socketAuth } from '../lib/api';
-import { useChartResize } from '../lib/useChartResize';
-
-interface CandlestickData {
-  time: Time;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume?: number;
-
-  // Technical Indicators
-  sma_20?: number;
-  sma_50?: number;
-  ema_12?: number;
-  ema_26?: number;
-  rsi?: number;
-  macd?: number;
-  macd_signal?: number;
-  macd_histogram?: number;
-  bb_upper?: number;
-  bb_middle?: number;
-  bb_lower?: number;
-  stoch_k?: number;
-  stoch_d?: number;
-  atr?: number;
-  obv?: number;
-  vwap?: number;
-  volume_sma?: number;
-}
+import React, { useEffect, useState } from 'react';
+import Chart from './Chart';
+import { useHistoricalData } from '../lib/useHistoricalData';
+import { useRealtimeStream } from '../lib/useRealtimeStream';
 
 interface TradingChartProps {
   onTimeframeChange?: (timeframe: string) => void;
@@ -52,248 +22,50 @@ const timeframes = [
   { label: '1d', value: '1day', minutes: 1440 },
 ];
 
+/**
+ * Symbol-input trading chart with a live price badge. Rewritten on top of the
+ * shared `<Chart>` primitive + `useHistoricalData` / `useRealtimeStream`
+ * hooks (GAP_ANALYSIS §3.5) — the bespoke lightweight-charts instance and its
+ * own Socket.IO wiring are gone; the live price now flows through the same
+ * streaming hook the rest of the app uses.
+ */
 export default function TradingChart({ onTimeframeChange, onSymbolChange }: TradingChartProps) {
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-  const chart = useRef<IChartApi | null>(null);
-  const candlestickSeries = useRef<ISeriesApi<'Candlestick'> | null>(null);
-  const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
-  const socket = useRef<Socket | null>(null);
-
   const [currentSymbol, setCurrentSymbol] = useState('AAPL');
   const [symbolInput, setSymbolInput] = useState('AAPL');
   const [currentTimeframe, setCurrentTimeframe] = useState('5min');
-  const [chartData, setChartData] = useState<CandlestickData[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+
+  const { bars, loading, error } = useHistoricalData({
+    symbol: currentSymbol,
+    timeframe: currentTimeframe,
+    period: '90D',
+  });
+
+  const stream = useRealtimeStream({
+    symbol: currentSymbol,
+    secType: 'STK',
+    exchange: 'SMART',
+    currency: 'USD',
+  });
+
   const [realTimePrice, setRealTimePrice] = useState<number | null>(null);
-  const [connectionStatus, setConnectionStatus] = useState('Disconnected');
-  const [isSubscribed, setIsSubscribed] = useState(false);
-
-  // Indicator states
-  const [selectedIndicators, setSelectedIndicators] = useState<string[]>([]);
-  const indicatorSeries = useRef<Map<string, ISeriesApi<any>>>(new Map());
 
   useEffect(() => {
-    if (!chartContainerRef.current) return;
-
-    // Create chart
-    chart.current = createChart(chartContainerRef.current, {
-      layout: {
-        background: { type: ColorType.Solid, color: '#ffffff' },
-        textColor: '#333',
-      },
-      width: chartContainerRef.current.clientWidth,
-      height: 600,
-      grid: {
-        vertLines: { color: '#f0f0f0' },
-        horzLines: { color: '#f0f0f0' },
-      },
-      crosshair: {
-        mode: 1,
-      },
-      rightPriceScale: {
-        borderColor: '#cccccc',
-      },
-      timeScale: {
-        borderColor: '#cccccc',
-        timeVisible: true,
-        secondsVisible: false,
-      },
-    });
-
-    // Add candlestick series
-    candlestickSeries.current = chart.current.addCandlestickSeries({
-      upColor: '#4CAF50',
-      downColor: '#F44336',
-      borderDownColor: '#F44336',
-      borderUpColor: '#4CAF50',
-      wickDownColor: '#F44336',
-      wickUpColor: '#4CAF50',
-    });
-
-    // Add volume series
-    volumeSeries.current = chart.current.addHistogramSeries({
-      color: '#26a69a',
-      priceFormat: {
-        type: 'volume',
-      },
-      priceScaleId: '',
-      visible: true,
-    });
-
-    return () => {
-      if (chart.current) {
-        chart.current.remove();
-      }
-    };
-  }, []);
-
-  useChartResize(chartContainerRef, chart);
-
-  // Set up Socket.io connection for real-time data
-  useEffect(() => {
-    socket.current = io(apiBaseUrl, socketAuth());
-
-    socket.current.on('connect', () => {
-      setConnectionStatus('Connected');
-      console.log('Chart connected to backend for real-time data');
-    });
-
-    socket.current.on('disconnect', () => {
-      setConnectionStatus('Disconnected');
-      setIsSubscribed(false);
-      console.log('Chart disconnected from backend');
-    });
-
-    socket.current.on('market-data-update', (data: any) => {
-      if (data.symbol === currentSymbol && data.data?.last) {
-        setRealTimePrice(data.data.last);
-
-        // Update chart with real-time price if we have chart data
-        if (chartData.length > 0 && candlestickSeries.current) {
-          const lastBar = chartData[chartData.length - 1];
-          const now = Math.floor(Date.now() / 1000);
-
-          // Create a new bar or update the last bar based on timeframe
-          const updatedBar: CandlestickData = {
-            time: now as Time,
-            open: lastBar.close,
-            high: Math.max(lastBar.high, data.data.last),
-            low: Math.min(lastBar.low, data.data.last),
-            close: data.data.last,
-            volume: lastBar.volume || 0,
-          };
-
-          candlestickSeries.current.update(updatedBar);
-        }
-      }
-    });
-
-    return () => {
-      if (socket.current) {
-        socket.current.close();
-      }
-    };
-  }, [currentSymbol, currentTimeframe]);
-
-  // Subscribe/unsubscribe to market data when symbol or timeframe changes
-  useEffect(() => {
-    if (socket.current && connectionStatus === 'Connected') {
-      // Unsubscribe from previous symbol if subscribed
-      if (isSubscribed) {
-        socket.current.emit('unsubscribe-market-data', { symbol: currentSymbol });
-      }
-
-      // Subscribe to new symbol
-      socket.current.emit('subscribe-market-data', {
-        symbol: currentSymbol,
-        timeframe: currentTimeframe,
-      });
-      setIsSubscribed(true);
+    const tick = stream.latestTick;
+    if (tick && tick.tick_type === 'LAST' && typeof tick.value === 'number' && tick.value > 0) {
+      setRealTimePrice(tick.value);
     }
-  }, [currentSymbol, currentTimeframe, connectionStatus]);
+  }, [stream.latestTick]);
 
-  // Fetch historical data when timeframe or symbol changes
+  // Reset the price badge when the symbol changes.
   useEffect(() => {
-    fetchHistoricalData();
-  }, [currentTimeframe, currentSymbol]);
-
-  const fetchHistoricalData = async () => {
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const response = await apiFetch(
-        `/api/market-data/history?symbol=${currentSymbol}&timeframe=${currentTimeframe}&period=90D`
-      );
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch data: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-
-      if (data.error) {
-        throw new Error(data.error);
-      }
-
-      // Convert data to TradingView format with proper timestamp handling and validation
-      const formattedData: CandlestickData[] =
-        data.bars
-          ?.map((bar: any) => {
-            // Validate and convert timestamp to TradingView format (Unix timestamp in seconds)
-            let timestamp = bar.timestamp || bar.time;
-
-            // Validate timestamp is a valid number
-            if (typeof timestamp !== 'number' || isNaN(timestamp)) {
-              console.warn('Invalid timestamp:', timestamp, 'for bar:', bar);
-              return null;
-            }
-
-            // Convert to seconds if in milliseconds
-            if (timestamp > 1000000000000) {
-              timestamp = Math.floor(timestamp / 1000);
-            }
-
-            // Validate timestamp is reasonable (not in the future or too far in the past)
-            const now = Math.floor(Date.now() / 1000);
-            if (timestamp > now + 86400 || timestamp < now - 31536000 * 10) {
-              // Within 1 day future or 10 years past
-              console.warn('Timestamp out of reasonable range:', timestamp, 'for bar:', bar);
-              return null;
-            }
-
-            return {
-              time: timestamp as Time,
-              open: bar.open,
-              high: bar.high,
-              low: bar.low,
-              close: bar.close,
-              volume: bar.volume,
-            };
-          })
-          .filter(
-            (bar: CandlestickData | null) =>
-              bar !== null &&
-              !isNaN(bar.open) &&
-              !isNaN(bar.high) &&
-              !isNaN(bar.low) &&
-              !isNaN(bar.close)
-          ) || [];
-
-      // Sort by timestamp in ascending order (oldest first) - required by TradingView
-      formattedData.sort((a, b) => (a.time as number) - (b.time as number));
-
-      setChartData(formattedData);
-
-      // Update chart series
-      if (candlestickSeries.current && volumeSeries.current) {
-        candlestickSeries.current.setData(formattedData);
-
-        // Volume data
-        const volumeData = formattedData.map((bar) => ({
-          time: bar.time,
-          value: bar.volume || 0,
-          color: bar.close >= bar.open ? '#4CAF50' : '#F44336',
-        }));
-
-        volumeSeries.current.setData(volumeData);
-      }
-    } catch (err) {
-      console.error('Error fetching historical data:', err);
-      setError(err instanceof Error ? err.message : 'Failed to fetch data');
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    setRealTimePrice(null);
+  }, [currentSymbol]);
 
   const handleSymbolSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const newSymbol = symbolInput.trim().toUpperCase();
     if (newSymbol && newSymbol !== currentSymbol) {
       setCurrentSymbol(newSymbol);
-      setRealTimePrice(null);
-      setError(null);
       onSymbolChange?.(newSymbol);
     }
   };
@@ -303,15 +75,7 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
     onTimeframeChange?.(timeframe);
   };
 
-  const updateRealTimeData = (newBar: CandlestickData) => {
-    setChartData((prev) => {
-      const updated = [...prev, newBar];
-      if (candlestickSeries.current) {
-        candlestickSeries.current.update(newBar);
-      }
-      return updated;
-    });
-  };
+  const connectionStatus = stream.connected ? 'Connected' : 'Disconnected';
 
   return (
     <div className="w-full h-full flex flex-col">
@@ -360,12 +124,6 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
               ></div>
               <span className="text-sm text-gray-600">{connectionStatus}</span>
             </div>
-            {isSubscribed && (
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-blue-500"></div>
-                <span className="text-sm text-gray-600">Subscribed</span>
-              </div>
-            )}
           </div>
         </div>
 
@@ -396,7 +154,7 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
 
       {/* Chart Container */}
       <div className="flex-1 relative">
-        {isLoading && (
+        {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-75 z-10">
             <div className="flex items-center gap-2">
               <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
@@ -404,7 +162,7 @@ export default function TradingChart({ onTimeframeChange, onSymbolChange }: Trad
             </div>
           </div>
         )}
-        <div ref={chartContainerRef} className="w-full h-full" />
+        <Chart data={bars} height={600} />
       </div>
     </div>
   );

@@ -58,9 +58,8 @@ The remaining risks are now smaller and mostly about **breadth and polish**:
 2. **Single-feature UI gaps.** Order management now ships
    (`/trade` page + ticket on `/account`, env-gated via
    `LIVE_TRADING_ENABLED` — §6); backtesting already shipped
-   (`/backtest`). Three of the four OHLCV chart components remain on
-   their pre-`<Chart>` implementations and pending browser-validated
-   rewrites (§3.5).
+   (`/backtest`). All four OHLCV chart components now render through the
+   shared `<Chart>` primitive (§3.5).
 3. **IB concurrency is capped at one.** The single synchronous IB client
    serialises every request (§3.3); `ib_service/main.py` is still monolithic
    (§3.4).
@@ -181,8 +180,8 @@ errors. See
 |---|---:|---|---|
 | `backend/src/routes/marketData.ts` | ~870 | All market-data endpoints, validation, DB write-through | ✅ split into `routes/marketData/{shared,search,history,realtime,indicators,database}.ts`; the old file is now a ~25-line aggregator |
 | `ib_service/main.py` | ~2,700 → ~1,840 | HTTP routes, IB client, threading, caching, indicators wiring, account handling | ✅ split into [`models.py`](ib_service/models.py), [`ib_client.py`](ib_service/ib_client.py), [`ib_helpers.py`](ib_service/ib_helpers.py), [`bars_processing.py`](ib_service/bars_processing.py); routes remain in `main.py` for this commit. Carving the routes into a `routes/` subpackage is the remaining follow-on. |
-| `frontend/app/components/MSFTRealtimeChart.tsx` | ~975 | Chart + data fetch + state + UI controls | ⬜ pending — kept intact because adopting the new `<Chart>` primitive (§3.5) needs browser validation |
-| `frontend/app/components/MarketDataFilter.tsx` | ~820 | Filter UI + chart trigger + state | ⬜ pending |
+| `frontend/app/components/MSFTRealtimeChart.tsx` | ~975 → ~640 | Chart + data fetch + state + UI controls | ✅ chart rendering delegated to `<Chart>` (§3.5); the bespoke lightweight-charts instance, series management and per-tick timestamp loop are gone. Controls / streaming / DataframeViewer stay. |
+| `frontend/app/components/MarketDataFilter.tsx` | ~820 | Filter UI + chart trigger + state | ⬜ pending (its embedded `EnhancedTradingChart` now uses `<Chart>`, but the filter shell itself is still monolithic) |
 
 ### 3.5 Overlapping chart components (primitive shipped)
 
@@ -197,12 +196,20 @@ errors. See
   `ChartBar` shape, exposing `{ bars, loading, error, source, refresh }`.
 - ✅ `HistoricalChart` is now a thin wrapper around `<Chart>` —
   >100 LoC of lightweight-charts boilerplate dropped.
-- ⬜ `TradingChart`, `EnhancedTradingChart` and `MSFTRealtimeChart` are
-  intentionally **not** rewritten in this PR. Their bodies (socket.io
-  setup, DataframeViewer integration, indicator/data switches) are
-  tightly coupled to the chart instance and migrating them safely needs
-  browser verification that jsdom can't provide. The new `<Chart>` is
-  available as a drop-in primitive for those follow-on rewrites.
+- ✅ `TradingChart`, `EnhancedTradingChart` and `MSFTRealtimeChart` now
+  render through the shared `<Chart>` primitive too. Each keeps its own
+  surrounding UI (symbol input, contract header, streaming price badges,
+  data switch, indicator selector, custom date range, DataframeViewer)
+  but no longer embeds a bespoke lightweight-charts instance, series
+  management or timestamp-validation loop — that all lives in `<Chart>`
+  now. `MSFTRealtimeChart` and `EnhancedTradingChart` reuse the streaming
+  (`useRealtimeStream`) / historical (`useHistoricalData`) hooks rather
+  than hand-rolled Socket.IO / fetch wiring. Net effect: ~800 lines of
+  duplicated chart boilerplate removed across the four wrappers.
+- `<Chart>` gained an optional `priceScaleId` per indicator series so
+  oscillators (RSI / MACD) render on their own axis instead of flattening
+  the candles — this is what let the MSFT indicator overlays move onto the
+  shared primitive without a visual regression.
 
 ---
 
@@ -400,8 +407,8 @@ months of history, sourced from IB Gateway, running remotely.
 - ✅ 12-month period selectable (`1Y`).
 - ✅ Real-time is now a genuine IB → Redis → Socket.IO → chart stream.
 - ✅ Runs entirely via Docker on a remote host (no local deps).
-- ⚠️ `/msft` still duplicates generic chart code instead of reusing a shared
-  `<Chart>` (see §3.5).
+- ✅ `/msft` now renders through the shared `<Chart>` primitive (§3.5) —
+  the duplicated chart code is gone.
 
 ---
 
@@ -438,8 +445,9 @@ Phases 1–4 are complete (see §2). Remaining work, ordered by dependency:
     bars_processing (routes still in main.py — carving them into a
     `routes/` subpackage is a follow-on); the largest frontend
     components still pending. ✅ Shared `<Chart>` primitive +
-    `useHistoricalData` hook now exist (§3.5); HistoricalChart adopts
-    them, the other three charts pending browser-validated rewrites.
+    `useHistoricalData` hook now exist (§3.5); **all four** OHLCV chart
+    wrappers (HistoricalChart / TradingChart / EnhancedTradingChart /
+    MSFTRealtimeChart) now render through it.
 11. ✅ Global `error.tsx` boundary and `ResizeObserver`s on all chart
     containers.
 12. ✅ Test breadth expanded: route-level Supertest coverage for

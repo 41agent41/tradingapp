@@ -110,7 +110,7 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
 | # | Issue | Location | Impact |
 |---|-------|----------|--------|
 | 4 | ~~`ib_service/main.py` is ~2,700 lines~~ | — | ✅ Split into models / ib_client / ib_helpers / bars_processing on this branch (main.py is now 1,840 LoC and only owns FastAPI wiring + route handlers). Carving the routes into a routes/ subpackage is the remaining follow-on. |
-| 5 | **Four overlapping chart components** | `frontend/app/components` | ✅ Shared `<Chart>` primitive + `useHistoricalData` hook shipped on this branch. `HistoricalChart` adopts them; `TradingChart` / `EnhancedTradingChart` / `MSFTRealtimeChart` rewrites still pending browser-validation. |
+| 5 | ~~Four overlapping chart components~~ | — | ✅ Shared `<Chart>` primitive + `useHistoricalData` hook, and all four wrappers (`HistoricalChart` / `TradingChart` / `EnhancedTradingChart` / `MSFTRealtimeChart`) now render through it. `<Chart>` gained per-indicator `priceScaleId` so RSI/MACD keep their own axis. |
 | 6 | ~~No observability~~ | — | ✅ First pass shipped on this branch (pino backend, structlog ib_service, /metrics on both, end-to-end X-Request-Id). Residual `console.log` / `print` cleanup is a touch-as-you-go follow-on. |
 | 7 | ~~No global `error.tsx` / `ResizeObserver`~~ | — | ✅ `error.tsx` + shared `useChartResize` shipped (previous branch). |
 | 8 | ~~Single synchronous IB client~~ | — | ✅ Opt-in pool shipped this branch (`ib_pool.IBPool` keyed by `IB_CLIENT_POOL_SIZE`, defaults to 1 = unchanged behaviour). |
@@ -146,11 +146,12 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
    bars_processing landed. Carving the routes into a dedicated
    `routes/` subpackage is the remaining slice; the rest of the
    handlers stay in `main.py` for now.
-7. ✅ Shared `<Chart>` primitive + `useHistoricalData` hook landed;
-   `HistoricalChart` adopts them. `TradingChart` /
-   `EnhancedTradingChart` / `MSFTRealtimeChart` still embed their own
-   lightweight-charts instances — these rewrites need browser
-   verification before they can land.
+7. ✅ Shared `<Chart>` primitive + `useHistoricalData` hook landed and
+   **all four** OHLCV chart wrappers now render through it
+   (`HistoricalChart` / `TradingChart` / `EnhancedTradingChart` /
+   `MSFTRealtimeChart`). The three streaming/contract charts keep their
+   own surrounding UI + data hooks but no longer embed a bespoke
+   lightweight-charts instance.
 8. ✅ Opt-in IB connection pool (`IB_CLIENT_POOL_SIZE`,
    [`ib_service/ib_pool.py`](ib_service/ib_pool.py)).
 
@@ -189,12 +190,11 @@ Priority  Task                                                Effort
   ✅      Prometheus alerting rules (ops/prometheus/alerts.yml) (done)
   ✅      Position-limit guard (ORDER_MAX_POSITION) on creates  (done)
             computed from order_audit net exposure
-  1       Rewrite TradingChart / EnhancedTradingChart /        Medium
-            MSFTRealtimeChart on top of <Chart> (needs browser
-            verification)
-  2       Carve ib_service routes/ subpackage out of main.py   Medium
-  3       Watchlists / alerts / scanners                       Large
-  4       MFA / RBAC on /api/orders (live-trading hardening)   Medium
+  ✅      Rewrite TradingChart / EnhancedTradingChart /        (done)
+            MSFTRealtimeChart on top of <Chart>
+  1       Carve ib_service routes/ subpackage out of main.py   Medium
+  2       Watchlists / alerts / scanners                       Large
+  3       MFA / RBAC on /api/orders (live-trading hardening)   Medium
 ```
 
 ---

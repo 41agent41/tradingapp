@@ -33,6 +33,13 @@ export interface ChartIndicatorSeries {
   values: Array<number | null | undefined>;
   /** Line colour (defaults to a TradingView blue). */
   color?: string;
+  /**
+   * Optional separate price scale id (e.g. `'rsi'`, `'macd'`). Overlays that
+   * share the price axis with the candles (moving averages, Bollinger bands,
+   * VWAP) should omit this; oscillators whose range would distort the candle
+   * scale should pass a dedicated id so they render on their own axis.
+   */
+  priceScaleId?: string;
 }
 
 export interface ChartProps {
@@ -185,7 +192,8 @@ export default function Chart({
     const wantedKeys = new Set(indicators.map((i) => i.key));
 
     // Drop any indicator series the caller no longer wants.
-    for (const [key, series] of live.entries()) {
+    // (Array.from keeps this es5-safe without --downlevelIteration.)
+    for (const [key, series] of Array.from(live.entries())) {
       if (!wantedKeys.has(key)) {
         chart.removeSeries(series);
         live.delete(key);
@@ -196,12 +204,22 @@ export default function Chart({
     for (const ind of indicators) {
       let series = live.get(ind.key);
       if (!series) {
+        const onSeparateScale =
+          ind.priceScaleId != null && ind.priceScaleId !== '' && ind.priceScaleId !== 'right';
         series = chart.addLineSeries({
           color: ind.color ?? DEFAULT_INDICATOR_COLOR,
           lineWidth: 2,
           priceLineVisible: false,
           lastValueVisible: false,
+          priceScaleId: ind.priceScaleId ?? 'right',
         });
+        // Give oscillator scales a little breathing room so they don't sit
+        // flush against the top/bottom of the pane.
+        if (onSeparateScale) {
+          series.priceScale().applyOptions({
+            scaleMargins: { top: 0.1, bottom: 0.1 },
+          });
+        }
         live.set(ind.key, series);
       } else if (ind.color) {
         series.applyOptions({ color: ind.color });
