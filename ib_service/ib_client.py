@@ -44,7 +44,7 @@ IB_TIMEOUT = int(os.getenv("IB_TIMEOUT", "15"))
 # ---------------------------------------------------------------------------
 # Module-level connection state
 # ---------------------------------------------------------------------------
-_ib_client: Optional["IBApp"] = None
+_ib_client: Optional[IBApp] = None
 _connection_status: Dict[str, Any] = {
     "connected": False,
     "last_connected": None,
@@ -58,7 +58,7 @@ def get_connection_status() -> Dict[str, Any]:
     return _connection_status
 
 
-def get_ib_app() -> Optional["IBApp"]:
+def get_ib_app() -> Optional[IBApp]:
     """Return the live IBApp instance, or None if disconnected. Read-only helper."""
     return _ib_client
 
@@ -184,7 +184,14 @@ def get_ib_connection() -> IBApp:
             _ib_client = None
 
         base_id = IB_CLIENT_ID
-        client_ids_to_try = [base_id, base_id + 1, base_id + 2, base_id + 3, base_id + 4, base_id + 5]
+        client_ids_to_try = [
+            base_id,
+            base_id + 1,
+            base_id + 2,
+            base_id + 3,
+            base_id + 4,
+            base_id + 5,
+        ]
         random.shuffle(client_ids_to_try[1:])
         last_error: Optional[str] = None
 

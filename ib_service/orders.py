@@ -25,7 +25,7 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException
 from ibapi.order import Order as IBOrder
 from pydantic import BaseModel, Field
 
@@ -41,7 +41,7 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 # Configuration — read at import time.
 # ---------------------------------------------------------------------------
-LIVE_TRADING_ENABLED = (os.getenv("LIVE_TRADING_ENABLED", "false").lower() == "true")
+LIVE_TRADING_ENABLED = os.getenv("LIVE_TRADING_ENABLED", "false").lower() == "true"
 ORDER_PLACE_WAIT_SECONDS = int(os.getenv("ORDER_PLACE_WAIT_SECONDS", "3"))
 
 VALID_ORDER_TYPES = {"MKT", "LMT", "STP", "STP_LMT"}

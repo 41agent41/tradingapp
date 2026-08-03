@@ -4,13 +4,26 @@ from __future__ import annotations
 
 import re
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from prometheus_client import REGISTRY
 
 from observability import attach_observability, configure_logging
 
-
 UUID_HEX = re.compile(r"^[0-9a-f]{32}$")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_prometheus_registry():
+    """`attach_observability` registers Instrumentator metrics on the global
+    prometheus REGISTRY. Production attaches once; these tests attach per app,
+    so unregister whatever a test added to avoid DuplicateTimeseries on the
+    next one."""
+    before = set(REGISTRY._collector_to_names)
+    yield
+    for collector in set(REGISTRY._collector_to_names) - before:
+        REGISTRY.unregister(collector)
 
 
 def _build_app() -> TestClient:
@@ -58,10 +71,7 @@ def test_metrics_endpoint_is_exposed_and_serves_prometheus_text():
     # `http_requests_total` (Counter) and `http_request_duration_seconds`
     # (Histogram). Be lenient — either is fine evidence the instrumentator
     # is wired.
-    assert (
-        "http_request_duration_seconds" in body
-        or "http_requests_total" in body
-    ), body[:500]
+    assert "http_request_duration_seconds" in body or "http_requests_total" in body, body[:500]
 
 
 def test_configure_logging_is_idempotent():

@@ -75,8 +75,12 @@ def test_validate_common_allows_paper_regardless_of_gate(monkeypatch):
 
 def test_build_ib_order_for_market(fresh_orders):
     o = fresh_orders._build_ib_order(
-        action="BUY", quantity=10, order_type="MKT", tif="DAY",
-        limit_price=None, stop_price=None,
+        action="BUY",
+        quantity=10,
+        order_type="MKT",
+        tif="DAY",
+        limit_price=None,
+        stop_price=None,
     )
     assert o.action == "BUY"
     assert o.orderType == "MKT"
@@ -87,8 +91,12 @@ def test_build_ib_order_for_market(fresh_orders):
 def test_build_ib_order_for_limit_requires_limit_price(fresh_orders):
     with pytest.raises(HTTPException) as exc:
         fresh_orders._build_ib_order(
-            action="BUY", quantity=10, order_type="LMT", tif="DAY",
-            limit_price=None, stop_price=None,
+            action="BUY",
+            quantity=10,
+            order_type="LMT",
+            tif="DAY",
+            limit_price=None,
+            stop_price=None,
         )
     assert exc.value.status_code == 400
     assert "limit_price" in exc.value.detail
@@ -97,8 +105,12 @@ def test_build_ib_order_for_limit_requires_limit_price(fresh_orders):
 def test_build_ib_order_for_stop_requires_stop_price(fresh_orders):
     with pytest.raises(HTTPException) as exc:
         fresh_orders._build_ib_order(
-            action="BUY", quantity=10, order_type="STP", tif="DAY",
-            limit_price=None, stop_price=None,
+            action="BUY",
+            quantity=10,
+            order_type="STP",
+            tif="DAY",
+            limit_price=None,
+            stop_price=None,
         )
     assert exc.value.status_code == 400
     assert "stop_price" in exc.value.detail
@@ -108,13 +120,21 @@ def test_build_ib_order_for_stp_lmt_requires_both_prices(fresh_orders):
     # No prices at all → first failure is on limit (validated first).
     with pytest.raises(HTTPException):
         fresh_orders._build_ib_order(
-            action="SELL", quantity=10, order_type="STP_LMT", tif="GTC",
-            limit_price=None, stop_price=10,
+            action="SELL",
+            quantity=10,
+            order_type="STP_LMT",
+            tif="GTC",
+            limit_price=None,
+            stop_price=10,
         )
     # Both prices → translates orderType to IB's space-separated form.
     o = fresh_orders._build_ib_order(
-        action="SELL", quantity=10, order_type="STP_LMT", tif="GTC",
-        limit_price=100, stop_price=99,
+        action="SELL",
+        quantity=10,
+        order_type="STP_LMT",
+        tif="GTC",
+        limit_price=100,
+        stop_price=99,
     )
     assert o.orderType == "STP LMT"
     assert o.lmtPrice == 100
@@ -126,8 +146,12 @@ def test_build_ib_order_disables_etradeonly_firmquoteonly(fresh_orders):
     """IB Gateway error 10268 rejects orders with eTradeOnly=True.
     Force them off."""
     o = fresh_orders._build_ib_order(
-        action="BUY", quantity=1, order_type="MKT", tif="DAY",
-        limit_price=None, stop_price=None,
+        action="BUY",
+        quantity=1,
+        order_type="MKT",
+        tif="DAY",
+        limit_price=None,
+        stop_price=None,
     )
     assert o.eTradeOnly is False
     assert o.firmQuoteOnly is False

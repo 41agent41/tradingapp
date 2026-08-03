@@ -40,6 +40,7 @@ ignore = [
     "UP006", # use X | Y syntax over typing.Optional — keep py3.9 friendly
     "UP007", # ditto
     "UP035", # `typing.Dict` etc.; mass-renaming is out of scope here
+    "UP038", # X | Y in isinstance() — same pyupgrade family; out of scope here
     "B904",  # raise-from; legacy IB handlers do this everywhere
     "E402",  # module-level imports not at top; main.py is a special case
     "C401",  # generator-expression-to-set rewrites; cosmetic

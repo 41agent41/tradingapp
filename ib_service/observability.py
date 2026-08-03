@@ -86,9 +86,7 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         incoming = request.headers.get(REQUEST_ID_HEADER, "").strip()
-        request_id = (
-            incoming if 0 < len(incoming) <= _REQUEST_ID_MAX_LEN else uuid.uuid4().hex
-        )
+        request_id = incoming if 0 < len(incoming) <= _REQUEST_ID_MAX_LEN else uuid.uuid4().hex
 
         # Bind for the lifetime of this request — every structlog call sees
         # `request_id` automatically via merge_contextvars.

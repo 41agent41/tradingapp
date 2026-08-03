@@ -64,7 +64,10 @@ class IBPool:
         self._base_client_id = base_client_id
         self._connect = connect_factory
         self._lock = threading.Lock()
-        self._free: "queue.Queue[int]" = queue.Queue()  # of slot indices
+        # LIFO so a released slot is the next one handed out — reusing an
+        # already-connected (warm) slot instead of connecting a cold one and
+        # churning IB Gateway sessions. Only matters for size >= 2.
+        self._free: queue.LifoQueue[int] = queue.LifoQueue()  # of slot indices
         self._slots = [PoolSlot(client_id=base_client_id + i) for i in range(size)]
         for i in range(size):
             self._free.put(i)
@@ -164,7 +167,9 @@ def get_pool() -> Optional[IBPool]:
     return _pool
 
 
-def configure_pool(connect_factory: Callable[[int], object], base_client_id: int) -> Optional[IBPool]:
+def configure_pool(
+    connect_factory: Callable[[int], object], base_client_id: int
+) -> Optional[IBPool]:
     """Initialise the module-level pool. Returns it (or None when size<=1).
 
     Callers (typically the FastAPI lifespan handler) should call this once
