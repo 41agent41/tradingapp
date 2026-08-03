@@ -194,7 +194,8 @@ Priority  Task                                                Effort
   ✅      Rewrite TradingChart / EnhancedTradingChart /        (done)
             MSFTRealtimeChart on top of <Chart>
   ✅      Carve ib_service routes/ subpackage out of main.py  (done)
-  1       Split MarketDataFilter.tsx (~820-line frontend monolith)  Medium
+  ✅      Split MarketDataFilter.tsx into hook + presentational  (done)
+            pieces (useContractSearch + components/marketData/*)
   2       Watchlists / alerts / scanners                       Large
   3       MFA / RBAC on /api/orders (live-trading hardening)   Medium
 ```
