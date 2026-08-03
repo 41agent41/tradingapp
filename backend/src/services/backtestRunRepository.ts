@@ -132,7 +132,9 @@ export class BacktestRunRepository {
    * List runs. The trades / equity curve / metrics blobs can be large, so the
    * list view returns a slim row — callers fetch the full record via findById.
    */
-  async list(filter: ListFilter = {}): Promise<Array<Omit<BacktestRunRow, 'trades' | 'equity_curve'>>> {
+  async list(
+    filter: ListFilter = {}
+  ): Promise<Array<Omit<BacktestRunRow, 'trades' | 'equity_curve'>>> {
     const where: string[] = [];
     const params: unknown[] = [];
 
@@ -145,7 +147,11 @@ export class BacktestRunRepository {
       where.push(`strategy = $${params.length}`);
     }
 
-    const limit = Math.min(Math.max(Number(filter.limit) || DEFAULT_LIMIT, 1), MAX_LIMIT);
+    // Positive limits clamp into [1, MAX_LIMIT]; anything non-positive or
+    // non-numeric (0, negatives, NaN) falls back to the default rather than
+    // silently collapsing a negative to 1.
+    const rawLimit = Number(filter.limit);
+    const limit = rawLimit > 0 ? Math.min(Math.max(rawLimit, 1), MAX_LIMIT) : DEFAULT_LIMIT;
     const offset = Math.max(Number(filter.offset) || 0, 0);
     params.push(limit, offset);
 

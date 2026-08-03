@@ -8,7 +8,10 @@ import { apiFetch } from '../lib/api';
  * quote, CR or LF are double-quoted, and embedded double quotes are
  * doubled. Null/undefined collapse to an empty cell.
  */
-export function toCsv(rows: Record<string, unknown>[], columns: { key: string; label: string }[]): string {
+export function toCsv(
+  rows: Record<string, unknown>[],
+  columns: { key: string; label: string }[]
+): string {
   const esc = (v: unknown): string => {
     if (v === null || v === undefined) return '';
     const s = typeof v === 'string' ? v : String(v);

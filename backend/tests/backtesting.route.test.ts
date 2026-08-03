@@ -31,6 +31,12 @@ import axios from 'axios';
 import backtestingRouter from '../src/routes/backtesting.js';
 
 const axiosMock = axios as jest.Mocked<typeof axios>;
+// Grab the mocked repository at module load — the same registry instance the
+// route imported. `resetModules: true` (jest.config.cjs) makes an in-test
+// `jest.requireMock(...)` hand back a fresh instance the route never uses.
+const repoMock = jest.requireMock('../src/services/backtestRunRepository.js') as {
+  __insert: jest.Mock;
+};
 
 function buildApp() {
   const app = express();
@@ -45,9 +51,7 @@ describe('POST /api/backtesting/run — validation', () => {
   });
 
   it('returns 400 when symbol or strategy is missing', async () => {
-    const res = await request(buildApp())
-      .post('/api/backtesting/run')
-      .send({ symbol: 'MSFT' });
+    const res = await request(buildApp()).post('/api/backtesting/run').send({ symbol: 'MSFT' });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Missing required/i);
   });
@@ -61,27 +65,23 @@ describe('POST /api/backtesting/run — validation', () => {
   });
 
   it('returns 400 when initial_capital is non-positive', async () => {
-    const res = await request(buildApp())
-      .post('/api/backtesting/run')
-      .send({
-        symbol: 'MSFT',
-        strategy: 'ma_crossover',
-        timeframe: '1day',
-        initial_capital: 0,
-      });
+    const res = await request(buildApp()).post('/api/backtesting/run').send({
+      symbol: 'MSFT',
+      strategy: 'ma_crossover',
+      timeframe: '1day',
+      initial_capital: 0,
+    });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/initial_capital/);
   });
 
   it('returns 400 when commission is out of [0,1]', async () => {
-    const res = await request(buildApp())
-      .post('/api/backtesting/run')
-      .send({
-        symbol: 'MSFT',
-        strategy: 'ma_crossover',
-        timeframe: '1day',
-        commission: 1.5,
-      });
+    const res = await request(buildApp()).post('/api/backtesting/run').send({
+      symbol: 'MSFT',
+      strategy: 'ma_crossover',
+      timeframe: '1day',
+      commission: 1.5,
+    });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/commission/);
   });
@@ -118,18 +118,20 @@ describe('POST /api/backtesting/run — validation', () => {
           strategy: 'ma_crossover',
           timeframe: '1day',
         }),
-      }),
+      })
     );
   });
 
   it('still returns 200 even if the persistence insert throws', async () => {
-    const repoMock = jest.requireMock('../src/services/backtestRunRepository.js') as {
-      __insert: jest.Mock;
-    };
     repoMock.__insert.mockRejectedValueOnce(new Error('db down'));
 
     axiosMock.post.mockResolvedValueOnce({
-      data: { success: true, results: { equity_curve: [], trades_summary: [] }, timeframe: '1day', period: '1Y' },
+      data: {
+        success: true,
+        results: { equity_curve: [], trades_summary: [] },
+        timeframe: '1day',
+        period: '1Y',
+      },
     });
 
     const res = await request(buildApp())
@@ -148,7 +150,11 @@ describe('GET /api/backtesting/strategies', () => {
 
   it('proxies to the IB service and returns its payload', async () => {
     axiosMock.get.mockResolvedValueOnce({
-      data: { strategies: { ma_crossover: { name: 'MA Crossover', indicators: ['sma'], description: '' } } },
+      data: {
+        strategies: {
+          ma_crossover: { name: 'MA Crossover', indicators: ['sma'], description: '' },
+        },
+      },
     });
     const res = await request(buildApp()).get('/api/backtesting/strategies');
     expect(res.status).toBe(200);

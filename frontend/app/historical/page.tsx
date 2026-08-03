@@ -80,7 +80,7 @@ export default function HistoricalChartPage() {
       const savedSymbol = window.localStorage.getItem(STORAGE_KEYS.lastSymbol);
       if (savedSymbol) {
         setExchangeFilters((prev) =>
-          prev.symbol === savedSymbol ? prev : { ...prev, symbol: savedSymbol },
+          prev.symbol === savedSymbol ? prev : { ...prev, symbol: savedSymbol }
         );
       }
       const savedTf = window.localStorage.getItem(STORAGE_KEYS.lastTimeframe);

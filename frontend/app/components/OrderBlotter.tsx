@@ -83,18 +83,14 @@ export default function OrderBlotter({
         setBusyId(null);
       }
     },
-    [load],
+    [load]
   );
 
   return (
     <div className="bg-white rounded-lg shadow-sm border" aria-label="Order blotter">
       <div className="p-4 border-b flex items-center justify-between">
         <h3 className="text-base font-semibold text-gray-900">Order Blotter</h3>
-        <button
-          type="button"
-          onClick={load}
-          className="text-xs text-blue-600 hover:text-blue-800"
-        >
+        <button type="button" onClick={load} className="text-xs text-blue-600 hover:text-blue-800">
           Refresh
         </button>
       </div>
@@ -151,7 +147,10 @@ export default function OrderBlotter({
                   <td className="py-2 px-3 text-right">{r.limit_price ?? '—'}</td>
                   <td className="py-2 px-3 text-right">{r.stop_price ?? '—'}</td>
                   <td className="py-2 px-3">{r.ib_order_id ?? '—'}</td>
-                  <td className={`py-2 px-3 ${statusColor(r.status)}`} title={r.last_error ?? undefined}>
+                  <td
+                    className={`py-2 px-3 ${statusColor(r.status)}`}
+                    title={r.last_error ?? undefined}
+                  >
                     {r.status}
                   </td>
                   {allowCancel && (

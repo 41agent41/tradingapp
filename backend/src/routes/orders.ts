@@ -111,7 +111,7 @@ router.post('/', async (req: Request, res: Response) => {
       const net = await audit.netExposure(
         v.value.symbol,
         v.value.account_mode,
-        positionLookbackHours(),
+        positionLookbackHours()
       );
       const decision = checkPositionLimit(net, v.value.action, v.value.quantity, cap);
       if (!decision.ok) {
@@ -126,7 +126,7 @@ router.post('/', async (req: Request, res: Response) => {
     } catch (limitErr: any) {
       logger.error(
         { err: String(limitErr?.message ?? limitErr) },
-        'position-limit check failed — refusing to place order',
+        'position-limit check failed — refusing to place order'
       );
       return res.status(503).json({
         error: 'Position-limit check failed',
@@ -149,7 +149,7 @@ router.post('/', async (req: Request, res: Response) => {
   } catch (auditErr: any) {
     logger.error(
       { err: String(auditErr?.message ?? auditErr) },
-      'order_audit insert failed — refusing to forward to IB',
+      'order_audit insert failed — refusing to forward to IB'
     );
     return res.status(500).json({
       error: 'Failed to record order attempt',
@@ -213,7 +213,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
     try {
       const found = await dbService.query(
         'SELECT id FROM order_audit WHERE ib_order_id = $1 ORDER BY submitted_at DESC LIMIT 1',
-        [orderId],
+        [orderId]
       );
       if (found.rows[0]?.id) {
         await audit.update({
@@ -270,7 +270,7 @@ router.put('/:id', async (req: Request, res: Response) => {
   } catch (auditErr: any) {
     logger.error(
       { err: String(auditErr?.message ?? auditErr) },
-      'order_audit insert failed — refusing to forward modify to IB',
+      'order_audit insert failed — refusing to forward modify to IB'
     );
     return res.status(500).json({
       error: 'Failed to record order modification',
@@ -294,7 +294,7 @@ router.put('/:id', async (req: Request, res: Response) => {
         exchange: v.value.exchange,
         currency: v.value.currency,
       },
-      { timeout: 30_000 },
+      { timeout: 30_000 }
     );
     const ibBody = ibResp.data ?? {};
     await audit

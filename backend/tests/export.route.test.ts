@@ -17,7 +17,9 @@ function buildApp() {
 
 describe('POST /api/export/parquet — validation', () => {
   it('rejects an empty columns array', async () => {
-    const res = await request(buildApp()).post('/api/export/parquet').send({ columns: [], rows: [] });
+    const res = await request(buildApp())
+      .post('/api/export/parquet')
+      .send({ columns: [], rows: [] });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/columns/i);
   });
@@ -52,9 +54,7 @@ describe('POST /api/export/parquet — validation', () => {
     const columns = Array(257)
       .fill(null)
       .map((_, i) => ({ key: `c${i}`, type: 'string' as const }));
-    const res = await request(buildApp())
-      .post('/api/export/parquet')
-      .send({ columns, rows: [] });
+    const res = await request(buildApp()).post('/api/export/parquet').send({ columns, rows: [] });
     expect(res.status).toBe(413);
   });
 });

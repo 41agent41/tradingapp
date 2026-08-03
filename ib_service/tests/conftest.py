@@ -7,12 +7,18 @@ layers are never exercised — they only need pandas and numpy.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+
+# ib_client.py reads IB_HOST at import time and raises without it. The tests
+# never touch a real gateway, so default it here — before any test module
+# imports the IB layer — while `setdefault` preserves a real value if set.
+os.environ.setdefault("IB_HOST", "127.0.0.1")
 
 # Make sure the ib_service package is importable when pytest is invoked
 # from the repo root or from ib_service/.

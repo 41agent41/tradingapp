@@ -16,7 +16,7 @@ Extracted from main.py during the GAP_ANALYSIS §3.4 module split.
 from __future__ import annotations
 
 import calendar
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import List, Optional
 
 import pandas as pd
@@ -265,9 +265,7 @@ def process_bars_with_date_range_and_indicators(
 
     try:
         start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date_str, "%Y-%m-%d").replace(
-            hour=23, minute=59, second=59
-        )
+        end_dt = datetime.strptime(end_date_str, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
 
         bars_data: List[dict] = []
         for bar in bars:

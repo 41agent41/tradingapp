@@ -374,7 +374,7 @@ server.listen(PORT, '0.0.0.0', () => {
       } else if (cacheService.status().enabled) {
         logger.warn(
           'redis cache unreachable — caching disabled at runtime, ' +
-            'requests will pass through directly',
+            'requests will pass through directly'
         );
       }
     })

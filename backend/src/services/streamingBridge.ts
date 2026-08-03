@@ -169,13 +169,13 @@ export class StreamingBridge {
         this.lastError = null;
         logger.info(
           { pattern: TICK_PATTERN, redis_host: REDIS_HOST, redis_port: REDIS_PORT },
-          'streaming bridge subscribed to redis',
+          'streaming bridge subscribed to redis'
         );
       } catch (err) {
         this.lastError = err instanceof Error ? err.message : String(err);
         logger.warn(
           { redis_host: REDIS_HOST, redis_port: REDIS_PORT, err: this.lastError },
-          'streaming bridge could not connect to redis — streaming will be degraded',
+          'streaming bridge could not connect to redis — streaming will be degraded'
         );
       } finally {
         this.connecting = null;
@@ -296,7 +296,7 @@ export class StreamingBridge {
       } catch (err) {
         logger.warn(
           { socket_id: socketId, symbol, err: String(err) },
-          'releaseSocket unsubscribe failed',
+          'releaseSocket unsubscribe failed'
         );
       }
     }

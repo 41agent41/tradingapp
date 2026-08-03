@@ -67,7 +67,7 @@ describe('coerce — string / boolean / empties', () => {
   it('converts truthy/falsy to boolean', () => {
     expect(coerce(1, 'boolean')).toBe(true);
     expect(coerce('false', 'boolean')).toBe(true); // any non-empty string is truthy
-    expect(coerce(0, 'boolean')).toBeNull(); // 0 is treated as empty by coerce()
+    expect(coerce(0, 'boolean')).toBe(false); // only null/undefined/'' are "empty"; 0 is a real value → Boolean(0)
   });
 
   it('returns null for null / undefined / empty-string regardless of type', () => {

@@ -37,9 +37,9 @@ describe('MarketDataService.isInvalidBar', () => {
   });
 
   it('flags high < low', () => {
-    expect(
-      MarketDataService.isInvalidBar(bar('2026-01-02T14:00:00Z', { high: 5, low: 20 }))
-    ).toBe(true);
+    expect(MarketDataService.isInvalidBar(bar('2026-01-02T14:00:00Z', { high: 5, low: 20 }))).toBe(
+      true
+    );
   });
 
   it('flags non-positive prices', () => {
@@ -58,9 +58,7 @@ describe('MarketDataService.isInvalidBar', () => {
   });
 
   it('flags negative volume', () => {
-    expect(
-      MarketDataService.isInvalidBar(bar('2026-01-02T14:00:00Z', { volume: -5 }))
-    ).toBe(true);
+    expect(MarketDataService.isInvalidBar(bar('2026-01-02T14:00:00Z', { volume: -5 }))).toBe(true);
   });
 });
 

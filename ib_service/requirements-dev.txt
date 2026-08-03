@@ -1,6 +1,13 @@
 # Development / CI-only dependencies for the IB service.
 # Install with: pip install -r requirements.txt -r requirements-dev.txt
-pytest>=7.4
-ruff>=0.6
-black>=24.8
-httpx>=0.27   # FastAPI TestClient dependency for the observability tests
+#
+# Pinned (not just floored) so CI is reproducible: unpinned lint/format/test
+# tooling silently drifts to newer releases whose stricter rules — and, for
+# httpx, a dropped TestClient shim — break CI on code that never changed.
+# Bump deliberately, re-running ruff/black/pytest.
+pytest>=7.4,<10
+ruff==0.6.9
+black>=24.8,<25
+# httpx <0.28: 0.28 removed the `app=` shortcut that Starlette 0.27's
+# TestClient (used by the observability tests) passes to httpx.Client.
+httpx>=0.27,<0.28

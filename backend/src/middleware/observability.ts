@@ -36,9 +36,7 @@ export function observabilityMiddleware() {
       // bucket by path so high-cardinality URLs (ids) don't explode the
       // metric label set.
       const route = (req.route?.path as string) || req.baseUrl || 'unknown';
-      httpRequestDuration
-        .labels(req.method, route, String(res.statusCode))
-        .observe(durationSec);
+      httpRequestDuration.labels(req.method, route, String(res.statusCode)).observe(durationSec);
 
       logger.info(
         {
@@ -51,7 +49,7 @@ export function observabilityMiddleware() {
           res: { statusCode: res.statusCode },
           duration_ms: Math.round(durationSec * 1000),
         },
-        'request completed',
+        'request completed'
       );
     });
 

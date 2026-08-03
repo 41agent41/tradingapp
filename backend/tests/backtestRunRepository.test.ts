@@ -50,7 +50,7 @@ describe('paramsHash', () => {
 
   it('normalises symbol case so MSFT and msft hash identically', () => {
     expect(paramsHash(sampleInput({ symbol: 'MSFT' }))).toBe(
-      paramsHash(sampleInput({ symbol: 'msft' })),
+      paramsHash(sampleInput({ symbol: 'msft' }))
     );
   });
 
@@ -63,7 +63,7 @@ describe('paramsHash', () => {
   it('does NOT include the metrics or equity curve in the hash', () => {
     const baseline = paramsHash(sampleInput());
     const other = paramsHash(
-      sampleInput({ metrics: { sharpe: 99 }, equity_curve: [], trades: [] }),
+      sampleInput({ metrics: { sharpe: 99 }, equity_curve: [], trades: [] })
     );
     expect(other).toBe(baseline);
   });
@@ -94,7 +94,7 @@ describe('BacktestRunRepository.insert', () => {
     const repo = new BacktestRunRepository(db);
 
     await repo.insert(
-      sampleInput({ trades: null as unknown as any[], equity_curve: undefined as unknown as any[] }),
+      sampleInput({ trades: null as unknown as any[], equity_curve: undefined as unknown as any[] })
     );
 
     const call = db.calls[0];
@@ -110,7 +110,7 @@ describe('BacktestRunRepository.insert', () => {
     const repo = new BacktestRunRepository(db);
 
     await repo.insert(
-      sampleInput({ period: 'CUSTOM', start_date: '2025-01-01', end_date: '2025-12-31' }),
+      sampleInput({ period: 'CUSTOM', start_date: '2025-01-01', end_date: '2025-12-31' })
     );
 
     const call = db.calls[0];

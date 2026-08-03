@@ -151,13 +151,15 @@ export class OrderAuditRepository {
     return Number(result.rows[0]?.net ?? 0);
   }
 
-  async list(filter: {
-    symbol?: string;
-    account_mode?: string;
-    status?: string;
-    limit?: number;
-    offset?: number;
-  } = {}): Promise<OrderAuditRow[]> {
+  async list(
+    filter: {
+      symbol?: string;
+      account_mode?: string;
+      status?: string;
+      limit?: number;
+      offset?: number;
+    } = {}
+  ): Promise<OrderAuditRow[]> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (filter.symbol) {

@@ -51,4 +51,23 @@ describe('<Chart> smoke render', () => {
     const { getByLabelText } = render(<Chart data={bars} />);
     expect(getByLabelText('Chart')).toBeInTheDocument();
   });
+
+  it('renders overlay and separate-scale indicators without throwing', () => {
+    const bars: ChartBar[] = [
+      { time: 1700000000, open: 1, high: 2, low: 0.5, close: 1.5, volume: 100 },
+      { time: 1700000060, open: 1.5, high: 2.5, low: 1, close: 2, volume: 120 },
+    ];
+    const { getByLabelText } = render(
+      <Chart
+        data={bars}
+        indicators={[
+          // Shares the candle price axis.
+          { key: 'sma_20', label: 'SMA 20', color: '#2563eb', values: [1.2, 1.8] },
+          // Renders on its own oscillator scale, with a gap in the data.
+          { key: 'rsi', label: 'RSI', color: '#9333ea', priceScaleId: 'rsi', values: [null, 55] },
+        ]}
+      />
+    );
+    expect(getByLabelText('Chart')).toBeInTheDocument();
+  });
 });

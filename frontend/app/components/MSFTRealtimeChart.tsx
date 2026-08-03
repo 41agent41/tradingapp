@@ -1,14 +1,14 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
-import { createChart, ColorType, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import type { Time } from 'lightweight-charts';
+import Chart, { ChartBar, ChartIndicatorSeries } from './Chart';
 import DataSwitch from './DataSwitch';
 import IndicatorSelector from './IndicatorSelector';
 import DataframeViewer from './DataframeViewer';
 import { useTradingAccount } from '../contexts/TradingAccountContext';
 import { apiFetch } from '../lib/api';
 import { useRealtimeStream, TickPayload } from '../lib/useRealtimeStream';
-import { useChartResize } from '../lib/useChartResize';
 import ChartSkeleton from './ChartSkeleton';
 
 interface RealtimeData {
@@ -60,6 +60,47 @@ const timeframes = [
   { label: '1d', value: '1day', minutes: 1440 },
 ];
 
+/**
+ * Which indicator fields render as chart overlays, and how. Overlays that
+ * share the candle price axis (moving averages, Bollinger bands, VWAP) leave
+ * `priceScaleId` unset; oscillators (MACD, RSI) get their own scale so they
+ * don't flatten the candles. Keyed by the bar field name the IB service
+ * returns, so the value can be pulled straight off each bar.
+ */
+const INDICATOR_CONFIGS: Record<string, { color: string; label: string; priceScaleId?: string }> = {
+  sma_20: { color: '#2563eb', label: 'SMA 20' },
+  sma_50: { color: '#dc2626', label: 'SMA 50' },
+  ema_12: { color: '#059669', label: 'EMA 12' },
+  ema_26: { color: '#ea580c', label: 'EMA 26' },
+  bb_upper: { color: '#7c3aed', label: 'BB Upper' },
+  bb_middle: { color: '#7c3aed', label: 'BB Middle' },
+  bb_lower: { color: '#7c3aed', label: 'BB Lower' },
+  vwap: { color: '#0891b2', label: 'VWAP' },
+  macd: { color: '#be123c', label: 'MACD', priceScaleId: 'macd' },
+  macd_signal: { color: '#0369a1', label: 'MACD Signal', priceScaleId: 'macd' },
+  rsi: { color: '#9333ea', label: 'RSI', priceScaleId: 'rsi' },
+};
+
+const INDICATOR_FIELDS = [
+  'sma_20',
+  'sma_50',
+  'ema_12',
+  'ema_26',
+  'rsi',
+  'macd',
+  'macd_signal',
+  'macd_histogram',
+  'bb_upper',
+  'bb_middle',
+  'bb_lower',
+  'stoch_k',
+  'stoch_d',
+  'atr',
+  'obv',
+  'vwap',
+  'volume_sma',
+] as const;
+
 export default function MSFTRealtimeChart() {
   const { accountMode, dataType } = useTradingAccount();
 
@@ -73,11 +114,6 @@ export default function MSFTRealtimeChart() {
     { label: '1 Year', value: '1Y' },
     { label: 'Custom Range', value: 'CUSTOM' },
   ];
-
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-  const chart = useRef<IChartApi | null>(null);
-  const candlestickSeries = useRef<ISeriesApi<'Candlestick'> | null>(null);
-  const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
 
   const [currentData, setCurrentData] = useState<RealtimeData | null>(null);
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
@@ -112,16 +148,9 @@ export default function MSFTRealtimeChart() {
     return [];
   });
 
-  // Chart series for indicators
-  const indicatorSeries = useRef<Map<string, ISeriesApi<any>>>(new Map());
-
-  // Interface for indicator configuration
-  interface IndicatorConfig {
-    color: string;
-    title: string;
-    type: string;
-    priceScale?: string;
-  }
+  // Keep the latest fetch inputs available to the imperative refresh button
+  // without threading them through as arguments.
+  const fetchRef = useRef<() => void>(() => {});
 
   // Simple date initialization
   useEffect(() => {
@@ -131,8 +160,6 @@ export default function MSFTRealtimeChart() {
 
     setEndDate(now.toISOString().split('T')[0]);
     setStartDate(threeMonthsAgo.toISOString().split('T')[0]);
-
-    console.log('MSFT Chart v3.0: Initialized with', periods.length, 'periods');
   }, []);
 
   // Handle data switch toggle
@@ -146,192 +173,19 @@ export default function MSFTRealtimeChart() {
     }
   };
 
-  // Handle indicator selection change
+  // Handle indicator selection change. The shared <Chart> reconciles overlay
+  // series from the `indicators` prop, so we just update state + persist and
+  // let the historical refetch pull the new indicator columns.
   const handleIndicatorChange = (indicators: string[]) => {
     setSelectedIndicators(indicators);
     if (typeof window !== 'undefined') {
       localStorage.setItem('msft-chart-indicators', JSON.stringify(indicators));
     }
-
-    // Clear existing indicator series
-    indicatorSeries.current.forEach((series, key) => {
-      if (chart.current) {
-        chart.current.removeSeries(series);
-      }
-    });
-    indicatorSeries.current.clear();
-
-    // Refetch data with new indicators
-    if (dataQueryEnabled) {
-      fetchHistoricalData();
-    }
-  };
-
-  // Initialize chart with candlestick display
-  useEffect(() => {
-    if (!chartContainerRef.current) return;
-
-    chart.current = createChart(chartContainerRef.current, {
-      layout: {
-        background: { type: ColorType.Solid, color: '#ffffff' },
-        textColor: '#333',
-      },
-      width: chartContainerRef.current.clientWidth,
-      height: 500,
-      grid: {
-        vertLines: { color: '#f0f0f0' },
-        horzLines: { color: '#f0f0f0' },
-      },
-      crosshair: {
-        mode: 1,
-      },
-      rightPriceScale: {
-        borderColor: '#cccccc',
-      },
-      timeScale: {
-        borderColor: '#cccccc',
-        timeVisible: true,
-        secondsVisible: false,
-      },
-    });
-
-    // Add candlestick series with green/red color coding
-    candlestickSeries.current = chart.current.addCandlestickSeries({
-      upColor: '#22c55e', // Green for bull bars
-      downColor: '#ef4444', // Red for bear bars
-      borderDownColor: '#ef4444',
-      borderUpColor: '#22c55e',
-      wickDownColor: '#ef4444',
-      wickUpColor: '#22c55e',
-    });
-
-    // Add volume series
-    volumeSeries.current = chart.current.addHistogramSeries({
-      color: '#64748b',
-      priceFormat: {
-        type: 'volume',
-      },
-      priceScaleId: '',
-      visible: true,
-    });
-
-    // Position volume series at the bottom
-    volumeSeries.current.priceScale().applyOptions({
-      scaleMargins: {
-        top: 0.8,
-        bottom: 0,
-      },
-    });
-
-    return () => {
-      if (chart.current) {
-        chart.current.remove();
-      }
-    };
-  }, []);
-
-  useChartResize(chartContainerRef, chart);
-
-  // Update indicator series on chart
-  const updateIndicatorSeries = (data: CandlestickData[]) => {
-    if (!chart.current) return;
-
-    const chartInstance = chart.current; // Store reference for TypeScript
-
-    // Clear existing indicator series first
-    indicatorSeries.current.forEach((series) => {
-      chartInstance.removeSeries(series);
-    });
-    indicatorSeries.current.clear();
-
-    // Define indicator configurations
-    const indicatorConfigs: Record<string, IndicatorConfig> = {
-      sma_20: { color: '#2563eb', title: 'SMA 20', type: 'line' },
-      sma_50: { color: '#dc2626', title: 'SMA 50', type: 'line' },
-      ema_12: { color: '#059669', title: 'EMA 12', type: 'line' },
-      ema_26: { color: '#ea580c', title: 'EMA 26', type: 'line' },
-      bb_upper: { color: '#7c3aed', title: 'BB Upper', type: 'line' },
-      bb_middle: { color: '#7c3aed', title: 'BB Middle', type: 'line' },
-      bb_lower: { color: '#7c3aed', title: 'BB Lower', type: 'line' },
-      vwap: { color: '#0891b2', title: 'VWAP', type: 'line' },
-      macd: { color: '#be123c', title: 'MACD', type: 'line', priceScale: 'macd' },
-      macd_signal: { color: '#0369a1', title: 'MACD Signal', type: 'line', priceScale: 'macd' },
-      rsi: { color: '#9333ea', title: 'RSI', type: 'line', priceScale: 'rsi' },
-    };
-
-    selectedIndicators.forEach((indicatorKey) => {
-      const config = indicatorConfigs[indicatorKey as keyof typeof indicatorConfigs];
-      if (!config) return;
-
-      // Extract data for this indicator
-      const indicatorData = data
-        .map((bar) => ({
-          time: bar.time,
-          value: (bar as any)[indicatorKey],
-        }))
-        .filter((point) => point.value !== undefined && !isNaN(point.value));
-
-      if (indicatorData.length === 0) return;
-
-      try {
-        let series: ISeriesApi<any>;
-
-        if (config.type === 'line') {
-          series = chartInstance.addLineSeries({
-            color: config.color,
-            lineWidth: 2,
-            title: config.title,
-            priceScaleId: config.priceScale ?? 'right',
-            visible: true,
-          });
-
-          // Set price scale options for oscillators
-          if (config.priceScale === 'rsi') {
-            series.priceScale().applyOptions({
-              scaleMargins: { top: 0.1, bottom: 0.1 },
-              autoScale: false,
-              mode: 1,
-              invertScale: false,
-              borderVisible: false,
-              ticksVisible: false,
-              entireTextOnly: false,
-              visible: true,
-            });
-          } else if (config.priceScale === 'macd') {
-            series.priceScale().applyOptions({
-              scaleMargins: { top: 0.1, bottom: 0.1 },
-              autoScale: true,
-              mode: 1,
-              invertScale: false,
-              borderVisible: false,
-              ticksVisible: false,
-              entireTextOnly: false,
-              visible: true,
-            });
-          }
-        } else {
-          // Default to line series
-          series = chartInstance.addLineSeries({
-            color: config.color,
-            lineWidth: 2,
-            title: config.title,
-          });
-        }
-
-        series.setData(indicatorData);
-        indicatorSeries.current.set(indicatorKey, series);
-
-        console.log(`Added ${config.title} indicator series with ${indicatorData.length} points`);
-      } catch (error) {
-        console.error(`Error adding ${config.title} series:`, error);
-      }
-    });
   };
 
   // Simplified historical data fetch
   const fetchHistoricalData = async () => {
     if (!dataQueryEnabled) {
-      console.log('Data querying disabled');
       setIsLoadingHistorical(false);
       return;
     }
@@ -345,25 +199,18 @@ export default function MSFTRealtimeChart() {
 
       if (useCustomDateRange && startDate && endDate) {
         url += `&start_date=${startDate}&end_date=${endDate}`;
-        console.log('Fetching custom date range:', startDate, 'to', endDate);
       } else {
         url += `&period=${currentPeriod}`;
-        console.log('Fetching period:', currentPeriod);
       }
 
       // Add indicators if selected
       if (selectedIndicators.length > 0) {
-        url += `&indicators=${selectedIndicators.join(',')}`;
-        console.log('Fetching with indicators:', selectedIndicators);
+        url += `&indicators=${selectedIndicators.join(',')}&include_indicators=true`;
       }
-
-      console.log('API Request:', url);
 
       const response = await apiFetch(url, {
         headers: { 'X-Data-Query-Enabled': 'true' },
       });
-
-      console.log('Response status:', response.status);
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -372,13 +219,10 @@ export default function MSFTRealtimeChart() {
       }
 
       const data = await response.json();
-      console.log('Response data:', data);
 
       if (!data.bars || !Array.isArray(data.bars)) {
         throw new Error('No bars data received');
       }
-
-      console.log('Processing', data.bars.length, 'bars');
 
       // Data conversion with indicators and proper timestamp handling
       const formattedData: CandlestickData[] = data.bars
@@ -415,27 +259,7 @@ export default function MSFTRealtimeChart() {
           };
 
           // Add indicator values if present
-          const indicatorFields = [
-            'sma_20',
-            'sma_50',
-            'ema_12',
-            'ema_26',
-            'rsi',
-            'macd',
-            'macd_signal',
-            'macd_histogram',
-            'bb_upper',
-            'bb_middle',
-            'bb_lower',
-            'stoch_k',
-            'stoch_d',
-            'atr',
-            'obv',
-            'vwap',
-            'volume_sma',
-          ];
-
-          indicatorFields.forEach((field) => {
+          INDICATOR_FIELDS.forEach((field) => {
             if (bar[field] !== undefined && bar[field] !== null && !isNaN(bar[field])) {
               (candlestick as any)[field] = Number(bar[field]);
             }
@@ -452,34 +276,11 @@ export default function MSFTRealtimeChart() {
             !isNaN(bar.close)
         );
 
-      console.log('Formatted', formattedData.length, 'valid bars');
-
       // Sort by timestamp in ascending order (oldest first) - required by TradingView
       formattedData.sort((a, b) => (a.time as number) - (b.time as number));
-      console.log('Sorted data for TradingView chart');
 
       setChartData(formattedData);
       setLastHistoricalUpdate(new Date());
-
-      // Update chart
-      if (candlestickSeries.current && formattedData.length > 0) {
-        candlestickSeries.current.setData(formattedData);
-
-        if (volumeSeries.current) {
-          const volumeData = formattedData.map((bar) => ({
-            time: bar.time,
-            value: bar.volume || 0,
-            color: bar.close >= bar.open ? '#22c55e' : '#ef4444',
-          }));
-          volumeSeries.current.setData(volumeData);
-        }
-
-        // Add indicator series
-        updateIndicatorSeries(formattedData);
-
-        chart.current?.timeScale().fitContent();
-        console.log('Chart updated successfully');
-      }
     } catch (err) {
       console.error('Fetch error:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch data');
@@ -487,6 +288,8 @@ export default function MSFTRealtimeChart() {
       setIsLoadingHistorical(false);
     }
   };
+
+  fetchRef.current = fetchHistoricalData;
 
   // One-shot REST fetch used to seed the price display before the
   // first streaming tick arrives, and as a manual-refresh fallback.
@@ -531,6 +334,7 @@ export default function MSFTRealtimeChart() {
     if (dataQueryEnabled) {
       fetchHistoricalData();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTimeframe, currentPeriod, dataQueryEnabled, selectedIndicators]);
 
   // Seed the price display once on mount / when the dependencies
@@ -538,11 +342,9 @@ export default function MSFTRealtimeChart() {
   // NOT poll on a timer any more.
   useEffect(() => {
     if (!dataQueryEnabled) {
-      console.log('Real-time updates disabled - data querying is off');
       return;
     }
     if (useCustomDateRange) {
-      console.log('Custom date range active, skipping real-time seed.');
       return;
     }
     refreshRealtimeOnce();
@@ -608,6 +410,38 @@ export default function MSFTRealtimeChart() {
     if (stream.error) setError(stream.error);
   }, [stream.error]);
 
+  // Project the fetched bars into the shared <Chart> shapes. The candle/
+  // volume data drops the indicator columns; the overlay series are built
+  // from the configured indicator fields, aligned by index to the bars.
+  const bars = useMemo<ChartBar[]>(
+    () =>
+      chartData.map((bar) => ({
+        time: bar.time as number,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        volume: bar.volume,
+      })),
+    [chartData]
+  );
+
+  const indicators = useMemo<ChartIndicatorSeries[]>(() => {
+    const out: ChartIndicatorSeries[] = [];
+    for (const key of selectedIndicators) {
+      const cfg = INDICATOR_CONFIGS[key];
+      if (!cfg) continue;
+      out.push({
+        key,
+        label: cfg.label,
+        color: cfg.color,
+        priceScaleId: cfg.priceScaleId,
+        values: chartData.map((bar) => (bar as any)[key] as number | undefined),
+      });
+    }
+    return out;
+  }, [chartData, selectedIndicators]);
+
   // Helper functions
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString('en-US', {
@@ -634,40 +468,6 @@ export default function MSFTRealtimeChart() {
     return priceChange.change >= 0 ? 'text-green-600' : 'text-red-600';
   };
 
-  const handleTimeframeChange = (timeframe: string) => {
-    setCurrentTimeframe(timeframe);
-  };
-
-  const handlePeriodChange = (period: string) => {
-    setCurrentPeriod(period);
-
-    // Toggle custom date range mode
-    if (period === 'CUSTOM') {
-      setUseCustomDateRange(true);
-    } else {
-      setUseCustomDateRange(false);
-    }
-  };
-
-  const handleDateRangeChange = (start: string, end: string) => {
-    setStartDate(start);
-    setEndDate(end);
-
-    // Validate date range
-    if (start && end) {
-      const startDateTime = new Date(start);
-      const endDateTime = new Date(end);
-
-      if (startDateTime >= endDateTime) {
-        setError('Start date must be before end date');
-        return;
-      }
-
-      // Clear any previous errors
-      setError(null);
-    }
-  };
-
   return (
     <div className="bg-white rounded-lg shadow-lg overflow-hidden">
       {/* Header */}
@@ -677,9 +477,6 @@ export default function MSFTRealtimeChart() {
           <div className="text-xs sm:text-sm opacity-90">
             NASDAQ • {dataType === 'real-time' ? 'Live Data' : 'Delayed Data (15-20 min)'} •{' '}
             {accountMode.toUpperCase()} Mode
-            <span className="ml-2 px-2 py-1 bg-green-500 text-white text-xs rounded">
-              v3.0 {periods.length} periods
-            </span>
           </div>
         </div>
       </div>
@@ -718,7 +515,6 @@ export default function MSFTRealtimeChart() {
                 value={currentTimeframe}
                 onChange={(e) => {
                   setCurrentTimeframe(e.target.value);
-                  console.log('Timeframe changed to:', e.target.value);
                 }}
                 className="border border-gray-300 rounded px-2 sm:px-3 py-1 text-xs sm:text-sm"
                 disabled={isLoadingHistorical || !dataQueryEnabled}
@@ -739,12 +535,6 @@ export default function MSFTRealtimeChart() {
                   const newPeriod = e.target.value;
                   setCurrentPeriod(newPeriod);
                   setUseCustomDateRange(newPeriod === 'CUSTOM');
-                  console.log(
-                    'Period changed to:',
-                    newPeriod,
-                    'Custom range:',
-                    newPeriod === 'CUSTOM'
-                  );
                 }}
                 className="border border-gray-300 rounded px-2 sm:px-3 py-1 text-xs sm:text-sm"
                 disabled={isLoadingHistorical || !dataQueryEnabled}
@@ -784,10 +574,7 @@ export default function MSFTRealtimeChart() {
             )}
 
             <button
-              onClick={() => {
-                console.log('Refresh button clicked');
-                fetchHistoricalData();
-              }}
+              onClick={() => fetchRef.current()}
               disabled={isLoadingHistorical || !dataQueryEnabled}
               className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:bg-gray-400"
             >
@@ -892,11 +679,11 @@ export default function MSFTRealtimeChart() {
           )}
         </div>
 
-        <div ref={chartContainerRef} className="w-full border border-gray-200 rounded" />
-
-        {isLoadingHistorical && chartData.length === 0 && (
-          <div className="mt-2">
-            <ChartSkeleton height={360} label="Loading MSFT history…" />
+        {isLoadingHistorical && chartData.length === 0 ? (
+          <ChartSkeleton height={500} label="Loading MSFT history…" />
+        ) : (
+          <div className="border border-gray-200 rounded">
+            <Chart data={bars} indicators={indicators} height={500} />
           </div>
         )}
 

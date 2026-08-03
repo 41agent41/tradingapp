@@ -41,7 +41,7 @@ describe('observabilityMiddleware', () => {
     const res = await request(app).get('/test/2');
     expect(res.status).toBe(200);
     expect(res.headers['x-request-id']).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
     );
     expect(res.body.seen_request_id).toBe(res.headers['x-request-id']);
   });

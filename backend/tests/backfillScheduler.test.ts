@@ -40,9 +40,7 @@ function makeDeps(overrides: Partial<BackfillDeps> = {}): BackfillDeps {
     listConfigs: jest.fn().mockResolvedValue([config()]),
     getLatestStoredTimestamp: jest.fn().mockResolvedValue(null),
     fetchHistory: jest.fn().mockResolvedValue(sampleRawBars),
-    storeCandlestickData: jest
-      .fn()
-      .mockResolvedValue({ inserted: 2, updated: 0, errors: 0 }),
+    storeCandlestickData: jest.fn().mockResolvedValue({ inserted: 2, updated: 0, errors: 0 }),
     recordDataQuality: jest.fn().mockResolvedValue(undefined),
     startSession: jest.fn().mockResolvedValue(42),
     endSession: jest.fn().mockResolvedValue(undefined),
