@@ -471,3 +471,9 @@ backtest_engine = BacktestEngine()
 
 # Available strategies
 AVAILABLE_STRATEGIES = {"ma_crossover": SimpleMAStrategy, "rsi_mean_reversion": RSIStrategy}
+
+# Rule-driven strategies (Systematic Trading roadmap — Phase 1 / A1) register
+# themselves into ``AVAILABLE_STRATEGIES`` on import. This is deferred to the
+# bottom of the module (module-form import) so ``rule_strategy`` can import
+# ``TradingStrategy`` from here without a circular-import failure.
+import rule_strategy  # noqa: E402,F401  (imported for its registration side effect)

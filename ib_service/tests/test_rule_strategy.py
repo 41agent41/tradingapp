@@ -1,0 +1,452 @@
+"""
+Unit tests for the rule-driven strategy layer (Systematic Trading roadmap A1).
+
+Coverage mirrors the Phase 1 Definition of Done:
+
+  * the **compiler** — valid/invalid rule-sets, indicator resolution, and the
+    example registry wiring into ``AVAILABLE_STRATEGIES``;
+  * **each operand class** — constants, bar fields, indicator columns,
+    multi-timeframe indicator operands and position-aware fields;
+  * the **operators**, including ``crosses_above`` / ``crosses_below`` and NaN
+    handling;
+  * **sessions** (time-of-day / day-of-week gating, flat-at-session-end);
+  * the **multi-timeframe merge** (values only visible after the higher-TF bar
+    closes — no look-ahead);
+  * the **SimpleMAStrategy parity** case — a JSON rule-set restating the
+    built-in strategy produces an identical backtest.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from backtesting import AVAILABLE_STRATEGIES, BacktestEngine, SimpleMAStrategy
+from rule_strategy import (
+    MA_CROSSOVER_PARITY_RULE_SET,
+    RULE_STRATEGY_EXAMPLES,
+    BarFieldOperand,
+    Condition,
+    ConstOperand,
+    EvalContext,
+    IndicatorOperand,
+    Position,
+    RuleSetError,
+    RuleStrategy,
+    SessionWindow,
+    compile_rule_strategy,
+    parse_operand,
+    session_mask,
+)
+
+
+def _ctx(row: dict, prev: dict | None = None, position: Position | None = None) -> EvalContext:
+    return EvalContext(
+        row=pd.Series(row),
+        prev=pd.Series(prev) if prev is not None else None,
+        position=position or Position(),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Operand classes
+# --------------------------------------------------------------------------- #
+
+
+class TestOperands:
+    def test_const_operand(self) -> None:
+        op = parse_operand(42)
+        assert isinstance(op, ConstOperand)
+        ctx = _ctx({"close": 1.0})
+        assert op.value(ctx) == 42.0
+        assert op.prev_value(ctx) == 42.0
+
+    def test_bar_field_operand(self) -> None:
+        op = parse_operand("close")
+        assert isinstance(op, BarFieldOperand)
+        ctx = _ctx({"close": 10.0}, prev={"close": 9.0})
+        assert op.value(ctx) == 10.0
+        assert op.prev_value(ctx) == 9.0
+
+    def test_indicator_operand_primary(self) -> None:
+        op = parse_operand("sma_20")
+        assert isinstance(op, IndicatorOperand)
+        assert op.timeframe is None
+        assert op.primary_requests() == {"sma_20"}
+        assert op.higher_tf_columns() == set()
+        assert op.value(_ctx({"sma_20": 5.5})) == 5.5
+
+    def test_indicator_operand_multi_timeframe(self) -> None:
+        op = parse_operand({"indicator": "rsi", "timeframe": "1hour"})
+        assert isinstance(op, IndicatorOperand)
+        assert op.column == "rsi@1hour"
+        # A higher-TF operand needs no primary indicator, but flags the (tf, col).
+        assert op.primary_requests() == set()
+        assert op.higher_tf_columns() == {("1hour", "rsi")}
+        assert op.value(_ctx({"rsi@1hour": 55.0})) == 55.0
+
+    def test_position_operands(self) -> None:
+        pos = Position(size=100.0, avg_price=10.0, last_price=11.0)
+        ctx = _ctx({"close": 11.0}, position=pos)
+        assert parse_operand("position.size").value(ctx) == 100.0
+        assert parse_operand("position.avg_price").value(ctx) == 10.0
+        assert parse_operand("position.unrealized_pct").value(ctx) == pytest.approx(10.0)
+
+    def test_position_unrealized_pct_flat_is_zero(self) -> None:
+        assert Position(size=0.0, avg_price=10.0, last_price=99.0).unrealized_pct == 0.0
+
+    def test_position_unrealized_pct_short(self) -> None:
+        # Short: price falling is a gain.
+        pos = Position(size=-50.0, avg_price=10.0, last_price=9.0)
+        assert pos.unrealized_pct == pytest.approx(10.0)
+
+    def test_missing_column_is_nan(self) -> None:
+        assert np.isnan(parse_operand("sma_20").value(_ctx({"close": 1.0})))
+
+    @pytest.mark.parametrize("bad", [True, {"nope": 1}, [1, 2], "position.bogus", "unknown_ind"])
+    def test_invalid_operands_raise(self, bad: object) -> None:
+        with pytest.raises(RuleSetError):
+            parse_operand(bad)
+
+
+# --------------------------------------------------------------------------- #
+# Operators
+# --------------------------------------------------------------------------- #
+
+
+class TestOperators:
+    @pytest.mark.parametrize(
+        "op,left,right,expected",
+        [
+            (">", 2.0, 1.0, True),
+            (">", 1.0, 2.0, False),
+            ("<", 1.0, 2.0, True),
+            (">=", 2.0, 2.0, True),
+            ("<=", 2.0, 2.0, True),
+            ("<=", 3.0, 2.0, False),
+        ],
+    )
+    def test_comparisons(self, op: str, left: float, right: float, expected: bool) -> None:
+        cond = Condition(ConstOperand(left), op, ConstOperand(right))
+        assert cond.evaluate(_ctx({"close": 1.0})) is expected
+
+    def test_comparison_with_nan_is_false(self) -> None:
+        cond = Condition(parse_operand("sma_20"), ">", ConstOperand(1.0))
+        assert cond.evaluate(_ctx({"close": 1.0})) is False  # sma_20 missing -> NaN
+
+    def test_crosses_above(self) -> None:
+        cond = Condition(parse_operand("sma_20"), "crosses_above", parse_operand("sma_50"))
+        # prev: fast <= slow, now: fast > slow -> cross up
+        assert cond.evaluate(_ctx({"sma_20": 11, "sma_50": 10}, prev={"sma_20": 9, "sma_50": 10}))
+        # already above on the previous bar -> not a fresh cross
+        assert not cond.evaluate(
+            _ctx({"sma_20": 11, "sma_50": 10}, prev={"sma_20": 10.5, "sma_50": 10})
+        )
+
+    def test_crosses_below(self) -> None:
+        cond = Condition(parse_operand("sma_20"), "crosses_below", parse_operand("sma_50"))
+        assert cond.evaluate(_ctx({"sma_20": 9, "sma_50": 10}, prev={"sma_20": 11, "sma_50": 10}))
+
+    def test_cross_without_prev_is_false(self) -> None:
+        cond = Condition(parse_operand("sma_20"), "crosses_above", parse_operand("sma_50"))
+        assert cond.evaluate(_ctx({"sma_20": 11, "sma_50": 10}, prev=None)) is False
+
+
+# --------------------------------------------------------------------------- #
+# Groups + compiler
+# --------------------------------------------------------------------------- #
+
+
+class TestCompiler:
+    def test_all_group(self) -> None:
+        strat = compile_rule_strategy(
+            {
+                "name": "t",
+                "entry": {
+                    "all": [
+                        {"left": "close", "op": ">", "right": 10},
+                        {"left": "close", "op": "<", "right": 20},
+                    ]
+                },
+                "exit": {"any": [{"left": "close", "op": ">", "right": 100}]},
+            }
+        )
+        assert strat.entry.evaluate(_ctx({"close": 15})) is True
+        assert strat.entry.evaluate(_ctx({"close": 25})) is False
+
+    def test_nested_groups(self) -> None:
+        group = compile_rule_strategy(
+            {
+                "name": "t",
+                "entry": {
+                    "any": [
+                        {"left": "close", "op": ">", "right": 100},
+                        {
+                            "all": [
+                                {"left": "close", "op": ">", "right": 5},
+                                {"left": "close", "op": "<", "right": 9},
+                            ]
+                        },
+                    ]
+                },
+            }
+        ).entry
+        assert group.evaluate(_ctx({"close": 7})) is True  # inner all matches
+        assert group.evaluate(_ctx({"close": 50})) is False
+
+    def test_indicator_requests_resolved(self) -> None:
+        strat = compile_rule_strategy(
+            {
+                "name": "t",
+                "indicators": ["rsi"],
+                "entry": {"all": [{"left": "sma_20", "op": ">", "right": "sma_50"}]},
+                "exit": {"all": [{"left": "macd", "op": ">", "right": 0}]},
+            }
+        )
+        # sma_20 + sma_50 from operands, rsi declared, macd from the exit operand.
+        assert set(strat.indicators) == {"sma_20", "sma_50", "rsi", "macd"}
+
+    def test_higher_tf_requirements_collected(self) -> None:
+        strat = compile_rule_strategy(
+            {
+                "name": "t",
+                "entry": {
+                    "all": [
+                        {"left": {"indicator": "rsi", "timeframe": "1hour"}, "op": "<", "right": 60}
+                    ]
+                },
+            }
+        )
+        assert strat._higher_tf_columns == {"1hour": {"rsi"}}
+        assert strat.indicators == []  # higher-TF indicators aren't primary requests
+
+    def test_missing_entry_raises(self) -> None:
+        with pytest.raises(RuleSetError):
+            compile_rule_strategy({"name": "t"})
+
+    def test_unknown_operator_raises(self) -> None:
+        with pytest.raises(RuleSetError):
+            compile_rule_strategy(
+                {"name": "t", "entry": {"all": [{"left": "close", "op": "~=", "right": 1}]}}
+            )
+
+    def test_unknown_declared_indicator_raises(self) -> None:
+        with pytest.raises(RuleSetError):
+            compile_rule_strategy({"name": "t", "indicators": ["not_real"], "entry": {"all": []}})
+
+    def test_group_with_both_all_and_any_raises(self) -> None:
+        with pytest.raises(RuleSetError):
+            compile_rule_strategy({"name": "t", "entry": {"all": [], "any": []}})
+
+    def test_invalid_sizing_and_scale_out_raise(self) -> None:
+        base = {"name": "t", "entry": {"all": [{"left": "close", "op": ">", "right": 1}]}}
+        with pytest.raises(RuleSetError):
+            compile_rule_strategy({**base, "sizing": {"type": "bogus"}})
+        with pytest.raises(RuleSetError):
+            compile_rule_strategy({**base, "scale_out": [{"reduce_pct": 50}]})  # no 'when'
+
+    def test_empty_group_is_vacuously_false(self) -> None:
+        strat = compile_rule_strategy({"name": "t", "entry": {"all": []}})
+        assert strat.entry.evaluate(_ctx({"close": 1})) is False
+
+
+# --------------------------------------------------------------------------- #
+# Sessions
+# --------------------------------------------------------------------------- #
+
+
+class TestSessions:
+    def test_no_sessions_is_always_in(self) -> None:
+        idx = pd.date_range("2024-06-03", periods=5, freq="h")
+        assert session_mask(idx, []).all()
+
+    def test_time_of_day_window(self) -> None:
+        # Naive index is treated as UTC; window is in UTC for a clean assertion.
+        idx = pd.to_datetime(["2024-06-03 08:00", "2024-06-03 10:00", "2024-06-03 16:00"])  # Monday
+        win = [
+            SessionWindow(
+                tz="UTC",
+                days=set(),
+                start=pd.Timestamp("09:00").time(),
+                end=pd.Timestamp("15:30").time(),
+            )
+        ]
+        assert list(session_mask(idx, win)) == [False, True, False]
+
+    def test_day_of_week_gating(self) -> None:
+        # 2024-06-08 is a Saturday, 2024-06-10 a Monday.
+        idx = pd.to_datetime(["2024-06-08 10:00", "2024-06-10 10:00"])
+        win = [
+            SessionWindow(
+                tz="UTC",
+                days={0},
+                start=pd.Timestamp("09:00").time(),
+                end=pd.Timestamp("15:00").time(),
+            )
+        ]
+        assert list(session_mask(idx, win)) == [False, True]
+
+    def test_timezone_conversion(self) -> None:
+        # 14:00 UTC == 10:00 America/New_York (EDT) — inside a 09:30-16:00 NY window.
+        idx = pd.to_datetime(["2024-06-03 14:00"])
+        win = [
+            SessionWindow(
+                tz="America/New_York",
+                days=set(),
+                start=pd.Timestamp("09:30").time(),
+                end=pd.Timestamp("16:00").time(),
+            )
+        ]
+        assert bool(session_mask(idx, win)[0]) is True
+
+    def test_flat_at_session_end_forces_sell(self) -> None:
+        # Two bars in-session then one out; the last in-session bar must sell.
+        idx = pd.to_datetime(["2024-06-03 10:00", "2024-06-03 10:05", "2024-06-03 18:00"])
+        strat = compile_rule_strategy(
+            {
+                "name": "t",
+                "timeframe": "5min",
+                "sessions": [{"tz": "UTC", "from": "09:00", "to": "15:00"}],
+                "flat_at_session_end": True,
+                "entry": {"all": [{"left": "close", "op": ">", "right": 1_000_000}]},  # never
+            }
+        )
+        df = pd.DataFrame(
+            {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1},
+            index=idx,
+        )
+        signals = strat.generate_signals(df)
+        assert list(signals["sell_signal"]) == [False, True, False]
+
+
+# --------------------------------------------------------------------------- #
+# Multi-timeframe merge
+# --------------------------------------------------------------------------- #
+
+
+class TestMultiTimeframeMerge:
+    def test_higher_tf_column_has_no_lookahead(self) -> None:
+        # 90 one-minute bars; a rule references sma_20@1hour. The first hourly
+        # bar closes at 01:00, so bars before that must have NaN for the merged
+        # column (no look-ahead), and from 01:00 on it must be populated.
+        idx = pd.date_range("2024-06-03 00:00", periods=90, freq="1min")
+        close = np.linspace(100.0, 130.0, len(idx))
+        df = pd.DataFrame(
+            {"open": close, "high": close, "low": close, "close": close, "volume": 1.0},
+            index=idx,
+        )
+        strat = compile_rule_strategy(
+            {
+                "name": "t",
+                "timeframe": "1min",
+                "entry": {
+                    "all": [
+                        {
+                            "left": "close",
+                            "op": ">",
+                            "right": {"indicator": "sma_20", "timeframe": "1hour"},
+                        }
+                    ]
+                },
+            }
+        )
+        signals = strat.generate_signals(df)
+        col = "sma_20@1hour"
+        assert col in signals.columns
+        before_close = signals.loc[: pd.Timestamp("2024-06-03 00:59"), col]
+        after_close = signals.loc[pd.Timestamp("2024-06-03 01:00") :, col]
+        assert before_close.isna().all()
+        assert after_close.notna().all()
+
+
+# --------------------------------------------------------------------------- #
+# Registry + examples
+# --------------------------------------------------------------------------- #
+
+
+class TestExampleRegistry:
+    def test_examples_registered(self) -> None:
+        for key in RULE_STRATEGY_EXAMPLES:
+            assert key in AVAILABLE_STRATEGIES
+
+    def test_example_classes_are_zero_arg_and_expose_catalogue_fields(self) -> None:
+        # The catalogue endpoint does exactly this: instantiate with no args and
+        # read name / indicators / __doc__.
+        for key in RULE_STRATEGY_EXAMPLES:
+            strat = AVAILABLE_STRATEGIES[key]()
+            assert isinstance(strat, RuleStrategy)
+            assert strat.name
+            assert isinstance(strat.indicators, list)
+            assert strat.__doc__
+
+    def test_showcase_has_multi_tf_session_and_position_rules(self) -> None:
+        strat = AVAILABLE_STRATEGIES["rule_mtf_session"]()
+        assert strat._higher_tf_columns == {"1hour": {"rsi"}}
+        assert len(strat.sessions) == 1
+        assert strat.flat_at_session_end is True
+        assert strat.scale_out  # carried through for A3
+
+
+# --------------------------------------------------------------------------- #
+# SimpleMAStrategy parity
+# --------------------------------------------------------------------------- #
+
+
+class TestParity:
+    @staticmethod
+    def _rising_frame(n: int = 60) -> pd.DataFrame:
+        close = np.linspace(100.0, 120.0, n)
+        df = pd.DataFrame(
+            {
+                "open": close,
+                "high": close + 0.5,
+                "low": close - 0.5,
+                "close": close,
+                "volume": np.arange(1_000, 1_000 + n, dtype=float),
+            }
+        )
+        df.index = pd.date_range("2024-01-01", periods=n, freq="D")
+        return df
+
+    def test_rule_set_matches_simple_ma_strategy(self) -> None:
+        df = self._rising_frame()
+        engine = BacktestEngine(initial_capital=100_000, commission=0.001)
+
+        builtin = engine.run_backtest(df.copy(), SimpleMAStrategy(), symbol="TEST")
+        rules = engine.run_backtest(
+            df.copy(), compile_rule_strategy(MA_CROSSOVER_PARITY_RULE_SET), symbol="TEST"
+        )
+
+        # Identical scalar results.
+        assert rules.total_trades == builtin.total_trades
+        assert rules.winning_trades == builtin.winning_trades
+        assert rules.losing_trades == builtin.losing_trades
+        assert rules.final_capital == pytest.approx(builtin.final_capital)
+        assert rules.total_return_percent == pytest.approx(builtin.total_return_percent)
+
+        # Identical equity curve.
+        assert np.allclose(rules.equity_curve.to_numpy(), builtin.equity_curve.to_numpy())
+
+        # Identical trades (entry/exit time, price, quantity, pnl) — only the
+        # free-text reason strings differ between the two implementations.
+        assert len(rules.trades) == len(builtin.trades)
+        for rt, bt in zip(rules.trades, builtin.trades):
+            assert rt.entry_time == bt.entry_time
+            assert rt.exit_time == bt.exit_time
+            assert rt.entry_price == pytest.approx(bt.entry_price)
+            assert (rt.exit_price is None) == (bt.exit_price is None)
+            if rt.exit_price is not None:
+                assert rt.exit_price == pytest.approx(bt.exit_price)
+            assert rt.quantity == bt.quantity
+            assert rt.pnl == pytest.approx(bt.pnl)
+
+    def test_compiled_result_is_json_serializable(self) -> None:
+        import json
+
+        df = self._rising_frame()
+        engine = BacktestEngine(initial_capital=100_000, commission=0.001)
+        results = engine.run_backtest(
+            df.copy(), compile_rule_strategy(MA_CROSSOVER_PARITY_RULE_SET), symbol="TEST"
+        )
+        json.dumps(results.to_dict(), allow_nan=False)
