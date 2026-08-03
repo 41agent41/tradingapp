@@ -75,24 +75,32 @@ describe('validateOrder — required fields', () => {
 
   it('rejects unknown tif', () => {
     const r = validateOrder({
-      symbol: 'MSFT', action: 'BUY', quantity: 1, order_type: 'MKT', tif: 'OPG',
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'MKT',
+      tif: 'OPG',
     });
     expect(r.ok).toBe(false);
   });
 
   it('rejects unknown account_mode', () => {
     const r = validateOrder({
-      symbol: 'MSFT', action: 'BUY', quantity: 1, order_type: 'MKT', account_mode: 'demo',
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'MKT',
+      account_mode: 'demo',
     });
     expect(r.ok).toBe(false);
   });
 
   it('rejects non-positive quantity', () => {
     expect(
-      validateOrder({ symbol: 'MSFT', action: 'BUY', quantity: 0, order_type: 'MKT' }).ok,
+      validateOrder({ symbol: 'MSFT', action: 'BUY', quantity: 0, order_type: 'MKT' }).ok
     ).toBe(false);
     expect(
-      validateOrder({ symbol: 'MSFT', action: 'BUY', quantity: -1, order_type: 'MKT' }).ok,
+      validateOrder({ symbol: 'MSFT', action: 'BUY', quantity: -1, order_type: 'MKT' }).ok
     ).toBe(false);
   });
 });
@@ -114,7 +122,11 @@ describe('validateOrder — price field cross-checks', () => {
 
   it('rejects MKT with extraneous limit_price', () => {
     const r = validateOrder({
-      symbol: 'MSFT', action: 'BUY', quantity: 1, order_type: 'MKT', limit_price: 100,
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'MKT',
+      limit_price: 100,
     });
     expect(r.ok).toBe(false);
     if (r.ok) return;
@@ -123,8 +135,12 @@ describe('validateOrder — price field cross-checks', () => {
 
   it('rejects STP with extraneous limit_price', () => {
     const r = validateOrder({
-      symbol: 'MSFT', action: 'BUY', quantity: 1, order_type: 'STP',
-      stop_price: 100, limit_price: 99,
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'STP',
+      stop_price: 100,
+      limit_price: 99,
     });
     expect(r.ok).toBe(false);
   });
@@ -132,13 +148,22 @@ describe('validateOrder — price field cross-checks', () => {
 
 describe('validateOrder — fat-finger caps', () => {
   it('rejects quantity > ORDER_MAX_QUANTITY (default 100k)', () => {
-    const r = validateOrder({ symbol: 'MSFT', action: 'BUY', quantity: 1_000_000, order_type: 'MKT' });
+    const r = validateOrder({
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1_000_000,
+      order_type: 'MKT',
+    });
     expect(r.ok).toBe(false);
   });
 
   it('rejects limit_price > ORDER_MAX_PRICE (default 1M)', () => {
     const r = validateOrder({
-      symbol: 'MSFT', action: 'BUY', quantity: 1, order_type: 'LMT', limit_price: 2_000_000,
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'LMT',
+      limit_price: 2_000_000,
     });
     expect(r.ok).toBe(false);
   });

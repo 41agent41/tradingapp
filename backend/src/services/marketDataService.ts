@@ -617,7 +617,7 @@ export class MarketDataService {
     } catch (qualityError) {
       logger.warn(
         { symbol, timeframe, err: String(qualityError) },
-        'failed to record data-quality metrics',
+        'failed to record data-quality metrics'
       );
     }
 
@@ -629,7 +629,7 @@ export class MarketDataService {
         updated: result.updated,
         errors: result.errors,
       },
-      'upload completed',
+      'upload completed'
     );
 
     return {

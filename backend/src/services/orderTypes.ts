@@ -43,10 +43,7 @@ export interface OrderInput {
  *   ORDER_MAX_QUANTITY  (defaults to 100_000)
  *   ORDER_MAX_PRICE     (defaults to 1_000_000)
  */
-export const ORDER_MAX_QUANTITY = Math.max(
-  1,
-  Number(process.env.ORDER_MAX_QUANTITY) || 100_000,
-);
+export const ORDER_MAX_QUANTITY = Math.max(1, Number(process.env.ORDER_MAX_QUANTITY) || 100_000);
 export const ORDER_MAX_PRICE = Math.max(0.01, Number(process.env.ORDER_MAX_PRICE) || 1_000_000);
 
 /**
@@ -93,7 +90,7 @@ export function checkPositionLimit(
   currentNet: number,
   action: OrderAction,
   quantity: number,
-  cap: number = positionCap(),
+  cap: number = positionCap()
 ): PositionLimitDecision {
   if (cap <= 0) return { ok: true, projected: currentNet, cap };
   const projected = currentNet + (action === 'BUY' ? quantity : -quantity);
@@ -121,7 +118,9 @@ export function isAccountMode(v: unknown): v is AccountMode {
   return typeof v === 'string' && (ACCOUNT_MODES as readonly string[]).includes(v);
 }
 
-export interface ValidatedOrder extends Required<Pick<OrderInput, 'symbol' | 'action' | 'quantity' | 'order_type' | 'tif' | 'account_mode'>> {
+export interface ValidatedOrder extends Required<
+  Pick<OrderInput, 'symbol' | 'action' | 'quantity' | 'order_type' | 'tif' | 'account_mode'>
+> {
   limit_price: number | null;
   stop_price: number | null;
   sec_type: string;
@@ -133,7 +132,9 @@ export interface ValidatedOrder extends Required<Pick<OrderInput, 'symbol' | 'ac
  * Pure validation. Returns the validated, normalised order or a list of
  * error strings. The caller decides whether to translate that into a 400.
  */
-export function validateOrder(raw: unknown): { ok: true; value: ValidatedOrder } | { ok: false; errors: string[] } {
+export function validateOrder(
+  raw: unknown
+): { ok: true; value: ValidatedOrder } | { ok: false; errors: string[] } {
   const errors: string[] = [];
   const r = (raw ?? {}) as Record<string, unknown>;
 

@@ -117,7 +117,10 @@ router.post('/parquet', async (req: Request, res: Response) => {
     const parquet = (await import('@dsnp/parquetjs')) as unknown as {
       ParquetSchema: new (def: Record<string, unknown>) => unknown;
       ParquetWriter: {
-        openStream(schema: unknown, stream: NodeJS.WritableStream): Promise<{
+        openStream(
+          schema: unknown,
+          stream: NodeJS.WritableStream
+        ): Promise<{
           appendRow(row: Record<string, unknown>): Promise<void>;
           close(): Promise<void>;
         }>;

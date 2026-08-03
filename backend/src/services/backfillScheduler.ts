@@ -203,7 +203,7 @@ export class BackfillScheduler {
         period: this.period,
         first_run_seconds: Math.round(this.initialDelayMs / 1000),
       },
-      'backfill scheduler enabled',
+      'backfill scheduler enabled'
     );
 
     this.initialTimer = setTimeout(() => {
@@ -277,7 +277,7 @@ export class BackfillScheduler {
           timeframe: cfg.timeframe,
           err: err instanceof Error ? err.message : String(err),
         },
-        'backfill freshness check failed',
+        'backfill freshness check failed'
       );
     }
 
@@ -319,7 +319,7 @@ export class BackfillScheduler {
             timeframe: cfg.timeframe,
             err: qualityError instanceof Error ? qualityError.message : String(qualityError),
           },
-          'backfill quality metrics failed',
+          'backfill quality metrics failed'
         );
       }
 
@@ -334,14 +334,14 @@ export class BackfillScheduler {
           updated: result.updated,
           errors: result.errors,
         },
-        'backfill row completed',
+        'backfill row completed'
       );
     } catch (err) {
       this.errors++;
       this.lastError = err instanceof Error ? err.message : String(err);
       logger.error(
         { symbol: cfg.symbol, timeframe: cfg.timeframe, err: this.lastError },
-        'backfill row failed',
+        'backfill row failed'
       );
       if (sessionId != null) {
         await this.deps.endSession(sessionId, 'failed', 0, this.lastError).catch(() => undefined);

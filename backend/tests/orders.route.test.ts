@@ -36,6 +36,13 @@ const axiosMock = axios as jest.Mocked<typeof axios>;
 const auditMock = jest.requireMock('../src/services/orderAuditRepository.js') as {
   __mocks: { create: jest.Mock; update: jest.Mock; list: jest.Mock; netExposure: jest.Mock };
 };
+// Capture the mocked dbService here at module load — the same registry
+// instance the route imported. `resetModules: true` (jest.config.cjs) makes
+// an in-test `jest.requireMock(...)` return a *fresh* instance the route
+// never sees, so it must be grabbed once at top level.
+const dbMock = jest.requireMock('../src/services/database.js') as {
+  dbService: { query: jest.Mock };
+};
 
 function buildApp() {
   const app = express();
@@ -59,7 +66,11 @@ describe('POST /api/orders — gate + validation', () => {
 
   it('returns 403 when account_mode=live and LIVE_TRADING_ENABLED is false', async () => {
     const res = await request(buildApp()).post('/api/orders').send({
-      symbol: 'MSFT', action: 'BUY', quantity: 1, order_type: 'MKT', account_mode: 'live',
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'MKT',
+      account_mode: 'live',
     });
     expect(res.status).toBe(403);
     expect(res.body.error).toMatch(/Live trading/);
@@ -71,16 +82,19 @@ describe('POST /api/orders — gate + validation', () => {
     axiosMock.post.mockResolvedValueOnce({ data: { order_id: 42, status: 'submitted' } });
 
     const res = await request(buildApp()).post('/api/orders').send({
-      symbol: 'MSFT', action: 'BUY', quantity: 1, order_type: 'MKT',
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'MKT',
     });
     expect(res.status).toBe(201);
     expect(res.body.audit_id).toBe(7);
     expect(res.body.order_id).toBe(42);
     expect(auditMock.__mocks.create).toHaveBeenCalledWith(
-      expect.objectContaining({ symbol: 'MSFT', operation: 'CREATE' }),
+      expect.objectContaining({ symbol: 'MSFT', operation: 'CREATE' })
     );
     expect(auditMock.__mocks.update).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 7, ib_order_id: 42, status: 'submitted' }),
+      expect.objectContaining({ id: 7, ib_order_id: 42, status: 'submitted' })
     );
   });
 
@@ -90,7 +104,11 @@ describe('POST /api/orders — gate + validation', () => {
     axiosMock.post.mockResolvedValueOnce({ data: { order_id: 43, status: 'submitted' } });
 
     const res = await request(buildApp()).post('/api/orders').send({
-      symbol: 'MSFT', action: 'SELL', quantity: 1, order_type: 'MKT', account_mode: 'live',
+      symbol: 'MSFT',
+      action: 'SELL',
+      quantity: 1,
+      order_type: 'MKT',
+      account_mode: 'live',
     });
     expect(res.status).toBe(201);
     expect(axiosMock.post).toHaveBeenCalled();
@@ -99,7 +117,10 @@ describe('POST /api/orders — gate + validation', () => {
   it('refuses to forward the order if the audit insert fails', async () => {
     auditMock.__mocks.create.mockRejectedValueOnce(new Error('db down'));
     const res = await request(buildApp()).post('/api/orders').send({
-      symbol: 'MSFT', action: 'BUY', quantity: 1, order_type: 'MKT',
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'MKT',
     });
     expect(res.status).toBe(500);
     expect(res.body.error).toMatch(/record order attempt/i);
@@ -109,14 +130,21 @@ describe('POST /api/orders — gate + validation', () => {
   it('marks the audit row rejected when the IB service errors out', async () => {
     auditMock.__mocks.create.mockResolvedValueOnce({ id: 9 });
     axiosMock.post.mockRejectedValueOnce({
-      response: { status: 503, statusText: 'service unavailable', data: { detail: 'no connection' } },
+      response: {
+        status: 503,
+        statusText: 'service unavailable',
+        data: { detail: 'no connection' },
+      },
     });
     const res = await request(buildApp()).post('/api/orders').send({
-      symbol: 'MSFT', action: 'BUY', quantity: 1, order_type: 'MKT',
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'MKT',
     });
     expect(res.status).toBe(503);
     expect(auditMock.__mocks.update).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 9, status: 'rejected' }),
+      expect.objectContaining({ id: 9, status: 'rejected' })
     );
   });
 });
@@ -126,7 +154,10 @@ describe('POST /api/orders — position-limit guard', () => {
     auditMock.__mocks.create.mockResolvedValueOnce({ id: 20 });
     axiosMock.post.mockResolvedValueOnce({ data: { order_id: 50, status: 'submitted' } });
     const res = await request(buildApp()).post('/api/orders').send({
-      symbol: 'MSFT', action: 'BUY', quantity: 10, order_type: 'MKT',
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 10,
+      order_type: 'MKT',
     });
     expect(res.status).toBe(201);
     expect(auditMock.__mocks.netExposure).not.toHaveBeenCalled();
@@ -138,7 +169,10 @@ describe('POST /api/orders — position-limit guard', () => {
     auditMock.__mocks.create.mockResolvedValueOnce({ id: 21 });
     axiosMock.post.mockResolvedValueOnce({ data: { order_id: 51, status: 'submitted' } });
     const res = await request(buildApp()).post('/api/orders').send({
-      symbol: 'MSFT', action: 'BUY', quantity: 50, order_type: 'MKT',
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 50,
+      order_type: 'MKT',
     });
     expect(res.status).toBe(201);
     expect(auditMock.__mocks.netExposure).toHaveBeenCalledWith('MSFT', 'paper', expect.any(Number));
@@ -148,7 +182,10 @@ describe('POST /api/orders — position-limit guard', () => {
     process.env.ORDER_MAX_POSITION = '1000';
     auditMock.__mocks.netExposure.mockResolvedValueOnce(900);
     const res = await request(buildApp()).post('/api/orders').send({
-      symbol: 'MSFT', action: 'BUY', quantity: 200, order_type: 'MKT',
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 200,
+      order_type: 'MKT',
     });
     expect(res.status).toBe(422);
     expect(res.body.error).toMatch(/Position limit/i);
@@ -162,7 +199,10 @@ describe('POST /api/orders — position-limit guard', () => {
     process.env.ORDER_MAX_POSITION = '1000';
     auditMock.__mocks.netExposure.mockRejectedValueOnce(new Error('db down'));
     const res = await request(buildApp()).post('/api/orders').send({
-      symbol: 'MSFT', action: 'BUY', quantity: 10, order_type: 'MKT',
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 10,
+      order_type: 'MKT',
     });
     expect(res.status).toBe(503);
     expect(res.body.error).toMatch(/Position-limit check failed/i);
@@ -178,14 +218,13 @@ describe('DELETE /api/orders/:id', () => {
   });
 
   it('forwards to the IB service and returns its payload', async () => {
-    const { dbService } = jest.requireMock('../src/services/database.js') as { dbService: { query: jest.Mock } };
-    dbService.query.mockResolvedValueOnce({ rows: [{ id: 10 }] });
+    dbMock.dbService.query.mockResolvedValueOnce({ rows: [{ id: 10 }] });
     axiosMock.delete.mockResolvedValueOnce({ data: { order_id: 42, status: 'cancel_requested' } });
     const res = await request(buildApp()).delete('/api/orders/42');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('cancel_requested');
     expect(auditMock.__mocks.update).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 10, status: 'cancel_requested' }),
+      expect.objectContaining({ id: 10, status: 'cancel_requested' })
     );
   });
 });
@@ -193,7 +232,10 @@ describe('DELETE /api/orders/:id', () => {
 describe('PUT /api/orders/:id — modify', () => {
   it('400s when the id is not a positive integer', async () => {
     const res = await request(buildApp()).put('/api/orders/abc').send({
-      symbol: 'MSFT', action: 'BUY', quantity: 1, order_type: 'MKT',
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'MKT',
     });
     expect(res.status).toBe(400);
   });
@@ -207,7 +249,11 @@ describe('PUT /api/orders/:id — modify', () => {
 
   it('403s for a live modify when LIVE_TRADING_ENABLED is false', async () => {
     const res = await request(buildApp()).put('/api/orders/42').send({
-      symbol: 'MSFT', action: 'BUY', quantity: 1, order_type: 'MKT', account_mode: 'live',
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'MKT',
+      account_mode: 'live',
     });
     expect(res.status).toBe(403);
     expect(auditMock.__mocks.create).not.toHaveBeenCalled();
@@ -218,26 +264,33 @@ describe('PUT /api/orders/:id — modify', () => {
     axiosMock.put.mockResolvedValueOnce({ data: { order_id: 42, status: 'modify_requested' } });
 
     const res = await request(buildApp()).put('/api/orders/42').send({
-      symbol: 'MSFT', action: 'BUY', quantity: 5, order_type: 'LMT', limit_price: 100,
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 5,
+      order_type: 'LMT',
+      limit_price: 100,
     });
 
     expect(res.status).toBe(200);
     expect(res.body.audit_id).toBe(11);
     expect(auditMock.__mocks.create).toHaveBeenCalledWith(
-      expect.objectContaining({ symbol: 'MSFT', operation: 'MODIFY', quantity: 5 }),
+      expect.objectContaining({ symbol: 'MSFT', operation: 'MODIFY', quantity: 5 })
     );
     expect(auditMock.__mocks.update).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 11, ib_order_id: 42 }),
+      expect.objectContaining({ id: 11, ib_order_id: 42 })
     );
     expect(auditMock.__mocks.update).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 11, status: 'modify_requested' }),
+      expect.objectContaining({ id: 11, status: 'modify_requested' })
     );
   });
 
   it('refuses to forward the modify if the audit insert fails', async () => {
     auditMock.__mocks.create.mockRejectedValueOnce(new Error('db down'));
     const res = await request(buildApp()).put('/api/orders/42').send({
-      symbol: 'MSFT', action: 'BUY', quantity: 1, order_type: 'MKT',
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'MKT',
     });
     expect(res.status).toBe(500);
     expect(res.body.error).toMatch(/record order modification/i);
@@ -247,14 +300,21 @@ describe('PUT /api/orders/:id — modify', () => {
   it('marks the audit row rejected when the IB service errors out', async () => {
     auditMock.__mocks.create.mockResolvedValueOnce({ id: 12 });
     axiosMock.put.mockRejectedValueOnce({
-      response: { status: 503, statusText: 'service unavailable', data: { detail: 'no connection' } },
+      response: {
+        status: 503,
+        statusText: 'service unavailable',
+        data: { detail: 'no connection' },
+      },
     });
     const res = await request(buildApp()).put('/api/orders/42').send({
-      symbol: 'MSFT', action: 'BUY', quantity: 1, order_type: 'MKT',
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'MKT',
     });
     expect(res.status).toBe(503);
     expect(auditMock.__mocks.update).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 12, status: 'rejected' }),
+      expect.objectContaining({ id: 12, status: 'rejected' })
     );
   });
 });
