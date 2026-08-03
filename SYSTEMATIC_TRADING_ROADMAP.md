@@ -190,7 +190,8 @@ New tables (canonical `timescaledb-schema.sql`, mirroring the `backtest_runs` /
 
 - `strategy_definitions` — the rule-set JSON, versioned.
 - `strategy_runs` — `{definition_id, broker, account_mode, status, sizing,
-  risk, started_at, stopped_at}`.
+  risk, started_at, stopped_at}`. `broker` fixes both the data source and the
+  execution venue for the run (§5 B1).
 - `strategy_signals` — every evaluation: `{run_id, bar_time, signal, reason,
   acted}` (links to the resulting `order_audit` row when acted).
 
@@ -224,6 +225,26 @@ turn `get_market_data_source()` into a real registry keyed by `source`. Add a
 `source=ib|mt5` request parameter (and a `broker=` field on `/api/orders`),
 defaulting to `ib`. Per-provider health surfaces under `/api/health`.
 
+**Broker-scoped instrument universes (confirmed).** The two brokers trade
+**different instruments** (IB is equities-centric here; MT5 is FX/CFD-centric),
+so the abstraction is *segmented*, not *unified*: there is no cross-broker
+symbol reconciliation. Concretely —
+
+- **Contract search / catalogues are broker-scoped.** Each adapter owns its own
+  symbol universe; the UI's search and the `contracts` table are keyed by
+  `broker` so `MSFT@ib` and an FX pair `@mt5` never collide.
+- **A strategy run targets exactly one broker.** `strategy_runs.broker` fixes
+  both the data source and the execution venue for that run; a definition's
+  symbol is resolved against that broker's universe.
+- **Positions and the `ORDER_MAX_POSITION` net are tracked per
+  `(broker, symbol, account_mode)`** — the existing guard already keys on
+  symbol + account_mode; add `broker` to the key so exposure never nets across
+  venues.
+
+This *simplifies* the abstraction (no symbol-mapping layer between brokers) at
+the cost of threading a `broker` dimension through search, `order_audit`,
+positions and the run model.
+
 **DoD:** all existing IB flows route through the interface; `source=ib` is
 byte-for-byte identical; tests green.
 
@@ -231,17 +252,24 @@ byte-for-byte identical; tests green.
 
 **Constraint:** the official `MetaTrader5` Python package is **Windows-only**
 and attaches to a running terminal; this stack is Linux/Docker. MT5 therefore
-cannot `pip install` into `ib_service`. Options:
+cannot `pip install` into `ib_service`.
 
-| Option | How | Trade-off |
+**Resolved — Option A (Windows sidecar).** A dedicated host is available for
+MT5 (and for IB), so the plan commits to a small FastAPI service on that
+Windows host running the MT5 terminal + `MetaTrader5`, exposing bars / ticks /
+orders over HTTP in the adapter shape. The Linux `MT5Adapter` is a thin HTTP
+client pointed at `MT5_BRIDGE_URL`. This is the officially-supported path and
+keeps the Linux stack clean; the alternatives below are recorded only as
+fallbacks if the sidecar proves impractical.
+
+| Option | How | Status |
 |---|---|---|
-| **A. Windows sidecar (recommended)** | Small FastAPI service on a Windows host/VM running the MT5 terminal + `MetaTrader5`; exposes bars/ticks/orders over HTTP matching the adapter shape. Linux `MT5Adapter` is a thin HTTP client. | One extra host; officially supported; keeps the Linux stack clean |
-| **B. Third-party Linux bridge** | A community MT5↔REST/socket gateway. | No Windows host; unofficial, varies in reliability |
-| **C. REST-EA in-terminal** | An Expert Advisor exposing an HTTP endpoint from inside MT5. | Trades within MT5's own runtime; EA maintenance, still needs the terminal running |
+| **A. Windows sidecar** | FastAPI service on the dedicated Windows host running MT5 + `MetaTrader5`; HTTP adapter boundary. | **Chosen** |
+| B. Third-party Linux bridge | A community MT5↔REST/socket gateway. | Fallback only |
+| C. REST-EA in-terminal | An Expert Advisor exposing an HTTP endpoint from inside MT5. | Fallback only |
 
-The plan assumes **Option A** unless a short spike says otherwise; the
-`MT5Adapter` interface is identical regardless, so the choice only affects what
-sits behind the HTTP boundary.
+The `MT5Adapter` interface is identical regardless, so a later change behind
+the HTTP boundary would not ripple into `ib_service` or the backend.
 
 - **B2a — data:** `MT5Adapter` implements `MarketDataAdapter`; map MT5 symbols
   (`MSFT`, `EURUSD`) and timeframes (`M1`…`D1`) to the app's `_TIMEFRAME_MAP`;
@@ -303,18 +331,23 @@ until explicitly set.
 
 ---
 
-## 9. Open decisions to confirm before Phase 1
+## 9. Decisions
 
-1. **MT5 deployment** — Option A (Windows sidecar) unless the spike finds a
-   solid Linux bridge. Confirm you can provide a Windows host for the terminal.
+**Resolved:**
+
+1. **MT5 deployment** — ✅ **Option A (Windows sidecar)** on a dedicated host
+   provided for MT5 (and IB). See §5 B2.
+3. **Instruments** — ✅ **different universes per broker**; the abstraction is
+   broker-scoped with no cross-broker symbol reconciliation. See §5 B1.
+
+**Still open (needed before Phase 1 / Phase 3):**
+
 2. **Rule expressiveness** — is the `all`/`any` + comparison/cross model
-   enough, or do you need time-of-day windows, multi-symbol conditions, or
-   position-aware rules (e.g. pyramiding) in v1?
-3. **Instruments** — IB is equities-centric here (MSFT brief); MT5 is
-   FX/CFD-centric. Which instruments must v1 trade — same symbols on both, or
-   different universes per broker?
+   enough for v1, or do you need time-of-day windows, multi-timeframe
+   conditions, or position-aware rules (e.g. pyramiding, scale-outs)?
 4. **Sizing default** — `fixed_qty` for v1, with `pct_equity` behind account
-   valuation later?
+   valuation later? (Note FX/CFD sizing on MT5 is in lots, not shares — the
+   sizing model may need a per-broker unit.)
 
 ---
 
