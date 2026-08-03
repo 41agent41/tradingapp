@@ -17,8 +17,8 @@ The scope below reflects four decisions taken up front:
 | Decision | Choice |
 |---|---|
 | Engine autonomy | **Full auto-execution** (paper-first, staged behind gates) |
-| Strategy definition | **Config / rule-driven criteria** (declarative, shared by backtest **and** live) |
-| MetaTrader role | **Data _and_ execution venue** (full parity with IB) |
+| Strategy definition | **Config / rule-driven criteria** — sessions, multi-timeframe operands, position-aware rules; shared by backtest **and** live |
+| MetaTrader role | **Data _and_ execution venue** (full parity with IB), broker-scoped instruments, broker-unit sizing |
 | First deliverable | This written plan |
 
 ---
@@ -111,42 +111,81 @@ Sketch of the definition (persisted as JSON, editable in the UI):
 
 ```jsonc
 {
-  "name": "MA + RSI confirmation",
+  "name": "MA + RSI, higher-TF confirmation, pyramiding",
   "symbol": "MSFT",
-  "timeframe": "1hour",
+  "broker": "ib",
+  "timeframe": "5min",          // the run's primary (execution) timeframe
   "indicators": ["sma_20", "sma_50", "rsi"],
+  "sessions": [                 // time-of-day windows (rules only fire inside)
+    { "tz": "America/New_York", "days": ["Mon","Tue","Wed","Thu","Fri"],
+      "from": "09:45", "to": "15:30" }
+  ],
   "entry": { "all": [
-    { "left": "sma_20", "op": ">",  "right": "sma_50" },
-    { "left": "rsi",    "op": "<",  "right": 35 }
+    { "left": "sma_20", "op": "crosses_above", "right": "sma_50" },
+    { "left": { "indicator": "rsi", "timeframe": "1hour" },   // multi-TF operand
+      "op": "<", "right": 60 },
+    { "left": "position.size", "op": "<", "right": 300 }      // position-aware (pyramiding cap)
   ]},
   "exit":  { "any": [
-    { "left": "sma_20", "op": "<",  "right": "sma_50" },
-    { "left": "rsi",    "op": ">",  "right": 70 }
+    { "left": "sma_20", "op": "crosses_below", "right": "sma_50" },
+    { "left": "rsi",    "op": ">", "right": 70 },
+    { "left": "position.unrealized_pct", "op": "<=", "right": -2.0 }  // position-aware stop
   ]},
-  "sizing": { "type": "fixed_qty", "quantity": 100 },
+  "scale_out": [                // optional partial exits (position-aware)
+    { "when": { "left": "position.unrealized_pct", "op": ">=", "right": 3.0 },
+      "reduce_pct": 50 }
+  ],
+  "sizing": { "type": "fixed", "unit": "broker_default", "size": 100 },
   "risk":   { "max_orders_per_day": 4, "stop_loss_pct": 2.0 }
 }
 ```
 
-- **Operands** are indicator column names, bar fields (`close`, `volume`), or
-  constants; **operators** `>` `<` `>=` `<=` `crosses_above` `crosses_below`.
-- `all` / `any` groups nest. The compiler resolves the required indicator list
-  and feeds it to `calculate_indicators` (same path backtest uses).
-- **Parity guarantee:** the plan includes a test asserting a JSON rule-set that
-  mirrors `SimpleMAStrategy` produces the identical backtest result.
+The model is deliberately richer than a flat comparison list, per the confirmed
+requirements:
+
+- **Operands** — indicator columns, bar fields (`close`, `volume`), constants,
+  **position-aware** fields (`position.size`, `position.avg_price`,
+  `position.unrealized_pct`), and **multi-timeframe** operands
+  (`{ "indicator": "rsi", "timeframe": "1hour" }` reads a higher-TF value while
+  the run executes on its primary timeframe).
+- **Operators** — `>` `<` `>=` `<=` `crosses_above` `crosses_below`.
+- **`sessions`** — time-of-day / day-of-week windows (in an explicit tz);
+  entry/exit rules only evaluate inside them, with an optional
+  `flat_at_session_end` to force-close.
+- **`scale_out`** — position-aware partial exits (pyramiding is expressed on the
+  entry side via a `position.size` cap; scale-outs on the exit side).
+- `all` / `any` groups nest. The compiler resolves the full indicator set
+  **per timeframe** and feeds each to `calculate_indicators` (same path
+  backtest uses).
+- **Parity guarantee:** a test asserts a JSON rule-set mirroring
+  `SimpleMAStrategy` produces the identical backtest result.
+
+> **Scope note.** Multi-timeframe operands, sessions and position-aware rules
+> push A1 from *M* to *L*: `generate_signals` currently sees one bar at a time
+> with no position/clock context, so the evaluator gains (a) a per-timeframe
+> indicator cache, (b) a session clock, and (c) live position state threaded in
+> from the runner. This context is also what backtest must simulate, so it is
+> built once and shared.
 
 **DoD:** rule-sets register alongside `AVAILABLE_STRATEGIES`; `/backtest`
-selects and parametrises them; unit tests cover the compiler + parity.
+selects and parametrises them, including a multi-TF + session + position-aware
+example; unit tests cover the compiler, each operand class, and the
+`SimpleMAStrategy` parity case.
 
 ### A2. Live signal runner (signal-only first)
 
 A backend `strategyRunner` service modelled on the opt-in
 `backfillScheduler.ts` timer:
 
-- Reads active `strategy_runs`; for each, on its `timeframe` cadence pulls the
-  **latest closed bar** (via `useHistoricalData`'s backend route / cache).
+- Reads active `strategy_runs`; for each, on its **primary** `timeframe`
+  cadence pulls the **latest closed bar** (via `useHistoricalData`'s backend
+  route / cache), plus the latest closed bar of any **higher timeframe** the
+  rule-set references (multi-TF operands).
+- Passes the run's current **position state** and the wall clock (for
+  `sessions`) into the evaluation call.
 - Calls `ib_service` `POST /strategies/evaluate` → `{signal, reason}` for the
-  newest bar only (debounced: one decision per closed bar, never mid-bar).
+  newest bar only (debounced: one decision per closed bar, never mid-bar;
+  rules outside an active session return no signal).
 - Writes a `strategy_signals` row and emits it on a `strategy:<runId>`
   Socket.IO room (reuses the streaming bridge fan-out).
 - **No orders in this phase** — proves the criteria fire correctly with zero
@@ -171,7 +210,15 @@ New, engine-level:
   `LIVE_TRADING_ENABLED`; paper auto-trading needs only the former.
 - **Signal→order dedupe** — one order per (run, bar, signal); a restart can't
   double-fire.
-- **Position sizing** — `fixed_qty`, `fixed_notional`, `pct_equity`.
+- **Position sizing — broker-unit-aware (confirmed).** Sizing resolves in the
+  target broker's native unit: **shares** for IB equities, **lots** for MT5
+  FX/CFD (with contract-size/min-lot/step honoured per instrument). The sizing
+  block carries a `unit` (`broker_default` | `shares` | `lots` | `notional` |
+  `pct_equity`); the broker adapter is the authority that converts an abstract
+  size into a valid, rounded order quantity and rejects sub-minimum sizes. The
+  same `fixed` / `notional` / `pct_equity` *type* therefore means different
+  concrete quantities on IB vs MT5 — resolution lives in the adapter, not the
+  rule.
 - **Per-run risk caps** — `max_orders_per_day`, `max_daily_loss`, optional
   `stop_loss_pct` / `take_profit_pct` bracket.
 - **Kill switch** — a run flips to `stopped` and the runner refuses new orders
@@ -333,21 +380,26 @@ until explicitly set.
 
 ## 9. Decisions
 
-**Resolved:**
+All four framing decisions are now resolved:
 
 1. **MT5 deployment** — ✅ **Option A (Windows sidecar)** on a dedicated host
    provided for MT5 (and IB). See §5 B2.
-3. **Instruments** — ✅ **different universes per broker**; the abstraction is
-   broker-scoped with no cross-broker symbol reconciliation. See §5 B1.
+2. **Rule expressiveness** — ✅ **rich model in v1**: time-of-day/session
+   windows, multi-timeframe operands, and position-aware rules (pyramiding
+   caps + scale-outs). See A1.
+3. **Instruments** — ✅ **different universes per broker**; broker-scoped
+   abstraction, no cross-broker symbol reconciliation. See §5 B1.
+4. **Sizing** — ✅ **broker-unit-aware**: shares (IB) vs lots (MT5), resolved
+   in the broker adapter. See A3.
 
-**Still open (needed before Phase 1 / Phase 3):**
+**Follow-on questions (not blocking Phase 1):**
 
-2. **Rule expressiveness** — is the `all`/`any` + comparison/cross model
-   enough for v1, or do you need time-of-day windows, multi-timeframe
-   conditions, or position-aware rules (e.g. pyramiding, scale-outs)?
-4. **Sizing default** — `fixed_qty` for v1, with `pct_equity` behind account
-   valuation later? (Note FX/CFD sizing on MT5 is in lots, not shares — the
-   sizing model may need a per-broker unit.)
+- **Backtesting fidelity for the richer rules** — sessions and multi-TF
+  operands must be simulated identically in backtest; intrabar fills and
+  higher-TF alignment are the usual sources of backtest↔live drift. Worth a
+  dedicated parity test suite as A1 lands.
+- **MT5 account/equity source** for `pct_equity` sizing — confirm the sidecar
+  exposes live account equity per run.
 
 ---
 
