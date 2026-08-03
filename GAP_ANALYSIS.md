@@ -343,9 +343,32 @@ any IB call or audit write. It fails closed if the net can't be computed.
 It is a *soft* guard built on submitted orders, not authoritative IB
 fills — runaway-order protection rather than a hard risk limit.
 
-**Not in scope (stretch):** MFA / RBAC on the order endpoints; an
-order-history chart overlay; a position-limit guard sourced from live IB
-positions rather than the audit log.
+**MFA / RBAC on the order endpoints:** ✅ two opt-in layers now guard the
+mutating order routes (`POST /api/orders`, `DELETE`/`PUT /api/orders/:id`)
+on top of the shared `API_TOKEN`, via
+[`orderAuth`](backend/src/middleware/orderAuth.ts):
+
+- **RBAC (trader role)** — when `TRADING_TOKENS` (a comma-separated
+  allowlist) is set, a mutating request must present a matching
+  `X-Trading-Token` header. A trading token is a credential distinct from
+  `API_TOKEN`, so a read-only viewer can't place orders. Missing/wrong →
+  HTTP 403.
+- **MFA (TOTP)** — when `ORDER_MFA_SECRET` (a base32 secret) is set, the
+  request must present a valid 6-digit `X-MFA-Code`, verified against a
+  dependency-free RFC 6238 implementation
+  ([`totp`](backend/src/services/totp.ts), ±1 step of skew tolerance).
+  Missing/invalid → HTTP 401.
+
+Both default off (unset = current behaviour) and apply to paper and live
+orders alike. `GET /api/orders/config` advertises which are active
+(`trading_auth_required` / `mfa_required`), and the
+[`OrderTicket`](frontend/app/components/OrderTicket.tsx) surfaces a trading-token
+/ authenticator-code field only when the backend reports them required,
+sending them as request headers (never baked into the bundle).
+
+**Not in scope (stretch):** an order-history chart overlay; a
+position-limit guard sourced from live IB positions rather than the audit
+log.
 
 ---
 

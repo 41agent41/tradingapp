@@ -20,6 +20,7 @@ import axios from 'axios';
 
 import { dbService } from '../services/database.js';
 import { logger, currentRequestId } from '../services/logger.js';
+import { orderAuth, isMfaRequired, isTradingAuthRequired } from '../middleware/orderAuth.js';
 import { OrderAuditRepository } from '../services/orderAuditRepository.js';
 import {
   isLiveTradingEnabled,
@@ -69,6 +70,8 @@ router.get('/config', async (_req: Request, res: Response) => {
       actions: ib.data?.actions ?? ['BUY', 'SELL'],
       position_limit_enabled: positionCap() > 0,
       position_cap: positionCap(),
+      trading_auth_required: isTradingAuthRequired(),
+      mfa_required: isMfaRequired(),
     });
   } catch (error: any) {
     // Config doesn't need to fail loudly; fall back to the defaults so the
@@ -81,6 +84,8 @@ router.get('/config', async (_req: Request, res: Response) => {
       order_types: ['MKT', 'LMT', 'STP', 'STP_LMT'],
       tif: ['DAY', 'GTC', 'IOC', 'FOK'],
       actions: ['BUY', 'SELL'],
+      trading_auth_required: isTradingAuthRequired(),
+      mfa_required: isMfaRequired(),
     });
   }
 });
@@ -88,7 +93,7 @@ router.get('/config', async (_req: Request, res: Response) => {
 // -------------------------------------------------------------------------
 // Create
 // -------------------------------------------------------------------------
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', orderAuth, async (req: Request, res: Response) => {
   const v = validateOrder(req.body);
   if (!v.ok) {
     return res.status(400).json({ error: 'Validation failed', detail: v.errors.join('; ') });
@@ -199,7 +204,7 @@ router.post('/', async (req: Request, res: Response) => {
 // -------------------------------------------------------------------------
 // Cancel
 // -------------------------------------------------------------------------
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', orderAuth, async (req: Request, res: Response) => {
   const orderId = Number(req.params.id);
   if (!Number.isInteger(orderId) || orderId <= 0) {
     return res.status(400).json({ error: 'Invalid order id' });
@@ -234,7 +239,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 // -------------------------------------------------------------------------
 // Modify
 // -------------------------------------------------------------------------
-router.put('/:id', async (req: Request, res: Response) => {
+router.put('/:id', orderAuth, async (req: Request, res: Response) => {
   const orderId = Number(req.params.id);
   if (!Number.isInteger(orderId) || orderId <= 0) {
     return res.status(400).json({ error: 'Invalid order id' });

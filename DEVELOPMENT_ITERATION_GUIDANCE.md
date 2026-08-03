@@ -196,8 +196,10 @@ Priority  Task                                                Effort
   ✅      Carve ib_service routes/ subpackage out of main.py  (done)
   ✅      Split MarketDataFilter.tsx into hook + presentational  (done)
             pieces (useContractSearch + components/marketData/*)
+  ✅      MFA / RBAC on /api/orders (live-trading hardening):    (done)
+            opt-in TRADING_TOKENS (X-Trading-Token) + TOTP
+            ORDER_MFA_SECRET (X-MFA-Code) on mutating routes
   2       Watchlists / alerts / scanners                       Large
-  3       MFA / RBAC on /api/orders (live-trading hardening)   Medium
 ```
 
 ---
