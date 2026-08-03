@@ -11,10 +11,7 @@ requires-python = ">=3.11"
 line-length = 100
 target-version = ["py311"]
 include = '\.pyi?$'
-# main.py is the 2,500-line monolith slated for Phase-5 refactor; bring
-# it under Black at that time. Until then, formatting it now would add
-# thousands of cosmetic diff lines that obscure real changes.
-force-exclude = '(/main\.py$|/(\.venv|venv|__pycache__|build|dist)/)'
+force-exclude = '/(\.venv|venv|__pycache__|build|dist)/'
 
 # ----------------------------------------------------------------------------
 # Ruff — fast linter
@@ -22,10 +19,7 @@ force-exclude = '(/main\.py$|/(\.venv|venv|__pycache__|build|dist)/)'
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-# main.py is the 2,500-line monolithic file slated for refactor in
-# Phase 5 of GAP_ANALYSIS.md; lint it then. The rest of the package
-# (indicators, backtesting, tests) is held to the full Ruff rule set.
-extend-exclude = [".venv", "venv", "__pycache__", "build", "dist", "main.py"]
+extend-exclude = [".venv", "venv", "__pycache__", "build", "dist"]
 
 [tool.ruff.lint]
 # A pragmatic starter set: pyflakes (F), pycodestyle errors (E),

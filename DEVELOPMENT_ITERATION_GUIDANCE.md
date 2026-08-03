@@ -109,7 +109,7 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
 ### P2 — Architecture / quality
 | # | Issue | Location | Impact |
 |---|-------|----------|--------|
-| 4 | ~~`ib_service/main.py` is ~2,700 lines~~ | — | ✅ Split into models / ib_client / ib_helpers / bars_processing on this branch (main.py is now 1,840 LoC and only owns FastAPI wiring + route handlers). Carving the routes into a routes/ subpackage is the remaining follow-on. |
+| 4 | ~~`ib_service/main.py` is ~2,700 lines~~ | — | ✅ Split into models / ib_client / ib_helpers / bars_processing, then the route handlers carved into a `routes/` subpackage (health / market_data / backtesting / streaming / contracts / account / symbols). `main.py` is now a ~80-line app shell, under Ruff/Black. |
 | 5 | ~~Four overlapping chart components~~ | — | ✅ Shared `<Chart>` primitive + `useHistoricalData` hook, and all four wrappers (`HistoricalChart` / `TradingChart` / `EnhancedTradingChart` / `MSFTRealtimeChart`) now render through it. `<Chart>` gained per-indicator `priceScaleId` so RSI/MACD keep their own axis. |
 | 6 | ~~No observability~~ | — | ✅ First pass shipped on this branch (pino backend, structlog ib_service, /metrics on both, end-to-end X-Request-Id). Residual `console.log` / `print` cleanup is a touch-as-you-go follow-on. |
 | 7 | ~~No global `error.tsx` / `ResizeObserver`~~ | — | ✅ `error.tsx` + shared `useChartResize` shipped (previous branch). |
@@ -143,9 +143,10 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
 
 ### Tier 3 — Refactors
 6. ✅ Split `ib_service/main.py` — models / ib_client / ib_helpers /
-   bars_processing landed. Carving the routes into a dedicated
-   `routes/` subpackage is the remaining slice; the rest of the
-   handlers stay in `main.py` for now.
+   bars_processing landed, then the route handlers were carved into a
+   dedicated `routes/` subpackage (health / market_data / backtesting /
+   streaming / contracts / account / symbols). `main.py` is now a
+   ~80-line app shell and is itself under Ruff/Black.
 7. ✅ Shared `<Chart>` primitive + `useHistoricalData` hook landed and
    **all four** OHLCV chart wrappers now render through it
    (`HistoricalChart` / `TradingChart` / `EnhancedTradingChart` /
@@ -192,7 +193,8 @@ Priority  Task                                                Effort
             computed from order_audit net exposure
   ✅      Rewrite TradingChart / EnhancedTradingChart /        (done)
             MSFTRealtimeChart on top of <Chart>
-  1       Carve ib_service routes/ subpackage out of main.py   Medium
+  ✅      Carve ib_service routes/ subpackage out of main.py  (done)
+  1       Split MarketDataFilter.tsx (~820-line frontend monolith)  Medium
   2       Watchlists / alerts / scanners                       Large
   3       MFA / RBAC on /api/orders (live-trading hardening)   Medium
 ```
