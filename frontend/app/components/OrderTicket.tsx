@@ -15,6 +15,10 @@ interface OrderConfig {
   order_types: OrderType[];
   tif: TimeInForce[];
   actions: OrderAction[];
+  /** Set when the backend requires a trader-role token (X-Trading-Token). */
+  trading_auth_required?: boolean;
+  /** Set when the backend requires a TOTP second factor (X-MFA-Code). */
+  mfa_required?: boolean;
 }
 
 const DEFAULT_CONFIG: OrderConfig = {
@@ -24,6 +28,8 @@ const DEFAULT_CONFIG: OrderConfig = {
   order_types: ['MKT', 'LMT', 'STP', 'STP_LMT'],
   tif: ['DAY', 'GTC', 'IOC', 'FOK'],
   actions: ['BUY', 'SELL'],
+  trading_auth_required: false,
+  mfa_required: false,
 };
 
 export interface OrderTicketProps {
@@ -57,6 +63,11 @@ export default function OrderTicket({
   const [limitPrice, setLimitPrice] = useState('');
   const [stopPrice, setStopPrice] = useState('');
   const [accountMode, setAccountMode] = useState<AccountMode>('paper');
+
+  // Order-endpoint credentials (opt-in on the backend). Entered per-session
+  // by the trader — never baked into the public bundle.
+  const [tradingToken, setTradingToken] = useState('');
+  const [mfaCode, setMfaCode] = useState('');
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -113,9 +124,16 @@ export default function OrderTicket({
     setError(null);
     setSuccess(null);
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (config.trading_auth_required && tradingToken.trim()) {
+        headers['X-Trading-Token'] = tradingToken.trim();
+      }
+      if (config.mfa_required && mfaCode.trim()) {
+        headers['X-MFA-Code'] = mfaCode.trim();
+      }
       const res = await apiFetch('/api/orders', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
       });
       const body = await res.json().catch(() => ({}));
@@ -125,6 +143,8 @@ export default function OrderTicket({
       setSuccess(
         `Order submitted (audit #${body.audit_id ?? '?'}${body.order_id ? `, IB id ${body.order_id}` : ''})`
       );
+      // A TOTP code is single-use; clear it so the next order needs a fresh one.
+      setMfaCode('');
       if (onPlaced) onPlaced(body);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to place order');
@@ -288,6 +308,46 @@ export default function OrderTicket({
               required={needsStop}
             />
           </label>
+        )}
+
+        {(config.trading_auth_required || config.mfa_required) && (
+          <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3 rounded border border-amber-200 bg-amber-50 p-3">
+            <p className="sm:col-span-2 text-xs text-amber-800">
+              Order authorization is enabled — supply your credentials to place, modify, or cancel
+              orders.
+            </p>
+            {config.trading_auth_required && (
+              <label className="block">
+                <span className="text-sm font-medium text-gray-700">Trading token</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={tradingToken}
+                  onChange={(e) => setTradingToken(e.target.value)}
+                  placeholder="X-Trading-Token"
+                  className="mt-1 w-full border border-gray-300 rounded px-3 py-2"
+                  required
+                />
+              </label>
+            )}
+            {config.mfa_required && (
+              <label className="block">
+                <span className="text-sm font-medium text-gray-700">Authenticator code</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  pattern="\d{6}"
+                  maxLength={6}
+                  value={mfaCode}
+                  onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))}
+                  placeholder="123456"
+                  className="mt-1 w-full border border-gray-300 rounded px-3 py-2 tracking-widest"
+                  required
+                />
+              </label>
+            )}
+          </div>
         )}
 
         <div className="sm:col-span-2 flex flex-col gap-2">
