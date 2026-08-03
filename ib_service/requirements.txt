@@ -18,4 +18,7 @@ redis>=5.0.1
 
 # Phase 6 — observability (structured logging + Prometheus metrics)
 structlog>=24.1.0
-prometheus-fastapi-instrumentator>=7.0.0
+# Capped below 7.0: instrumentator 7.x/8.x require starlette>=0.30, which
+# conflicts with the starlette<0.28 that fastapi==0.104.1 pins. 6.1.0 is the
+# latest release compatible with starlette 0.27 (keeps the existing FastAPI).
+prometheus-fastapi-instrumentator>=6.1.0,<7.0.0
