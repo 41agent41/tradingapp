@@ -375,6 +375,72 @@ CREATE INDEX IF NOT EXISTS idx_order_audit_symbol_created
     ON order_audit (symbol, submitted_at DESC);
 
 -- ==============================================
+-- SYSTEMATIC STRATEGIES (Systematic Trading roadmap — Phase 2 / A2)
+-- ==============================================
+-- A strategy is one declarative rule-set (see ib_service/rule_strategy.py)
+-- shared by the backtester and the live signal runner. `strategy_definitions`
+-- stores the rule-set; a `strategy_runs` row pins a definition to a
+-- broker/account_mode and a status; every evaluation the runner makes is
+-- recorded in `strategy_signals`.
+--
+-- Phase 2 is **signal-only** — the runner never places an order — so
+-- `acted` / `order_audit_id` stay unset until the A3 execution layer wires
+-- signals into the audited /api/orders path.
+
+CREATE TABLE IF NOT EXISTS strategy_definitions (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    broker VARCHAR(16) NOT NULL DEFAULT 'ib',
+    symbol VARCHAR(32) NOT NULL,
+    timeframe VARCHAR(16) NOT NULL,
+    rule_set JSONB NOT NULL,                 -- the declarative rule-set
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_definitions_created_desc
+    ON strategy_definitions (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_runs (
+    id BIGSERIAL PRIMARY KEY,
+    definition_id BIGINT NOT NULL REFERENCES strategy_definitions(id) ON DELETE CASCADE,
+    broker VARCHAR(16) NOT NULL DEFAULT 'ib',
+    account_mode VARCHAR(8) NOT NULL DEFAULT 'paper',   -- 'paper' | 'live'
+    status VARCHAR(16) NOT NULL DEFAULT 'running',       -- 'running' | 'stopped' | 'error'
+    sizing JSONB NOT NULL DEFAULT '{}'::jsonb,           -- carried through for A3
+    risk JSONB NOT NULL DEFAULT '{}'::jsonb,             -- carried through for A3
+    last_evaluated_at TIMESTAMPTZ,
+    last_error TEXT,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    stopped_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_runs_status
+    ON strategy_runs (status);
+CREATE INDEX IF NOT EXISTS idx_strategy_runs_definition
+    ON strategy_runs (definition_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_signals (
+    id BIGSERIAL PRIMARY KEY,
+    run_id BIGINT NOT NULL REFERENCES strategy_runs(id) ON DELETE CASCADE,
+    bar_time TIMESTAMPTZ NOT NULL,          -- the closed bar the decision was made on
+    signal VARCHAR(8) NOT NULL,             -- 'buy' | 'sell' | 'none'
+    reason TEXT,
+    entry BOOLEAN NOT NULL DEFAULT FALSE,
+    exit BOOLEAN NOT NULL DEFAULT FALSE,
+    in_session BOOLEAN NOT NULL DEFAULT TRUE,
+    position_size NUMERIC(20,4) NOT NULL DEFAULT 0,
+    acted BOOLEAN NOT NULL DEFAULT FALSE,   -- set by the A3 execution layer
+    order_audit_id BIGINT REFERENCES order_audit(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (run_id, bar_time)               -- one decision per closed bar (dedupe)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_signals_run
+    ON strategy_signals (run_id, bar_time DESC);
+
+-- ==============================================
 -- INITIAL DATA
 -- ==============================================
 

@@ -8,11 +8,13 @@ import settingsRoutes from './routes/settings.js';
 import backtestingRoutes from './routes/backtesting.js';
 import exportRoutes from './routes/export.js';
 import ordersRoutes from './routes/orders.js';
+import strategiesRoutes from './routes/strategies.js';
 import axios from 'axios';
 import { dbService } from './services/database.js';
 import { cacheService } from './services/cache.js';
 import { createStreamingBridge } from './services/streamingBridge.js';
 import { createBackfillScheduler } from './services/backfillScheduler.js';
+import { createStrategyRunner } from './services/strategyRunner.js';
 import { createAuthMiddleware, checkSocketAuth } from './middleware/auth.js';
 import { observabilityMiddleware } from './middleware/observability.js';
 import { logger, currentRequestId } from './services/logger.js';
@@ -163,6 +165,7 @@ app.get('/api/health', async (_req, res) => {
       },
       streaming: streamingBridge.status(),
       backfill: backfillScheduler.status(),
+      systematic: strategyRunner.status(),
     },
   });
 });
@@ -194,6 +197,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/backtesting', backtestingRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/orders', ordersRoutes);
+app.use('/api/strategies', strategiesRoutes);
 
 app.get('/', (_req, res) => {
   res.json({
@@ -208,6 +212,7 @@ app.get('/', (_req, res) => {
       backtesting: '/api/backtesting',
       export: '/api/export',
       orders: '/api/orders',
+      strategies: '/api/strategies',
     },
   });
 });
@@ -240,6 +245,14 @@ const streamingBridge = createStreamingBridge(io);
 // recent bars for every enabled `auto_collect` row in data_collection_config.
 // Opt-in via BACKFILL_ENABLED — see services/backfillScheduler.ts.
 const backfillScheduler = createBackfillScheduler();
+
+// Strategy runner (Systematic Trading Phase 2, signal-only): evaluates every
+// running strategy against the latest closed bar and fans signals out over
+// `strategy:<runId>` Socket.IO rooms. Opt-in via SYSTEMATIC_ENABLED; it never
+// places orders — that is the A3 execution layer.
+const strategyRunner = createStrategyRunner({
+  emit: (runId, payload) => io.to(`strategy:${runId}`).emit('strategy-signal', payload),
+});
 
 io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
@@ -299,6 +312,29 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Systematic strategy signal rooms. A client watching a run joins
+  // `strategy:<runId>` and receives `strategy-signal` events as the runner
+  // records them. Plain broadcast rooms — no server-side refcounting needed.
+  socket.on('subscribe-strategy', (data) => {
+    const runId = Number((data || {}).runId);
+    if (!Number.isInteger(runId) || runId <= 0) {
+      socket.emit('strategy-subscription-error', { error: 'runId is required' });
+      return;
+    }
+    socket.join(`strategy:${runId}`);
+    socket.emit('strategy-subscription-confirmed', { runId, room: `strategy:${runId}` });
+  });
+
+  socket.on('unsubscribe-strategy', (data) => {
+    const runId = Number((data || {}).runId);
+    if (!Number.isInteger(runId) || runId <= 0) {
+      socket.emit('strategy-subscription-error', { error: 'runId is required' });
+      return;
+    }
+    socket.leave(`strategy:${runId}`);
+    socket.emit('strategy-unsubscription-confirmed', { runId });
+  });
+
   socket.on('disconnect', async () => {
     console.log(`Client disconnected: ${socket.id}`);
     try {
@@ -334,6 +370,11 @@ async function shutdown(signal: string) {
   } catch (err) {
     console.warn('Error stopping backfill scheduler:', err);
   }
+  try {
+    strategyRunner.stop();
+  } catch (err) {
+    console.warn('Error stopping strategy runner:', err);
+  }
   server.close(() => {
     console.log('Server closed');
     process.exit(0);
@@ -354,6 +395,7 @@ server.listen(PORT, '0.0.0.0', () => {
   });
 
   backfillScheduler.start();
+  strategyRunner.start();
 
   void dbService
     .testConnection()
