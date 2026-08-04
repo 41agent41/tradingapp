@@ -297,9 +297,14 @@ New tables (canonical `timescaledb-schema.sql`, mirroring the `backtest_runs` /
 > the net key. `/api/orders/config` surfaces `brokers` + `default_broker`; the
 > blotter can filter by `broker`.
 >
-> **Follow-on (with B2a):** broker-scope the `contracts` catalogue and route
-> historical bars through the data adapter — additive, lands alongside the MT5
-> data source.
+> **Follow-on — done.** Historical bars now route through the data adapter for
+> non-IB sources (landed with B2a), and the persisted `contracts` catalogue is
+> broker-scoped: the table gains a `broker` column and its uniqueness is re-keyed
+> to `(broker, symbol, sec_type, exchange, currency, expiry, strike, right)`, so
+> `MSFT@ib` and a same-named instrument on another venue never collide. The
+> market-data search + history routes accept a `source=`/`broker=` selector
+> (default `ib`), tag stored contracts with it and forward it to the IB service;
+> `getDataCollectionStats` is broker-aware. B1 is fully closed out.
 
 Define two Python protocols in `ib_service` and make the current IB code
 implement them — **no behaviour change; `source=ib` stays the default**:

@@ -11,6 +11,7 @@ import {
   VALID_TIMEFRAMES,
   isDataQueryEnabled,
   handleDisabledDataQuery,
+  resolveBroker,
   type MarketDataQuery,
 } from './shared.js';
 
@@ -36,6 +37,8 @@ router.get('/history', async (req: Request, res: Response) => {
       currency,
       include_indicators = 'false',
       use_database = 'true',
+      source,
+      broker,
     } = req.query as Partial<
       MarketDataQuery & {
         start_date?: string;
@@ -46,8 +49,11 @@ router.get('/history', async (req: Request, res: Response) => {
         currency?: string;
         include_indicators?: string;
         use_database?: string;
+        source?: string;
+        broker?: string;
       }
     >;
+    const venue = resolveBroker(source ?? broker);
 
     // Validate required parameters
     if (!symbol || !timeframe) {
@@ -122,6 +128,7 @@ router.get('/history', async (req: Request, res: Response) => {
         exchange: exchange,
         currency: currency,
         include_indicators: include_indicators,
+        source: venue,
       },
       timeout: 60000, // 60 second timeout for historical data
       headers: {
@@ -139,8 +146,9 @@ router.get('/history', async (req: Request, res: Response) => {
     const ibBars = Array.isArray(response.data?.bars) ? response.data.bars : [];
     if (ibBars.length > 0) {
       try {
-        // Get or create contract
+        // Get or create contract (broker-scoped catalogue, B1)
         const contractData: Contract = {
+          broker: venue,
           symbol: symbol,
           secType: secType || 'STK',
           exchange: exchange,

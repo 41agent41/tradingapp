@@ -7,6 +7,7 @@ import {
   VALID_SEC_TYPES,
   isDataQueryEnabled,
   handleDisabledDataQuery,
+  resolveBroker,
   type SearchQuery,
   type AdvancedSearchQuery,
 } from './shared.js';
@@ -16,8 +17,9 @@ const router = express.Router();
 // Contract search endpoint
 router.post('/search', async (req: Request, res: Response) => {
   try {
-    const { symbol, secType, exchange, currency, searchByName, account_mode } =
+    const { symbol, secType, exchange, currency, searchByName, account_mode, broker, source } =
       req.body as SearchQuery;
+    const venue = resolveBroker(broker ?? source);
 
     // Validate required parameters
     if (!symbol || !secType) {
@@ -61,6 +63,7 @@ router.post('/search', async (req: Request, res: Response) => {
         currency: currency,
         searchByName: searchByName,
         account_mode: account_mode,
+        source: venue,
       },
       {
         timeout: 30000, // 30 second timeout for search
@@ -77,6 +80,7 @@ router.post('/search', async (req: Request, res: Response) => {
       for (const contract of response.data.contracts) {
         try {
           const contractData: Contract = {
+            broker: venue,
             symbol: contract.symbol,
             secType: contract.secType,
             exchange: contract.exchange,
@@ -140,7 +144,10 @@ router.post('/search/advanced', async (req: Request, res: Response) => {
       includeExpired,
       searchByName,
       account_mode,
+      broker,
+      source,
     } = req.body as AdvancedSearchQuery;
+    const venue = resolveBroker(broker ?? source);
 
     // Validate required parameters
     if (!secType) {
@@ -171,6 +178,7 @@ router.post('/search/advanced', async (req: Request, res: Response) => {
         includeExpired: includeExpired,
         searchByName: searchByName,
         account_mode: account_mode,
+        source: venue,
       },
       {
         timeout: 30000,
@@ -187,6 +195,7 @@ router.post('/search/advanced', async (req: Request, res: Response) => {
       for (const contract of response.data.contracts) {
         try {
           const contractData: Contract = {
+            broker: venue,
             symbol: contract.symbol,
             secType: contract.secType,
             exchange: contract.exchange,

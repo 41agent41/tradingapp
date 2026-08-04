@@ -8,9 +8,9 @@ const router = express.Router();
 // Database statistics endpoint
 router.get('/database/stats', async (req: Request, res: Response) => {
   try {
-    const { symbol } = req.query as { symbol?: string };
+    const { symbol, broker } = req.query as { symbol?: string; broker?: string };
 
-    const stats = await marketDataService.getDataCollectionStats(symbol);
+    const stats = await marketDataService.getDataCollectionStats(symbol, broker);
 
     res.json({
       stats: stats,
