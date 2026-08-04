@@ -62,6 +62,9 @@ export interface SearchQuery {
   currency?: string;
   searchByName?: boolean;
   account_mode?: string;
+  /** Venue (B1): 'ib' | 'mt5', default 'ib'. Accepts `source` as an alias. */
+  broker?: string;
+  source?: string;
 }
 
 // Interface for advanced search request parameters
@@ -77,6 +80,14 @@ export interface AdvancedSearchQuery {
   includeExpired?: boolean;
   searchByName?: boolean;
   account_mode?: string;
+  broker?: string;
+  source?: string;
+}
+
+/** Resolve a request's venue to a supported broker (B1), defaulting to 'ib'. */
+export function resolveBroker(raw?: string): string {
+  const v = (raw || '').trim().toLowerCase();
+  return v === 'mt5' ? 'mt5' : 'ib';
 }
 
 export function cacheKey(parts: Array<string | number | boolean | undefined | null>): string {

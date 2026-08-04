@@ -13,6 +13,7 @@ CREATE EXTENSION IF NOT EXISTS "timescaledb";
 -- Symbols/Contracts table - stores contract information from IB Gateway
 CREATE TABLE IF NOT EXISTS contracts (
     id SERIAL PRIMARY KEY,
+    broker VARCHAR(16) NOT NULL DEFAULT 'ib', -- venue (B1): 'ib' | 'mt5'
     symbol VARCHAR(20) NOT NULL,
     sec_type VARCHAR(10) NOT NULL, -- STK, OPT, FUT, CASH, etc.
     exchange VARCHAR(20),
@@ -25,9 +26,11 @@ CREATE TABLE IF NOT EXISTS contracts (
     contract_id INTEGER, -- IB contract ID
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    
-    -- Composite unique constraint
-    UNIQUE(symbol, sec_type, exchange, currency, expiry, strike, "right")
+
+    -- Composite unique constraint. Broker-scoped (B1) so the same symbol on two
+    -- venues (e.g. MSFT@ib and an FX pair @mt5) never collide in the catalogue.
+    CONSTRAINT contracts_broker_key
+        UNIQUE (broker, symbol, sec_type, exchange, currency, expiry, strike, "right")
 );
 
 -- Create index for efficient contract lookups
@@ -35,6 +38,32 @@ CREATE INDEX IF NOT EXISTS idx_contracts_symbol ON contracts(symbol);
 CREATE INDEX IF NOT EXISTS idx_contracts_sec_type ON contracts(sec_type);
 CREATE INDEX IF NOT EXISTS idx_contracts_exchange ON contracts(exchange);
 CREATE INDEX IF NOT EXISTS idx_contracts_contract_id ON contracts(contract_id);
+CREATE INDEX IF NOT EXISTS idx_contracts_broker_symbol ON contracts(broker, symbol);
+
+-- Existing deployments: add the broker column and re-key the uniqueness to
+-- include it (B1). Idempotent — safe to re-run.
+DO $$
+DECLARE cname text;
+BEGIN
+    ALTER TABLE contracts ADD COLUMN IF NOT EXISTS broker VARCHAR(16) NOT NULL DEFAULT 'ib';
+    -- Drop the pre-broker unique constraint (its generated name varies) so it
+    -- can be replaced by the broker-scoped one.
+    SELECT conname INTO cname
+      FROM pg_constraint
+     WHERE conrelid = 'contracts'::regclass
+       AND contype = 'u'
+       AND pg_get_constraintdef(oid) LIKE 'UNIQUE (symbol,%';
+    IF cname IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE contracts DROP CONSTRAINT %I', cname);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'contracts'::regclass AND conname = 'contracts_broker_key'
+    ) THEN
+        ALTER TABLE contracts ADD CONSTRAINT contracts_broker_key
+            UNIQUE (broker, symbol, sec_type, exchange, currency, expiry, strike, "right");
+    END IF;
+END $$;
 
 -- ==============================================
 -- RAW DATA TABLES (HYPERTABLES)

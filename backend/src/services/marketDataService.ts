@@ -15,6 +15,8 @@ export interface CandlestickBar {
 }
 
 export interface Contract {
+  /** Execution/data venue (B1). Broker-scoped catalogue; defaults to 'ib'. */
+  broker?: string;
   symbol: string;
   secType: string;
   exchange?: string;
@@ -60,10 +62,10 @@ export class MarketDataService {
   // Get or create contract in database
   async getOrCreateContract(contract: Contract): Promise<number> {
     const query = `
-      INSERT INTO contracts (symbol, sec_type, exchange, currency, multiplier, expiry, strike, right, local_symbol, contract_id)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      ON CONFLICT (symbol, sec_type, exchange, currency, expiry, strike, right)
-      DO UPDATE SET 
+      INSERT INTO contracts (broker, symbol, sec_type, exchange, currency, multiplier, expiry, strike, right, local_symbol, contract_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ON CONFLICT (broker, symbol, sec_type, exchange, currency, expiry, strike, right)
+      DO UPDATE SET
         local_symbol = EXCLUDED.local_symbol,
         contract_id = EXCLUDED.contract_id,
         updated_at = NOW()
@@ -71,6 +73,7 @@ export class MarketDataService {
     `;
 
     const params = [
+      contract.broker || 'ib',
       contract.symbol,
       contract.secType,
       contract.exchange || null,
@@ -301,9 +304,10 @@ export class MarketDataService {
   }
 
   // Get data collection statistics
-  async getDataCollectionStats(symbol?: string): Promise<any> {
+  async getDataCollectionStats(symbol?: string, broker?: string): Promise<any> {
     let query = `
-      SELECT 
+      SELECT
+        c.broker,
         c.symbol,
         cd.timeframe,
         COUNT(cd.id) as total_bars,
@@ -316,13 +320,18 @@ export class MarketDataService {
     `;
 
     const params: any[] = [];
-
+    const where: string[] = [];
     if (symbol) {
-      query += ' WHERE c.symbol = $1';
       params.push(symbol);
+      where.push(`c.symbol = $${params.length}`);
     }
+    if (broker) {
+      params.push(broker);
+      where.push(`c.broker = $${params.length}`);
+    }
+    if (where.length > 0) query += ` WHERE ${where.join(' AND ')}`;
 
-    query += ' GROUP BY c.symbol, cd.timeframe ORDER BY c.symbol, cd.timeframe';
+    query += ' GROUP BY c.broker, c.symbol, cd.timeframe ORDER BY c.broker, c.symbol, cd.timeframe';
 
     const result = await dbService.query(query, params);
     return result.rows;
