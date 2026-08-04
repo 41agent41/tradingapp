@@ -8,6 +8,7 @@ import {
   IChartApi,
   ISeriesApi,
   LineData,
+  SeriesMarker,
   Time,
   createChart,
 } from 'lightweight-charts';
@@ -42,10 +43,23 @@ export interface ChartIndicatorSeries {
   priceScaleId?: string;
 }
 
+/** A buy/sell (or arbitrary) marker drawn on the candle series. Used by the
+ *  systematic monitor to overlay strategy signals. */
+export interface ChartMarker {
+  /** Unix seconds — should line up with a bar's `time`. */
+  time: number;
+  position: 'aboveBar' | 'belowBar' | 'inBar';
+  shape: 'arrowUp' | 'arrowDown' | 'circle' | 'square';
+  color: string;
+  text?: string;
+}
+
 export interface ChartProps {
   data: ChartBar[];
   /** Optional overlay indicator series. */
   indicators?: ChartIndicatorSeries[];
+  /** Optional signal markers pinned to the candle series. */
+  markers?: ChartMarker[];
   /** Whether to render the volume histogram band. Defaults to true. */
   showVolume?: boolean;
   /** Canvas height in pixels. Defaults to 400. */
@@ -102,9 +116,26 @@ function sortAndDedupe<T extends { time: Time }>(rows: T[]): T[] {
  * MSFTRealtimeChart). The existing wrappers can adopt this primitive
  * incrementally.
  */
+/** Sort + dedupe markers by time ascending — lightweight-charts requires
+ *  `setMarkers` input in non-decreasing time order. */
+function prepareMarkers(markers: ChartMarker[]): SeriesMarker<Time>[] {
+  return markers
+    .filter((m) => m.time != null && Number.isFinite(m.time))
+    .slice()
+    .sort((a, b) => a.time - b.time)
+    .map((m) => ({
+      time: m.time as Time,
+      position: m.position,
+      shape: m.shape,
+      color: m.color,
+      text: m.text,
+    }));
+}
+
 export default function Chart({
   data,
   indicators = [],
+  markers = [],
   showVolume = true,
   height = DEFAULT_HEIGHT,
   readOnly = false,
@@ -236,7 +267,14 @@ export default function Chart({
     }
   }, [indicators, data]);
 
+  // Reconcile candle-series markers (strategy signals).
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series) return;
+    series.setMarkers(prepareMarkers(markers));
+  }, [markers]);
+
   return <div ref={containerRef} className="w-full" style={{ height }} aria-label="Chart" />;
 }
 
-export const __test = { sortAndDedupe };
+export const __test = { sortAndDedupe, prepareMarkers };
