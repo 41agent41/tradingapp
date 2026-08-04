@@ -401,6 +401,13 @@ log.
 **Remaining action:** treat watchlists / alerts / scanners as larger
 follow-on features.
 
+> **Update — the largest follow-on has shipped.** The systematic-trading and
+> multi-broker (IB + MetaTrader) work that this section once hand-waved as
+> "larger follow-on features" is now delivered in full — see
+> [`SYSTEMATIC_TRADING_ROADMAP.md`](SYSTEMATIC_TRADING_ROADMAP.md) for the design
+> and [`FEATURES.md`](FEATURES.md#systematic-trading-rule-driven-auto-execution)
+> for what's live. Watchlists / alerts / scanners remain the open items.
+
 ---
 
 ## 8. Operational / Deployment Gaps

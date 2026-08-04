@@ -22,6 +22,9 @@ capabilities never get conflated with aspirational plans.
    - [Historical data download](#historical-data-download)
    - [Automated data collection & retention](#automated-data-collection--retention)
    - [Account read endpoints](#account-read-endpoints)
+   - [Order management](#order-management)
+   - [Systematic trading (auto-execution)](#systematic-trading-rule-driven-auto-execution)
+   - [Multi-broker: IB + MetaTrader (MT5)](#multi-broker-interactive-brokers--metatrader-mt5)
    - [REST & WebSocket API](#rest--websocket-api)
    - [Authentication & CORS](#authentication--cors)
    - [Redis caching](#redis-caching)
@@ -235,11 +238,67 @@ Place, cancel and modify orders against IB Gateway from the UI:
 - **Fat-finger caps:** `ORDER_MAX_QUANTITY` (default 100k) and
   `ORDER_MAX_PRICE` (default $1M) are enforced by the validator.
 - **Position-limit guard (opt-in):** set `ORDER_MAX_POSITION` > 0 to cap
-  the net signed exposure per `(symbol, account_mode)` implied by the
+  the net signed exposure per `(broker, symbol, account_mode)` implied by the
   audit log. A create whose projected net would breach the cap is
-  rejected with HTTP 422 before any IB call. Only orders within
+  rejected with HTTP 422 before any broker call. Only orders within
   `ORDER_POSITION_LOOKBACK_HOURS` (default 24) count. It is a soft guard
-  on submitted orders, not authoritative IB fills.
+  on submitted orders, not authoritative fills. Keying on `broker` means
+  exposure never nets across venues.
+
+### Systematic trading (rule-driven auto-execution)
+
+Evaluate declarative criteria against live bars and place orders
+automatically — paper-first, staged behind gates. See the
+[Systematic Trading roadmap](SYSTEMATIC_TRADING_ROADMAP.md) for the full design.
+
+- **Rule-driven strategies:** a strategy is one declarative rule-set (entry /
+  exit conditions, sessions, multi-timeframe operands, position-aware fields,
+  sizing, risk) shared by the backtester **and** the live runner
+  ([`ib_service/rule_strategy.py`](ib_service/rule_strategy.py)). Evaluated
+  statelessly via `POST /strategies/evaluate`.
+- **Definitions & runs:** create/list rule-sets and start/stop runs through
+  `/api/strategies/*`; each run pins a definition to a broker + `account_mode`.
+- **Live signal runner:** an opt-in backend timer (`SYSTEMATIC_ENABLED=true`)
+  evaluates every running strategy on its closed-bar cadence, persists each
+  decision to `strategy_signals` (one per bar) and fans it out on the
+  `strategy:<runId>` Socket.IO room.
+- **Gated auto-execution:** with `SYSTEMATIC_EXECUTION_ENABLED=true` an
+  actionable signal is turned into an order through the **same** audited
+  `/api/orders` path — inheriting the live gate, `order_audit`, the fat-finger
+  caps and the position-limit guard. Engine-level guards on top: a per-run kill
+  switch, per-run `max_orders_per_day` + a global `SYSTEMATIC_MAX_ORDERS_PER_DAY`
+  backstop, broker-unit-aware sizing (`fixed` / `notional` / `pct_equity`), and
+  signal→order dedupe. Both gates default **off**; live (vs paper) auto-trading
+  additionally needs `LIVE_TRADING_ENABLED`.
+- **Monitoring UI (`/systematic`):** a rule builder, a definitions list (start a
+  run), a run dashboard (status, last-eval, per-run **Stop**) and a per-run
+  detail with a candle chart carrying buy/sell **signal markers** (acted orders
+  bolder), a summary strip (net position, signals, orders placed) and a
+  live-updating signal feed.
+
+### Multi-broker: Interactive Brokers + MetaTrader (MT5)
+
+The IB Gateway is no longer hard-wired — a venue-agnostic adapter seam lets a
+second broker plug in without touching the routes.
+
+- **Adapter registry** ([`ib_service/adapters.py`](ib_service/adapters.py)):
+  `MarketDataAdapter` / `BrokerAdapter` protocols keyed by provider. A request's
+  `source=` (market data) / `broker=` (orders) resolves to the concrete adapter,
+  defaulting to `ib`; an unknown provider → 400, a recognised-but-unconfigured
+  one → 501. `source=ib` / `broker=ib` behaviour is byte-for-byte unchanged.
+- **Broker-scoped instruments:** contract catalogues, positions and the
+  net-exposure cap are keyed per broker — no cross-broker symbol reconciliation,
+  and a strategy run targets exactly one venue.
+- **MetaTrader (MT5) via sidecar:** `MetaTrader5` is Windows-only, so MT5 runs as
+  a small HTTP service on a Windows host; the Linux
+  [`MT5Adapter`](ib_service/mt5_adapter.py) is a thin client pointed at
+  `MT5_BRIDGE_URL`, implementing both **data** (search / bars / quotes / ticks,
+  normalised to the app's shapes) and **execution** (place / cancel / modify /
+  positions / account, with the same validation + live gate as IB). When
+  `MT5_BRIDGE_URL` is set, `source=mt5` / `broker=mt5` become available;
+  otherwise MT5 is a recognised-but-unavailable provider.
+- **Provider health:** the IB service exposes `/providers` (and folds provider
+  status into `/health`) so operators can see which venues are registered.
 
 ### REST & WebSocket API
 
@@ -261,12 +320,20 @@ Place, cancel and modify orders against IB Gateway from the UI:
 | `/api/backtesting/runs` | GET | List persisted runs (filterable, paginated) |
 | `/api/backtesting/runs/:id` | GET | Full record for a persisted run |
 | `/api/export/parquet` | POST | Convert `{ columns, rows }` to a Parquet download |
-| `/api/orders` | POST | Place an order (validation + audit; gated by `LIVE_TRADING_ENABLED` for live) |
+| `/api/orders` | POST | Place an order (validation + audit; `broker=` venue; gated by `LIVE_TRADING_ENABLED` for live) |
 | `/api/orders/:id` | DELETE | Cancel a working order |
 | `/api/orders/:id` | PUT | Modify a working order |
-| `/api/orders/audit` | GET | Persisted order attempts (blotter feed) |
-| `/api/orders/config` | GET | Live-trading gate + supported enums |
+| `/api/orders/audit` | GET | Persisted order attempts (blotter feed; `broker` filter) |
+| `/api/orders/config` | GET | Live-trading gate + supported enums + brokers |
+| `/api/strategies/definitions` | GET·POST | List / create rule-set definitions |
+| `/api/strategies/runs` | GET·POST | List / start systematic runs |
+| `/api/strategies/runs/:id/stop` | POST | Stop a run (kill switch) |
+| `/api/strategies/runs/:id/signals` | GET | Recorded signals for a run |
+| `/api/strategies/evaluate` | POST | Ad-hoc rule-set evaluation (proxy) |
 | `/metrics` | GET | Prometheus scrape endpoint (backend) |
+
+Market-data reads (`/api/market-data/*`) and orders accept a `source=` /
+`broker=` parameter (`ib` \| `mt5`, default `ib`) selecting the venue.
 
 Socket.IO is mounted on the backend at the default path and its handshake
 is authenticated (see [Authentication & CORS](#authentication--cors)).
@@ -398,6 +465,16 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > components, a new [`/trade`](frontend/app/trade/page.tsx) page,
 > backend validation + `order_audit` persistence and IB-service routes
 > mirroring the gate.
+>
+> **Also recently shipped (Systematic Trading & Multi-Broker roadmap —
+> all phases).** Rule-driven strategies (backtest == live), a live signal
+> runner, gated paper auto-execution with a full risk layer, the
+> `/systematic` monitoring UI, the IB/MetaTrader broker abstraction, and the
+> MetaTrader (MT5) data **and** execution venue via the Windows sidecar. Now
+> live under [Systematic trading](#systematic-trading-rule-driven-auto-execution)
+> and [Multi-broker: IB + MetaTrader (MT5)](#multi-broker-interactive-brokers--metatrader-mt5).
+> The full design lives in
+> [`SYSTEMATIC_TRADING_ROADMAP.md`](SYSTEMATIC_TRADING_ROADMAP.md).
 
 ### Authentication, authorisation & secrets (advanced)
 
