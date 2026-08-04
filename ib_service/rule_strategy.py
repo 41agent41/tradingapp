@@ -514,15 +514,20 @@ class RuleStrategy(TradingStrategy):
 
     # -- signal generation -------------------------------------------------- #
 
-    def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
-        signals = df.copy()
+    def _prepared(self, df: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
+        """Copy ``df``, merge higher-timeframe indicator columns and compute the
+        session mask — shared by the batch backtest pass and live evaluation."""
 
-        # Merge higher-timeframe indicator columns (no look-ahead — see
-        # ``_merge_higher_timeframe``).
+        signals = df.copy()
         for timeframe, columns in self._higher_tf_columns.items():
             self._merge_higher_timeframe(signals, timeframe, columns)
-
         in_session = session_mask(signals.index, self.sessions)
+        return signals, in_session
+
+    def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
+        # Merge higher-timeframe columns + session mask (no look-ahead — see
+        # ``_merge_higher_timeframe``).
+        signals, in_session = self._prepared(df)
 
         n = len(signals)
         buy = np.zeros(n, dtype=bool)
@@ -561,6 +566,63 @@ class RuleStrategy(TradingStrategy):
         signals["buy_reason"] = buy_reason
         signals["sell_reason"] = sell_reason
         return signals
+
+    def evaluate(self, df: pd.DataFrame, position: Position | None = None) -> Dict[str, Any]:
+        """Evaluate the rules against the **newest closed bar** of ``df`` for a
+        given live ``position`` (Systematic Trading roadmap A2 — the stateless
+        signal the live runner polls per closed bar).
+
+        Unlike the backtest pass this threads real position state
+        (``size`` + ``avg_price``), so position-aware operands are meaningful
+        live. It computes the primary indicators itself (there is no engine to
+        do it here), applies the shared higher-timeframe merge + session prep,
+        and evaluates only the last bar. The returned ``signal`` is
+        position-aware: ``buy`` only when flat, ``sell`` only when long.
+
+        ``flat_at_session_end`` is intentionally *not* applied here — forcing a
+        flat at a session boundary is a clock-driven concern the runner owns (it
+        must observe that the session was left), not something derivable from a
+        single closed bar.
+        """
+
+        if df is None or len(df) == 0:
+            raise ValueError("evaluate() needs at least one bar.")
+
+        position = position or Position()
+
+        # Compute the primary-timeframe indicators the rules reference, then the
+        # shared higher-TF merge + session prep.
+        enriched = indicator_calculator.calculate_indicators(df, self.indicators)
+        signals, in_session = self._prepared(enriched)
+
+        last = len(signals) - 1
+        row = signals.iloc[last]
+        prev_row = signals.iloc[last - 1] if last >= 1 else None
+        position.last_price = float(row.get("close", float("nan")))
+        ctx = EvalContext(row=row, prev=prev_row, position=position)
+
+        entry = bool(in_session[last] and self.entry.evaluate(ctx))
+        exit_ = bool(in_session[last] and self.exit.evaluate(ctx))
+
+        if entry and position.size <= 0:
+            signal = "buy"
+        elif exit_ and position.size > 0:
+            signal = "sell"
+        else:
+            signal = "none"
+
+        bar_time = signals.index[last]
+        return {
+            "signal": signal,
+            "entry": entry,
+            "exit": exit_,
+            "entry_reason": f"{self.name}: entry rules met" if entry else "",
+            "exit_reason": f"{self.name}: exit rules met" if exit_ else "",
+            "in_session": bool(in_session[last]),
+            "bar_time": (bar_time.isoformat() if hasattr(bar_time, "isoformat") else str(bar_time)),
+            "position": {"size": position.size, "avg_price": position.avg_price},
+            "strategy": self.name,
+        }
 
     def _merge_higher_timeframe(
         self, signals: pd.DataFrame, timeframe: str, columns: set[str]

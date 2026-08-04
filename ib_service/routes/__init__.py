@@ -17,6 +17,7 @@ from . import (
     contracts,
     health,
     market_data,
+    strategies,
     streaming,
     symbols,
 )
@@ -27,6 +28,7 @@ _ROUTERS = (
     health.router,
     market_data.router,
     backtesting.router,
+    strategies.router,
     streaming.router,
     contracts.router,
     account.router,
