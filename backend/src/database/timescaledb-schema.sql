@@ -346,6 +346,7 @@ CREATE TABLE IF NOT EXISTS order_audit (
     id BIGSERIAL PRIMARY KEY,
     submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     account_mode VARCHAR(8) NOT NULL,           -- 'paper' | 'live'
+    broker VARCHAR(16) NOT NULL DEFAULT 'ib',   -- execution venue: 'ib' | 'mt5' (B1)
     action VARCHAR(8) NOT NULL,                 -- 'BUY' | 'SELL'
     symbol VARCHAR(32) NOT NULL,
     sec_type VARCHAR(8) NOT NULL DEFAULT 'STK',
@@ -373,6 +374,14 @@ CREATE INDEX IF NOT EXISTS idx_order_audit_ib_order_id
     ON order_audit (ib_order_id) WHERE ib_order_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_order_audit_symbol_created
     ON order_audit (symbol, submitted_at DESC);
+-- Backs the net-exposure guard, now keyed per (broker, symbol, account_mode)
+-- so exposure never nets across venues (B1).
+CREATE INDEX IF NOT EXISTS idx_order_audit_net_key
+    ON order_audit (broker, symbol, account_mode, submitted_at DESC)
+    WHERE ib_order_id IS NOT NULL;
+
+-- Existing deployments: add the broker column if it predates B1.
+ALTER TABLE order_audit ADD COLUMN IF NOT EXISTS broker VARCHAR(16) NOT NULL DEFAULT 'ib';
 
 -- ==============================================
 -- SYSTEMATIC STRATEGIES (Systematic Trading roadmap — Phase 2 / A2 + Phase 3 / A3)

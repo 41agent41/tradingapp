@@ -18,6 +18,20 @@ export type TimeInForce = (typeof TIME_IN_FORCE)[number];
 export const ACCOUNT_MODES = ['paper', 'live'] as const;
 export type AccountMode = (typeof ACCOUNT_MODES)[number];
 
+/**
+ * Execution venues (Systematic Trading roadmap — B1). Instruments are
+ * broker-scoped (no cross-broker symbol reconciliation), so `broker` is a
+ * first-class dimension on every order and on the net-exposure key. Defaults
+ * to `ib`; `mt5` is accepted here but only served once its adapter lands.
+ */
+export const BROKERS = ['ib', 'mt5'] as const;
+export type Broker = (typeof BROKERS)[number];
+export const DEFAULT_BROKER: Broker =
+  (process.env.DEFAULT_BROKER as Broker) &&
+  (BROKERS as readonly string[]).includes(process.env.DEFAULT_BROKER as string)
+    ? (process.env.DEFAULT_BROKER as Broker)
+    : 'ib';
+
 export const ORDER_OPERATIONS = ['CREATE', 'CANCEL', 'MODIFY'] as const;
 export type OrderOperation = (typeof ORDER_OPERATIONS)[number];
 
@@ -30,6 +44,7 @@ export interface OrderInput {
   limit_price?: number | null;
   stop_price?: number | null;
   account_mode: AccountMode;
+  broker?: Broker;
   sec_type?: string;
   exchange?: string;
   currency?: string;
@@ -117,10 +132,14 @@ export function isOrderAction(v: unknown): v is OrderAction {
 export function isAccountMode(v: unknown): v is AccountMode {
   return typeof v === 'string' && (ACCOUNT_MODES as readonly string[]).includes(v);
 }
+export function isBroker(v: unknown): v is Broker {
+  return typeof v === 'string' && (BROKERS as readonly string[]).includes(v);
+}
 
 export interface ValidatedOrder extends Required<
   Pick<OrderInput, 'symbol' | 'action' | 'quantity' | 'order_type' | 'tif' | 'account_mode'>
 > {
+  broker: Broker;
   limit_price: number | null;
   stop_price: number | null;
   sec_type: string;
@@ -161,6 +180,11 @@ export function validateOrder(
   const accountMode = r.account_mode ?? 'paper';
   if (!isAccountMode(accountMode)) {
     errors.push(`account_mode must be one of ${ACCOUNT_MODES.join(', ')}`);
+  }
+
+  const broker = r.broker ?? DEFAULT_BROKER;
+  if (!isBroker(broker)) {
+    errors.push(`broker must be one of ${BROKERS.join(', ')}`);
   }
 
   const needsLimit = orderType === 'LMT' || orderType === 'STP_LMT';
@@ -205,6 +229,7 @@ export function validateOrder(
       order_type: orderType as OrderType,
       tif: tif as TimeInForce,
       account_mode: accountMode as AccountMode,
+      broker: broker as Broker,
       limit_price: limitPrice,
       stop_price: stopPrice,
       sec_type: typeof r.sec_type === 'string' && r.sec_type ? r.sec_type : 'STK',

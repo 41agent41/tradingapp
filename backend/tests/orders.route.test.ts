@@ -175,7 +175,12 @@ describe('POST /api/orders — position-limit guard', () => {
       order_type: 'MKT',
     });
     expect(res.status).toBe(201);
-    expect(auditMock.__mocks.netExposure).toHaveBeenCalledWith('MSFT', 'paper', expect.any(Number));
+    expect(auditMock.__mocks.netExposure).toHaveBeenCalledWith(
+      'MSFT',
+      'paper',
+      expect.any(Number),
+      'ib'
+    );
   });
 
   it('rejects with 422 when the order would breach the cap (no IB call, no audit)', async () => {
