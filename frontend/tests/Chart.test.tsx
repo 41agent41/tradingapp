@@ -9,9 +9,9 @@
 import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import Chart, { __test, type ChartBar } from '../app/components/Chart';
+import Chart, { __test, type ChartBar, type ChartMarker } from '../app/components/Chart';
 
-const { sortAndDedupe } = __test;
+const { sortAndDedupe, prepareMarkers } = __test;
 
 describe('sortAndDedupe', () => {
   it('orders rows by time ascending', () => {
@@ -40,6 +40,26 @@ describe('sortAndDedupe', () => {
     ]);
     expect(out).toHaveLength(1);
     expect(out[0].x).toBe('good');
+  });
+});
+
+describe('prepareMarkers', () => {
+  it('sorts markers by time ascending', () => {
+    const markers: ChartMarker[] = [
+      { time: 3, position: 'aboveBar', shape: 'arrowDown', color: '#f00' },
+      { time: 1, position: 'belowBar', shape: 'arrowUp', color: '#0f0' },
+    ];
+    expect(prepareMarkers(markers).map((m) => m.time)).toEqual([1, 3]);
+  });
+
+  it('drops markers with a non-finite time', () => {
+    const markers: ChartMarker[] = [
+      { time: NaN, position: 'belowBar', shape: 'arrowUp', color: '#0f0' },
+      { time: 2, position: 'belowBar', shape: 'arrowUp', color: '#0f0' },
+    ];
+    const out = prepareMarkers(markers);
+    expect(out).toHaveLength(1);
+    expect(out[0].time).toBe(2);
   });
 });
 

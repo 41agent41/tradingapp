@@ -252,16 +252,24 @@ New tables (canonical `timescaledb-schema.sql`, mirroring the `backtest_runs` /
 - `strategy_signals` — every evaluation: `{run_id, bar_time, signal, reason,
   acted}` (links to the resulting `order_audit` row when acted).
 
-### A5. Monitoring UI (`/systematic`)
+### A5. Monitoring UI (`/systematic`) — ✅ delivered
 
 - **Rule builder** — form over the A1 schema (indicator · operator · value,
-  add/remove conditions), with a "Backtest this" button reusing `/backtest`.
-- **Run dashboard** — active runs, latest signal + reason, live net position,
-  realised/unrealised P&L, per-run **Stop**.
-- **Chart with signal markers** — `<Chart>` gains buy/sell markers from
-  `strategy_signals` (this also delivers the §6 "order-history overlay"
-  stretch item for free).
-- Reuses `DataframeViewer` (signal/fill tables) and `OrderBlotter`.
+  add/remove conditions), with a "Backtest this" link to `/backtest`.
+  Serialization is a pure, unit-tested helper (`app/lib/ruleSet.ts`).
+- **Run dashboard** — definitions list (start a run), a runs table (status,
+  last-eval, per-run **Stop**), and a per-run detail with a summary strip
+  (net position, signals, orders placed, latest signal + reason).
+- **Chart with signal markers** — `<Chart>` gained a `markers` prop; the run
+  detail overlays buy/sell markers from `strategy_signals` (acted orders render
+  bolder), delivering the §6 "order-history overlay" for free.
+- **Live feed** — `useStrategySignals` subscribes to the `strategy:<runId>`
+  Socket.IO room and merges live events with the REST history.
+
+> **Landed.** New page `app/systematic/page.tsx` + components under
+> `app/components/systematic/`. Consumes the existing `/api/strategies/*`
+> endpoints only — no backend change. Vitest covers the rule-set builder, the
+> signal socket hook, the merge/marker helpers and the `<Chart>` marker prep.
 
 ---
 
@@ -362,7 +370,7 @@ audited identically to IB.
 | **1** | A1 rule-driven strategies, **backtest-only** | 0 | none (no live orders) |
 | **2** | A2 live signal runner, **signal-only** | 1 | none (no orders) |
 | **3** | A3 auto-execution + risk layer, **paper** ✅ | 2 | gated, paper-only |
-| **4** | A5 `/systematic` monitoring UI + chart markers | 3 | none |
+| **4** | A5 `/systematic` monitoring UI + chart markers ✅ | 3 | none |
 | **5** | B1 broker abstraction (IB refactored behind interface) | — (parallelisable) | none (`source=ib` unchanged) |
 | **6** | B2a MetaTrader **data** source | 5 | none (read-only) |
 | **7** | B2b MetaTrader **execution** venue | 5, 6 | gated, paper-only |
