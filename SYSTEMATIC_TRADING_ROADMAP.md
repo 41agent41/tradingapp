@@ -364,7 +364,21 @@ the HTTP boundary would not ripple into `ib_service` or the backend.
   (`MSFT`, `EURUSD`) and timeframes (`M1`…`D1`) to the app's `_TIMEFRAME_MAP`;
   normalise timezone/timestamps to the app's UTC convention. — ✅ **delivered**
 - **B2b — execution:** implement `BrokerAdapter`; `/api/orders` `broker=mt5`
-  routes here; `order_audit`, the gate, and all guards apply unchanged.
+  routes here; `order_audit`, the gate, and all guards apply unchanged. — ✅ **delivered**
+
+> **B2b landed.** `MT5Adapter` now also implements the `BrokerAdapter` side —
+> `place_order` / `cancel_order` / `modify_order` / `positions` /
+> `account_summary` over the sidecar's order endpoints. Placement runs the
+> **same** `_validate_common` order validation + `LIVE_TRADING_ENABLED` gate the
+> IB path uses (a live order without the gate is refused before anything reaches
+> the bridge), and the result is shaped like the IB path so `order_audit`
+> reconciles uniformly. The registry registers MT5's broker side alongside its
+> data side when `MT5_BRIDGE_URL` is set, so a backend `broker=mt5` order flows
+> end-to-end: backend validates + audits + net-caps (per-`(broker,symbol,mode)`)
+> → `ib_service /orders` → `MT5Adapter.place_order` → sidecar. pytest covers
+> placement (paper), the live gate failing closed, cancel, positions and
+> account. No backend change was needed — the `broker=` plumbing from B1 already
+> carries it.
 
 > **B2a landed.** `ib_service/mt5_adapter.py` is the Linux-side thin HTTP client
 > for the sidecar: a data-only `MarketDataAdapter` that forwards `search`,
@@ -410,7 +424,7 @@ audited identically to IB.
 | **4** | A5 `/systematic` monitoring UI + chart markers ✅ | 3 | none |
 | **5** | B1 broker abstraction (IB refactored behind interface) ✅ | — (parallelisable) | none (`source=ib` unchanged) |
 | **6** | B2a MetaTrader **data** source ✅ | 5 | none (read-only) |
-| **7** | B2b MetaTrader **execution** venue | 5, 6 | gated, paper-only |
+| **7** | B2b MetaTrader **execution** venue ✅ | 5, 6 | gated, paper-only |
 
 Phases 1–4 (systematic engine) and 5–7 (MetaTrader) are largely independent;
 5 can start in parallel with 1. Live (non-paper) auto-trading is deliberately

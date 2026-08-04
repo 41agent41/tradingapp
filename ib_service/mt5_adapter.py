@@ -1,4 +1,4 @@
-"""MetaTrader 5 market-data adapter (Systematic Trading roadmap — B2a).
+"""MetaTrader 5 adapter — market data (B2a) + execution (B2b).
 
 The MetaTrader5 Python package is Windows-only and attaches to a running
 terminal, so it can't `pip install` into this Linux service. Per the roadmap's
@@ -18,12 +18,19 @@ like `source=ib` from the frontend's point of view.
              &start=<iso>&end=<iso>
     GET  {base}/quote?symbol=                            -> {bid, ask, last, volume, time}
     GET  {base}/tick?symbol=                             -> {bid, ask, last, volume, time, ...}
+    POST   {base}/orders   {symbol,action,quantity,order_type,tif,...}  -> {order_id|ticket, status}
+    DELETE {base}/orders/{id}                            -> {status}
+    PUT    {base}/orders/{id}  {symbol,action,quantity,...}             -> {status}
+    GET  {base}/positions                                -> {"positions": [...]} | [...]
+    GET  {base}/account                                  -> {balance, equity, ...}
 
 `timeframe` is sent in MT5's native form (`M1`, `H1`, `D1`, …); `time` fields
 may be unix seconds/millis or ISO — all are coerced to unix **seconds**.
 
-The MT5 execution/broker side (`place_order` et al.) is **not** implemented here
-— that is B2b. This adapter is data-only.
+Both sides of the protocol are implemented: market data (B2a) **and** execution
+(B2b). Order placement runs the same validation + live-trading gate as the IB
+path (defence in depth) before it reaches the bridge, and results are shaped
+like the IB path so `order_audit` reconciles uniformly.
 """
 
 from __future__ import annotations
@@ -89,7 +96,7 @@ def _to_unix_seconds(value: Any) -> float:
 
 
 class MT5Adapter:
-    """Data-only `MarketDataAdapter` backed by the MT5 sidecar over HTTP."""
+    """`MarketDataAdapter` + `BrokerAdapter` backed by the MT5 sidecar over HTTP."""
 
     name = "mt5"
 
@@ -98,15 +105,25 @@ class MT5Adapter:
         self._timeout = timeout
 
     # -- HTTP plumbing ----------------------------------------------------- #
-    def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Dict[str, Any]] = None,
+    ) -> Any:
         url = f"{self._base}{path}"
         try:
             with httpx.Client(timeout=self._timeout) as client:
-                resp = client.get(
-                    url, params={k: v for k, v in (params or {}).items() if v is not None}
+                resp = client.request(
+                    method,
+                    url,
+                    params={k: v for k, v in (params or {}).items() if v is not None},
+                    json=json,
                 )
         except httpx.HTTPError as exc:
-            logger.error("mt5_bridge_unreachable", url=url, error=str(exc))
+            logger.error("mt5_bridge_unreachable", url=url, method=method, error=str(exc))
             raise HTTPException(503, f"MT5 bridge unreachable: {exc}")
         if resp.status_code >= 400:
             raise HTTPException(
@@ -116,6 +133,9 @@ class MT5Adapter:
             return resp.json()
         except ValueError as exc:
             raise HTTPException(502, f"MT5 bridge returned non-JSON for {path}: {exc}")
+
+    def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        return self._request("GET", path, params=params)
 
     def _map_timeframe(self, timeframe: str) -> str:
         mt5_tf = _TIMEFRAME_TO_MT5.get(timeframe)
@@ -240,6 +260,80 @@ class MT5Adapter:
             "volume": t.get("volume"),
             "broker": "mt5",
         }
+
+    # -- BrokerAdapter (execution) — B2b ----------------------------------- #
+    def place_order(self, request: Any) -> Dict[str, Any]:
+        """Place an order on MT5 via the sidecar. The same order validation +
+        live-trading gate the IB path applies runs first (defence in depth,
+        identical to IB) — so a live order without ``LIVE_TRADING_ENABLED`` is
+        refused here just as it is for IB, before anything reaches the bridge."""
+        from orders import _validate_common  # shared gate; avoids an import cycle
+
+        _validate_common(request.action, request.order_type, request.tif, request.account_mode)
+        body = {
+            "symbol": request.symbol.upper(),
+            "action": request.action,
+            "quantity": request.quantity,
+            "order_type": request.order_type,
+            "tif": request.tif,
+            "limit_price": request.limit_price,
+            "stop_price": request.stop_price,
+            "account_mode": request.account_mode,
+            "audit_id": getattr(request, "audit_id", None),
+        }
+        resp = self._request("POST", "/orders", json=body)
+        # Shape the result like the IB path so order_audit reconciles uniformly.
+        return {
+            "order_id": resp.get("order_id") or resp.get("ticket") or resp.get("id"),
+            "symbol": request.symbol.upper(),
+            "action": request.action,
+            "quantity": request.quantity,
+            "order_type": request.order_type,
+            "tif": request.tif,
+            "account_mode": request.account_mode,
+            "broker": "mt5",
+            "status": resp.get("status", "submitted"),
+        }
+
+    def cancel_order(self, order_id: int) -> Dict[str, Any]:
+        resp = self._request("DELETE", f"/orders/{order_id}")
+        return {
+            "order_id": order_id,
+            "broker": "mt5",
+            "status": resp.get("status", "cancel_requested"),
+        }
+
+    def modify_order(self, order_id: int, request: Any) -> Dict[str, Any]:
+        from orders import _validate_common
+
+        _validate_common(
+            request.action, request.order_type, request.tif or "DAY", request.account_mode
+        )
+        body = {
+            "symbol": request.symbol.upper(),
+            "action": request.action,
+            "quantity": request.quantity,
+            "order_type": request.order_type,
+            "tif": request.tif or "DAY",
+            "limit_price": request.limit_price,
+            "stop_price": request.stop_price,
+            "account_mode": request.account_mode,
+        }
+        resp = self._request("PUT", f"/orders/{order_id}", json=body)
+        return {
+            "order_id": order_id,
+            "broker": "mt5",
+            "status": resp.get("status", "modify_requested"),
+        }
+
+    def positions(self) -> List[Dict[str, Any]]:
+        payload = self._get("/positions")
+        rows = payload.get("positions", payload) if isinstance(payload, dict) else payload
+        return rows if isinstance(rows, list) else []
+
+    def account_summary(self) -> Dict[str, Any]:
+        payload = self._get("/account")
+        return payload if isinstance(payload, dict) else {"account": payload}
 
 
 def _opt_float(v: Any) -> Optional[float]:
