@@ -72,6 +72,9 @@ class PlaceOrderRequest(BaseModel):
     secType: str = "STK"
     exchange: str = "SMART"
     currency: str = "USD"
+    # Execution venue (B1). Defaults to IB; the registry dispatches to the
+    # matching broker adapter. mt5 resolves to a 501 until its adapter lands.
+    broker: str = "ib"
     # Optional — the backend can supply its audit-row id so error logs
     # can be correlated to the persisted attempt.
     audit_id: Optional[int] = None
@@ -92,6 +95,7 @@ class ModifyOrderRequest(BaseModel):
     exchange: str = "SMART"
     currency: str = "USD"
     account_mode: str = "paper"
+    broker: str = "ib"
 
 
 # ---------------------------------------------------------------------------
@@ -252,26 +256,37 @@ def modify_order_sync(order_id: int, req: ModifyOrderRequest) -> Dict[str, Any]:
 @router.post("/orders")
 async def place_order(req: PlaceOrderRequest) -> Dict[str, Any]:
     # The TWS API client is synchronous; run the placement off the event loop.
+    # Dispatch through the broker registry (B1): broker=ib is the default and
+    # keeps the existing IB path; an unknown broker → 400, mt5 → 501.
     import asyncio
 
+    from adapters import get_broker_adapter
+
+    adapter = get_broker_adapter(req.broker)
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, place_order_sync, req)
+    return await loop.run_in_executor(None, lambda: adapter.place_order(req))
 
 
 @router.delete("/orders/{order_id}")
-async def cancel_order(order_id: int) -> Dict[str, Any]:
+async def cancel_order(order_id: int, broker: str = "ib") -> Dict[str, Any]:
     import asyncio
 
+    from adapters import get_broker_adapter
+
+    adapter = get_broker_adapter(broker)
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, cancel_order_sync, order_id)
+    return await loop.run_in_executor(None, lambda: adapter.cancel_order(order_id))
 
 
 @router.put("/orders/{order_id}")
 async def modify_order(order_id: int, req: ModifyOrderRequest) -> Dict[str, Any]:
     import asyncio
 
+    from adapters import get_broker_adapter
+
+    adapter = get_broker_adapter(req.broker)
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: modify_order_sync(order_id, req))
+    return await loop.run_in_executor(None, lambda: adapter.modify_order(order_id, req))
 
 
 @router.get("/orders/config")

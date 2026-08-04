@@ -31,13 +31,25 @@ connection_status = _get_connection_status_dict()
 @router.get("/health")
 async def health_check():
     """Health check endpoint - service status only, no IB Gateway connection test"""
+    from adapters import provider_health
+
     return {
         "status": "healthy",
         "service": "TWS API Service",
         "version": "4.0.0",
         "timestamp": datetime.now().isoformat(),
         "note": "Service is running - IB Gateway connection tested only when endpoints are called",
+        "providers": provider_health(),
     }
+
+
+@router.get("/providers")
+async def providers():
+    """Broker / data-source registry snapshot (B1): which venues are
+    recognised and which have a registered adapter available."""
+    from adapters import provider_health
+
+    return provider_health()
 
 
 @router.get("/timezone-info")
