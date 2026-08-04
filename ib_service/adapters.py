@@ -111,9 +111,9 @@ def _bootstrap() -> None:
     than at import time) so this module stays free of the heavy IB/MT5 imports
     and avoids a cycle with the route modules that import the registry.
 
-    IB is always registered. MT5 registers its **market-data** adapter only when
-    ``MT5_BRIDGE_URL`` is set (B2a) — otherwise ``mt5`` stays a recognised but
-    unavailable provider (→ 501). The MT5 broker/execution side lands in B2b.
+    IB is always registered. MT5 registers **both** its market-data (B2a) and
+    broker/execution (B2b) adapters when ``MT5_BRIDGE_URL`` is set — otherwise
+    ``mt5`` stays a recognised but unavailable provider (→ 501).
     """
     global _bootstrapped
     if _bootstrapped:
@@ -127,7 +127,8 @@ def _bootstrap() -> None:
     if bridge:
         from mt5_adapter import MT5Adapter
 
-        register("mt5", market_data=MT5Adapter(bridge))
+        mt5 = MT5Adapter(bridge)
+        register("mt5", market_data=mt5, broker=mt5)
 
     _bootstrapped = True
 
@@ -156,12 +157,7 @@ def resolve_provider(name: Optional[str]) -> str:
 def _unavailable(provider: str, side: str) -> HTTPException:
     hint = ""
     if provider == "mt5":
-        hint = (
-            " Set MT5_BRIDGE_URL to enable the MT5 data source (B2a);"
-            " MT5 execution lands in B2b."
-            if side == "market-data"
-            else " MT5 execution (broker adapter) lands in B2b."
-        )
+        hint = " Set MT5_BRIDGE_URL to enable the MT5 sidecar (data + execution)."
     return HTTPException(
         status_code=501,
         detail=f"Provider '{provider}' has no {side} adapter available.{hint}",
