@@ -26,6 +26,8 @@ function activeRun(overrides: Partial<ActiveRun> = {}): ActiveRun {
     symbol: 'MSFT',
     timeframe: '5min',
     rule_set: { entry: { all: [] } },
+    sizing: { type: 'fixed', size: 100 },
+    risk: {},
     ...overrides,
   };
 }
@@ -157,6 +159,76 @@ describe('StrategyRunner.runOnce', () => {
       avg_price: 42,
     });
     expect(deps.insertSignal).toHaveBeenCalledWith(expect.objectContaining({ position_size: 100 }));
+  });
+});
+
+describe('StrategyRunner — A3 execution wiring', () => {
+  it('hands a newly-recorded actionable signal to executeSignal and emits the outcome', async () => {
+    const executeSignal = jest.fn().mockResolvedValue({
+      placed: true,
+      orderAuditId: 900,
+      action: 'BUY',
+      quantity: 100,
+      ibBody: {},
+    });
+    const deps = makeDeps({
+      insertSignal: jest.fn().mockResolvedValue({ inserted: true, id: 55 }),
+      executeSignal,
+    });
+    const runner = makeRunner(deps);
+
+    await runner.runOnce();
+
+    expect(executeSignal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        signalId: 55,
+        signal: 'buy',
+        run: expect.objectContaining({ id: 1 }),
+      })
+    );
+    expect(deps.emit).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ acted: true, order_audit_id: 900 })
+    );
+    expect(runner.status().totals.orders_placed).toBe(1);
+  });
+
+  it('does not execute a non-actionable (none) signal', async () => {
+    const executeSignal = jest.fn();
+    const deps = makeDeps({
+      evaluate: jest.fn().mockResolvedValue({ ...buyResult, signal: 'none', entry: false }),
+      insertSignal: jest.fn().mockResolvedValue({ inserted: true, id: 55 }),
+      executeSignal,
+    });
+    await makeRunner(deps).runOnce();
+    expect(executeSignal).not.toHaveBeenCalled();
+  });
+
+  it('does not execute when the signal was suppressed by dedupe (not inserted)', async () => {
+    const executeSignal = jest.fn();
+    const deps = makeDeps({
+      insertSignal: jest.fn().mockResolvedValue({ inserted: false, id: null }),
+      executeSignal,
+    });
+    await makeRunner(deps).runOnce();
+    expect(executeSignal).not.toHaveBeenCalled();
+  });
+
+  it('isolates an execution failure, counts it and still emits the signal', async () => {
+    const deps = makeDeps({
+      insertSignal: jest.fn().mockResolvedValue({ inserted: true, id: 55 }),
+      executeSignal: jest.fn().mockRejectedValue(new Error('boom')),
+    });
+    const runner = makeRunner(deps);
+
+    await runner.runOnce();
+
+    expect(deps.emit).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ acted: false, execution_reason: expect.stringMatching(/boom/) })
+    );
+    expect(runner.status().totals.errors).toBe(1);
+    expect(runner.status().totals.signals_recorded).toBe(1);
   });
 });
 
