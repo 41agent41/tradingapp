@@ -223,3 +223,27 @@ export function validateOrder(
 export function isLiveTradingEnabled(): boolean {
   return (process.env.LIVE_TRADING_ENABLED ?? 'false').toLowerCase() === 'true';
 }
+
+/**
+ * Systematic auto-execution gate (Systematic Trading roadmap — A3).
+ *
+ * Distinct from `LIVE_TRADING_ENABLED`: this one gates the *engine's* ability
+ * to turn a signal into an order at all. Paper auto-trading needs only this;
+ * live (real-money) auto-trading needs this AND `LIVE_TRADING_ENABLED`. Both
+ * default off (defence in depth) — the engine places nothing until an operator
+ * explicitly opts in. Read live from the environment so tests (and a global
+ * kill) can toggle it per-case.
+ */
+export function isSystematicExecutionEnabled(): boolean {
+  return (process.env.SYSTEMATIC_EXECUTION_ENABLED ?? 'false').toLowerCase() === 'true';
+}
+
+/**
+ * Global backstop on the number of engine-placed orders per calendar day,
+ * across *all* runs. 0 (default) disables the global cap — per-run
+ * `max_orders_per_day` still applies. A last-resort circuit breaker so a
+ * misbehaving fleet of runs can't flood the broker.
+ */
+export function systematicMaxOrdersPerDay(): number {
+  return Math.max(0, Number(process.env.SYSTEMATIC_MAX_ORDERS_PER_DAY) || 0);
+}

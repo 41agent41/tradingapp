@@ -22,13 +22,12 @@ import { dbService } from '../services/database.js';
 import { logger, currentRequestId } from '../services/logger.js';
 import { orderAuth, isMfaRequired, isTradingAuthRequired } from '../middleware/orderAuth.js';
 import { OrderAuditRepository } from '../services/orderAuditRepository.js';
+import { submitCreateOrder } from '../services/orderService.js';
 import {
   isLiveTradingEnabled,
   isAccountMode,
   validateOrder,
   positionCap,
-  positionLookbackHours,
-  checkPositionLimit,
 } from '../services/orderTypes.js';
 
 const router = express.Router();
@@ -98,106 +97,47 @@ router.post('/', orderAuth, async (req: Request, res: Response) => {
   if (!v.ok) {
     return res.status(400).json({ error: 'Validation failed', detail: v.errors.join('; ') });
   }
-  if (v.value.account_mode === 'live' && !isLiveTradingEnabled()) {
-    return res.status(403).json({
-      error: 'Live trading is disabled',
-      detail:
-        'Set LIVE_TRADING_ENABLED=true on the backend AND the IB service to place live orders.',
-    });
-  }
 
-  // Opt-in position-limit guard. Runs before we persist or forward — a
-  // limit breach never reaches IB and (like a validation failure) writes no
-  // audit row. Fails closed: if the net can't be computed we refuse, which
-  // is consistent with the audit-insert hard dependency below.
-  const cap = positionCap();
-  if (cap > 0) {
-    try {
-      const net = await audit.netExposure(
-        v.value.symbol,
-        v.value.account_mode,
-        positionLookbackHours()
-      );
-      const decision = checkPositionLimit(net, v.value.action, v.value.quantity, cap);
-      if (!decision.ok) {
-        return res.status(422).json({
-          error: 'Position limit exceeded',
-          detail: decision.detail,
-          current_net: net,
-          projected: decision.projected,
-          cap,
-        });
-      }
-    } catch (limitErr: any) {
-      logger.error(
-        { err: String(limitErr?.message ?? limitErr) },
-        'position-limit check failed — refusing to place order'
-      );
+  // The audited submit core (shared with the systematic engine) enforces the
+  // live gate, the position-limit guard, the write-before-send audit and the
+  // IB hop; the route maps its typed outcome back to the same HTTP responses
+  // this endpoint has always returned.
+  const outcome = await submitCreateOrder(v.value, currentRequestId() ?? null, {
+    audit,
+    warn: (obj, msg) => logger.warn(obj, msg),
+    error: (obj, msg) => logger.error(obj, msg),
+  });
+
+  if (outcome.ok) {
+    return res.status(201).json({ ...outcome.ibBody, audit_id: outcome.auditId });
+  }
+  switch (outcome.kind) {
+    case 'live_disabled':
+      return res.status(403).json({
+        error: 'Live trading is disabled',
+        detail:
+          'Set LIVE_TRADING_ENABLED=true on the backend AND the IB service to place live orders.',
+      });
+    case 'position_limit':
+      return res.status(422).json({
+        error: 'Position limit exceeded',
+        detail: outcome.detail,
+        current_net: outcome.currentNet,
+        projected: outcome.projected,
+        cap: outcome.cap,
+      });
+    case 'position_check_failed':
       return res.status(503).json({
         error: 'Position-limit check failed',
         detail: 'Could not evaluate the position limit; refusing to place an unchecked order',
       });
-    }
-  }
-
-  const requestId = currentRequestId() ?? null;
-
-  // Persist the attempt before we call IB so failures still leave a trail.
-  let auditId: number | null = null;
-  try {
-    const row = await audit.create({
-      ...v.value,
-      operation: 'CREATE',
-      request_id: requestId,
-    });
-    auditId = row.id;
-  } catch (auditErr: any) {
-    logger.error(
-      { err: String(auditErr?.message ?? auditErr) },
-      'order_audit insert failed — refusing to forward to IB'
-    );
-    return res.status(500).json({
-      error: 'Failed to record order attempt',
-      detail: 'order_audit insert failed; refusing to place an unaudited order',
-    });
-  }
-
-  try {
-    const ibPayload = {
-      symbol: v.value.symbol,
-      action: v.value.action,
-      quantity: v.value.quantity,
-      order_type: v.value.order_type,
-      tif: v.value.tif,
-      limit_price: v.value.limit_price,
-      stop_price: v.value.stop_price,
-      account_mode: v.value.account_mode,
-      secType: v.value.sec_type,
-      exchange: v.value.exchange,
-      currency: v.value.currency,
-      audit_id: auditId,
-    };
-    const ibResp = await axios.post(`${IB_SERVICE_URL}/orders`, ibPayload, { timeout: 30_000 });
-    const ibBody = ibResp.data ?? {};
-    await audit
-      .update({
-        id: auditId,
-        ib_order_id: ibBody.order_id ?? null,
-        status: ibBody.status ?? 'submitted',
-        raw_response: ibBody,
-      })
-      .catch((e) => logger.warn({ err: String(e) }, 'audit update after place failed'));
-
-    res.status(201).json({ ...ibBody, audit_id: auditId });
-  } catch (error: any) {
-    await audit
-      .update({
-        id: auditId,
-        status: 'rejected',
-        last_error: error?.response?.data?.detail ?? error?.message ?? 'unknown',
-      })
-      .catch((e) => logger.warn({ err: String(e) }, 'audit update after reject failed'));
-    sendProxyError(res, error, 'Failed to place order');
+    case 'audit_failed':
+      return res.status(500).json({
+        error: 'Failed to record order attempt',
+        detail: 'order_audit insert failed; refusing to place an unaudited order',
+      });
+    case 'ib_error':
+      return sendProxyError(res, outcome.error, 'Failed to place order');
   }
 });
 

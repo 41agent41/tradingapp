@@ -60,7 +60,9 @@ export interface StrategyRunRow {
   stopped_at: string | null;
 }
 
-/** A run joined with the fields of its definition the runner needs. */
+/** A run joined with the fields of its definition the runner needs. The
+ *  run-level `sizing`/`risk` blocks (carried from the definition at run
+ *  creation) drive the A3 execution layer. */
 export interface ActiveRun {
   id: number;
   definition_id: number;
@@ -69,6 +71,8 @@ export interface ActiveRun {
   symbol: string;
   timeframe: string;
   rule_set: Record<string, unknown>;
+  sizing: Record<string, unknown>;
+  risk: Record<string, unknown>;
 }
 
 export interface StrategySignalInput {
@@ -191,6 +195,7 @@ export class StrategyRepository {
   async listActiveRuns(): Promise<ActiveRun[]> {
     const sql = `
       SELECT r.id, r.definition_id, r.broker, r.account_mode,
+             r.sizing, r.risk,
              d.symbol, d.timeframe, d.rule_set
       FROM strategy_runs r
       JOIN strategy_definitions d ON d.id = r.definition_id
@@ -276,5 +281,63 @@ export class StrategyRepository {
     );
     const row = result.rows[0] as { bar_time: string } | undefined;
     return row?.bar_time ?? null;
+  }
+
+  // ---- A3 execution layer ------------------------------------------------ //
+
+  /**
+   * Link a signal to the order it produced. `acted=true` + `order_audit_id`
+   * is the durable dedupe: a restart mid-cycle can't double-fire because the
+   * signal row already records that it was executed. Idempotent — only flips
+   * a row that hasn't already acted, and reports whether it did.
+   */
+  async markSignalActed(signalId: number, orderAuditId: number): Promise<{ updated: boolean }> {
+    const result = await this.db.query(
+      `UPDATE strategy_signals
+         SET acted = TRUE, order_audit_id = $2
+       WHERE id = $1 AND acted = FALSE
+       RETURNING id`,
+      [signalId, orderAuditId]
+    );
+    return { updated: (result.rows?.length ?? 0) > 0 };
+  }
+
+  /**
+   * How many orders this run has placed today (calendar day, DB clock). Backs
+   * the per-run `max_orders_per_day` cap; counts only signals that actually
+   * acted (i.e. produced an order), so a day full of `none` signals doesn't
+   * consume the budget.
+   */
+  async countActedSignalsToday(runId: number): Promise<number> {
+    const result = await this.db.query(
+      `SELECT COUNT(*)::int AS n
+         FROM strategy_signals
+        WHERE run_id = $1
+          AND acted = TRUE
+          AND created_at >= date_trunc('day', NOW())`,
+      [runId]
+    );
+    return Number(result.rows[0]?.n ?? 0);
+  }
+
+  /** Total orders placed across all runs today — backs the global backstop
+   *  (`SYSTEMATIC_MAX_ORDERS_PER_DAY`). */
+  async countActedSignalsTodayAllRuns(): Promise<number> {
+    const result = await this.db.query(
+      `SELECT COUNT(*)::int AS n
+         FROM strategy_signals
+        WHERE acted = TRUE
+          AND created_at >= date_trunc('day', NOW())`,
+      []
+    );
+    return Number(result.rows[0]?.n ?? 0);
+  }
+
+  /** Current status of a run — the kill switch re-check the engine makes
+   *  immediately before placing, so a run stopped mid-cycle can't fire. */
+  async getRunStatus(id: number): Promise<string | null> {
+    const result = await this.db.query('SELECT status FROM strategy_runs WHERE id = $1', [id]);
+    const row = result.rows[0] as { status: string } | undefined;
+    return row?.status ?? null;
   }
 }

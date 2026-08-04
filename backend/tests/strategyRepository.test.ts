@@ -130,3 +130,54 @@ describe('StrategyRepository.listSignals', () => {
     expect(calls[0].params[1]).toBe(200); // MAX_LIMIT
   });
 });
+
+describe('StrategyRepository.listActiveRuns (A3 fields)', () => {
+  it('selects the run-level sizing/risk blocks', async () => {
+    const { db, calls } = fakeDb(() => []);
+    await new StrategyRepository(db).listActiveRuns();
+    expect(calls[0].text).toMatch(/r\.sizing, r\.risk/);
+  });
+});
+
+describe('StrategyRepository.markSignalActed', () => {
+  it('flips acted only for a row that has not already acted', async () => {
+    const { db, calls } = fakeDb(() => [{ id: 5 }]);
+    const res = await new StrategyRepository(db).markSignalActed(5, 900);
+    expect(calls[0].text).toMatch(/SET acted = TRUE, order_audit_id = \$2/);
+    expect(calls[0].text).toMatch(/acted = FALSE/);
+    expect(calls[0].params).toEqual([5, 900]);
+    expect(res.updated).toBe(true);
+  });
+
+  it('reports updated=false when the row already acted', async () => {
+    const { db } = fakeDb(() => []);
+    expect((await new StrategyRepository(db).markSignalActed(5, 900)).updated).toBe(false);
+  });
+});
+
+describe('StrategyRepository order counters', () => {
+  it('counts acted signals today for a run', async () => {
+    const { db, calls } = fakeDb(() => [{ n: 3 }]);
+    const n = await new StrategyRepository(db).countActedSignalsToday(1);
+    expect(calls[0].text).toMatch(/acted = TRUE/);
+    expect(calls[0].text).toMatch(/date_trunc\('day', NOW\(\)\)/);
+    expect(calls[0].params).toEqual([1]);
+    expect(n).toBe(3);
+  });
+
+  it('counts acted signals today across all runs', async () => {
+    const { db, calls } = fakeDb(() => [{ n: 12 }]);
+    const n = await new StrategyRepository(db).countActedSignalsTodayAllRuns();
+    expect(calls[0].text).not.toMatch(/run_id/);
+    expect(n).toBe(12);
+  });
+});
+
+describe('StrategyRepository.getRunStatus', () => {
+  it('returns the run status or null', async () => {
+    const withRow = fakeDb(() => [{ status: 'running' }]);
+    expect(await new StrategyRepository(withRow.db).getRunStatus(1)).toBe('running');
+    const empty = fakeDb(() => []);
+    expect(await new StrategyRepository(empty.db).getRunStatus(1)).toBeNull();
+  });
+});

@@ -194,11 +194,21 @@ A backend `strategyRunner` service modelled on the opt-in
 **DoD:** live signals appear in the UI and persist; a run can be started and
 stopped; nothing can place an order yet.
 
-### A3. Execution + risk layer (turns on auto-execution)
+### A3. Execution + risk layer (turns on auto-execution) — ✅ delivered (paper)
 
 Maps a signal → `OrderInput` → the **existing** `/api/orders`. The engine adds
 no new broker code; it adds *guards* on top of the ones the order path already
 enforces:
+
+> **Landed.** The audited create-order core was extracted to
+> `backend/src/services/orderService.ts` (`submitCreateOrder`) and is shared by
+> the HTTP route **and** the new `executionEngine.ts`, so the engine reuses the
+> exact position-limit guard, `order_audit` write-before-send and IB hop. The
+> runner (`strategyRunner.ts`) hands each newly-recorded actionable signal to
+> the engine; sizing resolves in `orderSizing.ts` (IB shares — MT5 lots wait for
+> B2). All guards below are unit-tested fail-closed. **Paper-only:** the engine
+> is off unless `SYSTEMATIC_EXECUTION_ENABLED=true`, and a `live` order still
+> needs `LIVE_TRADING_ENABLED` on top.
 
 Reused (already in `orderTypes.ts` / `orderAuth.ts`): `validateOrder`,
 `LIVE_TRADING_ENABLED`, `order_audit` write-before-send, `ORDER_MAX_QUANTITY`
@@ -351,7 +361,7 @@ audited identically to IB.
 | **0** | Finalise A1 rule schema + tables; MT5 deployment spike (Option A/B/C) | — | none (design) |
 | **1** | A1 rule-driven strategies, **backtest-only** | 0 | none (no live orders) |
 | **2** | A2 live signal runner, **signal-only** | 1 | none (no orders) |
-| **3** | A3 auto-execution + risk layer, **paper** | 2 | gated, paper-only |
+| **3** | A3 auto-execution + risk layer, **paper** ✅ | 2 | gated, paper-only |
 | **4** | A5 `/systematic` monitoring UI + chart markers | 3 | none |
 | **5** | B1 broker abstraction (IB refactored behind interface) | — (parallelisable) | none (`source=ib` unchanged) |
 | **6** | B2a MetaTrader **data** source | 5 | none (read-only) |

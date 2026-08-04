@@ -375,7 +375,7 @@ CREATE INDEX IF NOT EXISTS idx_order_audit_symbol_created
     ON order_audit (symbol, submitted_at DESC);
 
 -- ==============================================
--- SYSTEMATIC STRATEGIES (Systematic Trading roadmap — Phase 2 / A2)
+-- SYSTEMATIC STRATEGIES (Systematic Trading roadmap — Phase 2 / A2 + Phase 3 / A3)
 -- ==============================================
 -- A strategy is one declarative rule-set (see ib_service/rule_strategy.py)
 -- shared by the backtester and the live signal runner. `strategy_definitions`
@@ -383,9 +383,12 @@ CREATE INDEX IF NOT EXISTS idx_order_audit_symbol_created
 -- broker/account_mode and a status; every evaluation the runner makes is
 -- recorded in `strategy_signals`.
 --
--- Phase 2 is **signal-only** — the runner never places an order — so
--- `acted` / `order_audit_id` stay unset until the A3 execution layer wires
--- signals into the audited /api/orders path.
+-- Phase 3 (A3) adds gated, audited paper auto-execution: an actionable signal
+-- is submitted through the shared /api/orders path, and its `acted` /
+-- `order_audit_id` columns are set to link the signal to the resulting
+-- `order_audit` row (also the durable one-order-per-bar dedupe). The engine is
+-- off unless SYSTEMATIC_EXECUTION_ENABLED=true, so with only SYSTEMATIC_ENABLED
+-- these stay unset (signal-only).
 
 CREATE TABLE IF NOT EXISTS strategy_definitions (
     id BIGSERIAL PRIMARY KEY,
@@ -439,6 +442,10 @@ CREATE TABLE IF NOT EXISTS strategy_signals (
 
 CREATE INDEX IF NOT EXISTS idx_strategy_signals_run
     ON strategy_signals (run_id, bar_time DESC);
+-- Backs the A3 per-run / global "orders placed today" caps: only acted
+-- signals count, so index just those by run + time.
+CREATE INDEX IF NOT EXISTS idx_strategy_signals_acted
+    ON strategy_signals (run_id, created_at DESC) WHERE acted;
 
 -- ==============================================
 -- INITIAL DATA
