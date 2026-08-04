@@ -14,6 +14,7 @@ function order(overrides: Partial<ValidatedOrder> = {}): ValidatedOrder {
     order_type: 'MKT',
     tif: 'DAY',
     account_mode: 'paper',
+    broker: 'ib',
     limit_price: null,
     stop_price: null,
     sec_type: 'STK',
@@ -62,6 +63,16 @@ describe('submitCreateOrder', () => {
     expect(d.update).toHaveBeenCalledWith(
       expect.objectContaining({ id: 7, ib_order_id: 42, status: 'submitted' })
     );
+    // Broker forwarded to the IB-service payload (B1).
+    expect(d.ibPost).toHaveBeenCalledWith(expect.objectContaining({ broker: 'ib' }));
+  });
+
+  it('keys the position guard net exposure per broker (B1)', async () => {
+    process.env.ORDER_MAX_POSITION = '1000';
+    const d = makeDeps();
+    d.netExposure.mockResolvedValueOnce(100);
+    await submitCreateOrder(order({ broker: 'mt5' }), null, d.overrides);
+    expect(d.netExposure).toHaveBeenCalledWith('MSFT', 'paper', expect.any(Number), 'mt5');
   });
 
   it('blocks a live order when LIVE_TRADING_ENABLED is false', async () => {

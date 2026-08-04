@@ -24,8 +24,31 @@ describe('validateOrder — happy paths', () => {
     expect(result.value.symbol).toBe('MSFT'); // uppercased
     expect(result.value.tif).toBe('DAY');
     expect(result.value.account_mode).toBe('paper');
+    expect(result.value.broker).toBe('ib'); // default venue (B1)
     expect(result.value.limit_price).toBeNull();
     expect(result.value.stop_price).toBeNull();
+  });
+
+  it('accepts an explicit broker and rejects an unknown one (B1)', () => {
+    const ok = validateOrder({
+      symbol: 'EURUSD',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'MKT',
+      broker: 'mt5',
+    });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.broker).toBe('mt5');
+
+    const bad = validateOrder({
+      symbol: 'MSFT',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'MKT',
+      broker: 'robinhood',
+    });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.errors.some((e) => /broker/.test(e))).toBe(true);
   });
 
   it('accepts a LMT order with a positive limit_price', () => {

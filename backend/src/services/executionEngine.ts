@@ -138,6 +138,7 @@ export class ExecutionEngine {
       order_type: 'MKT',
       tif: 'DAY',
       account_mode: run.account_mode,
+      broker: run.broker,
     });
     if (!v.ok) {
       return { placed: false, reason: `order validation failed: ${v.errors.join('; ')}` };

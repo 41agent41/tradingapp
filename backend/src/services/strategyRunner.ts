@@ -177,7 +177,8 @@ function defaultDeps(
         const size = await auditRepo.netExposure(
           run.symbol,
           run.account_mode,
-          POSITION_LOOKBACK_HOURS
+          POSITION_LOOKBACK_HOURS,
+          run.broker
         );
         return { size: Number.isFinite(size) ? size : 0, avg_price: 0 };
       } catch {

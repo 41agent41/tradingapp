@@ -96,7 +96,12 @@ export async function submitCreateOrder(
   if (cap > 0) {
     let net: number;
     try {
-      net = await deps.audit.netExposure(order.symbol, order.account_mode, positionLookbackHours());
+      net = await deps.audit.netExposure(
+        order.symbol,
+        order.account_mode,
+        positionLookbackHours(),
+        order.broker
+      );
     } catch (limitErr) {
       deps.error(
         { err: String((limitErr as Error)?.message ?? limitErr) },
@@ -141,6 +146,7 @@ export async function submitCreateOrder(
       limit_price: order.limit_price,
       stop_price: order.stop_price,
       account_mode: order.account_mode,
+      broker: order.broker,
       secType: order.sec_type,
       exchange: order.exchange,
       currency: order.currency,

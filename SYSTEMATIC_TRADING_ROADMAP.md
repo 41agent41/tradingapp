@@ -275,7 +275,7 @@ New tables (canonical `timescaledb-schema.sql`, mirroring the `backtest_runs` /
 
 ## 5. Component B — Multi-broker abstraction + MetaTrader
 
-### B1. Broker/data-source interface (enabling refactor) — 🚧 seam landed
+### B1. Broker/data-source interface (enabling refactor) — ✅ delivered
 
 > **Landed (ib_service seam).** New `ib_service/adapters.py` defines the
 > `MarketDataAdapter` / `BrokerAdapter` protocols + a registry keyed by
@@ -286,14 +286,20 @@ New tables (canonical `timescaledb-schema.sql`, mirroring the `backtest_runs` /
 > `broker=` parameter (default `ib`) is validated — unknown → 400, the
 > recognised-but-unbuilt `mt5` → a clean 501. `get_market_data_source()`'s
 > cosmetic string is superseded by `provider_health()`, surfaced at
-> `/health` and a new `/providers`. pytest covers resolution, availability and
-> IB delegation.
+> `/health` and a new `/providers`.
 >
-> **Remaining B1 (follow-on):** thread the `broker` dimension through the
-> backend `order_audit` + the `ORDER_MAX_POSITION` net key (per
-> `(broker, symbol, account_mode)`) and the `contracts` catalogue, and route
-> historical bars through the data adapter. These are additive and land with,
-> or just before, the MT5 data adapter (B2a).
+> **Landed (backend broker dimension).** `order_audit` gains a `broker` column
+> (default `ib`, with an `ADD COLUMN IF NOT EXISTS` for existing deployments);
+> `validateOrder` validates `broker` (default from `DEFAULT_BROKER`); the
+> `ORDER_MAX_POSITION` net is now keyed per `(broker, symbol, account_mode)` so
+> exposure never nets across venues; the order path forwards `broker` to the IB
+> service and the systematic engine threads each run's broker through sizing +
+> the net key. `/api/orders/config` surfaces `brokers` + `default_broker`; the
+> blotter can filter by `broker`.
+>
+> **Follow-on (with B2a):** broker-scope the `contracts` catalogue and route
+> historical bars through the data adapter — additive, lands alongside the MT5
+> data source.
 
 Define two Python protocols in `ib_service` and make the current IB code
 implement them — **no behaviour change; `source=ib` stays the default**:
@@ -389,7 +395,7 @@ audited identically to IB.
 | **2** | A2 live signal runner, **signal-only** | 1 | none (no orders) |
 | **3** | A3 auto-execution + risk layer, **paper** ✅ | 2 | gated, paper-only |
 | **4** | A5 `/systematic` monitoring UI + chart markers ✅ | 3 | none |
-| **5** | B1 broker abstraction (IB refactored behind interface) 🚧 seam | — (parallelisable) | none (`source=ib` unchanged) |
+| **5** | B1 broker abstraction (IB refactored behind interface) ✅ | — (parallelisable) | none (`source=ib` unchanged) |
 | **6** | B2a MetaTrader **data** source | 5 | none (read-only) |
 | **7** | B2b MetaTrader **execution** venue | 5, 6 | gated, paper-only |
 

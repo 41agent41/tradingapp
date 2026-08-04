@@ -30,6 +30,7 @@ export interface OrderAuditRow {
   id: number;
   submitted_at: string;
   account_mode: string;
+  broker: string;
   action: string;
   symbol: string;
   sec_type: string;
@@ -58,18 +59,19 @@ export class OrderAuditRepository {
   async create(input: AuditCreateInput): Promise<OrderAuditRow> {
     const sql = `
       INSERT INTO order_audit (
-        account_mode, action, symbol, sec_type, exchange, currency,
+        account_mode, broker, action, symbol, sec_type, exchange, currency,
         quantity, order_type, tif, limit_price, stop_price,
         operation, request_id, status
       ) VALUES (
-        $1, $2, $3, $4, $5, $6,
-        $7, $8, $9, $10, $11,
-        $12, $13, 'submitted'
+        $1, $2, $3, $4, $5, $6, $7,
+        $8, $9, $10, $11, $12,
+        $13, $14, 'submitted'
       )
       RETURNING *
     `;
     const result = await this.db.query(sql, [
       input.account_mode,
+      input.broker ?? 'ib',
       input.action,
       input.symbol,
       input.sec_type,
@@ -127,14 +129,24 @@ export class OrderAuditRepository {
    *     DAY orders don't inflate the net.
    *
    * BUY contributes +quantity, SELL −quantity. Returns 0 when nothing matches.
+   *
+   * Keyed per (broker, symbol, account_mode) so exposure never nets across
+   * venues (B1) — `MSFT@ib` and a same-named instrument on another broker are
+   * independent positions.
    */
-  async netExposure(symbol: string, accountMode: string, lookbackHours: number): Promise<number> {
+  async netExposure(
+    symbol: string,
+    accountMode: string,
+    lookbackHours: number,
+    broker: string = 'ib'
+  ): Promise<number> {
     const sql = `
       WITH latest AS (
         SELECT DISTINCT ON (ib_order_id) action, quantity, status
         FROM order_audit
         WHERE symbol = $1
           AND account_mode = $2
+          AND broker = $4
           AND ib_order_id IS NOT NULL
           AND submitted_at >= NOW() - ($3 * INTERVAL '1 hour')
         ORDER BY ib_order_id, submitted_at DESC
@@ -147,7 +159,12 @@ export class OrderAuditRepository {
         'rejected', 'cancel_requested', 'cancelled', 'Cancelled', 'ApiCancelled', 'Inactive'
       )
     `;
-    const result = await this.db.query(sql, [symbol.toUpperCase(), accountMode, lookbackHours]);
+    const result = await this.db.query(sql, [
+      symbol.toUpperCase(),
+      accountMode,
+      lookbackHours,
+      broker,
+    ]);
     return Number(result.rows[0]?.net ?? 0);
   }
 
@@ -155,6 +172,7 @@ export class OrderAuditRepository {
     filter: {
       symbol?: string;
       account_mode?: string;
+      broker?: string;
       status?: string;
       limit?: number;
       offset?: number;
@@ -169,6 +187,10 @@ export class OrderAuditRepository {
     if (filter.account_mode) {
       params.push(filter.account_mode);
       where.push(`account_mode = $${params.length}`);
+    }
+    if (filter.broker) {
+      params.push(filter.broker);
+      where.push(`broker = $${params.length}`);
     }
     if (filter.status) {
       params.push(filter.status);

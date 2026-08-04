@@ -26,8 +26,11 @@ import { submitCreateOrder } from '../services/orderService.js';
 import {
   isLiveTradingEnabled,
   isAccountMode,
+  isBroker,
   validateOrder,
   positionCap,
+  BROKERS,
+  DEFAULT_BROKER,
 } from '../services/orderTypes.js';
 
 const router = express.Router();
@@ -67,6 +70,8 @@ router.get('/config', async (_req: Request, res: Response) => {
       order_types: ib.data?.order_types ?? ['MKT', 'LMT', 'STP', 'STP_LMT'],
       tif: ib.data?.tif ?? ['DAY', 'GTC', 'IOC', 'FOK'],
       actions: ib.data?.actions ?? ['BUY', 'SELL'],
+      brokers: [...BROKERS],
+      default_broker: DEFAULT_BROKER,
       position_limit_enabled: positionCap() > 0,
       position_cap: positionCap(),
       trading_auth_required: isTradingAuthRequired(),
@@ -83,6 +88,8 @@ router.get('/config', async (_req: Request, res: Response) => {
       order_types: ['MKT', 'LMT', 'STP', 'STP_LMT'],
       tif: ['DAY', 'GTC', 'IOC', 'FOK'],
       actions: ['BUY', 'SELL'],
+      brokers: [...BROKERS],
+      default_broker: DEFAULT_BROKER,
       trading_auth_required: isTradingAuthRequired(),
       mfa_required: isMfaRequired(),
     });
@@ -271,6 +278,9 @@ router.get('/audit', async (req: Request, res: Response) => {
     if (typeof req.query.symbol === 'string' && req.query.symbol) filter.symbol = req.query.symbol;
     if (typeof req.query.account_mode === 'string' && isAccountMode(req.query.account_mode)) {
       filter.account_mode = req.query.account_mode;
+    }
+    if (typeof req.query.broker === 'string' && isBroker(req.query.broker)) {
+      filter.broker = req.query.broker;
     }
     if (typeof req.query.status === 'string' && req.query.status) filter.status = req.query.status;
     if (typeof req.query.limit === 'string') filter.limit = Number(req.query.limit);
