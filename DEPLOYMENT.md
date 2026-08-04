@@ -220,6 +220,17 @@ explicit liveness check + alert for both broker sessions — silent logout
 on either host is currently indistinguishable from "no trading opportunity
 today" until someone notices.
 
+**Future considerations** (tracked, not yet scheduled — see
+[`GAP_ANALYSIS.md` § Operational / Deployment Gaps](GAP_ANALYSIS.md#8-operational--deployment-gaps)
+for the living version of this list):
+
+- Authenticate the MT5 sidecar HTTP contract (shared-secret header or mTLS).
+- Firewall the IB Gateway and MT5 hosts to accept connections only from the
+  app host.
+- Add a liveness check + alert for both broker sessions.
+- Revisit whether IB Gateway and MT5 need separate hosts or can share one
+  with OS-level isolation.
+
 ## One-Command Deployment
 
 ```bash
