@@ -20,6 +20,7 @@ lands in B2 (Phases 6–7).
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 from fastapi import HTTPException
@@ -35,11 +36,23 @@ DEFAULT_PROVIDER = "ib"
 # --------------------------------------------------------------------------- #
 @runtime_checkable
 class MarketDataAdapter(Protocol):
-    """Read-side venue surface: contract discovery + quotes."""
+    """Read-side venue surface: contract discovery + historical bars + quotes."""
 
     name: str
 
     def search_contracts(self, request: Any) -> Dict[str, Any]: ...
+
+    def historical_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        period: str = "1Y",
+        *,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        indicators: Optional[List[str]] = None,
+        account_mode: str = "paper",
+    ) -> Any: ...
 
     def realtime_quote(self, symbol: str, account_mode: str = "paper") -> Any: ...
 
@@ -68,7 +81,14 @@ class BrokerAdapter(Protocol):
 # --------------------------------------------------------------------------- #
 _market_data: Dict[str, MarketDataAdapter] = {}
 _broker: Dict[str, BrokerAdapter] = {}
-_ib_registered = False
+_bootstrapped = False
+
+
+def mt5_bridge_url() -> Optional[str]:
+    """The MT5 sidecar base URL, or None when MT5 isn't configured. Read live
+    so tests (and a deployment enabling MT5) don't need a process restart."""
+    url = (os.getenv("MT5_BRIDGE_URL") or "").strip()
+    return url or None
 
 
 def register(
@@ -86,18 +106,39 @@ def register(
         _broker[key] = broker
 
 
-def _ensure_ib_registered() -> None:
-    """Lazily register the IB adapter on first use. Done lazily (rather than at
-    import time) so this module stays free of the heavy IB imports and avoids a
-    cycle with the route modules that import the registry."""
-    global _ib_registered
-    if _ib_registered:
+def _bootstrap() -> None:
+    """Lazily register the built-in adapters on first use. Done lazily (rather
+    than at import time) so this module stays free of the heavy IB/MT5 imports
+    and avoids a cycle with the route modules that import the registry.
+
+    IB is always registered. MT5 registers its **market-data** adapter only when
+    ``MT5_BRIDGE_URL`` is set (B2a) — otherwise ``mt5`` stays a recognised but
+    unavailable provider (→ 501). The MT5 broker/execution side lands in B2b.
+    """
+    global _bootstrapped
+    if _bootstrapped:
         return
     from ib_adapter import IBAdapter  # local import breaks the cycle
 
-    adapter = IBAdapter()
-    register("ib", market_data=adapter, broker=adapter)
-    _ib_registered = True
+    ib = IBAdapter()
+    register("ib", market_data=ib, broker=ib)
+
+    bridge = mt5_bridge_url()
+    if bridge:
+        from mt5_adapter import MT5Adapter
+
+        register("mt5", market_data=MT5Adapter(bridge))
+
+    _bootstrapped = True
+
+
+def reset_registry() -> None:
+    """Drop all registrations so the next resolve re-bootstraps. Test-only —
+    lets a test toggle MT5_BRIDGE_URL and re-derive availability."""
+    global _bootstrapped
+    _market_data.clear()
+    _broker.clear()
+    _bootstrapped = False
 
 
 def resolve_provider(name: Optional[str]) -> str:
@@ -113,18 +154,23 @@ def resolve_provider(name: Optional[str]) -> str:
 
 
 def _unavailable(provider: str, side: str) -> HTTPException:
+    hint = ""
+    if provider == "mt5":
+        hint = (
+            " Set MT5_BRIDGE_URL to enable the MT5 data source (B2a);"
+            " MT5 execution lands in B2b."
+            if side == "market-data"
+            else " MT5 execution (broker adapter) lands in B2b."
+        )
     return HTTPException(
         status_code=501,
-        detail=(
-            f"Provider '{provider}' has no {side} adapter yet. "
-            f"Only '{DEFAULT_PROVIDER}' is available; MetaTrader (mt5) lands in a later phase."
-        ),
+        detail=f"Provider '{provider}' has no {side} adapter available.{hint}",
     )
 
 
 def get_market_data_adapter(source: Optional[str] = None) -> MarketDataAdapter:
     """Resolve ``source=`` to a market-data adapter (default IB)."""
-    _ensure_ib_registered()
+    _bootstrap()
     provider = resolve_provider(source)
     adapter = _market_data.get(provider)
     if adapter is None:
@@ -134,7 +180,7 @@ def get_market_data_adapter(source: Optional[str] = None) -> MarketDataAdapter:
 
 def get_broker_adapter(broker: Optional[str] = None) -> BrokerAdapter:
     """Resolve ``broker=`` to a broker adapter (default IB)."""
-    _ensure_ib_registered()
+    _bootstrap()
     provider = resolve_provider(broker)
     adapter = _broker.get(provider)
     if adapter is None:
@@ -144,7 +190,7 @@ def get_broker_adapter(broker: Optional[str] = None) -> BrokerAdapter:
 
 def provider_health() -> Dict[str, Any]:
     """Per-provider registration/availability snapshot, for /health surfacing."""
-    _ensure_ib_registered()
+    _bootstrap()
     providers = {
         name: {
             "market_data": name in _market_data,

@@ -362,9 +362,22 @@ the HTTP boundary would not ripple into `ib_service` or the backend.
 
 - **B2a — data:** `MT5Adapter` implements `MarketDataAdapter`; map MT5 symbols
   (`MSFT`, `EURUSD`) and timeframes (`M1`…`D1`) to the app's `_TIMEFRAME_MAP`;
-  normalise timezone/timestamps to the app's UTC convention.
+  normalise timezone/timestamps to the app's UTC convention. — ✅ **delivered**
 - **B2b — execution:** implement `BrokerAdapter`; `/api/orders` `broker=mt5`
   routes here; `order_audit`, the gate, and all guards apply unchanged.
+
+> **B2a landed.** `ib_service/mt5_adapter.py` is the Linux-side thin HTTP client
+> for the sidecar: a data-only `MarketDataAdapter` that forwards `search`,
+> `historical_bars`, `realtime_quote` and `tick` to `MT5_BRIDGE_URL` and
+> normalises responses into the app's shapes (UTC unix-second bars,
+> `CandlestickBar`/`RealTimeQuote`, indicators via the shared calculator). It
+> registers under `mt5` **only when `MT5_BRIDGE_URL` is set** — otherwise `mt5`
+> stays a recognised-but-unavailable source (501). The historical/realtime/tick
+> and contract-search routes dispatch non-IB sources to it; `source=ib` is
+> untouched. pytest fakes the HTTP layer to cover the timeframe map, timestamp
+> coercion, response shaping, indicator parity and error translation (bridge
+> down → 503, 5xx → 502). The Windows sidecar itself (the `MetaTrader5` server)
+> is deployed out-of-repo against the contract documented in the adapter.
 
 **DoD (data):** a symbol charts + streams live via `source=mt5`.
 **DoD (exec):** a **paper** order places through MT5 end-to-end, gated and
@@ -396,7 +409,7 @@ audited identically to IB.
 | **3** | A3 auto-execution + risk layer, **paper** ✅ | 2 | gated, paper-only |
 | **4** | A5 `/systematic` monitoring UI + chart markers ✅ | 3 | none |
 | **5** | B1 broker abstraction (IB refactored behind interface) ✅ | — (parallelisable) | none (`source=ib` unchanged) |
-| **6** | B2a MetaTrader **data** source | 5 | none (read-only) |
+| **6** | B2a MetaTrader **data** source ✅ | 5 | none (read-only) |
 | **7** | B2b MetaTrader **execution** venue | 5, 6 | gated, paper-only |
 
 Phases 1–4 (systematic engine) and 5–7 (MetaTrader) are largely independent;

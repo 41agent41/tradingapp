@@ -16,6 +16,10 @@ pytz==2023.3
 # Phase 4 — real-time pipeline
 redis>=5.0.1
 
+# B2a — MetaTrader (MT5) sidecar HTTP client. Pinned <0.28 to match the
+# TestClient shim already used in dev (0.28 dropped the app= shortcut).
+httpx>=0.27,<0.28
+
 # Phase 6 — observability (structured logging + Prometheus metrics)
 structlog>=24.1.0
 # Capped below 7.0: instrumentator 7.x/8.x require starlette>=0.30, which

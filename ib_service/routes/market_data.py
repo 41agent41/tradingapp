@@ -46,18 +46,29 @@ async def get_historical_data(
 ):
     """Get historical market data with support for date ranges and technical indicators"""
     try:
-        # Broker-scoped source (B1): validate + resolve the venue. source=ib is
-        # the default and keeps the existing IB path below unchanged; an unknown
-        # source → 400 and a not-yet-available venue (mt5) → 501. Per-venue
-        # historical dispatch through the adapter arrives with the MT5 data
-        # adapter (B2a); today only IB serves bars.
-        from adapters import get_market_data_adapter
+        # Broker-scoped source (B1/B2a): resolve the venue. source=ib keeps the
+        # IB path below unchanged; a non-IB venue (e.g. mt5) dispatches straight
+        # to that adapter's historical_bars. Unknown source → 400; a recognised
+        # but unconfigured venue → 501.
+        from adapters import get_market_data_adapter, resolve_provider
 
-        get_market_data_adapter(source)
+        adapter = get_market_data_adapter(source)
+
         # Parse indicators parameter (comma-separated list)
         indicator_list = []
         if indicators:
             indicator_list = [ind.strip() for ind in indicators.split(",") if ind.strip()]
+
+        if resolve_provider(source) != "ib":
+            return adapter.historical_bars(
+                symbol.upper(),
+                timeframe,
+                period,
+                start_date=start_date,
+                end_date=end_date,
+                indicators=indicator_list or None,
+                account_mode=account_mode,
+            )
 
         # Validate that we have either period OR date range, but not both
         has_date_range = start_date and end_date
