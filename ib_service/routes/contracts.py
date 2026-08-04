@@ -106,53 +106,69 @@ def _contract_to_result(contract) -> dict:
     return result
 
 
+def search_contracts_sync(request: SearchRequest) -> dict:
+    """Contract-search worker (the IB implementation of
+    ``MarketDataAdapter.search_contracts``). Extracted from the route so the
+    IB adapter can delegate to it; the route dispatches here via the registry.
+    """
+    # Log the account mode being used
+    data_type = get_data_type_for_account_mode(request.account_mode)
+    logger.info(
+        f"Searching contracts for {request.symbol} ({request.secType}) "
+        f"in {request.account_mode} mode - {data_type} data"
+    )
+
+    # Get connection
+    ib = get_ib_connection()
+
+    # Create contract with enhanced parameters
+    contract = create_contract(
+        request.symbol.upper(), request.secType, request.exchange, request.currency
+    )
+
+    # Clear previous contracts
+    ib.contracts = []
+
+    # Request contract details with longer timeout for better results
+    ib.reqContractDetails(5, contract)
+    time.sleep(3)  # Increased wait time for more comprehensive results
+
+    if not ib.contracts:
+        return {"results": [], "count": 0}
+
+    # Enhanced results formatting with more details
+    results = [_contract_to_result(c) for c in ib.contracts]
+
+    # Sort results by relevance (stocks first, then by exchange preference)
+    results.sort(key=_exchange_sort_key)
+
+    return {
+        "results": results,
+        "count": len(results),
+        "search_params": {
+            "symbol": request.symbol,
+            "secType": request.secType,
+            "exchange": request.exchange,
+            "currency": request.currency,
+            "searchByName": request.name,
+        },
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
 @router.post("/contract/search")
 async def search_contracts(request: SearchRequest):
-    """Enhanced search for contracts with better filtering and results"""
+    """Enhanced search for contracts with better filtering and results.
+
+    Broker-scoped (B1): ``request.source`` selects the venue's catalogue via
+    the adapter registry, defaulting to IB. Unknown source → 400; a recognised
+    but not-yet-available venue (mt5) → 501.
+    """
     try:
-        # Log the account mode being used
-        data_type = get_data_type_for_account_mode(request.account_mode)
-        logger.info(
-            f"Searching contracts for {request.symbol} ({request.secType}) "
-            f"in {request.account_mode} mode - {data_type} data"
-        )
+        from adapters import get_market_data_adapter
 
-        # Get connection
-        ib = get_ib_connection()
-
-        # Create contract with enhanced parameters
-        contract = create_contract(
-            request.symbol.upper(), request.secType, request.exchange, request.currency
-        )
-
-        # Clear previous contracts
-        ib.contracts = []
-
-        # Request contract details with longer timeout for better results
-        ib.reqContractDetails(5, contract)
-        time.sleep(3)  # Increased wait time for more comprehensive results
-
-        if not ib.contracts:
-            return {"results": [], "count": 0}
-
-        # Enhanced results formatting with more details
-        results = [_contract_to_result(c) for c in ib.contracts]
-
-        # Sort results by relevance (stocks first, then by exchange preference)
-        results.sort(key=_exchange_sort_key)
-
-        return {
-            "results": results,
-            "count": len(results),
-            "search_params": {
-                "symbol": request.symbol,
-                "secType": request.secType,
-                "exchange": request.exchange,
-                "currency": request.currency,
-                "searchByName": request.name,
-            },
-            "timestamp": datetime.now().isoformat(),
-        }
+        adapter = get_market_data_adapter(request.source)
+        return adapter.search_contracts(request)
 
     except HTTPException:
         raise

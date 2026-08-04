@@ -72,6 +72,9 @@ class SearchRequest(BaseModel):
     currency: str = "USD"
     name: bool = False
     account_mode: str = "paper"
+    # Broker-scoped source (B1). Defaults to IB; contract universes are keyed
+    # per broker (no cross-broker symbol reconciliation).
+    source: str = "ib"
 
 
 class AdvancedSearchRequest(BaseModel):

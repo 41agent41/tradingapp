@@ -42,9 +42,18 @@ async def get_historical_data(
     secType: str = "STK",
     exchange: str = "SMART",
     currency: str = "USD",
+    source: str = "ib",
 ):
     """Get historical market data with support for date ranges and technical indicators"""
     try:
+        # Broker-scoped source (B1): validate + resolve the venue. source=ib is
+        # the default and keeps the existing IB path below unchanged; an unknown
+        # source → 400 and a not-yet-available venue (mt5) → 501. Per-venue
+        # historical dispatch through the adapter arrives with the MT5 data
+        # adapter (B2a); today only IB serves bars.
+        from adapters import get_market_data_adapter
+
+        get_market_data_adapter(source)
         # Parse indicators parameter (comma-separated list)
         indicator_list = []
         if indicators:
@@ -390,13 +399,16 @@ def get_realtime_data_sync(symbol: str, account_mode: str = "paper"):
 
 
 @router.get("/market-data/tick")
-async def get_tick_data(symbol: str, account_mode: str = "paper"):
+async def get_tick_data(symbol: str, account_mode: str = "paper", source: str = "ib"):
     """Get high-frequency tick data"""
     try:
         logger.info(f"Tick data endpoint called for symbol: {symbol}")
 
+        from adapters import get_market_data_adapter
+
+        adapter = get_market_data_adapter(source)
         # Run the synchronous operation in a separate thread
-        tick_data = await run_tws_operation(lambda: get_tick_data_sync(symbol, account_mode))
+        tick_data = await run_tws_operation(lambda: adapter.tick(symbol, account_mode))
 
         logger.info(f"Successfully retrieved tick data for {symbol}")
         return tick_data
@@ -482,13 +494,16 @@ def get_tick_data_sync(symbol: str, account_mode: str = "paper"):
 
 
 @router.get("/market-data/realtime", response_model=RealTimeQuote)
-async def get_realtime_data(symbol: str, account_mode: str = "paper"):
+async def get_realtime_data(symbol: str, account_mode: str = "paper", source: str = "ib"):
     """Get real-time market data"""
     try:
         logger.info(f"Real-time data endpoint called for symbol: {symbol}")
 
+        from adapters import get_market_data_adapter
+
+        adapter = get_market_data_adapter(source)
         # Run the synchronous operation in a separate thread
-        quote = await run_tws_operation(lambda: get_realtime_data_sync(symbol, account_mode))
+        quote = await run_tws_operation(lambda: adapter.realtime_quote(symbol, account_mode))
 
         logger.info(f"Successfully retrieved market data for {symbol}")
         return quote
