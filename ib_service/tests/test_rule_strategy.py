@@ -450,3 +450,116 @@ class TestParity:
             df.copy(), compile_rule_strategy(MA_CROSSOVER_PARITY_RULE_SET), symbol="TEST"
         )
         json.dumps(results.to_dict(), allow_nan=False)
+
+
+# --------------------------------------------------------------------------- #
+# Live evaluation (A2 — RuleStrategy.evaluate)
+# --------------------------------------------------------------------------- #
+
+
+def _rising_ohlcv(n: int = 60) -> pd.DataFrame:
+    close = np.linspace(100.0, 120.0, n)
+    df = pd.DataFrame(
+        {
+            "open": close,
+            "high": close + 0.5,
+            "low": close - 0.5,
+            "close": close,
+            "volume": np.full(n, 1_000.0),
+        }
+    )
+    df.index = pd.date_range("2024-01-01", periods=n, freq="D")
+    return df
+
+
+class TestEvaluate:
+    def test_buy_when_flat_and_entry_fires(self) -> None:
+        # Rising series -> sma_20 > sma_50 on the last bar; flat position -> buy.
+        strat = compile_rule_strategy(MA_CROSSOVER_PARITY_RULE_SET)
+        result = strat.evaluate(_rising_ohlcv(), Position(size=0.0))
+        assert result["signal"] == "buy"
+        assert result["entry"] is True
+        assert result["in_session"] is True
+
+    def test_no_buy_when_already_long(self) -> None:
+        # Entry rule includes position.size <= 0, so a long position blocks it.
+        strat = compile_rule_strategy(MA_CROSSOVER_PARITY_RULE_SET)
+        result = strat.evaluate(_rising_ohlcv(), Position(size=100.0, avg_price=100.0))
+        assert result["signal"] == "none"
+        assert result["entry"] is False
+
+    def test_sell_on_unrealized_stop_when_long(self) -> None:
+        strat = compile_rule_strategy(
+            {
+                "name": "stop",
+                "entry": {"all": [{"left": "close", "op": ">", "right": 1_000_000}]},  # never
+                "exit": {"any": [{"left": "position.unrealized_pct", "op": "<=", "right": -2.0}]},
+            }
+        )
+        # Long at avg 120, last close ~120 from the rising frame... make the loss
+        # explicit: avg_price well above the last close.
+        df = _rising_ohlcv()
+        last_close = float(df["close"].iloc[-1])
+        result = strat.evaluate(df, Position(size=100.0, avg_price=last_close * 1.05))
+        assert result["exit"] is True
+        assert result["signal"] == "sell"
+
+    def test_no_sell_when_flat_even_if_exit_fires(self) -> None:
+        strat = compile_rule_strategy(
+            {
+                "name": "always-exit",
+                "entry": {"all": [{"left": "close", "op": ">", "right": 1_000_000}]},
+                "exit": {"any": [{"left": "close", "op": ">", "right": 0}]},  # always
+            }
+        )
+        result = strat.evaluate(_rising_ohlcv(), Position(size=0.0))
+        assert result["exit"] is True
+        assert result["signal"] == "none"  # nothing to sell
+
+    def test_out_of_session_is_none(self) -> None:
+        strat = compile_rule_strategy(
+            {
+                "name": "sess",
+                "timeframe": "1day",
+                "sessions": [
+                    {"tz": "UTC", "from": "00:00", "to": "00:01"}
+                ],  # never (daily 00:00 only)
+                "entry": {"all": [{"left": "close", "op": ">", "right": 0}]},  # always, but gated
+            }
+        )
+        # Daily bars stamped at 00:00 UTC actually fall in the 00:00-00:01 window,
+        # so use an out-of-window intraday timestamp instead.
+        df = _rising_ohlcv()
+        df.index = pd.date_range("2024-01-01 12:00", periods=len(df), freq="D")
+        result = strat.evaluate(df, Position(size=0.0))
+        assert result["in_session"] is False
+        assert result["signal"] == "none"
+
+    def test_multi_timeframe_operand_resolved_in_evaluate(self) -> None:
+        # evaluate() computes primary indicators itself and merges the 1h RSI.
+        idx = pd.date_range("2024-06-03 00:00", periods=180, freq="5min")
+        close = 100 + np.sin(np.linspace(0, 6, len(idx))) * 3
+        df = pd.DataFrame(
+            {"open": close, "high": close + 0.2, "low": close - 0.2, "close": close, "volume": 1.0},
+            index=idx,
+        )
+        strat = compile_rule_strategy(
+            {
+                "name": "mtf",
+                "timeframe": "5min",
+                "entry": {
+                    "all": [
+                        {"left": {"indicator": "rsi", "timeframe": "1hour"}, "op": ">", "right": 0}
+                    ]
+                },
+            }
+        )
+        result = strat.evaluate(df, Position(size=0.0))
+        # The 1h RSI is defined well before the last bar, so the entry (rsi > 0)
+        # resolves to a real boolean rather than being NaN-suppressed.
+        assert result["entry"] is True
+
+    def test_empty_frame_raises(self) -> None:
+        strat = compile_rule_strategy(MA_CROSSOVER_PARITY_RULE_SET)
+        with pytest.raises(ValueError):
+            strat.evaluate(pd.DataFrame())

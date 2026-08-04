@@ -29,6 +29,8 @@ EXPECTED_PATHS = {
     # backtesting.py
     "/backtesting/strategies",
     "/backtesting/run",
+    # strategies.py
+    "/strategies/evaluate",
     # streaming.py
     "/market-data/stream/subscribe",
     "/market-data/stream/unsubscribe",

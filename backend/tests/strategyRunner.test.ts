@@ -1,0 +1,179 @@
+/**
+ * StrategyRunner tests.
+ *
+ * Every dependency (active-run listing, history fetch, position lookup,
+ * evaluate call, signal persistence, emit) is injected, so the suite is
+ * hermetic — no DB, no IB service, no timers fired in real time
+ * (mirrors backfillScheduler.test.ts).
+ */
+import {
+  StrategyRunner,
+  historyPeriodFor,
+  type StrategyRunnerDeps,
+  type RawBar,
+  type EvaluateResult,
+} from '../src/services/strategyRunner.js';
+import type { ActiveRun } from '../src/services/strategyRepository.js';
+
+const NOW = Date.parse('2026-01-10T00:00:00Z');
+
+function activeRun(overrides: Partial<ActiveRun> = {}): ActiveRun {
+  return {
+    id: 1,
+    definition_id: 2,
+    broker: 'ib',
+    account_mode: 'paper',
+    symbol: 'MSFT',
+    timeframe: '5min',
+    rule_set: { entry: { all: [] } },
+    ...overrides,
+  };
+}
+
+const bars: RawBar[] = [
+  { timestamp: 1_700_000_000, open: 10, high: 11, low: 9, close: 10.5, volume: 100 },
+  { timestamp: 1_700_000_300, open: 10.5, high: 12, low: 10, close: 11, volume: 120 },
+];
+
+const buyResult: EvaluateResult = {
+  signal: 'buy',
+  entry: true,
+  exit: false,
+  entry_reason: 'entry rules met',
+  in_session: true,
+  bar_time: '2024-06-03T14:00:00Z',
+};
+
+function makeDeps(overrides: Partial<StrategyRunnerDeps> = {}): StrategyRunnerDeps {
+  return {
+    listActiveRuns: jest.fn().mockResolvedValue([activeRun()]),
+    fetchHistory: jest.fn().mockResolvedValue(bars),
+    getPosition: jest.fn().mockResolvedValue({ size: 0, avg_price: 0 }),
+    evaluate: jest.fn().mockResolvedValue(buyResult),
+    latestSignalBarTime: jest.fn().mockResolvedValue(null),
+    insertSignal: jest.fn().mockResolvedValue({ inserted: true }),
+    markEvaluated: jest.fn().mockResolvedValue(undefined),
+    markError: jest.fn().mockResolvedValue(undefined),
+    emit: jest.fn(),
+    now: () => NOW,
+    ...overrides,
+  };
+}
+
+function makeRunner(deps: StrategyRunnerDeps) {
+  return new StrategyRunner({ enabled: true, deps, intervalSeconds: 60, initialDelayMs: 0 });
+}
+
+describe('StrategyRunner.runOnce', () => {
+  it('evaluates a run, persists the signal and emits it', async () => {
+    const deps = makeDeps();
+    const runner = makeRunner(deps);
+
+    await runner.runOnce();
+
+    expect(deps.fetchHistory).toHaveBeenCalledWith('MSFT', '5min');
+    expect(deps.evaluate).toHaveBeenCalledWith(
+      bars,
+      { entry: { all: [] } },
+      {
+        size: 0,
+        avg_price: 0,
+      }
+    );
+    expect(deps.insertSignal).toHaveBeenCalledWith(
+      expect.objectContaining({ run_id: 1, signal: 'buy', bar_time: '2024-06-03T14:00:00Z' })
+    );
+    expect(deps.emit).toHaveBeenCalledWith(1, expect.objectContaining({ signal: 'buy' }));
+    expect(deps.markEvaluated).toHaveBeenCalled();
+
+    const status = runner.status();
+    expect(status.totals.signals_recorded).toBe(1);
+    expect(status.totals.errors).toBe(0);
+  });
+
+  it('dedupes: does not re-insert or emit when the latest bar is unchanged', async () => {
+    const deps = makeDeps({
+      latestSignalBarTime: jest.fn().mockResolvedValue('2024-06-03T14:00:00Z'),
+    });
+    const runner = makeRunner(deps);
+
+    await runner.runOnce();
+
+    expect(deps.insertSignal).not.toHaveBeenCalled();
+    expect(deps.emit).not.toHaveBeenCalled();
+    expect(deps.markEvaluated).toHaveBeenCalled(); // still marks the run as evaluated
+    expect(runner.status().totals.signals_recorded).toBe(0);
+  });
+
+  it('does not emit when the insert was suppressed by the dedupe constraint', async () => {
+    const deps = makeDeps({ insertSignal: jest.fn().mockResolvedValue({ inserted: false }) });
+    const runner = makeRunner(deps);
+
+    await runner.runOnce();
+
+    expect(deps.emit).not.toHaveBeenCalled();
+    expect(runner.status().totals.signals_recorded).toBe(0);
+  });
+
+  it('skips a run with no bars', async () => {
+    const deps = makeDeps({ fetchHistory: jest.fn().mockResolvedValue([]) });
+    const runner = makeRunner(deps);
+
+    await runner.runOnce();
+
+    expect(deps.evaluate).not.toHaveBeenCalled();
+    expect(deps.insertSignal).not.toHaveBeenCalled();
+  });
+
+  it('isolates a per-run failure, records it on the run and keeps going', async () => {
+    const deps = makeDeps({
+      listActiveRuns: jest.fn().mockResolvedValue([activeRun({ id: 1 }), activeRun({ id: 2 })]),
+      evaluate: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('ib down'))
+        .mockResolvedValueOnce(buyResult),
+    });
+    const runner = makeRunner(deps);
+
+    await runner.runOnce();
+
+    expect(deps.markError).toHaveBeenCalledWith(1, 'ib down');
+    // The second run still recorded its signal despite the first failing.
+    expect(deps.insertSignal).toHaveBeenCalledTimes(1);
+    expect(runner.status().totals.errors).toBe(1);
+    expect(runner.status().totals.signals_recorded).toBe(1);
+  });
+
+  it('threads the run position into the evaluate call', async () => {
+    const deps = makeDeps({
+      getPosition: jest.fn().mockResolvedValue({ size: 100, avg_price: 42 }),
+    });
+    const runner = makeRunner(deps);
+
+    await runner.runOnce();
+
+    expect(deps.evaluate).toHaveBeenCalledWith(bars, expect.anything(), {
+      size: 100,
+      avg_price: 42,
+    });
+    expect(deps.insertSignal).toHaveBeenCalledWith(expect.objectContaining({ position_size: 100 }));
+  });
+});
+
+describe('StrategyRunner disabled', () => {
+  it('start() is a no-op when not enabled', () => {
+    const deps = makeDeps();
+    const runner = new StrategyRunner({ enabled: false, deps });
+    runner.start();
+    expect(runner.status().enabled).toBe(false);
+  });
+});
+
+describe('historyPeriodFor', () => {
+  it('sizes the window to the timeframe', () => {
+    expect(historyPeriodFor('1day')).toBe('1Y');
+    expect(historyPeriodFor('1hour')).toBe('1M');
+    expect(historyPeriodFor('5min')).toBe('10D');
+    expect(historyPeriodFor('tick')).toBe('1D');
+  });
+});

@@ -1,0 +1,280 @@
+/**
+ * Persistence for systematic strategies (Systematic Trading roadmap — Phase 2 / A2).
+ *
+ * Three tables, one repository:
+ *   - `strategy_definitions` — a declarative rule-set (shared by backtest + live).
+ *   - `strategy_runs`        — a definition pinned to a broker/account_mode + status.
+ *   - `strategy_signals`     — every evaluation the runner makes (signal-only in P2).
+ *
+ * The DB layer is abstracted behind a small `Querier` so the SQL can be
+ * unit-tested without Postgres (mirrors `backtestRunRepository.ts`).
+ */
+
+export interface Querier {
+  query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
+}
+
+// --------------------------------------------------------------------------- //
+// Row / input shapes
+// --------------------------------------------------------------------------- //
+
+export interface StrategyDefinitionInput {
+  name: string;
+  symbol: string;
+  timeframe: string;
+  broker?: string;
+  rule_set: Record<string, unknown>;
+}
+
+export interface StrategyDefinitionRow {
+  id: number;
+  name: string;
+  broker: string;
+  symbol: string;
+  timeframe: string;
+  rule_set: Record<string, unknown>;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StrategyRunInput {
+  definition_id: number;
+  broker?: string;
+  account_mode?: string;
+  sizing?: Record<string, unknown>;
+  risk?: Record<string, unknown>;
+}
+
+export interface StrategyRunRow {
+  id: number;
+  definition_id: number;
+  broker: string;
+  account_mode: string;
+  status: string;
+  sizing: Record<string, unknown>;
+  risk: Record<string, unknown>;
+  last_evaluated_at: string | null;
+  last_error: string | null;
+  started_at: string;
+  stopped_at: string | null;
+}
+
+/** A run joined with the fields of its definition the runner needs. */
+export interface ActiveRun {
+  id: number;
+  definition_id: number;
+  broker: string;
+  account_mode: string;
+  symbol: string;
+  timeframe: string;
+  rule_set: Record<string, unknown>;
+}
+
+export interface StrategySignalInput {
+  run_id: number;
+  bar_time: string; // ISO 8601
+  signal: string; // 'buy' | 'sell' | 'none'
+  reason?: string | null;
+  entry?: boolean;
+  exit?: boolean;
+  in_session?: boolean;
+  position_size?: number;
+}
+
+export interface StrategySignalRow {
+  id: number;
+  run_id: number;
+  bar_time: string;
+  signal: string;
+  reason: string | null;
+  entry: boolean;
+  exit: boolean;
+  in_session: boolean;
+  position_size: string;
+  acted: boolean;
+  order_audit_id: number | null;
+  created_at: string;
+}
+
+const MAX_LIMIT = 200;
+const DEFAULT_LIMIT = 50;
+
+function clampLimit(raw: unknown): number {
+  const n = Number(raw);
+  return n > 0 ? Math.min(Math.max(n, 1), MAX_LIMIT) : DEFAULT_LIMIT;
+}
+
+export class StrategyRepository {
+  constructor(private db: Querier) {}
+
+  // ---- definitions ------------------------------------------------------- //
+
+  async createDefinition(input: StrategyDefinitionInput): Promise<StrategyDefinitionRow> {
+    const sql = `
+      INSERT INTO strategy_definitions (name, broker, symbol, timeframe, rule_set)
+      VALUES ($1, $2, $3, $4, $5::jsonb)
+      RETURNING *
+    `;
+    const values = [
+      input.name,
+      input.broker ?? 'ib',
+      input.symbol.toUpperCase(),
+      input.timeframe,
+      JSON.stringify(input.rule_set ?? {}),
+    ];
+    const result = await this.db.query(sql, values);
+    return result.rows[0] as StrategyDefinitionRow;
+  }
+
+  async listDefinitions(limit?: number, offset?: number): Promise<StrategyDefinitionRow[]> {
+    const sql = `
+      SELECT * FROM strategy_definitions
+      ORDER BY created_at DESC
+      LIMIT $1 OFFSET $2
+    `;
+    const result = await this.db.query(sql, [clampLimit(limit), Math.max(Number(offset) || 0, 0)]);
+    return result.rows as StrategyDefinitionRow[];
+  }
+
+  async findDefinition(id: number): Promise<StrategyDefinitionRow | null> {
+    const result = await this.db.query('SELECT * FROM strategy_definitions WHERE id = $1', [id]);
+    return (result.rows[0] as StrategyDefinitionRow | undefined) ?? null;
+  }
+
+  // ---- runs -------------------------------------------------------------- //
+
+  async createRun(input: StrategyRunInput): Promise<StrategyRunRow> {
+    const sql = `
+      INSERT INTO strategy_runs (definition_id, broker, account_mode, sizing, risk)
+      VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+      RETURNING *
+    `;
+    const values = [
+      input.definition_id,
+      input.broker ?? 'ib',
+      input.account_mode ?? 'paper',
+      JSON.stringify(input.sizing ?? {}),
+      JSON.stringify(input.risk ?? {}),
+    ];
+    const result = await this.db.query(sql, values);
+    return result.rows[0] as StrategyRunRow;
+  }
+
+  async listRuns(
+    filter: { status?: string; limit?: number; offset?: number } = {}
+  ): Promise<StrategyRunRow[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (filter.status) {
+      params.push(filter.status);
+      where.push(`status = $${params.length}`);
+    }
+    params.push(clampLimit(filter.limit), Math.max(Number(filter.offset) || 0, 0));
+    const sql = `
+      SELECT * FROM strategy_runs
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY started_at DESC
+      LIMIT $${params.length - 1} OFFSET $${params.length}
+    `;
+    const result = await this.db.query(sql, params);
+    return result.rows as StrategyRunRow[];
+  }
+
+  async findRun(id: number): Promise<StrategyRunRow | null> {
+    const result = await this.db.query('SELECT * FROM strategy_runs WHERE id = $1', [id]);
+    return (result.rows[0] as StrategyRunRow | undefined) ?? null;
+  }
+
+  /** Runs the live runner should evaluate: status='running', joined with the
+   *  definition fields it needs (symbol, timeframe, rule_set). */
+  async listActiveRuns(): Promise<ActiveRun[]> {
+    const sql = `
+      SELECT r.id, r.definition_id, r.broker, r.account_mode,
+             d.symbol, d.timeframe, d.rule_set
+      FROM strategy_runs r
+      JOIN strategy_definitions d ON d.id = r.definition_id
+      WHERE r.status = 'running'
+      ORDER BY r.id ASC
+    `;
+    const result = await this.db.query(sql, []);
+    return result.rows as ActiveRun[];
+  }
+
+  /** Move a run to a terminal/paused status. `stopped_at` is set when leaving
+   *  'running'; clearing back to 'running' is not supported here (start a new run). */
+  async updateRunStatus(id: number, status: string): Promise<StrategyRunRow | null> {
+    const sql = `
+      UPDATE strategy_runs
+      SET status = $2,
+          stopped_at = CASE WHEN $2 <> 'running' AND stopped_at IS NULL THEN NOW() ELSE stopped_at END
+      WHERE id = $1
+      RETURNING *
+    `;
+    const result = await this.db.query(sql, [id, status]);
+    return (result.rows[0] as StrategyRunRow | undefined) ?? null;
+  }
+
+  async markRunEvaluated(id: number, atIso: string): Promise<void> {
+    await this.db.query(
+      'UPDATE strategy_runs SET last_evaluated_at = $2, last_error = NULL WHERE id = $1',
+      [id, atIso]
+    );
+  }
+
+  async markRunError(id: number, error: string): Promise<void> {
+    await this.db.query('UPDATE strategy_runs SET last_error = $2 WHERE id = $1', [id, error]);
+  }
+
+  // ---- signals ----------------------------------------------------------- //
+
+  /**
+   * Insert a signal. The `(run_id, bar_time)` unique constraint enforces the
+   * "one decision per closed bar" invariant at the DB level, so a duplicate
+   * insert is a no-op — `inserted` reports whether a row was actually written.
+   */
+  async insertSignal(
+    input: StrategySignalInput
+  ): Promise<{ inserted: boolean; row: StrategySignalRow | null }> {
+    const sql = `
+      INSERT INTO strategy_signals
+        (run_id, bar_time, signal, reason, entry, exit, in_session, position_size)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ON CONFLICT (run_id, bar_time) DO NOTHING
+      RETURNING *
+    `;
+    const values = [
+      input.run_id,
+      input.bar_time,
+      input.signal,
+      input.reason ?? null,
+      input.entry ?? false,
+      input.exit ?? false,
+      input.in_session ?? true,
+      input.position_size ?? 0,
+    ];
+    const result = await this.db.query(sql, values);
+    const row = (result.rows[0] as StrategySignalRow | undefined) ?? null;
+    return { inserted: row !== null, row };
+  }
+
+  async listSignals(runId: number, limit?: number): Promise<StrategySignalRow[]> {
+    const sql = `
+      SELECT * FROM strategy_signals
+      WHERE run_id = $1
+      ORDER BY bar_time DESC
+      LIMIT $2
+    `;
+    const result = await this.db.query(sql, [runId, clampLimit(limit)]);
+    return result.rows as StrategySignalRow[];
+  }
+
+  async latestSignalBarTime(runId: number): Promise<string | null> {
+    const result = await this.db.query(
+      'SELECT bar_time FROM strategy_signals WHERE run_id = $1 ORDER BY bar_time DESC LIMIT 1',
+      [runId]
+    );
+    const row = result.rows[0] as { bar_time: string } | undefined;
+    return row?.bar_time ?? null;
+  }
+}
