@@ -425,6 +425,28 @@ follow-on features.
 `verify_timestamp_config.sh` from `TROUBLESHOOTING.md` or fold it into
 `diagnose`.
 
+- The multi-broker topology (`DEPLOYMENT.md` §
+  [Multi-Broker Host Topology](DEPLOYMENT.md#multi-broker-host-topology-ib--mt5))
+  runs IB Gateway and the MT5 sidecar as two separate GUI-session hosts, each
+  a single point of failure for its venue, and the MT5 sidecar's HTTP
+  contract (`ib_service/mt5_adapter.py`) carries no authentication.
+
+**Action (future consideration — not yet scheduled):**
+1. Add authentication to the MT5 sidecar HTTP contract (shared-secret header
+   or mTLS) before it's relied on beyond a lab test — currently anything
+   that can reach `MT5_BRIDGE_URL` can place/cancel/modify orders.
+2. Firewall both the IB Gateway host and the MT5 host so only the app host's
+   IP can reach them (private network/VPN, not public internet); document
+   this alongside the existing `ufw` guidance in `DEPLOYMENT.md`.
+3. Add a liveness check + alert for both broker sessions (IB Gateway login
+   state, MT5 terminal login state) — today a silent logout on either host
+   is indistinguishable from "no trading opportunity" until someone notices.
+4. Revisit whether IB Gateway and the MT5 terminal need separate physical/
+   virtual hosts at all, or whether OS-level isolation (separate users/
+   services on one Windows host) meets the same isolation goal with half
+   the hosts to patch and monitor — decide this deliberately rather than by
+   default.
+
 ---
 
 ## 9. Functional Status Against the `.cursorrules` Brief

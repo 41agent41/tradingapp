@@ -7,14 +7,15 @@ other deployment scripts in this repository.
 ## Table of Contents
 
 1. [Prerequisites](#prerequisites)
-2. [One-Command Deployment](#one-command-deployment)
-3. [Manual Deployment](#manual-deployment)
-4. [Environment Configuration](#environment-configuration)
-5. [Service Verification](#service-verification)
-6. [Common Issues](#common-issues)
-7. [Production Setup](#production-setup)
-8. [Monitoring & Maintenance](#monitoring--maintenance)
-9. [Deployment Checklist](#deployment-checklist)
+2. [Multi-Broker Host Topology (IB + MT5)](#multi-broker-host-topology-ib--mt5)
+3. [One-Command Deployment](#one-command-deployment)
+4. [Manual Deployment](#manual-deployment)
+5. [Environment Configuration](#environment-configuration)
+6. [Service Verification](#service-verification)
+7. [Common Issues](#common-issues)
+8. [Production Setup](#production-setup)
+9. [Monitoring & Maintenance](#monitoring--maintenance)
+10. [Deployment Checklist](#deployment-checklist)
 
 ## Prerequisites
 
@@ -44,6 +45,29 @@ fresh Ubuntu host.
 - Market-data subscriptions for the assets you intend to query (paper
   accounts are recommended for testing).
 
+### MetaTrader 5 (MT5) — optional second broker
+
+MT5 is optional; skip this if you're only trading through IB. The
+`MetaTrader5` Python package only runs against a live MT5 terminal and is
+**Windows-only**, so it cannot join the Linux Docker stack. Instead:
+
+- A **dedicated Windows host** runs the MT5 terminal, logged into its own
+  MT5 account, plus a small FastAPI sidecar service that exposes the HTTP
+  contract documented in
+  [`ib_service/mt5_adapter.py`](ib_service/mt5_adapter.py) (`/health`,
+  `/symbols`, `/history`, `/quote`, `/tick`, `/orders`, `/positions`,
+  `/account`). The sidecar itself is not part of this repository — it's a
+  separate service you build and run on that Windows host.
+- The Linux `ib_service` container talks to it as a plain HTTP client
+  (`MT5Adapter`) — set `MT5_BRIDGE_URL` (e.g.
+  `MT5_BRIDGE_URL=http://10.7.3.22:9100`) and redeploy. Until it's set,
+  `source=mt5` / `broker=mt5` resolve to a clean `501` instead of a
+  confusing `404`.
+- See [Multi-Broker Host Topology](#multi-broker-host-topology-ib--mt5)
+  below for how this host relates to the rest of the deployment, and the
+  design trade-offs of running IB and MT5 as separate dedicated hosts with
+  separate accounts.
+
 ### External database (recommended for production)
 
 By default the base `docker-compose.yml` does **not** provision a
@@ -70,6 +94,142 @@ opt into the bundled TimescaleDB by passing `--with-db` to any
 Under the hood `--with-db` layers `docker-compose.db.yml` onto the base
 file. The schema in `backend/src/database/timescaledb-schema.sql` is
 applied automatically on first run.
+
+## Multi-Broker Host Topology (IB + MT5)
+
+TradingApp can trade through two broker venues at once — Interactive
+Brokers and MetaTrader 5 — via the adapter seam in
+[`ib_service/adapters.py`](ib_service/adapters.py). Both are **GUI
+applications that hold a logged-in broker session**, and neither runs
+inside the Docker stack, so a full deployment spans up to four hosts:
+
+```
+                    ┌────────────────────────────────────────────┐
+                    │  App host — Docker Compose                 │
+                    │  frontend :3000  backend :4000  redis :6379│
+                    │  ib_service :8000  (172.20.0.0/16 bridge)  │
+                    └───────┬──────────────────────┬─────────────┘
+                            │                       │
+              IB socket API │                       │ HTTP (MT5Adapter)
+                (4001/4002) │                       │ MT5_BRIDGE_URL
+                            ▼                       ▼
+              ┌──────────────────────┐   ┌───────────────────────────┐
+              │ IB Gateway / TWS host│   │ MT5 Windows host           │
+              │ logged into one      │   │ MT5 terminal, logged into  │
+              │ IB account           │   │ one MT5 account            │
+              │ (Win/Linux, GUI)     │   │  + FastAPI sidecar :9100   │
+              │                      │   │  (not in this repo — see   │
+              │                      │   │  ib_service/mt5_adapter.py)│
+              └──────────────────────┘   └───────────────────────────┘
+                            │
+                            │ (elsewhere)
+                            ▼
+              ┌──────────────────────┐
+              │ External Postgres /  │
+              │ TimescaleDB          │
+              └──────────────────────┘
+```
+
+- **App host → IB Gateway host:** `ib_service` connects outbound over the
+  IB socket API (`IB_HOST:IB_PORT`, `ibapi`). One TCP session, one
+  `IB_CLIENT_ID`, one logged-in IB account.
+- **App host → MT5 host:** `ib_service`'s `MT5Adapter` connects outbound
+  over plain HTTP to the sidecar (`MT5_BRIDGE_URL`). One logged-in MT5
+  account, driven by whatever process keeps the MT5 terminal signed in on
+  that host.
+- Both venues are **broker-scoped** end-to-end: contract catalogues,
+  positions, order audit and the net-exposure cap are keyed per broker, so
+  IB and MT5 never reconcile against each other and a systematic run
+  targets exactly one venue (see `FEATURES.md` §
+  [Multi-broker: IB + MetaTrader](FEATURES.md#multi-broker-interactive-brokers--metatrader-mt5)).
+- Only the app host needs inbound exposure to end users (3000/4000, or a
+  reverse proxy in front of them). The IB Gateway and MT5 hosts should only
+  accept inbound connections from the app host's IP — put both behind the
+  same private network/VPN as the app host, never on the public internet.
+
+### Design considerations: one dedicated host + one account per broker
+
+The current design — a separate host per broker, each logged into its own
+broker account — is a reasonable default, but it's worth being deliberate
+about *why*, because it also compounds some existing weaknesses rather
+than fixing them.
+
+**What it gets right:**
+
+- **Forced by MT5, not optional.** `MetaTrader5` only runs Windows-side
+  against a live terminal, so *some* Windows host is unavoidable for MT5
+  regardless of how IB is deployed.
+- **Blast-radius isolation.** A crash, reboot, or Windows Update on the
+  MT5 host can't take down the IB session (or the Docker stack), and vice
+  versa. A resource-hungry MT5 backtest can't starve IB Gateway's socket
+  loop.
+- **Session isolation.** IB Gateway and an MT5 terminal are both fragile,
+  stateful GUI sessions (auto-logout, 2FA re-prompts, update dialogs).
+  Keeping them on separate machines means a stuck dialog or forced restart
+  on one doesn't require touching the other.
+
+**Where it's worth challenging:**
+
+- **It doubles the "must stay logged in" operational problem instead of
+  solving it.** The single-host review already flagged the IB Gateway
+  session as a manual, non-declarative dependency and a hard SPOF. Adding
+  a second GUI-session host for MT5 doesn't reduce that risk, it
+  duplicates it — now there are two broker sessions that can silently log
+  out and quietly stop trading, each needing its own babysitting
+  (auto-restart, session-alive monitoring, 2FA handling).
+- **The MT5 sidecar contract has no authentication.** `MT5Adapter`
+  (`ib_service/mt5_adapter.py`) makes plain `httpx` calls with no auth
+  header, and the documented sidecar contract has no token/mTLS story. As
+  designed, *anything* that can reach `MT5_BRIDGE_URL:9100` can query
+  positions/account and place, cancel, or modify orders on that MT5
+  account. This needs a shared-secret header or mTLS before it's exposed
+  beyond a trusted private link — it's the same class of gap as the
+  unauthenticated Redis instance in the base compose file.
+- **"Dedicated host" doesn't necessarily mean "separate hardware."** The
+  two accounts genuinely need to stay separate (they're different broker
+  relationships), but the *hosts* don't automatically need to be separate
+  physical/virtual machines. IB Gateway also runs on Windows — if host
+  count/cost is a concern, both sessions could run on **one** Windows host
+  under separate OS users/services (or separate VMs on one hypervisor),
+  which cuts patching/monitoring surface in half while keeping the account
+  boundary intact via OS-level isolation rather than hardware isolation.
+  Conversely, if the two hosts exist for genuine reliability/compliance
+  reasons (e.g. so an MT5-host outage never touches IB), that's a valid
+  reason to keep them apart — but it should be a stated decision, not a
+  default.
+- **No failover per broker.** Each broker is still a single account on a
+  single host with no standby — this design isolates failures *between*
+  brokers, it doesn't add redundancy *within* either one. If MT5 or IB
+  Gateway logs out or the host drops, that venue goes dark until someone
+  intervenes; there's no secondary session to fail over to.
+- **Scaling stays vertical, doubled.** IB already can't run more than one
+  active session per `IB_CLIENT_ID`; MT5 has the same one-terminal-session
+  constraint. So this topology doesn't just inherit the IB service's
+  "vertical scaling only" ceiling, it applies it independently to a second
+  broker — running two venues doesn't add throughput, it adds two more
+  places a single stuck session can halt trading.
+
+**Recommendation:** keep the two accounts logically separate (required),
+but treat "separate hardware" as a choice to justify rather than a given —
+decide it based on actual reliability/compliance needs rather than
+defaulting to it. Whichever way that's decided, prioritize: (1) adding
+authentication to the MT5 sidecar HTTP contract before relying on it for
+anything beyond a lab test, (2) firewalling both the IB Gateway host and
+the MT5 host to accept connections only from the app host, and (3) an
+explicit liveness check + alert for both broker sessions — silent logout
+on either host is currently indistinguishable from "no trading opportunity
+today" until someone notices.
+
+**Future considerations** (tracked, not yet scheduled — see
+[`GAP_ANALYSIS.md` § Operational / Deployment Gaps](GAP_ANALYSIS.md#8-operational--deployment-gaps)
+for the living version of this list):
+
+- Authenticate the MT5 sidecar HTTP contract (shared-secret header or mTLS).
+- Firewall the IB Gateway and MT5 hosts to accept connections only from the
+  app host.
+- Add a liveness check + alert for both broker sessions.
+- Revisit whether IB Gateway and MT5 need separate hosts or can share one
+  with OS-level isolation.
 
 ## One-Command Deployment
 
@@ -151,6 +311,9 @@ IB_HOST=10.7.3.21
 IB_PORT=4002
 IB_CLIENT_ID=1
 IB_TIMEOUT=30
+
+# MT5 sidecar (optional second broker — see Multi-Broker Host Topology)
+MT5_BRIDGE_URL=http://10.7.3.22:9100
 
 # External Postgres / TimescaleDB
 POSTGRES_HOST=db.example.com
@@ -398,6 +561,8 @@ Open the frontend in a browser at `http://<server-ip>:3000`.
 | Services won't start (port clash) | `sudo ss -ltnp \| grep -E ':(3000\|4000\|8000)'` and free the port |
 | Frontend can't reach backend | Verify `NEXT_PUBLIC_API_URL` and `CORS_ORIGINS` agree with your server IP |
 | IB connection failures | `./tradingapp.sh ib-help`, then `./tradingapp.sh test` |
+| MT5 requests return 501 | `MT5_BRIDGE_URL` is unset — expected until the MT5 sidecar host is deployed (see [Multi-Broker Host Topology](#multi-broker-host-topology-ib--mt5)) |
+| MT5 requests return 503 | Sidecar unreachable — confirm the MT5 Windows host is up, the terminal is logged in, and the app host can reach `MT5_BRIDGE_URL` (firewall/VPN) |
 | Database health check fails | Confirm `POSTGRES_HOST` is reachable from inside the backend container (`docker compose exec backend node -e "require('net').connect(5432,'$POSTGRES_HOST').on('connect',()=>console.log('ok'))"`) |
 | Charts not loading | `./tradingapp.sh logs` for frontend errors, then `./tradingapp.sh redeploy` |
 
