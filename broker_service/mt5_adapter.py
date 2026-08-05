@@ -12,6 +12,11 @@ like `source=ib` from the frontend's point of view.
 
 ### Sidecar HTTP contract (documented here; implemented on the Windows host)
 
+When `MT5_BRIDGE_SECRET` is set, every request below carries an
+`X-MT5-Bridge-Secret: <secret>` header; the sidecar should reject any request
+missing it or presenting the wrong value (shared-secret auth — the bridge has
+no auth story otherwise, so anything that can reach it can trade the account).
+
     GET  {base}/health                                   -> {"status": "..."}
     GET  {base}/symbols?query=<q>&limit=<n>              -> {"results": [...], "count": n}
     GET  {base}/history?symbol=&timeframe=<MT5>&count=   -> {"bars": [{time,open,high,low,close,volume}, ...]}
@@ -72,6 +77,7 @@ _PERIOD_TO_COUNT = {
 }
 
 _HTTP_TIMEOUT_SECONDS = 30.0
+_SHARED_SECRET_HEADER = "X-MT5-Bridge-Secret"
 
 
 def _to_unix_seconds(value: Any) -> float:
@@ -100,9 +106,16 @@ class MT5Adapter:
 
     name = "mt5"
 
-    def __init__(self, base_url: str, *, timeout: float = _HTTP_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout: float = _HTTP_TIMEOUT_SECONDS,
+        shared_secret: Optional[str] = None,
+    ) -> None:
         self._base = base_url.rstrip("/")
         self._timeout = timeout
+        self._shared_secret = shared_secret or None
 
     # -- HTTP plumbing ----------------------------------------------------- #
     def _request(
@@ -114,6 +127,7 @@ class MT5Adapter:
         json: Optional[Dict[str, Any]] = None,
     ) -> Any:
         url = f"{self._base}{path}"
+        headers = {_SHARED_SECRET_HEADER: self._shared_secret} if self._shared_secret else None
         try:
             with httpx.Client(timeout=self._timeout) as client:
                 resp = client.request(
@@ -121,6 +135,7 @@ class MT5Adapter:
                     url,
                     params={k: v for k, v in (params or {}).items() if v is not None},
                     json=json,
+                    headers=headers,
                 )
         except httpx.HTTPError as exc:
             logger.error("mt5_bridge_unreachable", url=url, method=method, error=str(exc))

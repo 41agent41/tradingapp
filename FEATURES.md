@@ -296,7 +296,11 @@ other brokers plug in without touching the routes.
   normalised to the app's shapes) and **execution** (place / cancel / modify /
   positions / account, with the same validation + live gate as IB). When
   `MT5_BRIDGE_URL` is set, `source=mt5` / `broker=mt5` become available;
-  otherwise MT5 is a recognised-but-unavailable provider.
+  otherwise MT5 is a recognised-but-unavailable provider. When
+  `MT5_BRIDGE_SECRET` is also set, every request to the sidecar carries an
+  `X-MT5-Bridge-Secret` header — the sidecar itself must enforce it, since the
+  bridge contract otherwise has no auth story; `broker_service` logs a startup
+  warning if the URL is configured without the secret.
 - **Alpaca and OANDA — cloud REST, no sidecar host.** Unlike MT5, both are
   reachable directly over HTTPS, so
   [`AlpacaAdapter`](broker_service/alpaca_adapter.py) and

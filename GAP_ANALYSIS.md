@@ -435,9 +435,16 @@ follow-on features.
   to the broker's own authenticated API, no self-hosted sidecar involved.
 
 **Action (future consideration — not yet scheduled):**
-1. Add authentication to the MT5 sidecar HTTP contract (shared-secret header
-   or mTLS) before it's relied on beyond a lab test — currently anything
-   that can reach `MT5_BRIDGE_URL` can place/cancel/modify orders.
+1. ✅ **Client side done, sidecar side still open.** `MT5Adapter`
+   (`broker_service/mt5_adapter.py`) now sends an `X-MT5-Bridge-Secret`
+   header on every request when `MT5_BRIDGE_SECRET` is set, and
+   `broker_service` logs a startup warning if `MT5_BRIDGE_URL` is configured
+   without it. The other half of the contract — the sidecar rejecting
+   requests missing the header or presenting the wrong value — has to be
+   implemented on the Windows host itself, outside this repo. Until that
+   lands there, anything that can reach `MT5_BRIDGE_URL` can still
+   place/cancel/modify orders. mTLS remains a valid alternative to the
+   shared-secret header if the sidecar framework makes it easier.
 2. Firewall both the IB Gateway host and the MT5 host so only the app host's
    IP can reach them (private network/VPN, not public internet); document
    this alongside the existing `ufw` guidance in `DEPLOYMENT.md`.
