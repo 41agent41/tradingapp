@@ -113,9 +113,7 @@ describe('resolveOrderQuantity — alpaca (share-sized like IB)', () => {
   });
 
   it("still rejects 'lots' and 'units' units on an alpaca run", () => {
-    expect(
-      resolveOrderQuantity({ type: 'fixed', unit: 'lots', size: 1 }, alpaca).ok
-    ).toBe(false);
+    expect(resolveOrderQuantity({ type: 'fixed', unit: 'lots', size: 1 }, alpaca).ok).toBe(false);
     const r = resolveOrderQuantity({ type: 'fixed', unit: 'units', size: 1 }, alpaca);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toMatch(/units/);

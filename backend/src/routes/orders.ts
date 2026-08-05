@@ -158,7 +158,9 @@ router.delete('/:id', orderAuth, async (req: Request, res: Response) => {
   }
 
   try {
-    const ibResp = await axios.delete(`${BROKER_SERVICE_URL}/orders/${orderId}`, { timeout: 10_000 });
+    const ibResp = await axios.delete(`${BROKER_SERVICE_URL}/orders/${orderId}`, {
+      timeout: 10_000,
+    });
     // A cancel doesn't produce a *new* audit row — it transitions the
     // existing one (matched by ib_order_id). Best-effort: update the
     // most-recent row for this id.
