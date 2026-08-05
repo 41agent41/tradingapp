@@ -14,8 +14,9 @@
  * `/api/market-data`, so the public surface is unchanged.
  */
 import type { Request, Response } from 'express';
+import { BROKERS } from '../../services/orderTypes.js';
 
-export const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
+export const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
 // Cache TTLs (seconds). Tunable via env so operators don't have to redeploy.
 export const REALTIME_CACHE_TTL = parseInt(process.env.CACHE_TTL_REALTIME || '2', 10);
@@ -87,7 +88,7 @@ export interface AdvancedSearchQuery {
 /** Resolve a request's venue to a supported broker (B1), defaulting to 'ib'. */
 export function resolveBroker(raw?: string): string {
   const v = (raw || '').trim().toLowerCase();
-  return v === 'mt5' ? 'mt5' : 'ib';
+  return (BROKERS as readonly string[]).includes(v) ? v : 'ib';
 }
 
 export function cacheKey(parts: Array<string | number | boolean | undefined | null>): string {

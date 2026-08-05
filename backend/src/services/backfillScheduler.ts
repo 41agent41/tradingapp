@@ -6,7 +6,7 @@
  * both `enabled` and `auto_collect`. Without it, the only way to get data
  * into the database is to click the Download page by hand.
  *
- *   data_collection_config ─▶ scheduler ─▶ ib_service /market-data/history
+ *   data_collection_config ─▶ scheduler ─▶ broker_service /market-data/history
  *                                              │
  *                                              ▼
  *                          marketDataService.storeCandlestickData (upsert)
@@ -16,7 +16,7 @@
  *
  * Design notes:
  *
- *  - Lives in the **backend**, not `ib_service`, because the IB service has
+ *  - Lives in the **backend**, not `broker_service`, because the IB service has
  *    no database access — it cannot read `data_collection_config` nor write
  *    `candlestick_data`. The backend owns Postgres and already proxies the
  *    IB service, so orchestration belongs here.
@@ -43,7 +43,7 @@ import {
 } from './marketDataService.js';
 import { logger } from './logger.js';
 
-const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
+const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
 const BACKFILL_ENABLED = (process.env.BACKFILL_ENABLED ?? 'false').toLowerCase() === 'true';
 const BACKFILL_INTERVAL_MINUTES = Math.max(
@@ -122,7 +122,7 @@ function defaultDeps(): BackfillDeps {
     getLatestStoredTimestamp: (contractId, timeframe) =>
       marketDataService.getLatestStoredTimestamp(contractId, timeframe),
     fetchHistory: async (req) => {
-      const response = await axios.get(`${IB_SERVICE_URL}/market-data/history`, {
+      const response = await axios.get(`${BROKER_SERVICE_URL}/market-data/history`, {
         params: {
           symbol: req.symbol,
           timeframe: req.timeframe,

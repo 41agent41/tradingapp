@@ -23,7 +23,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-tradingapp}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tradingapp123}
       POSTGRES_DB: ${POSTGRES_DB:-tradingapp}
-      # Force UTC so timestamps round-trip cleanly with the IB service.
+      # Force UTC so timestamps round-trip cleanly with the broker service.
       PGTZ: UTC
       TZ: UTC
     ports:
@@ -53,7 +53,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      ib_service:
+      broker_service:
         condition: service_started
       redis:
         condition: service_started

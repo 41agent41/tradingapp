@@ -152,7 +152,7 @@ export class MarketDataService {
   //
   // Technical indicators are intentionally NOT persisted (the canonical
   // TimescaleDB schema omits the `technical_indicators` table) — they are
-  // computed on demand in `ib_service/indicators.py` and rendered client-side.
+  // computed on demand in `broker_service/indicators.py` and rendered client-side.
   // Callers that need indicators should fetch from the IB service rather than
   // this cache (see GAP_ANALYSIS.md §3.2).
   async getHistoricalData(

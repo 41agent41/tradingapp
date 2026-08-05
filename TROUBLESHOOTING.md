@@ -92,7 +92,7 @@ curl -s -X POST http://<server-ip>:8000/contract/search \
   -d '{"symbol":"AAPL","secType":"STK","exchange":"SMART"}'
 
 curl -fs http://<server-ip>:8000/health
-docker compose restart ib_service
+docker compose restart broker_service
 ```
 
 If the IB service answers but the search is empty, the most likely causes
@@ -139,13 +139,13 @@ curl -fs http://<server-ip>:4000/api/database/health
 ### IB Service
 
 ```bash
-docker compose logs --tail=200 ib_service
+docker compose logs --tail=200 broker_service
 
 # Verify the IB Python client is installed
-docker compose exec ib_service python -c "import ibapi, fastapi; print('ok')"
+docker compose exec broker_service python -c "import ibapi, fastapi; print('ok')"
 
 # Force a rebuild (clears cached wheels)
-docker compose build --no-cache ib_service
+docker compose build --no-cache broker_service
 ```
 
 ## Network & CORS
@@ -153,8 +153,8 @@ docker compose build --no-cache ib_service
 ### Inter-container connectivity
 
 ```bash
-docker compose exec backend curl -fs http://ib_service:8000/health
-docker compose exec backend ping -c1 ib_service
+docker compose exec backend curl -fs http://broker_service:8000/health
+docker compose exec backend ping -c1 broker_service
 docker network ls
 docker network inspect tradingapp_tradingapp-network
 ```
@@ -287,7 +287,7 @@ Local Next.js dev runs outside Docker:
 ```bash
 cd frontend && npm run dev
 cd backend  && npm run dev
-cd ib_service && uvicorn main:app --reload --host 0.0.0.0
+cd broker_service && uvicorn main:app --reload --host 0.0.0.0
 ```
 
 Inside Docker the production images do not enable hot reload — make code

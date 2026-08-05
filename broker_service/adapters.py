@@ -16,6 +16,12 @@ MetaTrader is a *recognised but not-yet-available* provider: asking for it
 resolves to a clean ``501`` rather than a confusing ``404``/``400``, which is
 exactly the "nowhere to plug in" gap this phase closes. The MT5 adapter itself
 lands in B2 (Phases 6–7).
+
+Alpaca and OANDA follow the same shape as MT5 — a thin ``httpx`` client
+implementing both protocols — but need no sidecar host: both are cloud REST
+APIs reachable directly from this Linux service, gated by API-credential env
+vars instead of a bridge URL (``ALPACA_API_KEY``/``ALPACA_API_SECRET`` and
+``OANDA_API_TOKEN``/``OANDA_ACCOUNT_ID`` respectively).
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ from fastapi import HTTPException
 
 # Every provider the platform knows about. Membership here means "a valid value
 # for source=/broker="; availability (a registered adapter) is separate.
-SUPPORTED_PROVIDERS = ("ib", "mt5")
+SUPPORTED_PROVIDERS = ("ib", "mt5", "alpaca", "oanda")
 DEFAULT_PROVIDER = "ib"
 
 
@@ -91,6 +97,22 @@ def mt5_bridge_url() -> Optional[str]:
     return url or None
 
 
+def alpaca_credentials() -> Optional[tuple[str, str]]:
+    """``(key, secret)`` when both Alpaca credentials are set, else None. Read
+    live, same as ``mt5_bridge_url()``, so tests can toggle availability
+    without a process restart."""
+    key = (os.getenv("ALPACA_API_KEY") or "").strip()
+    secret = (os.getenv("ALPACA_API_SECRET") or "").strip()
+    return (key, secret) if key and secret else None
+
+
+def oanda_credentials() -> Optional[tuple[str, str]]:
+    """``(token, account_id)`` when both OANDA credentials are set, else None."""
+    token = (os.getenv("OANDA_API_TOKEN") or "").strip()
+    account_id = (os.getenv("OANDA_ACCOUNT_ID") or "").strip()
+    return (token, account_id) if token and account_id else None
+
+
 def register(
     name: str,
     *,
@@ -113,7 +135,9 @@ def _bootstrap() -> None:
 
     IB is always registered. MT5 registers **both** its market-data (B2a) and
     broker/execution (B2b) adapters when ``MT5_BRIDGE_URL`` is set — otherwise
-    ``mt5`` stays a recognised but unavailable provider (→ 501).
+    ``mt5`` stays a recognised but unavailable provider (→ 501). Alpaca and
+    OANDA follow the identical pattern, gated by API credentials instead of a
+    bridge URL (no sidecar host — both are cloud REST APIs).
     """
     global _bootstrapped
     if _bootstrapped:
@@ -129,6 +153,25 @@ def _bootstrap() -> None:
 
         mt5 = MT5Adapter(bridge)
         register("mt5", market_data=mt5, broker=mt5)
+
+    alpaca_creds = alpaca_credentials()
+    if alpaca_creds:
+        from alpaca_adapter import AlpacaAdapter
+
+        key, secret = alpaca_creds
+        alpaca_paper = os.getenv("ALPACA_PAPER", "true").lower() != "false"
+        alpaca = AlpacaAdapter(key, secret, paper=alpaca_paper)
+        register("alpaca", market_data=alpaca, broker=alpaca)
+
+    oanda_creds = oanda_credentials()
+    if oanda_creds:
+        from oanda_adapter import OANDAAdapter
+
+        token, account_id = oanda_creds
+        oanda = OANDAAdapter(
+            token, account_id, environment=os.getenv("OANDA_ENVIRONMENT", "practice")
+        )
+        register("oanda", market_data=oanda, broker=oanda)
 
     _bootstrapped = True
 
@@ -154,10 +197,15 @@ def resolve_provider(name: Optional[str]) -> str:
     return key
 
 
+_UNAVAILABLE_HINTS = {
+    "mt5": " Set MT5_BRIDGE_URL to enable the MT5 sidecar (data + execution).",
+    "alpaca": " Set ALPACA_API_KEY and ALPACA_API_SECRET to enable Alpaca.",
+    "oanda": " Set OANDA_API_TOKEN and OANDA_ACCOUNT_ID to enable OANDA.",
+}
+
+
 def _unavailable(provider: str, side: str) -> HTTPException:
-    hint = ""
-    if provider == "mt5":
-        hint = " Set MT5_BRIDGE_URL to enable the MT5 sidecar (data + execution)."
+    hint = _UNAVAILABLE_HINTS.get(provider, "")
     return HTTPException(
         status_code=501,
         detail=f"Provider '{provider}' has no {side} adapter available.{hint}",

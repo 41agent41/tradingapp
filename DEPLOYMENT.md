@@ -6,16 +6,35 @@ other deployment scripts in this repository.
 
 ## Table of Contents
 
-1. [Prerequisites](#prerequisites)
-2. [Multi-Broker Host Topology (IB + MT5)](#multi-broker-host-topology-ib--mt5)
-3. [One-Command Deployment](#one-command-deployment)
-4. [Manual Deployment](#manual-deployment)
-5. [Environment Configuration](#environment-configuration)
-6. [Service Verification](#service-verification)
-7. [Common Issues](#common-issues)
-8. [Production Setup](#production-setup)
-9. [Monitoring & Maintenance](#monitoring--maintenance)
-10. [Deployment Checklist](#deployment-checklist)
+1. [Upgrading from `ib_service`](#upgrading-from-ib_service)
+2. [Prerequisites](#prerequisites)
+3. [Multi-Broker Host Topology (IB + MT5)](#multi-broker-host-topology-ib--mt5)
+4. [One-Command Deployment](#one-command-deployment)
+5. [Manual Deployment](#manual-deployment)
+6. [Environment Configuration](#environment-configuration)
+7. [Service Verification](#service-verification)
+8. [Common Issues](#common-issues)
+9. [Production Setup](#production-setup)
+10. [Monitoring & Maintenance](#monitoring--maintenance)
+11. [Deployment Checklist](#deployment-checklist)
+
+## Upgrading from `ib_service`
+
+The `ib_service` directory and Docker Compose service are now **`broker_service`**
+— the service grew beyond Interactive Brokers (it also hosts the MT5, Alpaca
+and OANDA adapters), so the name no longer fit. This is a **breaking change**
+for existing deployments:
+
+- The Compose service is now named `broker_service` (was `ib_service`) — update
+  any scripts that call `docker compose logs ib_service` / `exec ib_service`.
+- Env vars renamed: `IB_SERVICE_URL` → `BROKER_SERVICE_URL`,
+  `IB_SERVICE_PORT` → `BROKER_SERVICE_PORT`, `IB_SERVICE_HOST` →
+  `BROKER_SERVICE_HOST`. Update your `.env` accordingly — the old names are
+  **not** read as fallbacks.
+- `IB_HOST` / `IB_PORT` / `IB_CLIENT_ID` (the actual IB Gateway connection)
+  are **unchanged** — only the service-identity vars above were renamed.
+- `./tradingapp.sh` already targets the new service name; no script changes
+  needed on your part beyond `.env`.
 
 ## Prerequisites
 
@@ -54,11 +73,11 @@ MT5 is optional; skip this if you're only trading through IB. The
 - A **dedicated Windows host** runs the MT5 terminal, logged into its own
   MT5 account, plus a small FastAPI sidecar service that exposes the HTTP
   contract documented in
-  [`ib_service/mt5_adapter.py`](ib_service/mt5_adapter.py) (`/health`,
+  [`broker_service/mt5_adapter.py`](broker_service/mt5_adapter.py) (`/health`,
   `/symbols`, `/history`, `/quote`, `/tick`, `/orders`, `/positions`,
   `/account`). The sidecar itself is not part of this repository — it's a
   separate service you build and run on that Windows host.
-- The Linux `ib_service` container talks to it as a plain HTTP client
+- The Linux `broker_service` container talks to it as a plain HTTP client
   (`MT5Adapter`) — set `MT5_BRIDGE_URL` (e.g.
   `MT5_BRIDGE_URL=http://10.7.3.22:9100`) and redeploy. Until it's set,
   `source=mt5` / `broker=mt5` resolve to a clean `501` instead of a
@@ -67,6 +86,24 @@ MT5 is optional; skip this if you're only trading through IB. The
   below for how this host relates to the rest of the deployment, and the
   design trade-offs of running IB and MT5 as separate dedicated hosts with
   separate accounts.
+
+### Alpaca and OANDA — optional cloud brokers
+
+Both are optional and, unlike MT5, need **no dedicated host** — they're cloud
+REST APIs the `broker_service` container calls directly over HTTPS, so
+enabling either is just setting credentials and redeploying:
+
+- **Alpaca** (US equities/options): set `ALPACA_API_KEY` and
+  `ALPACA_API_SECRET`; `ALPACA_PAPER` (default `true`) selects Alpaca's paper
+  or live trading endpoint. Once both credentials are set, `source=alpaca` /
+  `broker=alpaca` become available.
+- **OANDA** (FX/CFD): set `OANDA_API_TOKEN` and `OANDA_ACCOUNT_ID`;
+  `OANDA_ENVIRONMENT` (`practice` default, or `live`) selects the endpoint.
+  Once both credentials are set, `source=oanda` / `broker=oanda` become
+  available.
+
+Until a broker's credentials are set, requests for it resolve to a clean
+`501` (same as MT5 without `MT5_BRIDGE_URL`), not a confusing `404`.
 
 ### External database (recommended for production)
 
@@ -97,17 +134,20 @@ applied automatically on first run.
 
 ## Multi-Broker Host Topology (IB + MT5)
 
-TradingApp can trade through two broker venues at once — Interactive
-Brokers and MetaTrader 5 — via the adapter seam in
-[`ib_service/adapters.py`](ib_service/adapters.py). Both are **GUI
-applications that hold a logged-in broker session**, and neither runs
-inside the Docker stack, so a full deployment spans up to four hosts:
+TradingApp can trade through several broker venues at once via the adapter
+seam in [`broker_service/adapters.py`](broker_service/adapters.py). IB and
+MT5 are both **GUI applications that hold a logged-in broker session**, and
+neither runs inside the Docker stack, so a full deployment spans up to four
+hosts. Alpaca and OANDA don't need this treatment — they're cloud REST APIs
+the `broker_service` container calls directly (see
+[Alpaca and OANDA](#alpaca-and-oanda--optional-cloud-brokers) above) — so
+this topology discussion is specific to IB + MT5:
 
 ```
                     ┌────────────────────────────────────────────┐
                     │  App host — Docker Compose                 │
                     │  frontend :3000  backend :4000  redis :6379│
-                    │  ib_service :8000  (172.20.0.0/16 bridge)  │
+                    │  broker_service :8000  (172.20.0.0/16 bridge)  │
                     └───────┬──────────────────────┬─────────────┘
                             │                       │
               IB socket API │                       │ HTTP (MT5Adapter)
@@ -119,7 +159,7 @@ inside the Docker stack, so a full deployment spans up to four hosts:
               │ IB account           │   │ one MT5 account            │
               │ (Win/Linux, GUI)     │   │  + FastAPI sidecar :9100   │
               │                      │   │  (not in this repo — see   │
-              │                      │   │  ib_service/mt5_adapter.py)│
+              │                      │   │  broker_service/mt5_adapter.py)│
               └──────────────────────┘   └───────────────────────────┘
                             │
                             │ (elsewhere)
@@ -130,10 +170,10 @@ inside the Docker stack, so a full deployment spans up to four hosts:
               └──────────────────────┘
 ```
 
-- **App host → IB Gateway host:** `ib_service` connects outbound over the
+- **App host → IB Gateway host:** `broker_service` connects outbound over the
   IB socket API (`IB_HOST:IB_PORT`, `ibapi`). One TCP session, one
   `IB_CLIENT_ID`, one logged-in IB account.
-- **App host → MT5 host:** `ib_service`'s `MT5Adapter` connects outbound
+- **App host → MT5 host:** `broker_service`'s `MT5Adapter` connects outbound
   over plain HTTP to the sidecar (`MT5_BRIDGE_URL`). One logged-in MT5
   account, driven by whatever process keeps the MT5 terminal signed in on
   that host.
@@ -178,7 +218,7 @@ than fixing them.
   out and quietly stop trading, each needing its own babysitting
   (auto-restart, session-alive monitoring, 2FA handling).
 - **The MT5 sidecar contract has no authentication.** `MT5Adapter`
-  (`ib_service/mt5_adapter.py`) makes plain `httpx` calls with no auth
+  (`broker_service/mt5_adapter.py`) makes plain `httpx` calls with no auth
   header, and the documented sidecar contract has no token/mTLS story. As
   designed, *anything* that can reach `MT5_BRIDGE_URL:9100` can query
   positions/account and place, cancel, or modify orders on that MT5
@@ -428,7 +468,7 @@ subscribe-mode and forwards every tick to Socket.IO clients in the
 The end-to-end flow is:
 
 ```
-IB Gateway ──reqMktData──▶ ib_service ──redis.publish──▶ Redis
+IB Gateway ──reqMktData──▶ broker_service ──redis.publish──▶ Redis
                                                           │  pSUBSCRIBE
                                                           ▼
                               Socket.IO room ◀── backend StreamingBridge
@@ -563,6 +603,8 @@ Open the frontend in a browser at `http://<server-ip>:3000`.
 | IB connection failures | `./tradingapp.sh ib-help`, then `./tradingapp.sh test` |
 | MT5 requests return 501 | `MT5_BRIDGE_URL` is unset — expected until the MT5 sidecar host is deployed (see [Multi-Broker Host Topology](#multi-broker-host-topology-ib--mt5)) |
 | MT5 requests return 503 | Sidecar unreachable — confirm the MT5 Windows host is up, the terminal is logged in, and the app host can reach `MT5_BRIDGE_URL` (firewall/VPN) |
+| Alpaca/OANDA requests return 501 | Credentials unset — expected until `ALPACA_API_KEY`+`ALPACA_API_SECRET` or `OANDA_API_TOKEN`+`OANDA_ACCOUNT_ID` are both set (see [Alpaca and OANDA](#alpaca-and-oanda--optional-cloud-brokers)) |
+| Alpaca/OANDA requests return 503 | The broker's API is unreachable from the app host — check outbound HTTPS / firewall rules |
 | Database health check fails | Confirm `POSTGRES_HOST` is reachable from inside the backend container (`docker compose exec backend node -e "require('net').connect(5432,'$POSTGRES_HOST').on('connect',()=>console.log('ok'))"`) |
 | Charts not loading | `./tradingapp.sh logs` for frontend errors, then `./tradingapp.sh redeploy` |
 
@@ -719,8 +761,8 @@ scrape_configs:
   - job_name: tradingapp-backend
     static_configs: [{ targets: ['backend:4000'] }]
     metrics_path: /metrics
-  - job_name: tradingapp-ib_service
-    static_configs: [{ targets: ['ib_service:8000'] }]
+  - job_name: tradingapp-broker_service
+    static_configs: [{ targets: ['broker_service:8000'] }]
     metrics_path: /metrics
 ```
 
@@ -760,7 +802,7 @@ panels rely on and where in the code it is emitted.
 
 Every backend response carries an `X-Request-Id` header (the value is
 echoed back from the caller's request or minted as a uuid4 on the way
-in). The same id is propagated into every backend → ib_service axios
+in). The same id is propagated into every backend → broker_service axios
 hop, so a single grep across both services' structured logs reconstructs
 the trace. The frontend `apiFetch` mints the id browser-side, so traces
 start from the click.

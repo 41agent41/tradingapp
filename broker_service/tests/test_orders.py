@@ -1,5 +1,5 @@
 """
-Tests for ib_service/orders.py.
+Tests for broker_service/orders.py.
 
 Hits the validation gate (action / order_type / tif / account_mode /
 LIVE_TRADING_ENABLED) and the IB-Order builder. Doesn't touch a live

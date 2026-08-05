@@ -15,6 +15,13 @@ describe('resolveBroker', () => {
     expect(resolveBroker(' MT5 ')).toBe('mt5');
   });
 
+  it('accepts alpaca and oanda (case/space-insensitive)', () => {
+    expect(resolveBroker('alpaca')).toBe('alpaca');
+    expect(resolveBroker(' Alpaca ')).toBe('alpaca');
+    expect(resolveBroker('oanda')).toBe('oanda');
+    expect(resolveBroker(' OANDA ')).toBe('oanda');
+  });
+
   it('falls back to ib for anything else', () => {
     expect(resolveBroker('robinhood')).toBe('ib');
     expect(resolveBroker('IB')).toBe('ib');

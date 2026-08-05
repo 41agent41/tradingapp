@@ -18,7 +18,7 @@ const ALLOWED_KEYS = new Set<string>([
   // Public service endpoints (these are visible to the browser anyway)
   'FRONTEND_PORT',
   'BACKEND_PORT',
-  'IB_SERVICE_PORT',
+  'BROKER_SERVICE_PORT',
   'NEXT_PUBLIC_API_URL',
   'CORS_ORIGINS',
 

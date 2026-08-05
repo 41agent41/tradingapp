@@ -51,6 +51,28 @@ describe('validateOrder — happy paths', () => {
     if (!bad.ok) expect(bad.errors.some((e) => /broker/.test(e))).toBe(true);
   });
 
+  it('accepts alpaca and oanda as brokers', () => {
+    const alpaca = validateOrder({
+      symbol: 'AAPL',
+      action: 'BUY',
+      quantity: 1,
+      order_type: 'MKT',
+      broker: 'alpaca',
+    });
+    expect(alpaca.ok).toBe(true);
+    if (alpaca.ok) expect(alpaca.value.broker).toBe('alpaca');
+
+    const oanda = validateOrder({
+      symbol: 'EUR.USD',
+      action: 'BUY',
+      quantity: 1000,
+      order_type: 'MKT',
+      broker: 'oanda',
+    });
+    expect(oanda.ok).toBe(true);
+    if (oanda.ok) expect(oanda.value.broker).toBe('oanda');
+  });
+
   it('accepts a LMT order with a positive limit_price', () => {
     const result = validateOrder({
       symbol: 'AAPL',

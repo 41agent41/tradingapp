@@ -1,5 +1,5 @@
 """
-Observability primitives for ib_service (GAP_ANALYSIS §6).
+Observability primitives for broker_service (GAP_ANALYSIS §6).
 
 Three concerns wired up in one module:
 
@@ -72,7 +72,7 @@ def configure_logging(level: str | None = None) -> None:
     _configured = True
 
 
-def get_logger(name: str = "ib_service") -> structlog.stdlib.BoundLogger:
+def get_logger(name: str = "broker_service") -> structlog.stdlib.BoundLogger:
     configure_logging()
     return structlog.get_logger(name)
 

@@ -11,7 +11,7 @@
  * `validateOrder` (orderTypes.ts), checks the live-trading gate, writes
  * an audit row before the IB-service call, then updates the audit row
  * with the outcome. The IB service repeats the gate check (see
- * `ib_service/orders.py`). Creates additionally pass an opt-in
+ * `broker_service/orders.py`). Creates additionally pass an opt-in
  * position-limit guard (`ORDER_MAX_POSITION`) computed from the audit log.
  */
 import express from 'express';
@@ -34,7 +34,7 @@ import {
 } from '../services/orderTypes.js';
 
 const router = express.Router();
-const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
+const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 const audit = new OrderAuditRepository(dbService);
 
 function sendProxyError(res: Response, error: any, label: string) {
@@ -52,7 +52,7 @@ function sendProxyError(res: Response, error: any, label: string) {
   res.status(statusCode).json({
     error: label,
     detail,
-    ib_service_status: statusCode,
+    broker_service_status: statusCode,
     timestamp: new Date().toISOString(),
   });
 }
@@ -62,7 +62,7 @@ function sendProxyError(res: Response, error: any, label: string) {
 // -------------------------------------------------------------------------
 router.get('/config', async (_req: Request, res: Response) => {
   try {
-    const ib = await axios.get(`${IB_SERVICE_URL}/orders/config`, { timeout: 5000 });
+    const ib = await axios.get(`${BROKER_SERVICE_URL}/orders/config`, { timeout: 5000 });
     res.json({
       live_trading_enabled: isLiveTradingEnabled() && (ib.data?.live_trading_enabled ?? false),
       backend_live_enabled: isLiveTradingEnabled(),
@@ -158,7 +158,7 @@ router.delete('/:id', orderAuth, async (req: Request, res: Response) => {
   }
 
   try {
-    const ibResp = await axios.delete(`${IB_SERVICE_URL}/orders/${orderId}`, { timeout: 10_000 });
+    const ibResp = await axios.delete(`${BROKER_SERVICE_URL}/orders/${orderId}`, { timeout: 10_000 });
     // A cancel doesn't produce a *new* audit row — it transitions the
     // existing one (matched by ib_order_id). Best-effort: update the
     // most-recent row for this id.
@@ -232,7 +232,7 @@ router.put('/:id', orderAuth, async (req: Request, res: Response) => {
 
   try {
     const ibResp = await axios.put(
-      `${IB_SERVICE_URL}/orders/${orderId}`,
+      `${BROKER_SERVICE_URL}/orders/${orderId}`,
       {
         symbol: v.value.symbol,
         action: v.value.action,

@@ -23,7 +23,7 @@ describe('rowsFromPayload', () => {
         status: 'healthy',
         services: {
           database: { connected: true },
-          ib_service: { connected: true, status: 'ok' },
+          broker_service: { connected: true, status: 'ok' },
           cache: { connected: true, enabled: true },
           streaming: { connected: true, enabled: true },
           backfill: { enabled: true, last_error: null },
@@ -39,7 +39,7 @@ describe('rowsFromPayload', () => {
       {
         services: {
           database: { connected: true },
-          ib_service: { connected: true },
+          broker_service: { connected: true },
           cache: { connected: false, enabled: false },
           streaming: { connected: false, enabled: false },
           backfill: { enabled: false, last_error: null },
@@ -53,12 +53,12 @@ describe('rowsFromPayload', () => {
     expect(byKey.backfill).toBe('disabled');
   });
 
-  it('surfaces IB error state when ib_service.status is error', () => {
+  it('surfaces IB error state when broker_service.status is error', () => {
     const rows = rowsFromPayload(
       {
         services: {
           database: { connected: true },
-          ib_service: { connected: false, status: 'error', error: 'connection refused' },
+          broker_service: { connected: false, status: 'error', error: 'connection refused' },
           cache: { connected: true, enabled: true },
           streaming: { connected: true, enabled: true },
           backfill: { enabled: true, last_error: null },
@@ -76,7 +76,7 @@ describe('rowsFromPayload', () => {
       {
         services: {
           database: { connected: true },
-          ib_service: { connected: true },
+          broker_service: { connected: true },
           cache: { connected: true, enabled: true },
           streaming: { connected: true, enabled: true },
           backfill: { enabled: true, running: true, last_error: 'IB timeout' },

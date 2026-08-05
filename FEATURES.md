@@ -24,7 +24,7 @@ capabilities never get conflated with aspirational plans.
    - [Account read endpoints](#account-read-endpoints)
    - [Order management](#order-management)
    - [Systematic trading (auto-execution)](#systematic-trading-rule-driven-auto-execution)
-   - [Multi-broker: IB + MetaTrader (MT5)](#multi-broker-interactive-brokers--metatrader-mt5)
+   - [Multi-broker: IB + MetaTrader + Alpaca + OANDA](#multi-broker-interactive-brokers-metatrader-mt5-alpaca-oanda)
    - [REST & WebSocket API](#rest--websocket-api)
    - [Authentication & CORS](#authentication--cors)
    - [Redis caching](#redis-caching)
@@ -91,14 +91,14 @@ acts as a fallback when streaming is disabled.
 A genuine end-to-end tick stream backs the real-time views (no polling):
 
 ```
-IB Gateway ──reqMktData──▶ ib_service ──redis.publish──▶ Redis
+IB Gateway ──reqMktData──▶ broker_service ──redis.publish──▶ Redis
                             (StreamingManager)            │ pSUBSCRIBE
                                                           ▼
                        frontend  ◀── Socket.IO room ◀── backend StreamingBridge
                   (useRealtimeStream)
 ```
 
-- **Publisher:** `ib_service/streaming.py` runs an in-process
+- **Publisher:** `broker_service/streaming.py` runs an in-process
   `StreamingManager` that opens `reqMktData` subscriptions and publishes
   every tick to `marketdata:tick:<SYMBOL>` on Redis.
 - **Bridge:** `backend/src/services/streamingBridge.ts` holds a second
@@ -117,7 +117,7 @@ IB Gateway ──reqMktData──▶ ib_service ──redis.publish──▶ Red
 
 ### Technical indicators
 
-`ib_service/indicators.py` ships a pandas/numpy implementation of:
+`broker_service/indicators.py` ships a pandas/numpy implementation of:
 
 - **Trend:** SMA, EMA, WMA, MACD
 - **Momentum:** RSI, Stochastic, Williams %R
@@ -131,7 +131,7 @@ toggle them on the chart.
 
 ### Backtesting
 
-`ib_service/backtesting.py` ships an event-driven backtest engine and two
+`broker_service/backtesting.py` ships an event-driven backtest engine and two
 sample strategies:
 
 - `ma_crossover` (simple moving-average crossover)
@@ -254,7 +254,7 @@ automatically — paper-first, staged behind gates. See the
 - **Rule-driven strategies:** a strategy is one declarative rule-set (entry /
   exit conditions, sessions, multi-timeframe operands, position-aware fields,
   sizing, risk) shared by the backtester **and** the live runner
-  ([`ib_service/rule_strategy.py`](ib_service/rule_strategy.py)). Evaluated
+  ([`broker_service/rule_strategy.py`](broker_service/rule_strategy.py)). Evaluated
   statelessly via `POST /strategies/evaluate`.
 - **Definitions & runs:** create/list rule-sets and start/stop runs through
   `/api/strategies/*`; each run pins a definition to a broker + `account_mode`.
@@ -276,12 +276,12 @@ automatically — paper-first, staged behind gates. See the
   bolder), a summary strip (net position, signals, orders placed) and a
   live-updating signal feed.
 
-### Multi-broker: Interactive Brokers + MetaTrader (MT5)
+### Multi-broker: Interactive Brokers, MetaTrader (MT5), Alpaca, OANDA
 
-The IB Gateway is no longer hard-wired — a venue-agnostic adapter seam lets a
-second broker plug in without touching the routes.
+The IB Gateway is no longer hard-wired — a venue-agnostic adapter seam lets
+other brokers plug in without touching the routes.
 
-- **Adapter registry** ([`ib_service/adapters.py`](ib_service/adapters.py)):
+- **Adapter registry** ([`broker_service/adapters.py`](broker_service/adapters.py)):
   `MarketDataAdapter` / `BrokerAdapter` protocols keyed by provider. A request's
   `source=` (market data) / `broker=` (orders) resolves to the concrete adapter,
   defaulting to `ib`; an unknown provider → 400, a recognised-but-unconfigured
@@ -291,20 +291,31 @@ second broker plug in without touching the routes.
   and a strategy run targets exactly one venue.
 - **MetaTrader (MT5) via sidecar:** `MetaTrader5` is Windows-only, so MT5 runs as
   a small HTTP service on a Windows host; the Linux
-  [`MT5Adapter`](ib_service/mt5_adapter.py) is a thin client pointed at
+  [`MT5Adapter`](broker_service/mt5_adapter.py) is a thin client pointed at
   `MT5_BRIDGE_URL`, implementing both **data** (search / bars / quotes / ticks,
   normalised to the app's shapes) and **execution** (place / cancel / modify /
   positions / account, with the same validation + live gate as IB). When
   `MT5_BRIDGE_URL` is set, `source=mt5` / `broker=mt5` become available;
   otherwise MT5 is a recognised-but-unavailable provider.
-- **Provider health:** the IB service exposes `/providers` (and folds provider
-  status into `/health`) so operators can see which venues are registered.
+- **Alpaca and OANDA — cloud REST, no sidecar host.** Unlike MT5, both are
+  reachable directly over HTTPS, so
+  [`AlpacaAdapter`](broker_service/alpaca_adapter.py) and
+  [`OANDAAdapter`](broker_service/oanda_adapter.py) run in-process in
+  `broker_service` — gated by API credentials
+  (`ALPACA_API_KEY`/`ALPACA_API_SECRET`, `OANDA_API_TOKEN`/`OANDA_ACCOUNT_ID`)
+  instead of a bridge URL. Both implement the same data + execution surface as
+  MT5. OANDA has a native 8-hour candle (unlike MT5) so every app timeframe
+  maps cleanly; `STP_LMT` orders aren't representable on OANDA and are
+  rejected with a 400.
+- **Provider health:** the broker service exposes `/providers` (and folds
+  provider status into `/health`) so operators can see which venues are
+  registered.
 
 ### REST & WebSocket API
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/health` | GET | Backend, DB, IB service health summary |
+| `/api/health` | GET | Backend, DB, broker service health summary |
 | `/api/database/health` | GET | Postgres connection probe |
 | `/api/market-data/search` | POST | Contract search |
 | `/api/market-data/search/advanced` | POST | Contract search with derivatives filters |
@@ -383,7 +394,7 @@ Cache health surfaces in `/api/health` under `services.cache`. Set
 - Built on the official Interactive Brokers TWS API (`ibapi`).
 - A **single synchronous IB client** keeps the integration simple and
   reliable — this was an explicit simplification (see `README.md`).
-- Auto-reconnect logic in `ib_service/main.py` re-establishes the socket if
+- Auto-reconnect logic in `broker_service/main.py` re-establishes the socket if
   IB Gateway drops the connection.
 - Configurable IB host, port, client id and timeout via `.env`.
 - UTC timezone enforcement throughout the IB service so timestamps round-
@@ -391,7 +402,7 @@ Cache health surfaces in `/api/health` under `services.cache`. Set
 
 ### Deployment & operations
 
-- Docker Compose stack: `frontend`, `backend`, `ib_service`, `redis`.
+- Docker Compose stack: `frontend`, `backend`, `broker_service`, `redis`.
 - One unified management script: `./tradingapp.sh`
   (`setup`, `deploy`, `redeploy`, `config`, `env`, `start`, `stop`,
   `restart`, `status`, `logs`, `test`, `diagnose`, `fix`, `ib-help`,
@@ -407,7 +418,7 @@ Cache health surfaces in `/api/health` under `services.cache`. Set
   (`npm run lint` / `format:check` / `type-check` / `test`).
 - **Frontend:** ESLint + Prettier + Vitest (`apiFetch` test suite).
 - **IB service:** Ruff + Black + pytest (indicator math + streaming tests
-  under `ib_service/tests/`).
+  under `broker_service/tests/`).
 - **CI:** `.github/workflows/ci.yml` runs lint, format-check, type-check,
   tests and build for all three services on every push / PR to `master`
   (and `main`).
@@ -437,7 +448,7 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > `prom-client` + `/metrics`; IB-service `structlog` +
 > `prometheus_fastapi_instrumentator` + `/metrics`; and end-to-end
 > `X-Request-Id` propagation from `apiFetch` → backend axios →
-> ib_service.
+> broker_service.
 >
 > **Also recently shipped (Tier 2 polish).** Loading skeletons on
 > `/historical`, `/msft` and `/backtest`; the service-layer
@@ -447,12 +458,12 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > + Prometheus scrape config in `DEPLOYMENT.md`; and an *Export Parquet*
 > button in `DataframeViewer` backed by `POST /api/export/parquet`.
 >
-> **Also recently shipped (Tier 3 refactors).** `ib_service/main.py`
-> split into [`models.py`](ib_service/models.py), [`ib_client.py`](ib_service/ib_client.py),
-> [`ib_helpers.py`](ib_service/ib_helpers.py) and
-> [`bars_processing.py`](ib_service/bars_processing.py) (2,700 → 1,840
+> **Also recently shipped (Tier 3 refactors).** `broker_service/main.py`
+> split into [`models.py`](broker_service/models.py), [`ib_client.py`](broker_service/ib_client.py),
+> [`ib_helpers.py`](broker_service/ib_helpers.py) and
+> [`bars_processing.py`](broker_service/bars_processing.py) (2,700 → 1,840
 > LoC); opt-in IB connection pool
-> ([`ib_service/ib_pool.py`](ib_service/ib_pool.py), parameterised by
+> ([`broker_service/ib_pool.py`](broker_service/ib_pool.py), parameterised by
 > `IB_CLIENT_POOL_SIZE`); shared `<Chart>` primitive +
 > [`useHistoricalData`](frontend/app/lib/useHistoricalData.ts) hook
 > (HistoricalChart now delegates to them); test breadth expanded across
@@ -469,10 +480,11 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > **Also recently shipped (Systematic Trading & Multi-Broker roadmap —
 > all phases).** Rule-driven strategies (backtest == live), a live signal
 > runner, gated paper auto-execution with a full risk layer, the
-> `/systematic` monitoring UI, the IB/MetaTrader broker abstraction, and the
-> MetaTrader (MT5) data **and** execution venue via the Windows sidecar. Now
-> live under [Systematic trading](#systematic-trading-rule-driven-auto-execution)
-> and [Multi-broker: IB + MetaTrader (MT5)](#multi-broker-interactive-brokers--metatrader-mt5).
+> `/systematic` monitoring UI, the broker abstraction, MetaTrader (MT5) data
+> **and** execution via the Windows sidecar, and Alpaca/OANDA as two
+> sidecar-free cloud brokers. Now live under
+> [Systematic trading](#systematic-trading-rule-driven-auto-execution) and
+> [Multi-broker: IB + MetaTrader + Alpaca + OANDA](#multi-broker-interactive-brokers-metatrader-mt5-alpaca-oanda).
 > The full design lives in
 > [`SYSTEMATIC_TRADING_ROADMAP.md`](SYSTEMATIC_TRADING_ROADMAP.md).
 
@@ -517,7 +529,7 @@ on `master` have **shipped** (see
 
 ### Refactors
 
-- Split the ~2,700-line `ib_service/main.py` into `routes/`, `ib_client/`,
+- Split the ~2,700-line `broker_service/main.py` into `routes/`, `ib_client/`,
   `cache/` and `models/`. (The equivalent backend split has shipped —
   `backend/src/routes/marketData.ts` is now the 6-file
   `routes/marketData/` package.)

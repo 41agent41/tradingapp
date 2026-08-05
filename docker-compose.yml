@@ -7,7 +7,7 @@ services:
       - HOST=${BACKEND_HOST:-0.0.0.0}
       - NODE_ENV=${NODE_ENV:-production}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
-      - IB_SERVICE_URL=http://172.20.0.10:8000
+      - BROKER_SERVICE_URL=http://172.20.0.10:8000
       - POSTGRES_HOST=${POSTGRES_HOST:-localhost}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - POSTGRES_USER=${POSTGRES_USER:-tradingapp}
@@ -37,7 +37,7 @@ services:
     ports:
       - "${BACKEND_PORT:-4000}:${BACKEND_PORT:-4000}"
     depends_on:
-      - ib_service
+      - broker_service
       - redis
     networks:
       tradingapp-network:
@@ -65,8 +65,8 @@ services:
         ipv4_address: 172.20.0.3
     restart: unless-stopped
       
-  ib_service:
-    build: ./ib_service
+  broker_service:
+    build: ./broker_service
     env_file: .env
     environment:
       - IB_HOST=${IB_HOST}
@@ -83,7 +83,7 @@ services:
       - IB_TIME_FORMAT=${IB_TIME_FORMAT:-HHMMSS}
       - IB_FORMAT_DATE=${IB_FORMAT_DATE:-2}
     ports:
-      - "${IB_SERVICE_PORT:-8000}:8000"
+      - "${BROKER_SERVICE_PORT:-8000}:8000"
     networks:
       tradingapp-network:
         ipv4_address: 172.20.0.10

@@ -1,5 +1,5 @@
 """
-TWS API Service — FastAPI application shell.
+Broker Service — FastAPI application shell.
 
 After the GAP_ANALYSIS §3.4 split this file only *builds* the app: it wires
 the cross-cutting middleware (observability + CORS) and mounts the route
@@ -35,19 +35,19 @@ CORS_ORIGINS = os.getenv("IB_CORS_ORIGINS", "").split(",") if os.getenv("IB_CORS
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    logger.info("Starting TWS API Service...")
-    logger.info(f"Configuration: {IB_HOST}:{IB_PORT}, Client ID: {IB_CLIENT_ID}")
-    logger.info("TWS API Service ready - connection will be established on first API call")
+    logger.info("Starting Broker Service...")
+    logger.info(f"IB configuration: {IB_HOST}:{IB_PORT}, Client ID: {IB_CLIENT_ID}")
+    logger.info("Broker Service ready - broker connections are established on first API call")
 
     yield
 
-    logger.info("Shutting down TWS API Service...")
+    logger.info("Shutting down Broker Service...")
     disconnect_ib()
 
 
 app = FastAPI(
-    title="TradingApp TWS API Service",
-    description="Interactive Brokers TWS API service for TradingApp",
+    title="TradingApp Broker Service",
+    description="Multi-broker market-data and order-execution service for TradingApp (IB, MT5, Alpaca, OANDA)",
     version="4.0.0",
     lifespan=lifespan,
 )
@@ -75,5 +75,5 @@ register_routes(app)
 
 
 if __name__ == "__main__":
-    logger.info("Starting TWS API Service...")
+    logger.info("Starting Broker Service...")
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

@@ -4,7 +4,7 @@
  * The audited create-order path lived inline in `routes/orders.ts`. A3 needs
  * the systematic engine to place orders through *exactly* the same path —
  * same position-limit guard, same `order_audit` write-before-send, same
- * `ib_service` `/orders` hop, same status transitions — without duplicating
+ * `broker_service` `/orders` hop, same status transitions — without duplicating
  * it. So the core is extracted here and both callers share it:
  *
  *   - `routes/orders.ts`  (the HTTP surface, behind `orderAuth` RBAC/MFA)
@@ -28,7 +28,7 @@ import {
   type ValidatedOrder,
 } from './orderTypes.js';
 
-const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
+const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
 /** The outcome of a create-order submission. `ok` splits success from the
  *  five distinct failure modes the route has always distinguished. */
@@ -61,7 +61,7 @@ function defaultDeps(): SubmitCreateDeps {
   return {
     audit: new OrderAuditRepository(dbService),
     ibPost: (payload) =>
-      axios.post(`${IB_SERVICE_URL}/orders`, payload, { timeout: 30_000 }) as Promise<{
+      axios.post(`${BROKER_SERVICE_URL}/orders`, payload, { timeout: 30_000 }) as Promise<{
         data: Record<string, unknown>;
       }>,
     warn: () => undefined,

@@ -1,4 +1,4 @@
-"""Tests for ib_service/observability.py."""
+"""Tests for broker_service/observability.py."""
 
 from __future__ import annotations
 

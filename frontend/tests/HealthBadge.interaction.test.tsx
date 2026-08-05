@@ -17,7 +17,7 @@ describe('HealthBadge popover interactions', () => {
       status: 'healthy',
       services: {
         database: { connected: true },
-        ib_service: { connected: true, status: 'ok' },
+        broker_service: { connected: true, status: 'ok' },
         cache: { connected: true, enabled: true },
         streaming: { connected: true, enabled: true },
         backfill: { enabled: true, last_error: null },

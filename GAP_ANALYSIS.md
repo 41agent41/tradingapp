@@ -41,7 +41,7 @@ The platform is in materially better shape than at the previous review:
 - **There is a real quality bar.** ESLint/Prettier/Jest (backend),
   ESLint/Prettier/Vitest (frontend) and Ruff/Black/pytest (IB service) all
   run in CI on `master`.
-- **"Real-time" is real.** `ib_service` publishes `reqMktData` ticks to
+- **"Real-time" is real.** `broker_service` publishes `reqMktData` ticks to
   Redis; the backend bridge fans them out over Socket.IO rooms; the frontend
   consumes them via `useRealtimeStream`.
 - **Security baseline exists.** Bearer-token auth on every route and the
@@ -61,7 +61,7 @@ The remaining risks are now smaller and mostly about **breadth and polish**:
    (`/backtest`). All four OHLCV chart components now render through the
    shared `<Chart>` primitive (§3.5).
 3. **IB concurrency is capped at one.** The single synchronous IB client
-   serialises every request (§3.3); `ib_service/main.py` is still monolithic
+   serialises every request (§3.3); `broker_service/main.py` is still monolithic
    (§3.4).
 
 ---
@@ -103,7 +103,7 @@ These items were open gaps in earlier revisions of this document and are now
   lint → format-check → type-check → test → build per service.
 
 ### Phase 4 — Real-time pipeline ✅
-- `ib_service/streaming.py` `StreamingManager` publishes `reqMktData` ticks
+- `broker_service/streaming.py` `StreamingManager` publishes `reqMktData` ticks
   to `marketdata:tick:<SYMBOL>` on Redis.
 - `backend/src/services/streamingBridge.ts` subscribes and emits into
   `market-data:<SYMBOL>` Socket.IO rooms with per-symbol refcounting and
@@ -127,7 +127,7 @@ This section's three gaps have been closed:
   respecting each row's `collection_interval_minutes`. It writes a
   `data_collection_sessions` row per attempt and reports under
   `services.backfill` in `/api/health`. It lives in the **backend**, not
-  `ib_service` as originally proposed, because only the backend has database
+  `broker_service` as originally proposed, because only the backend has database
   access — the IB service can neither read `data_collection_config` nor write
   `candlestick_data`.
 - **`data_quality_metrics` is populated.** `MarketDataService.recordDataQuality()`
@@ -152,7 +152,7 @@ Resolved by **dropping the persistence path** (indicators stay
 compute-on-demand). `storeTechnicalIndicators()` and the `technical_indicators`
 `LEFT JOIN` in `getHistoricalData()` are gone; `getHistoricalData()` now
 returns raw OHLCV only, and `/api/market-data/indicators` proxies straight to
-the IB service (`ib_service/indicators.py`). No backend code references the
+the IB service (`broker_service/indicators.py`). No backend code references the
 `technical_indicators` table anymore, so a fresh canonical database no longer
 errors. See
 [`backend/src/database/README.md`](backend/src/database/README.md#indicators-are-not-persisted-by-design).
@@ -160,7 +160,7 @@ errors. See
 ### 3.3 IB connection model ✅ resolved (opt-in)
 
 - ✅ A connection pool is now available in
-  [`ib_service/ib_pool.py`](ib_service/ib_pool.py), parameterised by
+  [`broker_service/ib_pool.py`](broker_service/ib_pool.py), parameterised by
   `IB_CLIENT_POOL_SIZE` (defaults to 1, which preserves the existing
   single-client behaviour byte-for-byte). When set to `N>=2` the pool
   reserves the clientId range `[IB_CLIENT_ID, IB_CLIENT_ID+N-1]` so
@@ -169,7 +169,7 @@ errors. See
   racing the primary. Acquire / release / context-manager `borrow()` and
   `stats()` are covered by hermetic pytest using a fake IBApp.
 - The existing `get_ib_connection()` in
-  [`ib_service/ib_client.py`](ib_service/ib_client.py) is intentionally
+  [`broker_service/ib_client.py`](broker_service/ib_client.py) is intentionally
   unchanged — opting in only requires the env var, and the next time a
   route handler is touched it can adopt `pool.borrow()` without
   breaking any defaults.
@@ -179,7 +179,7 @@ errors. See
 | File | LoC (approx) | Concern | Status |
 |---|---:|---|---|
 | `backend/src/routes/marketData.ts` | ~870 | All market-data endpoints, validation, DB write-through | ✅ split into `routes/marketData/{shared,search,history,realtime,indicators,database}.ts`; the old file is now a ~25-line aggregator |
-| `ib_service/main.py` | ~2,700 → ~1,840 → ~80 | HTTP routes, IB client, threading, caching, indicators wiring, account handling | ✅ split into [`models.py`](ib_service/models.py), [`ib_client.py`](ib_service/ib_client.py), [`ib_helpers.py`](ib_service/ib_helpers.py), [`bars_processing.py`](ib_service/bars_processing.py); the route handlers are now carved into a [`routes/`](ib_service/routes) subpackage (health / market_data / backtesting / streaming / contracts / account / symbols), so `main.py` is a ~80-line app shell and is itself now under Ruff/Black. |
+| `broker_service/main.py` | ~2,700 → ~1,840 → ~80 | HTTP routes, IB client, threading, caching, indicators wiring, account handling | ✅ split into [`models.py`](broker_service/models.py), [`ib_client.py`](broker_service/ib_client.py), [`ib_helpers.py`](broker_service/ib_helpers.py), [`bars_processing.py`](broker_service/bars_processing.py); the route handlers are now carved into a [`routes/`](broker_service/routes) subpackage (health / market_data / backtesting / streaming / contracts / account / symbols), so `main.py` is a ~80-line app shell and is itself now under Ruff/Black. |
 | `frontend/app/components/MSFTRealtimeChart.tsx` | ~975 → ~640 | Chart + data fetch + state + UI controls | ✅ chart rendering delegated to `<Chart>` (§3.5); the bespoke lightweight-charts instance, series management and per-tick timestamp loop are gone. Controls / streaming / DataframeViewer stay. |
 | `frontend/app/components/MarketDataFilter.tsx` | ~801 → ~180 | Filter UI + chart trigger + state | ✅ split: the data flow moved to a [`useContractSearch`](frontend/app/lib/useContractSearch.ts) hook and the JSX into presentational pieces under [`components/marketData/`](frontend/app/components/marketData) (ConnectionStatusBar / QuickSearch / SearchFilters / SearchResultsList / MarketDataPanel / SearchTips + shared types/constants). `MarketDataFilter` is now a ~180-line container. |
 
@@ -230,9 +230,9 @@ The first observability pass has landed:
   into ALS, times the request, and emits one structured log line on
   finish.
 - An axios request interceptor auto-attaches `X-Request-Id` on every
-  backend → ib_service hop so the trace flows end-to-end.
+  backend → broker_service hop so the trace flows end-to-end.
 - **IB service:** `structlog` + `prometheus_fastapi_instrumentator` wired
-  in [`ib_service/observability.py`](ib_service/observability.py); a
+  in [`broker_service/observability.py`](broker_service/observability.py); a
   `RequestIdMiddleware` binds the id to `contextvars` so every log record
   in the request carries it, and `/metrics` is exposed on the FastAPI
   app.
@@ -247,9 +247,9 @@ The first observability pass has landed:
   `database.ts`) now route every log through pino with structured
   payloads (this branch). Route handlers' `console.*` calls are
   intentionally left alone — the observability middleware already emits
-  a structured "request completed" line per request. `ib_service` has no
+  a structured "request completed" line per request. `broker_service` has no
   `print()` calls; its stdlib `logger` is transparently reconfigured by
-  `ib_service/observability.py` to emit through `structlog`.
+  `broker_service/observability.py` to emit through `structlog`.
 - ✅ Grafana dashboard
   ([`ops/grafana/tradingapp-dashboard.json`](ops/grafana/tradingapp-dashboard.json))
   + README + DEPLOYMENT.md *Monitoring & Maintenance* section now
@@ -264,7 +264,7 @@ The first observability pass has landed:
 
 ## 5. Backtesting (Phase 5) ✅ exposed in the UI
 
-`ib_service/backtesting.py` and `AVAILABLE_STRATEGIES` are wired into FastAPI
+`broker_service/backtesting.py` and `AVAILABLE_STRATEGIES` are wired into FastAPI
 (`GET /backtesting/strategies`, `POST /backtesting/run`). These are now
 fronted by:
 
@@ -282,7 +282,7 @@ While wiring this up, `BacktestResults.to_dict()` was made JSON-safe — it now
 emits the `equity_curve` the chart needs and coerces non-finite metrics (e.g.
 `profit_factor` with zero losing trades) to `null`, which Starlette's
 `allow_nan=False` encoder would otherwise reject. Covered by
-`ib_service/tests/test_backtesting.py`.
+`broker_service/tests/test_backtesting.py`.
 
 > ⚠️ Implemented but **not yet runtime-validated** against a live IB Gateway —
 > the authoring environment has no Node/Python, so type-check, lint and pytest
@@ -303,7 +303,7 @@ Full place / cancel / modify path now lives behind the
 `LIVE_TRADING_ENABLED` env-var gate (defaulting to `false` so paper
 orders work but any `account_mode=live` request is rejected with 403):
 
-- **IB service** ([`ib_service/orders.py`](ib_service/orders.py)) —
+- **IB service** ([`broker_service/orders.py`](broker_service/orders.py)) —
   `POST /orders`, `DELETE /orders/{id}`, `PUT /orders/{id}`,
   `GET /orders/config`. Supports MKT / LMT / STP / STP_LMT and
   DAY / GTC / IOC / FOK. The STP_LMT form is translated to IB's wire
@@ -429,7 +429,10 @@ follow-on features.
   [Multi-Broker Host Topology](DEPLOYMENT.md#multi-broker-host-topology-ib--mt5))
   runs IB Gateway and the MT5 sidecar as two separate GUI-session hosts, each
   a single point of failure for its venue, and the MT5 sidecar's HTTP
-  contract (`ib_service/mt5_adapter.py`) carries no authentication.
+  contract (`broker_service/mt5_adapter.py`) carries no authentication.
+  Alpaca and OANDA (`broker_service/alpaca_adapter.py` /
+  `oanda_adapter.py`) don't share this risk — both are direct HTTPS calls
+  to the broker's own authenticated API, no self-hosted sidecar involved.
 
 **Action (future consideration — not yet scheduled):**
 1. Add authentication to the MT5 sidecar HTTP contract (shared-secret header
@@ -484,16 +487,16 @@ Phases 1–4 are complete (see §2). Remaining work, ordered by dependency:
    flag (§6).
 
 ### Phase 6 — Operational polish
-7. ✅ Structured logging (`pino` backend, `structlog` ib_service),
-   `x-request-id` propagation browser → backend → ib_service, `/metrics`
+7. ✅ Structured logging (`pino` backend, `structlog` broker_service),
+   `x-request-id` propagation browser → backend → broker_service, `/metrics`
    endpoints on both services. (Replacing residual `console.log` / `print`
    calls in heavier modules is a follow-on as those files are touched.)
 8. ✅ Live `<HealthBadge />` reflecting IB / DB / cache / streaming /
    backfill state on the home page.
 9. ✅ Opt-in IB connection pool across a `clientId` range
-   ([`ib_service/ib_pool.py`](ib_service/ib_pool.py); §3.3).
+   ([`broker_service/ib_pool.py`](broker_service/ib_pool.py); §3.3).
 10. Split the monolithic modules (§3.4) — ✅ `marketData.ts` done;
-    ✅ `ib_service/main.py` split into models / ib_client / ib_helpers /
+    ✅ `broker_service/main.py` split into models / ib_client / ib_helpers /
     bars_processing (routes still in main.py — carving them into a
     `routes/` subpackage is a follow-on); the largest frontend
     components still pending. ✅ Shared `<Chart>` primitive +
