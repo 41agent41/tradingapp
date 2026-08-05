@@ -15,7 +15,7 @@ metrics shipped by the backend (`pino` + `prom-client`) and the IB service
 ## Importing into Grafana
 
 1. Bring up Prometheus and have it scrape the two `/metrics` endpoints —
-   `http://backend:4000/metrics` and `http://ib_service:8000/metrics`. A
+   `http://backend:4000/metrics` and `http://broker_service:8000/metrics`. A
    minimal scrape job:
 
    ```yaml
@@ -24,9 +24,9 @@ metrics shipped by the backend (`pino` + `prom-client`) and the IB service
        static_configs:
          - targets: ['backend:4000']
        metrics_path: /metrics
-     - job_name: tradingapp-ib_service
+     - job_name: tradingapp-broker_service
        static_configs:
-         - targets: ['ib_service:8000']
+         - targets: ['broker_service:8000']
        metrics_path: /metrics
    ```
 
@@ -45,8 +45,8 @@ the code referenced in each row.
 | `http_request_duration_seconds_count` (Counter) | backend | same |
 | `backtest_runs_persisted_total` (Counter) | backend | `backend/src/routes/backtesting.ts` |
 | `process_*`, `nodejs_*` | backend | `prom-client` defaults |
-| `http_requests_total` (Counter) | ib_service | `prometheus_fastapi_instrumentator` |
-| `http_request_duration_seconds` (Histogram) | ib_service | same |
+| `http_requests_total` (Counter) | broker_service | `prometheus_fastapi_instrumentator` |
+| `http_request_duration_seconds` (Histogram) | broker_service | same |
 
 All series carry a `service=` label (`backend` for prom-client,
 auto-tagged by Prometheus's job label otherwise) so the panels can

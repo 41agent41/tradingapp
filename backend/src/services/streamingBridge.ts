@@ -4,7 +4,7 @@
  * Sits between the IB service (which publishes ticks to Redis) and the
  * Socket.IO clients (which subscribe to per-symbol updates):
  *
- *      ib_service ──redis.publish──▶ marketdata:tick:<SYMBOL>
+ *      broker_service ──redis.publish──▶ marketdata:tick:<SYMBOL>
  *                                            │
  *                                            ▼
  *                       StreamingBridge.handleMessage
@@ -33,7 +33,7 @@ import type { Server as SocketIOServer } from 'socket.io';
 import { createClient } from 'redis';
 import { logger } from './logger.js';
 
-const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
+const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
 const REDIS_HOST = process.env.REDIS_HOST || 'redis';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
@@ -82,13 +82,13 @@ class HttpIBClient implements IBClientLike {
     exchange?: string;
     currency?: string;
   }): Promise<void> {
-    await axios.post(`${IB_SERVICE_URL}/market-data/stream/subscribe`, payload, {
+    await axios.post(`${BROKER_SERVICE_URL}/market-data/stream/subscribe`, payload, {
       timeout: 5000,
     });
   }
 
   async unsubscribe(payload: { symbol: string }): Promise<void> {
-    await axios.post(`${IB_SERVICE_URL}/market-data/stream/unsubscribe`, payload, {
+    await axios.post(`${BROKER_SERVICE_URL}/market-data/stream/unsubscribe`, payload, {
       timeout: 5000,
     });
   }
@@ -274,7 +274,7 @@ export class StreamingBridge {
         // Keep the room torn down even if the IB call fails — the IB
         // service has its own refcount and will catch up on the next
         // healthcheck.
-        logger.warn({ symbol, err: String(err) }, 'ib_service unsubscribe failed');
+        logger.warn({ symbol, err: String(err) }, 'broker_service unsubscribe failed');
       }
     }
 

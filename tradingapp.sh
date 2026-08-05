@@ -188,7 +188,7 @@ BACKEND_PORT=4000
 CORS_ORIGINS=http://$SERVER_IP:3000
 
 # IB Service
-IB_SERVICE_PORT=8000
+BROKER_SERVICE_PORT=8000
 IB_HOST=$IB_HOST
 IB_PORT=$DEFAULT_IB_PORT
 IB_CLIENT_ID=$DEFAULT_CLIENT_ID
@@ -277,7 +277,7 @@ deploy_application() {
 
     # Verify TWS API installation
     print_info "Verifying TWS API installation..."
-    if compose_cmd exec -T ib_service python -c "import ibapi; print('TWS API installed successfully')" 2>/dev/null; then
+    if compose_cmd exec -T broker_service python -c "import ibapi; print('TWS API installed successfully')" 2>/dev/null; then
         print_status "TWS API (ibapi) is properly installed"
     else
         print_error "TWS API installation verification failed"
@@ -430,7 +430,7 @@ show_logs() {
         compose_cmd logs --tail=20 backend 2>/dev/null || echo "Backend not running"
         echo ""
         echo "--- IB Service ---"
-        compose_cmd logs --tail=20 ib_service 2>/dev/null || echo "IB Service not running"
+        compose_cmd logs --tail=20 broker_service 2>/dev/null || echo "Broker Service not running"
         if [[ "${WITH_DB:-0}" == "1" ]] || [[ -f "$WITH_DB_STATE_FILE" ]]; then
             echo ""
             echo "--- Postgres (TimescaleDB) ---"
@@ -527,7 +527,7 @@ case "${1:-}" in
         compose_cmd down --remove-orphans
 
         # Remove project images to ensure fresh build
-        docker rmi $(docker images -q tradingapp_ib_service) 2>/dev/null || echo "No ib_service images to remove"
+        docker rmi $(docker images -q tradingapp_broker_service) 2>/dev/null || echo "No broker_service images to remove"
         docker rmi $(docker images -q tradingapp_backend) 2>/dev/null || echo "No backend images to remove"
         docker rmi $(docker images -q tradingapp_frontend) 2>/dev/null || echo "No frontend images to remove"
 
@@ -585,7 +585,7 @@ case "${1:-}" in
             rm -f "$WITH_DB_STATE_FILE"
             
             # Remove all project images
-            docker rmi $(docker images -q tradingapp_ib_service) 2>/dev/null || echo "No ib_service images to remove"
+            docker rmi $(docker images -q tradingapp_broker_service) 2>/dev/null || echo "No broker_service images to remove"
             docker rmi $(docker images -q tradingapp_backend) 2>/dev/null || echo "No backend images to remove"
             docker rmi $(docker images -q tradingapp_frontend) 2>/dev/null || echo "No frontend images to remove"
             

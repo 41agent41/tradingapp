@@ -22,9 +22,12 @@ export type AccountMode = (typeof ACCOUNT_MODES)[number];
  * Execution venues (Systematic Trading roadmap — B1). Instruments are
  * broker-scoped (no cross-broker symbol reconciliation), so `broker` is a
  * first-class dimension on every order and on the net-exposure key. Defaults
- * to `ib`; `mt5` is accepted here but only served once its adapter lands.
+ * to `ib`. Each of `mt5` / `alpaca` / `oanda` is accepted here but only
+ * served once its adapter is configured on the broker service (see
+ * `broker_service/adapters.py`) — otherwise a request for it resolves to a
+ * clean 501, not a 400.
  */
-export const BROKERS = ['ib', 'mt5'] as const;
+export const BROKERS = ['ib', 'mt5', 'alpaca', 'oanda'] as const;
 export type Broker = (typeof BROKERS)[number];
 export const DEFAULT_BROKER: Broker =
   (process.env.DEFAULT_BROKER as Broker) &&
@@ -242,7 +245,7 @@ export function validateOrder(
 /**
  * Live-trading gate. Returns the (frozen) decision used by both the
  * backend route and the IB-service handler. A second copy in
- * ib_service/orders.py mirrors this — both must agree before any
+ * broker_service/orders.py mirrors this — both must agree before any
  * real-money order reaches IB.
  */
 export function isLiveTradingEnabled(): boolean {

@@ -2,7 +2,7 @@
  * Backtesting proxy routes (GAP_ANALYSIS §5).
  *
  * The backtesting engine and strategies live in the IB service
- * (`ib_service/backtesting.py`, exposed at `/backtesting/*`). Going through
+ * (`broker_service/backtesting.py`, exposed at `/backtesting/*`). Going through
  * the backend keeps the feature behind the same auth/CORS perimeter as the
  * rest of the API and gives the frontend a single origin to talk to.
  *
@@ -20,7 +20,7 @@ import { BacktestRunRepository } from '../services/backtestRunRepository.js';
 import { backtestRunsPersisted } from '../services/metrics.js';
 
 const router = express.Router();
-const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
+const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
 const VALID_TIMEFRAMES = [
   'tick',
@@ -58,7 +58,7 @@ function sendProxyError(res: Response, error: any, label: string) {
   res.status(statusCode).json({
     error: label,
     detail: errorMessage,
-    ib_service_status: statusCode,
+    broker_service_status: statusCode,
     timestamp: new Date().toISOString(),
   });
 }
@@ -68,7 +68,7 @@ function sendProxyError(res: Response, error: any, label: string) {
 router.get('/strategies', async (_req: Request, res: Response) => {
   try {
     const data = await cacheService.wrap('backtesting:strategies', 3600, async () => {
-      const response = await axios.get(`${IB_SERVICE_URL}/backtesting/strategies`, {
+      const response = await axios.get(`${BROKER_SERVICE_URL}/backtesting/strategies`, {
         timeout: 5000,
       });
       return response.data;
@@ -130,7 +130,7 @@ router.post('/run', async (req: Request, res: Response) => {
         (hasRange ? `${start_date}..${end_date}` : period)
     );
 
-    const response = await axios.post(`${IB_SERVICE_URL}/backtesting/run`, null, {
+    const response = await axios.post(`${BROKER_SERVICE_URL}/backtesting/run`, null, {
       params: {
         symbol,
         strategy,
@@ -148,7 +148,7 @@ router.post('/run', async (req: Request, res: Response) => {
     const results = payload.results ?? {};
 
     // The IB service returns the equity curve + trade list inline inside
-    // `results` (see `BacktestResults.to_dict` in `ib_service/backtesting.py`).
+    // `results` (see `BacktestResults.to_dict` in `broker_service/backtesting.py`).
     // Split them out for storage so they can be queried independently of the
     // scalar metrics — the metrics blob keeps everything else from `results`.
     const { equity_curve, trades_summary, ...metrics } = results as Record<string, unknown>;

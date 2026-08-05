@@ -26,7 +26,7 @@ chmod +x tradingapp.sh
 ### **Access Your Application**
 - **Frontend**: `http://your-server-ip:3000` - Market data and charts
 - **Backend**: `http://your-server-ip:4000` - API endpoints  
-- **IB Service**: `http://your-server-ip:8000` - Interactive Brokers integration
+- **Broker Service**: `http://your-server-ip:8000` - Interactive Brokers, MetaTrader 5, Alpaca and OANDA integration
 
 ## 📋 **Unified Management Commands**
 
@@ -62,11 +62,19 @@ chmod +x tradingapp.sh
 - **Account read endpoints**: Summary, positions, orders, connection status.
 - **Error Handling**: Robust error recovery and reconnection.
 
+### **Multi-broker: MetaTrader 5, Alpaca, OANDA**
+- A venue-agnostic adapter seam (`broker_service/adapters.py`) lets other
+  brokers plug in behind the same `source=`/`broker=` API surface as IB.
+- **MetaTrader 5**: quote and trade via a Windows sidecar (`MT5_BRIDGE_URL`).
+- **Alpaca** (equities/options) and **OANDA** (FX/CFD): cloud REST APIs
+  called directly — no sidecar host, just API credentials. See
+  [DEPLOYMENT.md](DEPLOYMENT.md#alpaca-and-oanda--optional-cloud-brokers).
+
 ### **Backtesting**
 - **`/backtest` page** with strategy picker, parameter form, metrics
   summary, equity-curve chart and trade-list table.
 - **Strategies shipped**: `ma_crossover`, `rsi_mean_reversion` — engine
-  is event-driven (`ib_service/backtesting.py`).
+  is event-driven (`broker_service/backtesting.py`).
 - **Backend proxy** (`/api/backtesting/*`) validates inputs and caches the
   strategy catalogue.
 
@@ -96,8 +104,8 @@ chmod +x tradingapp.sh
   endpoints, degrading gracefully to a cache miss on a Redis outage.
 - **CI per service**: GitHub Actions runs lint, format-check, type-check and
   tests for the backend (ESLint/Prettier/Jest), frontend
-  (ESLint/Prettier/Vitest) and IB service (Ruff/Black/pytest) on every push
-  to `master`.
+  (ESLint/Prettier/Vitest) and the broker service (Ruff/Black/pytest) on
+  every push to `master`.
 
 ## 🔧 **Configuration**
 
@@ -127,7 +135,7 @@ IB_CLIENT_ID=1
 # Service Ports
 FRONTEND_PORT=3000
 BACKEND_PORT=4000
-IB_SERVICE_PORT=8000
+BROKER_SERVICE_PORT=8000
 ```
 
 ## 🏗️ **Architecture**
@@ -135,9 +143,9 @@ IB_SERVICE_PORT=8000
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐    ┌────────────┐
 │                 │    │                 │    │                 │    │            │
-│   Frontend      │    │   Backend       │    │   IB Service    │◄──►│ IB Gateway │
-│   (Next.js)     │◄──►│   (Express +    │◄──►│   (FastAPI +    │    │   / TWS    │
-│                 │    │    Socket.IO)   │    │    ibapi)       │    │            │
+│   Frontend      │    │   Backend       │    │ Broker Service  │◄──►│ IB Gateway │
+│   (Next.js)     │◄──►│   (Express +    │◄──►│   (FastAPI +    │    │  / MT5 /   │
+│                 │    │    Socket.IO)   │    │  ibapi/httpx)   │    │Alpaca/OANDA│
 │ • TradingView   │    │ • REST routes   │    │ • REST routes   │    └────────────┘
 │ • Real-time UI  │    │ • Auth, CORS    │    │ • reqMktData    │
 │ • Charts        │    │ • Redis cache   │    │ • Redis publish │
@@ -154,7 +162,7 @@ IB_SERVICE_PORT=8000
                                               └──────────────────┘
 ```
 
-The real-time pipeline (Phase 4): `ib_service` subscribes to IB tick
+The real-time pipeline (Phase 4): `broker_service` subscribes to IB tick
 data via `reqMktData` and publishes every tick to
 `marketdata:tick:<SYMBOL>` on Redis. The `backend` subscribes to that
 pattern and fans each tick out to Socket.IO clients in the
@@ -210,17 +218,17 @@ cd backend && npm run dev
 # Frontend development  
 cd frontend && npm run dev
 
-# IB Service development
-cd ib_service && python main.py
+# Broker Service development
+cd broker_service && python main.py
 ```
 
 ### **Docker Development**
 ```bash
 # Build and run specific service
-docker-compose up --build ib_service
+docker-compose up --build broker_service
 
 # View logs for specific service
-docker-compose logs -f ib_service
+docker-compose logs -f broker_service
 ```
 
 ## 📈 **Performance Improvements**

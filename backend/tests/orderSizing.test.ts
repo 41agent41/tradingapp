@@ -83,13 +83,41 @@ describe('resolveOrderQuantity — guards', () => {
     if (!r.ok) expect(r.reason).toMatch(/lots/);
   });
 
-  it('rejects a non-IB broker in Phase 3', () => {
-    const r = resolveOrderQuantity({ type: 'fixed', size: 1 }, { ...ib, broker: 'mt5' });
-    expect(r.ok).toBe(false);
+  it('rejects a non-share-sized broker (mt5, oanda)', () => {
+    expect(resolveOrderQuantity({ type: 'fixed', size: 1 }, { ...ib, broker: 'mt5' }).ok).toBe(
+      false
+    );
+    expect(resolveOrderQuantity({ type: 'fixed', size: 1 }, { ...ib, broker: 'oanda' }).ok).toBe(
+      false
+    );
   });
 
   it('rejects an unknown sizing type', () => {
     const r = resolveOrderQuantity({ type: 'martingale', size: 1 }, ib);
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('resolveOrderQuantity — alpaca (share-sized like IB)', () => {
+  const alpaca = { price: 100, broker: 'alpaca', equity: null as number | null };
+
+  it('resolves fixed/notional/pct_equity the same way as IB', () => {
+    expect(resolveOrderQuantity({ type: 'fixed', size: 100 }, alpaca)).toEqual({
+      ok: true,
+      quantity: 100,
+    });
+    expect(resolveOrderQuantity({ type: 'notional', size: 1000 }, alpaca)).toEqual({
+      ok: true,
+      quantity: 10,
+    });
+  });
+
+  it("still rejects 'lots' and 'units' units on an alpaca run", () => {
+    expect(
+      resolveOrderQuantity({ type: 'fixed', unit: 'lots', size: 1 }, alpaca).ok
+    ).toBe(false);
+    const r = resolveOrderQuantity({ type: 'fixed', unit: 'units', size: 1 }, alpaca);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/units/);
   });
 });

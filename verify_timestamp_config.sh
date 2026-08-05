@@ -85,7 +85,7 @@ echo ""
 
 # Test trading app API endpoints
 API_BASE="${NEXT_PUBLIC_API_URL:-http://localhost:4000}"
-IB_SERVICE_BASE="${IB_SERVICE_URL:-http://localhost:8000}"
+BROKER_SERVICE_BASE="${BROKER_SERVICE_URL:-http://localhost:8000}"
 
 echo "📡 Testing Trading App APIs (Remote IB Gateway Data):"
 echo ""
@@ -94,12 +94,12 @@ echo ""
 test_timestamp_format "$API_BASE/api/market-data/history?symbol=MSFT&timeframe=1hour&period=1D" "Main Trading App API (Full Chain)"
 
 # Test IB service directly (IB service → remote IB Gateway)
-test_timestamp_format "$IB_SERVICE_BASE/market-data/history?symbol=MSFT&timeframe=1hour&period=1D" "IB Service Direct API"
+test_timestamp_format "$BROKER_SERVICE_BASE/market-data/history?symbol=MSFT&timeframe=1hour&period=1D" "IB Service Direct API"
 
 # Test timezone configuration endpoint
 echo "🔧 Testing Configuration Endpoint:"
-echo "📡 Endpoint: $IB_SERVICE_BASE/timezone-info"
-config_response=$(curl -s "$IB_SERVICE_BASE/timezone-info" 2>/dev/null)
+echo "📡 Endpoint: $BROKER_SERVICE_BASE/timezone-info"
+config_response=$(curl -s "$BROKER_SERVICE_BASE/timezone-info" 2>/dev/null)
 if [ $? -eq 0 ] && [ -n "$config_response" ]; then
     echo "✅ Configuration endpoint accessible"
     echo "📊 Configuration details:"
@@ -112,7 +112,7 @@ echo ""
 # Debug guidance for remote architecture
 echo "🔍 Debug Information:"
 echo "   Frontend: Check browser console for timestamp processing logs"
-echo "   Trading App: Check IB service logs: './tradingapp.sh logs ib_service'"
+echo "   Trading App: Check IB service logs: './tradingapp.sh logs broker_service'"
 echo "   Remote IB Gateway: Check logs on IB Gateway server (10.7.3.21)"
 echo "   Configuration: Use /timezone-info endpoint for environment verification"
 echo ""
@@ -138,7 +138,7 @@ echo "   1. Trading App Side:"
 echo "      - Verify IB_FORMAT_DATE=2 in .env file"
 echo "      - Check TZ=UTC in docker containers"
 echo "      - Restart trading app: './tradingapp.sh restart'"
-echo "      - Check IB service logs: './tradingapp.sh logs ib_service'"
+echo "      - Check IB service logs: './tradingapp.sh logs broker_service'"
 echo ""
 echo "   2. Remote IB Gateway Side (10.7.3.21):"
 echo "      - Verify IB Gateway timezone is set to UTC (you configured this)"

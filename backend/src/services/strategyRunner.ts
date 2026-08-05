@@ -13,10 +13,10 @@
  * Both gates default off, so with only `SYSTEMATIC_ENABLED=true` the runner is
  * still strictly signal-only.
  *
- *   strategy_runs (running) ─▶ runner ─▶ ib_service /market-data/history
+ *   strategy_runs (running) ─▶ runner ─▶ broker_service /market-data/history
  *                                            │
  *                                            ▼
- *                             ib_service /strategies/evaluate  ─▶ {signal,…}
+ *                             broker_service /strategies/evaluate  ─▶ {signal,…}
  *                                            │
  *                                            ▼
  *                      strategy_signals (dedupe: one per closed bar)
@@ -38,7 +38,7 @@ import { submitCreateOrder } from './orderService.js';
 import { isSystematicExecutionEnabled, systematicMaxOrdersPerDay } from './orderTypes.js';
 import { ExecutionEngine, type ExecutionContext, type ExecutionResult } from './executionEngine.js';
 
-const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
+const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
 const SYSTEMATIC_ENABLED = (process.env.SYSTEMATIC_ENABLED ?? 'false').toLowerCase() === 'true';
 const SYSTEMATIC_INTERVAL_SECONDS = Math.max(
@@ -154,7 +154,7 @@ function defaultDeps(
   return {
     listActiveRuns: () => repo.listActiveRuns(),
     fetchHistory: async (symbol, timeframe) => {
-      const response = await axios.get(`${IB_SERVICE_URL}/market-data/history`, {
+      const response = await axios.get(`${BROKER_SERVICE_URL}/market-data/history`, {
         params: { symbol, timeframe, period: historyPeriodFor(timeframe) },
         timeout: 60000,
         headers: { Connection: 'close' },
@@ -187,7 +187,7 @@ function defaultDeps(
     },
     evaluate: async (bars, ruleSet, position) => {
       const response = await axios.post(
-        `${IB_SERVICE_URL}/strategies/evaluate`,
+        `${BROKER_SERVICE_URL}/strategies/evaluate`,
         { bars, rule_set: ruleSet, position },
         { timeout: 30000, headers: { Connection: 'close' } }
       );

@@ -3,7 +3,7 @@ import type { Request, Response } from 'express';
 import axios from 'axios';
 import { marketDataService, type Contract } from '../../services/marketDataService.js';
 import {
-  IB_SERVICE_URL,
+  BROKER_SERVICE_URL,
   VALID_SEC_TYPES,
   isDataQueryEnabled,
   handleDisabledDataQuery,
@@ -55,7 +55,7 @@ router.post('/search', async (req: Request, res: Response) => {
     console.log(`Searching for contract: ${symbol} (${secType}) on ${exchange || 'any exchange'}`);
 
     const response = await axios.post(
-      `${IB_SERVICE_URL}/market-data/search`,
+      `${BROKER_SERVICE_URL}/market-data/search`,
       {
         symbol: symbol,
         secType: secType,
@@ -165,7 +165,7 @@ router.post('/search/advanced', async (req: Request, res: Response) => {
     console.log(`Advanced search for: ${secType} ${symbol || ''} on ${exchange || 'any exchange'}`);
 
     const response = await axios.post(
-      `${IB_SERVICE_URL}/market-data/search/advanced`,
+      `${BROKER_SERVICE_URL}/market-data/search/advanced`,
       {
         symbol: symbol,
         secType: secType,

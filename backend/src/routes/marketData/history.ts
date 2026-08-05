@@ -7,7 +7,7 @@ import {
   type CandlestickBar,
 } from '../../services/marketDataService.js';
 import {
-  IB_SERVICE_URL,
+  BROKER_SERVICE_URL,
   VALID_TIMEFRAMES,
   isDataQueryEnabled,
   handleDisabledDataQuery,
@@ -116,7 +116,7 @@ router.get('/history', async (req: Request, res: Response) => {
     // Fallback to IB service
     console.log(`Fetching historical data from IB service: ${symbol} ${timeframe} ${period}`);
 
-    const response = await axios.get(`${IB_SERVICE_URL}/market-data/history`, {
+    const response = await axios.get(`${BROKER_SERVICE_URL}/market-data/history`, {
       params: {
         symbol: symbol,
         timeframe: timeframe,
@@ -141,7 +141,7 @@ router.get('/history', async (req: Request, res: Response) => {
     // Cache the fetched bars in the database.
     //
     // The IB service returns its bars under `bars` with a numeric `timestamp`
-    // (unix seconds) — see ib_service `HistoricalDataResponse`. Indicators are
+    // (unix seconds) — see broker_service `HistoricalDataResponse`. Indicators are
     // intentionally NOT persisted (GAP_ANALYSIS §3.2); only raw OHLCV is stored.
     const ibBars = Array.isArray(response.data?.bars) ? response.data.bars : [];
     if (ibBars.length > 0) {
@@ -195,7 +195,7 @@ router.get('/history', async (req: Request, res: Response) => {
 
     res.json({
       ...response.data,
-      source: 'ib_service',
+      source: 'broker_service',
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {

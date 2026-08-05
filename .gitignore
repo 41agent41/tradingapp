@@ -21,7 +21,7 @@ build/
 .pnpm-store/
 .eslintcache
 
-# Python / ib_service
+# Python / broker_service
 __pycache__/
 *.py[cod]
 *$py.class

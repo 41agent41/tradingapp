@@ -166,7 +166,7 @@ The schema inserts a handful of common contracts (`MSFT`, `AAPL`, `GOOGL`,
 ## Indicators are not persisted (by design)
 
 The canonical schema **intentionally omits** a `technical_indicators`
-table — indicators are computed on demand in `ib_service/indicators.py`
+table — indicators are computed on demand in `broker_service/indicators.py`
 and rendered client-side by `lightweight-charts` rather than stored.
 
 The backend code matches this: `marketDataService.getHistoricalData()`

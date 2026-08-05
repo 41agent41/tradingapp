@@ -18,7 +18,7 @@ interface HealthPayload {
   status?: string;
   services?: {
     database?: { connected?: boolean };
-    ib_service?: { connected?: boolean; status?: string; error?: string };
+    broker_service?: { connected?: boolean; status?: string; error?: string };
     cache?: { connected?: boolean; enabled?: boolean; last_error?: string | null };
     streaming?: { connected?: boolean; enabled?: boolean; last_error?: string | null };
     backfill?: { running?: boolean; enabled?: boolean; last_error?: string | null };
@@ -35,9 +35,9 @@ function rowsFromPayload(p: HealthPayload | null, fetchError: string | null): Se
 
   const svc = p.services ?? {};
 
-  const ibState: ServiceState = svc.ib_service?.connected
+  const ibState: ServiceState = svc.broker_service?.connected
     ? 'ok'
-    : svc.ib_service?.status === 'error'
+    : svc.broker_service?.status === 'error'
       ? 'down'
       : 'warn';
 
@@ -57,7 +57,7 @@ function rowsFromPayload(p: HealthPayload | null, fetchError: string | null): Se
       key: 'ib',
       label: 'IB Gateway',
       state: ibState,
-      detail: svc.ib_service?.error ?? svc.ib_service?.status,
+      detail: svc.broker_service?.error ?? svc.broker_service?.status,
     },
     { key: 'db', label: 'Database', state: dbState },
     { key: 'cache', label: 'Cache', state: cacheState, detail: svc.cache?.last_error ?? undefined },

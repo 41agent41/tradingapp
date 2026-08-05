@@ -5,8 +5,8 @@
  * order quantity. Per the roadmap the broker adapter is the authority that
  * turns an abstract size into a valid, rounded quantity and rejects
  * sub-minimum sizes — so the same `type` yields different concrete quantities
- * on IB (shares) vs MT5 (lots). Phase 3 ships the IB (equities / shares) path;
- * MT5 lots resolve in B2.
+ * on IB/Alpaca (shares) vs MT5 (lots) vs OANDA (units). Phase 3 ships the
+ * share-based path (IB, Alpaca); MT5 lots and OANDA units resolve later.
  *
  * A pure function returning a discriminated result: a positive integer
  * quantity, or a reason the size can't be resolved (so the engine skips the
@@ -15,14 +15,14 @@
 
 export interface SizingSpec {
   type?: string; // 'fixed' | 'notional' | 'pct_equity'
-  unit?: string; // 'broker_default' | 'shares' | 'lots' | 'notional' | 'pct_equity'
+  unit?: string; // 'broker_default' | 'shares' | 'lots' | 'units' | 'notional' | 'pct_equity'
   size?: number;
 }
 
 export interface SizingContext {
   /** Latest close for the run's symbol — used to convert notional → quantity. */
   price: number;
-  /** Execution broker for the run; only 'ib' is resolvable in Phase 3. */
+  /** Execution broker for the run; only share-based brokers (ib, alpaca) resolve today. */
   broker: string;
   /** Account equity, when known — required for `pct_equity`. */
   equity?: number | null;
@@ -45,9 +45,13 @@ function positiveInt(raw: number): SizeResolution {
  *   - `notional`   → floor(size / price) shares (needs a positive price).
  *   - `pct_equity` → floor((size% × equity) / price) shares (needs equity + price).
  *
- * MT5 `lots` sizing is out of scope until the MT5 adapter (B2) lands, so it is
- * rejected rather than silently mis-sized as shares.
+ * Alpaca trades in shares with identical unit semantics to IB, so it shares
+ * this path. MT5 `lots` and OANDA `units` sizing are out of scope until their
+ * broker-native unit conversion lands, so both are rejected rather than
+ * silently mis-sized as shares.
  */
+const SHARE_SIZED_BROKERS = new Set(['ib', 'alpaca']);
+
 export function resolveOrderQuantity(spec: SizingSpec, ctx: SizingContext): SizeResolution {
   const type = spec?.type ?? 'fixed';
   const unit = spec?.unit ?? 'broker_default';
@@ -57,14 +61,20 @@ export function resolveOrderQuantity(spec: SizingSpec, ctx: SizingContext): Size
     return { ok: false, reason: `sizing.size must be a positive number (got ${spec?.size})` };
   }
 
-  if (ctx.broker !== 'ib') {
+  if (!SHARE_SIZED_BROKERS.has(ctx.broker)) {
     return {
       ok: false,
-      reason: `sizing for broker '${ctx.broker}' is not supported yet (Phase 3 is IB-only)`,
+      reason: `sizing for broker '${ctx.broker}' is not supported yet (share-based sizing only)`,
     };
   }
   if (unit === 'lots') {
     return { ok: false, reason: "sizing unit 'lots' is MT5-only; this run targets IB (shares)" };
+  }
+  if (unit === 'units') {
+    return {
+      ok: false,
+      reason: "sizing unit 'units' is OANDA-only; this run targets IB/Alpaca (shares)",
+    };
   }
 
   switch (type) {

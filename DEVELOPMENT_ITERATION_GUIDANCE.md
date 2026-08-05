@@ -26,7 +26,7 @@ components, a new `/trade` page, and a compact ticket on `/account`.
 | **Frontend (Next.js 14)** | PASS | `next build` compiles all routes (`/`, `/account`, `/backtest`, `/download`, `/historical`, `/msft`); ESLint + Prettier + Vitest in CI |
 | **IB Service (Python/FastAPI)** | PASS | Ruff + Black + pytest (`tests/test_indicators.py`, `tests/test_streaming.py`, `tests/test_backtesting.py`) in CI |
 | **CI Pipeline (GitHub Actions)** | ACTIVE | `.github/workflows/ci.yml` runs lint → format-check → type-check → test → build per service on push/PR to `master`/`main` |
-| **Docker Compose** | DEFINED | 4 base services (frontend, backend, ib_service, redis); optional TimescaleDB via `docker-compose.db.yml` + `--with-db` |
+| **Docker Compose** | DEFINED | 4 base services (frontend, backend, broker_service, redis); optional TimescaleDB via `docker-compose.db.yml` + `--with-db` |
 
 ---
 
@@ -48,7 +48,7 @@ components, a new `/trade` page, and a compact ticket on `/account`.
   unconsolidated — see §3).
 
 ### Interactive Brokers integration
-- TWS API client (`EClient`/`EWrapper`) in `ib_service/main.py`.
+- TWS API client (`EClient`/`EWrapper`) in `broker_service/main.py`.
 - Contract search (basic + advanced) and 3-phase symbol discovery.
 - Historical data retrieval with UTC timestamp handling.
 - Technical indicators (`indicators.py`) — compute-on-demand, not persisted.
@@ -102,16 +102,16 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
 ### P1 — Functional gaps
 | # | Issue | Location | Impact |
 |---|-------|----------|--------|
-| 1 | ~~No order placement~~ | — | ✅ Env-gated place / cancel / modify shipped on this branch (`ib_service/orders.py`, `backend/src/routes/orders.ts`, `OrderTicket` + `OrderBlotter` + `/trade`). |
+| 1 | ~~No order placement~~ | — | ✅ Env-gated place / cancel / modify shipped on this branch (`broker_service/orders.py`, `backend/src/routes/orders.ts`, `OrderTicket` + `OrderBlotter` + `/trade`). |
 | 2 | ~~Backtesting runs are not persisted~~ | — | ✅ `backtest_runs` + Previous Runs panel shipped on this branch. |
 | 3 | ~~Static IB status on the home page~~ | — | ✅ Replaced by `HealthBadge` (previous branch). |
 
 ### P2 — Architecture / quality
 | # | Issue | Location | Impact |
 |---|-------|----------|--------|
-| 4 | ~~`ib_service/main.py` is ~2,700 lines~~ | — | ✅ Split into models / ib_client / ib_helpers / bars_processing, then the route handlers carved into a `routes/` subpackage (health / market_data / backtesting / streaming / contracts / account / symbols). `main.py` is now a ~80-line app shell, under Ruff/Black. |
+| 4 | ~~`broker_service/main.py` is ~2,700 lines~~ | — | ✅ Split into models / ib_client / ib_helpers / bars_processing, then the route handlers carved into a `routes/` subpackage (health / market_data / backtesting / streaming / contracts / account / symbols). `main.py` is now a ~80-line app shell, under Ruff/Black. |
 | 5 | ~~Four overlapping chart components~~ | — | ✅ Shared `<Chart>` primitive + `useHistoricalData` hook, and all four wrappers (`HistoricalChart` / `TradingChart` / `EnhancedTradingChart` / `MSFTRealtimeChart`) now render through it. `<Chart>` gained per-indicator `priceScaleId` so RSI/MACD keep their own axis. |
-| 6 | ~~No observability~~ | — | ✅ First pass shipped on this branch (pino backend, structlog ib_service, /metrics on both, end-to-end X-Request-Id). Residual `console.log` / `print` cleanup is a touch-as-you-go follow-on. |
+| 6 | ~~No observability~~ | — | ✅ First pass shipped on this branch (pino backend, structlog broker_service, /metrics on both, end-to-end X-Request-Id). Residual `console.log` / `print` cleanup is a touch-as-you-go follow-on. |
 | 7 | ~~No global `error.tsx` / `ResizeObserver`~~ | — | ✅ `error.tsx` + shared `useChartResize` shipped (previous branch). |
 | 8 | ~~Single synchronous IB client~~ | — | ✅ Opt-in pool shipped this branch (`ib_pool.IBPool` keyed by `IB_CLIENT_POOL_SIZE`, defaults to 1 = unchanged behaviour). |
 
@@ -121,12 +121,12 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
 
 ### Tier 1 — Surface remaining engines
 1. ✅ Live `<HealthBadge />` on the home page, polling `/api/health`
-   (covers `database`, `ib_service`, `cache`, `streaming`, `backfill`).
+   (covers `database`, `broker_service`, `cache`, `streaming`, `backfill`).
 2. ✅ Persist backtest runs into Postgres + Previous Runs panel on
    `/backtest`.
 
 ### Tier 2 — Operational polish
-3. ✅ Structured logging (`pino` backend, `structlog` ib_service),
+3. ✅ Structured logging (`pino` backend, `structlog` broker_service),
    `/metrics` on both, end-to-end `X-Request-Id` propagation.
 4. ✅ Frontend `error.tsx` boundary + `ResizeObserver`s on chart containers
    (all five charts now share `useChartResize`).
@@ -142,7 +142,7 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
    streamingBridge, backfillScheduler, cache, database).
 
 ### Tier 3 — Refactors
-6. ✅ Split `ib_service/main.py` — models / ib_client / ib_helpers /
+6. ✅ Split `broker_service/main.py` — models / ib_client / ib_helpers /
    bars_processing landed, then the route handlers were carved into a
    dedicated `routes/` subpackage (health / market_data / backtesting /
    streaming / contracts / account / symbols). `main.py` is now a
@@ -154,10 +154,10 @@ mismatches, the missing backfill scheduler and the API-only backtesting — are
    own surrounding UI + data hooks but no longer embed a bespoke
    lightweight-charts instance.
 8. ✅ Opt-in IB connection pool (`IB_CLIENT_POOL_SIZE`,
-   [`ib_service/ib_pool.py`](ib_service/ib_pool.py)).
+   [`broker_service/ib_pool.py`](broker_service/ib_pool.py)).
 
 ### Tier 4 — Live trading (gated)
-9. ✅ `placeOrder` path in `ib_service`, validated
+9. ✅ `placeOrder` path in `broker_service`, validated
    `POST/DELETE/PUT /api/orders`, order ticket + blotter UI — all
    gated by `LIVE_TRADING_ENABLED` on both services. Every attempt
    is persisted in `order_audit`; the live submission flow is
@@ -179,7 +179,7 @@ Priority  Task                                                Effort
   ✅      Loading skeletons on chart pages                     (done)
   ✅      Grafana dashboard JSON + DEPLOYMENT.md reference     (done)
   ✅      Parquet export + service-layer logger sweep          (done)
-  ✅      Split ib_service/main.py (models / ib_client /        (done)
+  ✅      Split broker_service/main.py (models / ib_client /        (done)
             ib_helpers / bars_processing) — routes still in main
   ✅      Shared <Chart> + useHistoricalData (HistoricalChart   (done)
             adopts; other three charts pending browser-validation)
@@ -193,7 +193,7 @@ Priority  Task                                                Effort
             computed from order_audit net exposure
   ✅      Rewrite TradingChart / EnhancedTradingChart /        (done)
             MSFTRealtimeChart on top of <Chart>
-  ✅      Carve ib_service routes/ subpackage out of main.py  (done)
+  ✅      Carve broker_service routes/ subpackage out of main.py  (done)
   ✅      Split MarketDataFilter.tsx into hook + presentational  (done)
             pieces (useContractSearch + components/marketData/*)
   ✅      MFA / RBAC on /api/orders (live-trading hardening):    (done)
@@ -223,14 +223,14 @@ Browser ──REST (apiFetch + bearer token)──▶ Express backend ──▶ 
 
 - REST: every route except the health checks requires a bearer token; the
   frontend `apiFetch` attaches it automatically.
-- Real-time: `ib_service` publishes ticks to Redis; the backend bridge fans
+- Real-time: `broker_service` publishes ticks to Redis; the backend bridge fans
   them out to Socket.IO rooms; `useRealtimeStream` consumes them.
 - Caching: `/api/market-data/realtime` and `/indicators/available` are served
   through the Redis read-through cache, degrading to a miss on outage.
 - Storage: historical bars read DB-first (`use_database=true`) with a live IB
   fallback. The backfill scheduler keeps the DB topped up; every store path
   records per-day quality counts.
-- Indicators: computed on demand in `ib_service/indicators.py` and proxied
+- Indicators: computed on demand in `broker_service/indicators.py` and proxied
   through `/api/market-data/indicators` — **not persisted**.
 - Backtesting: the IB service runs the engine; the backend proxies and
   validates; the `/backtest` page consumes the result. Runs are not yet

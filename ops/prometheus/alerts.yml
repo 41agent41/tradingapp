@@ -13,8 +13,8 @@
 #     - job_name: tradingapp-backend
 #       static_configs: [{ targets: ['backend:4000'] }]
 #       metrics_path: /metrics
-#     - job_name: tradingapp-ib_service
-#       static_configs: [{ targets: ['ib_service:8000'] }]
+#     - job_name: tradingapp-broker_service
+#       static_configs: [{ targets: ['broker_service:8000'] }]
 #       metrics_path: /metrics
 #
 # Metric provenance:
@@ -22,7 +22,7 @@
 #                                            nodejs_eventloop_lag_p99_seconds,
 #                                            process_resident_memory_bytes,
 #                                            all carry the label service="backend".
-#   ib_service (prometheus_fastapi_instrumentator)
+#   broker_service (prometheus_fastapi_instrumentator)
 #                                         — http_request_duration_seconds_* with
 #                                            labels method/handler/status.
 #
@@ -106,7 +106,7 @@ groups:
   # -----------------------------------------------------------------------
   # IB service (FastAPI + prometheus_fastapi_instrumentator)
   # -----------------------------------------------------------------------
-  - name: tradingapp-ib_service
+  - name: tradingapp-broker_service
     rules:
       - alert: IBServiceHighErrorRate
         # >5% 5xx over 5m, excluding the infra endpoints the dashboard also
@@ -123,7 +123,7 @@ groups:
           description: >-
             {{ printf "%.1f" $value }}% of IB-service requests have returned
             5xx over the last 5 minutes. Often the IB Gateway connection has
-            dropped — check `./tradingapp.sh status` and the ib_service logs.
+            dropped — check `./tradingapp.sh status` and the broker_service logs.
 
       - alert: IBServiceHighLatencyP95
         # IB calls are inherently slower than backend-local work, so the

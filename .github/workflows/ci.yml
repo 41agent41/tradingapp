@@ -98,12 +98,12 @@ jobs:
   # --------------------------------------------------------------------
   # IB service (Python / FastAPI)
   # --------------------------------------------------------------------
-  ib_service:
-    name: ib_service (ruff / black / pytest)
+  broker_service:
+    name: broker_service (ruff / black / pytest)
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ib_service
+        working-directory: broker_service
     steps:
       - uses: actions/checkout@v4
 
@@ -113,8 +113,8 @@ jobs:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: |
-            ib_service/requirements.txt
-            ib_service/requirements-dev.txt
+            broker_service/requirements.txt
+            broker_service/requirements-dev.txt
 
       - name: Install dependencies
         run: |

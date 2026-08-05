@@ -3,7 +3,7 @@ import type { Request, Response } from 'express';
 import axios from 'axios';
 import { cacheService } from '../../services/cache.js';
 import {
-  IB_SERVICE_URL,
+  BROKER_SERVICE_URL,
   REALTIME_CACHE_TTL,
   cacheKey,
   isDataQueryEnabled,
@@ -37,7 +37,7 @@ router.get('/realtime', async (req: Request, res: Response) => {
     // to the IB service call.
     const key = cacheKey(['rt', String(symbol), String(account_mode || '')]);
     const data = await cacheService.wrap(key, REALTIME_CACHE_TTL, async () => {
-      const response = await axios.get(`${IB_SERVICE_URL}/market-data/realtime`, {
+      const response = await axios.get(`${BROKER_SERVICE_URL}/market-data/realtime`, {
         params: { symbol, account_mode },
         timeout: 10000,
         headers: { Connection: 'close' },

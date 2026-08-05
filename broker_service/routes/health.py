@@ -35,7 +35,7 @@ async def health_check():
 
     return {
         "status": "healthy",
-        "service": "TWS API Service",
+        "service": "Broker Service",
         "version": "4.0.0",
         "timestamp": datetime.now().isoformat(),
         "note": "Service is running - IB Gateway connection tested only when endpoints are called",
@@ -92,7 +92,7 @@ async def timezone_info():
 async def root():
     """Service information"""
     return {
-        "service": "TradingApp TWS API Service",
+        "service": "TradingApp Broker Service",
         "version": "4.0.0",
         "status": "running",
         "config": {

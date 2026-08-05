@@ -2,13 +2,13 @@ import express from 'express';
 import type { Request, Response } from 'express';
 import axios from 'axios';
 import { cacheService } from '../../services/cache.js';
-import { IB_SERVICE_URL, isDataQueryEnabled, handleDisabledDataQuery } from './shared.js';
+import { BROKER_SERVICE_URL, isDataQueryEnabled, handleDisabledDataQuery } from './shared.js';
 
 const router = express.Router();
 
 // Technical indicators endpoint.
 //
-// Indicators are computed on demand by the IB service (ib_service/indicators.py)
+// Indicators are computed on demand by the IB service (broker_service/indicators.py)
 // and are NOT persisted in the database — the canonical schema omits the
 // `technical_indicators` table (GAP_ANALYSIS §3.2). This endpoint therefore
 // always proxies to the IB service rather than reading a DB cache.
@@ -38,7 +38,7 @@ router.get('/indicators', async (req: Request, res: Response) => {
 
     console.log(`Calculating technical indicators for ${symbol} ${timeframe}`);
 
-    const response = await axios.get(`${IB_SERVICE_URL}/market-data/indicators`, {
+    const response = await axios.get(`${BROKER_SERVICE_URL}/market-data/indicators`, {
       params: {
         symbol: symbol,
         timeframe: timeframe,
@@ -56,7 +56,7 @@ router.get('/indicators', async (req: Request, res: Response) => {
 
     res.json({
       ...response.data,
-      source: 'ib_service',
+      source: 'broker_service',
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
@@ -93,7 +93,7 @@ router.get('/indicators', async (req: Request, res: Response) => {
 router.get('/indicators/available', async (_req: Request, res: Response) => {
   try {
     const data = await cacheService.wrap('indicators:available', 3600, async () => {
-      const response = await axios.get(`${IB_SERVICE_URL}/indicators/available`, {
+      const response = await axios.get(`${BROKER_SERVICE_URL}/indicators/available`, {
         timeout: 5000,
       });
       return response.data;

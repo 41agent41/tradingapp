@@ -116,7 +116,7 @@ def _validate_common(action: str, order_type: str, tif: str, account_mode: str) 
     if account_mode == "live" and not LIVE_TRADING_ENABLED:
         raise HTTPException(
             403,
-            "Live trading is disabled. Set LIVE_TRADING_ENABLED=true on the ib_service to enable.",
+            "Live trading is disabled. Set LIVE_TRADING_ENABLED=true on the broker_service to enable.",
         )
 
 

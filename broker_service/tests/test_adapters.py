@@ -34,6 +34,8 @@ def test_resolve_provider_defaults_to_ib(adapters_mod):
 def test_resolve_provider_normalises_case(adapters_mod):
     assert adapters_mod.resolve_provider("IB") == "ib"
     assert adapters_mod.resolve_provider("Mt5") == "mt5"
+    assert adapters_mod.resolve_provider("Alpaca") == "alpaca"
+    assert adapters_mod.resolve_provider("OANDA") == "oanda"
 
 
 def test_resolve_provider_rejects_unknown(adapters_mod):
@@ -69,6 +71,26 @@ def test_mt5_market_data_is_recognised_but_unavailable(adapters_mod):
     assert exc.value.status_code == 501
 
 
+def test_alpaca_is_recognised_but_unavailable_by_default(adapters_mod, monkeypatch):
+    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_API_SECRET", raising=False)
+    adapters_mod.reset_registry()
+    with pytest.raises(HTTPException) as exc:
+        adapters_mod.get_broker_adapter("alpaca")
+    assert exc.value.status_code == 501
+    assert "alpaca" in exc.value.detail
+
+
+def test_oanda_is_recognised_but_unavailable_by_default(adapters_mod, monkeypatch):
+    monkeypatch.delenv("OANDA_API_TOKEN", raising=False)
+    monkeypatch.delenv("OANDA_ACCOUNT_ID", raising=False)
+    adapters_mod.reset_registry()
+    with pytest.raises(HTTPException) as exc:
+        adapters_mod.get_broker_adapter("oanda")
+    assert exc.value.status_code == 501
+    assert "oanda" in exc.value.detail
+
+
 def test_unknown_broker_is_400(adapters_mod):
     with pytest.raises(HTTPException) as exc:
         adapters_mod.get_broker_adapter("wells_fargo")
@@ -81,6 +103,8 @@ def test_provider_health_reports_ib_available_mt5_not(adapters_mod):
     assert health["providers"]["ib"]["available"] is True
     assert health["providers"]["ib"]["broker"] is True
     assert health["providers"]["ib"]["market_data"] is True
+    assert health["providers"]["alpaca"]["available"] is False
+    assert health["providers"]["oanda"]["available"] is False
     assert health["providers"]["mt5"]["available"] is False
 
 

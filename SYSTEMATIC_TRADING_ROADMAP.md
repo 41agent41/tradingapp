@@ -29,11 +29,11 @@ The raw materials already exist in the repo but are **not connected**:
 
 | Building block | Where it lives today | Used for | Missing link |
 |---|---|---|---|
-| Signal logic | `ib_service/backtesting.py` — `TradingStrategy.should_buy/should_sell/generate_signals`, `SimpleMAStrategy`, `RSIStrategy`, `AVAILABLE_STRATEGIES` | **Backtest only** | Never evaluated against live bars |
-| Indicators | `ib_service/indicators.py` — `indicator_calculator.calculate_indicators` | Charts + backtest | — |
-| Order path | `backend/src/routes/orders.ts` + `ib_service/orders.py` — validated, gated (`LIVE_TRADING_ENABLED`), audited (`order_audit`), position-capped | **Manual tickets only** | Nothing generates orders programmatically |
-| Tick stream | `ib_service/streaming.py` → Redis → `streamingBridge.ts` → Socket.IO | **Chart display only** | Not consumed by a strategy |
-| Broker plumbing | `ib_service/ib_client.py`, `streaming.py`, `orders.py`, `ib_pool.py` | IB | **IB is hardcoded** — no adapter seam; `get_market_data_source()` is a cosmetic string |
+| Signal logic | `broker_service/backtesting.py` — `TradingStrategy.should_buy/should_sell/generate_signals`, `SimpleMAStrategy`, `RSIStrategy`, `AVAILABLE_STRATEGIES` | **Backtest only** | Never evaluated against live bars |
+| Indicators | `broker_service/indicators.py` — `indicator_calculator.calculate_indicators` | Charts + backtest | — |
+| Order path | `backend/src/routes/orders.ts` + `broker_service/orders.py` — validated, gated (`LIVE_TRADING_ENABLED`), audited (`order_audit`), position-capped | **Manual tickets only** | Nothing generates orders programmatically |
+| Tick stream | `broker_service/streaming.py` → Redis → `streamingBridge.ts` → Socket.IO | **Chart display only** | Not consumed by a strategy |
+| Broker plumbing | `broker_service/ib_client.py`, `streaming.py`, `orders.py`, `ib_pool.py` | IB | **IB is hardcoded** — no adapter seam; `get_market_data_source()` is a cosmetic string |
 
 **Gap A — no execution engine:** nothing turns a criterion into a live order.
 **Gap B — no broker seam:** MetaTrader has nowhere to plug in.
@@ -72,13 +72,13 @@ The raw materials already exist in the repo but are **not connected**:
                  ┌───────────────▼──────────────────────────▼───────────────┐
    backend       │  strategyRunner (opt-in timer, per active run)            │
    (has DB +     │     ├─ pulls latest CLOSED bar per run                    │
-    order path)  │     ├─ calls ib_service /strategies/evaluate  ───────────┐│
+    order path)  │     ├─ calls broker_service /strategies/evaluate  ───────────┐│
                  │     ├─ persists strategy_signals                          ││
                  │     ├─ RISK LAYER → OrderInput → /api/orders (existing)   ││
                  │     └─ reconciles strategy_runs / _state                  ││
                  └───────────────┬──────────────────────────────────────────┘│
                                  │ order path (audited, gated)                │
-                 ┌───────────────▼───────────── ib_service ──────────────────▼┐
+                 ┌───────────────▼───────────── broker_service ──────────────────▼┐
                  │  BrokerAdapter registry  ── source/broker = ib | mt5        │
                  │     ├─ IBAdapter   (ib_client / streaming / orders)         │
                  │     └─ MT5Adapter  ── HTTP ──▶ MT5 sidecar (Windows)        │
@@ -88,7 +88,7 @@ The raw materials already exist in the repo but are **not connected**:
 
 Two rules of placement drive this split:
 
-- **Evaluation lives in `ib_service`** — that's where indicators and the
+- **Evaluation lives in `broker_service`** — that's where indicators and the
   strategy classes already are. Add a stateless `POST /strategies/evaluate`
   (bars + rule-set → latest signal); no new IB coupling.
 - **Orchestration, state and execution live in the backend** — only it has the
@@ -183,7 +183,7 @@ A backend `strategyRunner` service modelled on the opt-in
   rule-set references (multi-TF operands).
 - Passes the run's current **position state** and the wall clock (for
   `sessions`) into the evaluation call.
-- Calls `ib_service` `POST /strategies/evaluate` → `{signal, reason}` for the
+- Calls `broker_service` `POST /strategies/evaluate` → `{signal, reason}` for the
   newest bar only (debounced: one decision per closed bar, never mid-bar;
   rules outside an active session return no signal).
 - Writes a `strategy_signals` row and emits it on a `strategy:<runId>`
@@ -273,20 +273,20 @@ New tables (canonical `timescaledb-schema.sql`, mirroring the `backtest_runs` /
 
 ---
 
-## 5. Component B — Multi-broker abstraction + MetaTrader
+## 5. Component B — Multi-broker abstraction + MetaTrader + Alpaca + OANDA
 
 ### B1. Broker/data-source interface (enabling refactor) — ✅ delivered
 
-> **Landed (ib_service seam).** New `ib_service/adapters.py` defines the
+> **Landed (broker_service seam).** New `broker_service/adapters.py` defines the
 > `MarketDataAdapter` / `BrokerAdapter` protocols + a registry keyed by
-> provider (`ib` | `mt5`); `ib_service/ib_adapter.py` is the concrete
-> `IBAdapter`, a thin delegation layer over the existing sync workers so
-> `source=ib` / `broker=ib` are byte-for-byte identical. Orders, contract
-> search and realtime/tick now dispatch through the registry; a `source=` /
-> `broker=` parameter (default `ib`) is validated — unknown → 400, the
-> recognised-but-unbuilt `mt5` → a clean 501. `get_market_data_source()`'s
-> cosmetic string is superseded by `provider_health()`, surfaced at
-> `/health` and a new `/providers`.
+> provider (`ib` | `mt5` | `alpaca` | `oanda`); `broker_service/ib_adapter.py`
+> is the concrete `IBAdapter`, a thin delegation layer over the existing sync
+> workers so `source=ib` / `broker=ib` are byte-for-byte identical. Orders,
+> contract search and realtime/tick now dispatch through the registry; a
+> `source=` / `broker=` parameter (default `ib`) is validated — unknown →
+> 400, a recognised-but-unconfigured provider → a clean 501.
+> `get_market_data_source()`'s cosmetic string is superseded by
+> `provider_health()`, surfaced at `/health` and a new `/providers`.
 >
 > **Landed (backend broker dimension).** `order_audit` gains a `broker` column
 > (default `ib`, with an `ADD COLUMN IF NOT EXISTS` for existing deployments);
@@ -306,7 +306,7 @@ New tables (canonical `timescaledb-schema.sql`, mirroring the `backtest_runs` /
 > (default `ib`), tag stored contracts with it and forward it to the IB service;
 > `getDataCollectionStats` is broker-aware. B1 is fully closed out.
 
-Define two Python protocols in `ib_service` and make the current IB code
+Define two Python protocols in `broker_service` and make the current IB code
 implement them — **no behaviour change; `source=ib` stays the default**:
 
 - `MarketDataAdapter` — `search_contracts`, `historical_bars`,
@@ -346,7 +346,7 @@ byte-for-byte identical; tests green.
 
 **Constraint:** the official `MetaTrader5` Python package is **Windows-only**
 and attaches to a running terminal; this stack is Linux/Docker. MT5 therefore
-cannot `pip install` into `ib_service`.
+cannot `pip install` into `broker_service`.
 
 **Resolved — Option A (Windows sidecar).** A dedicated host is available for
 MT5 (and for IB), so the plan commits to a small FastAPI service on that
@@ -363,7 +363,7 @@ fallbacks if the sidecar proves impractical.
 | C. REST-EA in-terminal | An Expert Advisor exposing an HTTP endpoint from inside MT5. | Fallback only |
 
 The `MT5Adapter` interface is identical regardless, so a later change behind
-the HTTP boundary would not ripple into `ib_service` or the backend.
+the HTTP boundary would not ripple into `broker_service` or the backend.
 
 - **B2a — data:** `MT5Adapter` implements `MarketDataAdapter`; map MT5 symbols
   (`MSFT`, `EURUSD`) and timeframes (`M1`…`D1`) to the app's `_TIMEFRAME_MAP`;
@@ -380,12 +380,12 @@ the HTTP boundary would not ripple into `ib_service` or the backend.
 > reconciles uniformly. The registry registers MT5's broker side alongside its
 > data side when `MT5_BRIDGE_URL` is set, so a backend `broker=mt5` order flows
 > end-to-end: backend validates + audits + net-caps (per-`(broker,symbol,mode)`)
-> → `ib_service /orders` → `MT5Adapter.place_order` → sidecar. pytest covers
+> → `broker_service /orders` → `MT5Adapter.place_order` → sidecar. pytest covers
 > placement (paper), the live gate failing closed, cancel, positions and
 > account. No backend change was needed — the `broker=` plumbing from B1 already
 > carries it.
 
-> **B2a landed.** `ib_service/mt5_adapter.py` is the Linux-side thin HTTP client
+> **B2a landed.** `broker_service/mt5_adapter.py` is the Linux-side thin HTTP client
 > for the sidecar: a data-only `MarketDataAdapter` that forwards `search`,
 > `historical_bars`, `realtime_quote` and `tick` to `MT5_BRIDGE_URL` and
 > normalises responses into the app's shapes (UTC unix-second bars,
@@ -401,6 +401,38 @@ the HTTP boundary would not ripple into `ib_service` or the backend.
 **DoD (data):** a symbol charts + streams live via `source=mt5`.
 **DoD (exec):** a **paper** order places through MT5 end-to-end, gated and
 audited identically to IB.
+
+### B3. Alpaca and OANDA adapters — ✅ delivered
+
+Unlike MT5, both are cloud REST APIs reachable directly from Linux — no
+Windows terminal, no sidecar host, no separate deployment topology. Each is
+an in-process `httpx` client in `broker_service`, implementing the identical
+`MarketDataAdapter` + `BrokerAdapter` surface as MT5, gated by API
+credentials instead of a bridge URL:
+
+- **`broker_service/alpaca_adapter.py`** — `AlpacaAdapter`, registered when
+  `ALPACA_API_KEY` and `ALPACA_API_SECRET` are both set (`ALPACA_PAPER`
+  selects paper vs. live). Order types map 1:1 to IB's vocabulary
+  (`MKT/LMT/STP/STP_LMT`), so no order type is unsupported.
+- **`broker_service/oanda_adapter.py`** — `OANDAAdapter`, registered when
+  `OANDA_API_TOKEN` and `OANDA_ACCOUNT_ID` are both set (`OANDA_ENVIRONMENT`
+  selects practice vs. live). Two OANDA-specific quirks the rest of the
+  codebase doesn't see: symbols are normalised to OANDA's underscore form
+  (`EUR.USD` ↔ `EUR_USD`), and direction is a *signed* `units` value rather
+  than a separate side field. OANDA has a native 8-hour candle (an advantage
+  over MT5, which has none), so every app timeframe maps cleanly; `STP_LMT`
+  has no OANDA equivalent and is rejected with a 400.
+
+Both follow B1's registry pattern exactly — an unconfigured provider
+resolves to a clean 501, not a 404/400 — and both reuse the same
+`_validate_common` order-validation + `LIVE_TRADING_ENABLED` gate as
+IB/MT5 before anything reaches the broker. Position sizing for Alpaca
+resolves through the same share-based path as IB (`orderSizing.ts`); OANDA's
+`units` sizing is out of scope for now, same as MT5's `lots`.
+
+**DoD (data):** a symbol charts + streams live via `source=alpaca` /
+`source=oanda`. **DoD (exec):** a **paper** order places through each venue
+end-to-end, gated and audited identically to IB.
 
 ---
 
@@ -430,10 +462,12 @@ audited identically to IB.
 | **5** | B1 broker abstraction (IB refactored behind interface) ✅ | — (parallelisable) | none (`source=ib` unchanged) |
 | **6** | B2a MetaTrader **data** source ✅ | 5 | none (read-only) |
 | **7** | B2b MetaTrader **execution** venue ✅ | 5, 6 | gated, paper-only |
+| **8** | B3 Alpaca + OANDA data **and** execution venues ✅ | 5 | gated, paper-only |
 
-Phases 1–4 (systematic engine) and 5–7 (MetaTrader) are largely independent;
-5 can start in parallel with 1. Live (non-paper) auto-trading is deliberately
-the *last* switch flipped, after phases 3 + 7 have proven out on paper.
+Phases 1–4 (systematic engine) and 5–8 (broker venues) are largely
+independent; 5 can start in parallel with 1. Live (non-paper) auto-trading is
+deliberately the *last* switch flipped, after phases 3, 7 and 8 have proven
+out on paper.
 
 ---
 
@@ -445,6 +479,10 @@ the *last* switch flipped, after phases 3 + 7 have proven out on paper.
 | `SYSTEMATIC_EXECUTION_ENABLED` | `false` | Allow the engine to place orders (phase 3+) |
 | `SYSTEMATIC_MAX_ORDERS_PER_DAY` | `0` (off) | Global backstop across all runs |
 | `MT5_BRIDGE_URL` | _unset_ | HTTP endpoint of the MT5 sidecar (phase 6+) |
+| `ALPACA_API_KEY` / `ALPACA_API_SECRET` | _unset_ | Alpaca credentials — both required to register the adapter |
+| `ALPACA_PAPER` | `true` | Alpaca paper vs. live trading endpoint |
+| `OANDA_API_TOKEN` / `OANDA_ACCOUNT_ID` | _unset_ | OANDA credentials — both required to register the adapter |
+| `OANDA_ENVIRONMENT` | `practice` | OANDA practice vs. live endpoint |
 | `DEFAULT_BROKER` | `ib` | Default `broker=`/`source=` when unspecified |
 
 All default to today's behaviour; nothing here changes an existing deployment

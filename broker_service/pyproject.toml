@@ -1,7 +1,7 @@
 [project]
-name = "tradingapp-ib-service"
+name = "tradingapp-broker-service"
 version = "0.1.0"
-description = "TradingApp IB Gateway service"
+description = "TradingApp multi-broker market-data and order-execution service (IB, MT5, Alpaca, OANDA)"
 requires-python = ">=3.11"
 
 # ----------------------------------------------------------------------------

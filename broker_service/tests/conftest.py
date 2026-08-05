@@ -1,5 +1,5 @@
 """
-Shared pytest fixtures for the ib_service tests.
+Shared pytest fixtures for the broker_service tests.
 
 The tests target pure-math modules so the IB gateway / FastAPI / network
 layers are never exercised — they only need pandas and numpy.
@@ -20,8 +20,8 @@ import pytest
 # imports the IB layer — while `setdefault` preserves a real value if set.
 os.environ.setdefault("IB_HOST", "127.0.0.1")
 
-# Make sure the ib_service package is importable when pytest is invoked
-# from the repo root or from ib_service/.
+# Make sure the broker_service package is importable when pytest is invoked
+# from the repo root or from broker_service/.
 _SERVICE_DIR = Path(__file__).resolve().parent.parent
 if str(_SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVICE_DIR))

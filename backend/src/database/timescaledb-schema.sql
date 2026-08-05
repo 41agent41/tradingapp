@@ -13,7 +13,7 @@ CREATE EXTENSION IF NOT EXISTS "timescaledb";
 -- Symbols/Contracts table - stores contract information from IB Gateway
 CREATE TABLE IF NOT EXISTS contracts (
     id SERIAL PRIMARY KEY,
-    broker VARCHAR(16) NOT NULL DEFAULT 'ib', -- venue (B1): 'ib' | 'mt5'
+    broker VARCHAR(16) NOT NULL DEFAULT 'ib', -- venue (B1): 'ib' | 'mt5' | 'alpaca' | 'oanda'
     symbol VARCHAR(20) NOT NULL,
     sec_type VARCHAR(10) NOT NULL, -- STK, OPT, FUT, CASH, etc.
     exchange VARCHAR(20),
@@ -327,7 +327,7 @@ CREATE TRIGGER update_order_audit_updated_at
 -- ==============================================
 -- One row per backtest invocation. The full input set is kept (so a run
 -- can be reproduced) alongside the engine output (metrics + equity curve
--- + trade list) as JSONB so additions in `ib_service/backtesting.py` do
+-- + trade list) as JSONB so additions in `broker_service/backtesting.py` do
 -- not require a schema migration. A `params_hash` lets the UI suppress
 -- duplicate re-runs of the same configuration cheaply.
 
@@ -375,7 +375,7 @@ CREATE TABLE IF NOT EXISTS order_audit (
     id BIGSERIAL PRIMARY KEY,
     submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     account_mode VARCHAR(8) NOT NULL,           -- 'paper' | 'live'
-    broker VARCHAR(16) NOT NULL DEFAULT 'ib',   -- execution venue: 'ib' | 'mt5' (B1)
+    broker VARCHAR(16) NOT NULL DEFAULT 'ib',   -- execution venue: 'ib' | 'mt5' | 'alpaca' | 'oanda' (B1)
     action VARCHAR(8) NOT NULL,                 -- 'BUY' | 'SELL'
     symbol VARCHAR(32) NOT NULL,
     sec_type VARCHAR(8) NOT NULL DEFAULT 'STK',
@@ -415,7 +415,7 @@ ALTER TABLE order_audit ADD COLUMN IF NOT EXISTS broker VARCHAR(16) NOT NULL DEF
 -- ==============================================
 -- SYSTEMATIC STRATEGIES (Systematic Trading roadmap — Phase 2 / A2 + Phase 3 / A3)
 -- ==============================================
--- A strategy is one declarative rule-set (see ib_service/rule_strategy.py)
+-- A strategy is one declarative rule-set (see broker_service/rule_strategy.py)
 -- shared by the backtester and the live signal runner. `strategy_definitions`
 -- stores the rule-set; a `strategy_runs` row pins a definition to a
 -- broker/account_mode and a status; every evaluation the runner makes is

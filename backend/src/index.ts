@@ -21,7 +21,7 @@ import { logger, currentRequestId } from './services/logger.js';
 import { registry } from './services/metrics.js';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 4000;
-const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
+const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
 // ---------------------------------------------------------------------------
 // CORS
@@ -99,7 +99,7 @@ app.use(observabilityMiddleware());
 app.use(createAuthMiddleware());
 
 // Propagate the per-request id into every axios call (mostly: the backend
-// → ib_service hops). The interceptor reads the current AsyncLocalStorage
+// → broker_service hops). The interceptor reads the current AsyncLocalStorage
 // store, so it works whether axios is called directly in a route or buried
 // inside a service.
 axios.interceptors.request.use((config) => {
@@ -127,7 +127,7 @@ app.get('/api/health', async (_req, res) => {
     dbService.testConnection().catch(() => false),
     cacheService.ping().catch(() => false),
     axios
-      .get(`${IB_SERVICE_URL}/health`, { timeout: 5000 })
+      .get(`${BROKER_SERVICE_URL}/health`, { timeout: 5000 })
       .then((r) => ({ ok: true as const, data: r.data }))
       .catch((e: any) => ({ ok: false as const, error: e?.message || 'unknown' })),
   ]);
@@ -144,16 +144,16 @@ app.get('/api/health', async (_req, res) => {
         status: dbConnected ? 'connected' : 'disconnected',
         connected: dbConnected,
       },
-      ib_service: ibResult.ok
+      broker_service: ibResult.ok
         ? {
             status: ibResult.data?.status || 'unknown',
             connected: ibResult.data?.connection?.ib_gateway?.connected || false,
-            url: IB_SERVICE_URL,
+            url: BROKER_SERVICE_URL,
           }
         : {
             status: 'error',
             connected: false,
-            url: IB_SERVICE_URL,
+            url: BROKER_SERVICE_URL,
             error: ibResult.error,
           },
       cache: {
@@ -388,7 +388,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 // Start
 // ---------------------------------------------------------------------------
 server.listen(PORT, '0.0.0.0', () => {
-  logger.info({ port: PORT, ib_service: IB_SERVICE_URL }, 'backend listening');
+  logger.info({ port: PORT, broker_service: BROKER_SERVICE_URL }, 'backend listening');
 
   void streamingBridge.start().catch((err) => {
     logger.warn({ err: String(err) }, 'streaming bridge failed to start');

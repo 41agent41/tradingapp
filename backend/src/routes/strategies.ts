@@ -9,7 +9,7 @@
  *   GET  /api/strategies/runs/:id         — one run
  *   POST /api/strategies/runs/:id/stop    — stop a run
  *   GET  /api/strategies/runs/:id/signals — recorded signals for a run
- *   POST /api/strategies/evaluate         — ad-hoc evaluate (proxies ib_service)
+ *   POST /api/strategies/evaluate         — ad-hoc evaluate (proxies broker_service)
  *
  * The runner itself lives in services/strategyRunner.ts; these routes only
  * manage definitions/runs and read back signals. No orders are placed.
@@ -21,7 +21,7 @@ import { dbService } from '../services/database.js';
 import { StrategyRepository } from '../services/strategyRepository.js';
 
 const router = express.Router();
-const IB_SERVICE_URL = process.env.IB_SERVICE_URL || 'http://ib_service:8000';
+const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
 const repo = new StrategyRepository(dbService);
 
@@ -175,7 +175,7 @@ router.get('/runs/:id/signals', async (req: Request, res: Response) => {
 
 router.post('/evaluate', async (req: Request, res: Response) => {
   try {
-    const response = await axios.post(`${IB_SERVICE_URL}/strategies/evaluate`, req.body ?? {}, {
+    const response = await axios.post(`${BROKER_SERVICE_URL}/strategies/evaluate`, req.body ?? {}, {
       timeout: 30000,
       headers: { Connection: 'close' },
     });

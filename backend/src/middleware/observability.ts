@@ -7,7 +7,7 @@
  *      fresh UUID.
  *   2. Echo it back on the response (so callers can correlate logs).
  *   3. Push it into AsyncLocalStorage for the duration of the request, so
- *      downstream code (DB layer, axios calls to ib_service, logger) can
+ *      downstream code (DB layer, axios calls to broker_service, logger) can
  *      read it without it being threaded through every signature.
  *   4. Time the request and observe into the prom-client histogram.
  *   5. Log one structured line per request when the response finishes.
