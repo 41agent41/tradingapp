@@ -36,8 +36,8 @@ _NON_JSON = object()
 
 class FakeClient:
     """Context-manager stand-in for httpx.Client. `calls` records
-    (method, url, params, json); `handler(method, url, params, json)` returns a
-    FakeResponse (or raises httpx.HTTPError)."""
+    (method, url, params, json, headers); `handler(method, url, params, json)`
+    returns a FakeResponse (or raises httpx.HTTPError)."""
 
     calls = []
     handler = None
@@ -51,8 +51,8 @@ class FakeClient:
     def __exit__(self, *exc):
         return False
 
-    def request(self, method, url, params=None, json=None):
-        FakeClient.calls.append((method, url, params or {}, json))
+    def request(self, method, url, params=None, json=None, headers=None):
+        FakeClient.calls.append((method, url, params or {}, json, headers))
         return FakeClient.handler(method, url, params or {}, json)
 
 
@@ -105,7 +105,7 @@ def test_historical_bars_maps_timeframe_and_normalises(mt5):
     resp = _adapter(mt5).historical_bars("eurusd", "5min", "1M")
 
     # Sent MT5-native timeframe + a bounded count.
-    _, _url, params, _body = FakeClient.calls[0]
+    _, _url, params, _body, _headers = FakeClient.calls[0]
     assert params["timeframe"] == "M5"
     assert params["symbol"] == "EURUSD"
     assert "count" in params
@@ -124,7 +124,7 @@ def test_historical_bars_date_range_sets_custom_period(mt5):
     resp = _adapter(mt5).historical_bars(
         "EURUSD", "1hour", "1Y", start_date="2024-01-01", end_date="2024-02-01"
     )
-    _, _url, params, _body = FakeClient.calls[0]
+    _, _url, params, _body, _headers = FakeClient.calls[0]
     assert params["timeframe"] == "H1"
     assert params["start"] == "2024-01-01" and params["end"] == "2024-02-01"
     assert "count" not in params
@@ -210,6 +210,40 @@ def test_bridge_5xx_is_502(mt5):
 
 
 # --------------------------------------------------------------------------- #
+# shared-secret auth (X-MT5-Bridge-Secret)
+# --------------------------------------------------------------------------- #
+def test_no_secret_configured_sends_no_auth_header(mt5):
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        {"bid": 1.0, "ask": 1.0, "last": 1.0, "volume": 0, "time": 1_700_000_000}
+    )
+    mt5.MT5Adapter("http://mt5-host:9100/").realtime_quote("EURUSD")
+    _, _url, _params, _body, headers = FakeClient.calls[0]
+    assert headers is None
+
+
+def test_secret_configured_sends_auth_header(mt5):
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        {"bid": 1.0, "ask": 1.0, "last": 1.0, "volume": 0, "time": 1_700_000_000}
+    )
+    adapter = mt5.MT5Adapter("http://mt5-host:9100/", shared_secret="s3cr3t")
+    adapter.realtime_quote("EURUSD")
+    _, _url, _params, _body, headers = FakeClient.calls[0]
+    assert headers == {"X-MT5-Bridge-Secret": "s3cr3t"}
+
+
+def test_registry_wires_bridge_secret_into_adapter(monkeypatch):
+    import adapters
+
+    importlib.reload(adapters)
+    monkeypatch.setenv("MT5_BRIDGE_URL", "http://mt5-host:9100")
+    monkeypatch.setenv("MT5_BRIDGE_SECRET", "s3cr3t")
+    adapters.reset_registry()
+
+    md = adapters.get_market_data_adapter("mt5")
+    assert md._shared_secret == "s3cr3t"
+
+
+# --------------------------------------------------------------------------- #
 # registry availability
 # --------------------------------------------------------------------------- #
 def test_registry_registers_mt5_when_bridge_url_set(monkeypatch):
@@ -267,7 +301,7 @@ def test_place_order_paper_posts_to_bridge_and_shapes_result(mt5, monkeypatch):
     )
     out = _adapter(mt5).place_order(_OrderReq(symbol="eurusd", quantity=2, audit_id=9))
 
-    method, url, _params, body = FakeClient.calls[0]
+    method, url, _params, body, _headers = FakeClient.calls[0]
     assert method == "POST" and url.endswith("/orders")
     assert body["symbol"] == "EURUSD" and body["quantity"] == 2 and body["audit_id"] == 9
     # IB-shaped result so order_audit reconciles uniformly.

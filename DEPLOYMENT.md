@@ -77,11 +77,17 @@ MT5 is optional; skip this if you're only trading through IB. The
   `/symbols`, `/history`, `/quote`, `/tick`, `/orders`, `/positions`,
   `/account`). The sidecar itself is not part of this repository — it's a
   separate service you build and run on that Windows host.
-- The Linux `broker_service` container talks to it as a plain HTTP client
+- The Linux `broker_service` container talks to it as an HTTP client
   (`MT5Adapter`) — set `MT5_BRIDGE_URL` (e.g.
   `MT5_BRIDGE_URL=http://10.7.3.22:9100`) and redeploy. Until it's set,
   `source=mt5` / `broker=mt5` resolve to a clean `501` instead of a
   confusing `404`.
+- Also set `MT5_BRIDGE_SECRET` to a random shared secret, and have the
+  sidecar reject any request whose `X-MT5-Bridge-Secret` header doesn't
+  match — the sidecar contract otherwise has no auth story, so anything
+  that can reach `MT5_BRIDGE_URL` can trade the account. `broker_service`
+  logs a startup warning if `MT5_BRIDGE_URL` is set without
+  `MT5_BRIDGE_SECRET`.
 - See [Multi-Broker Host Topology](#multi-broker-host-topology-ib--mt5)
   below for how this host relates to the rest of the deployment, and the
   design trade-offs of running IB and MT5 as separate dedicated hosts with
@@ -217,14 +223,19 @@ than fixing them.
   duplicates it — now there are two broker sessions that can silently log
   out and quietly stop trading, each needing its own babysitting
   (auto-restart, session-alive monitoring, 2FA handling).
-- **The MT5 sidecar contract has no authentication.** `MT5Adapter`
-  (`broker_service/mt5_adapter.py`) makes plain `httpx` calls with no auth
-  header, and the documented sidecar contract has no token/mTLS story. As
-  designed, *anything* that can reach `MT5_BRIDGE_URL:9100` can query
+- **The MT5 sidecar contract supports shared-secret auth, but it's opt-in
+  and the sidecar side still has to enforce it.** `MT5Adapter`
+  (`broker_service/mt5_adapter.py`) sends an `X-MT5-Bridge-Secret` header
+  on every request when `MT5_BRIDGE_SECRET` is set (`broker_service` logs a
+  startup warning if `MT5_BRIDGE_URL` is configured without it). That's
+  only half the contract — the sidecar itself, built and run on the
+  Windows host outside this repo, has to reject requests missing the
+  header or presenting the wrong value. Until that check is implemented
+  there, *anything* that can reach `MT5_BRIDGE_URL:9100` can still query
   positions/account and place, cancel, or modify orders on that MT5
-  account. This needs a shared-secret header or mTLS before it's exposed
-  beyond a trusted private link — it's the same class of gap as the
-  unauthenticated Redis instance in the base compose file.
+  account — the same class of gap as the unauthenticated Redis instance in
+  the base compose file. mTLS is a stronger alternative if the sidecar
+  framework makes that easier than header-checking.
 - **"Dedicated host" doesn't necessarily mean "separate hardware."** The
   two accounts genuinely need to stay separate (they're different broker
   relationships), but the *hosts* don't automatically need to be separate
@@ -252,9 +263,9 @@ than fixing them.
 **Recommendation:** keep the two accounts logically separate (required),
 but treat "separate hardware" as a choice to justify rather than a given —
 decide it based on actual reliability/compliance needs rather than
-defaulting to it. Whichever way that's decided, prioritize: (1) adding
-authentication to the MT5 sidecar HTTP contract before relying on it for
-anything beyond a lab test, (2) firewalling both the IB Gateway host and
+defaulting to it. Whichever way that's decided, prioritize: (1) setting
+`MT5_BRIDGE_SECRET` and enforcing it on the sidecar before relying on MT5
+for anything beyond a lab test, (2) firewalling both the IB Gateway host and
 the MT5 host to accept connections only from the app host, and (3) an
 explicit liveness check + alert for both broker sessions — silent logout
 on either host is currently indistinguishable from "no trading opportunity
@@ -264,7 +275,9 @@ today" until someone notices.
 [`GAP_ANALYSIS.md` § Operational / Deployment Gaps](GAP_ANALYSIS.md#8-operational--deployment-gaps)
 for the living version of this list):
 
-- Authenticate the MT5 sidecar HTTP contract (shared-secret header or mTLS).
+- Implement the `X-MT5-Bridge-Secret` check on the sidecar itself (the
+  `broker_service` side now sends it — see `MT5_BRIDGE_SECRET` above) or
+  move to mTLS.
 - Firewall the IB Gateway and MT5 hosts to accept connections only from the
   app host.
 - Add a liveness check + alert for both broker sessions.
@@ -354,6 +367,7 @@ IB_TIMEOUT=30
 
 # MT5 sidecar (optional second broker — see Multi-Broker Host Topology)
 MT5_BRIDGE_URL=http://10.7.3.22:9100
+MT5_BRIDGE_SECRET=<rotate-me>   # sidecar must enforce X-MT5-Bridge-Secret
 
 # External Postgres / TimescaleDB
 POSTGRES_HOST=db.example.com

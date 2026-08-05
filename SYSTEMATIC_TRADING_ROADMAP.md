@@ -479,6 +479,7 @@ out on paper.
 | `SYSTEMATIC_EXECUTION_ENABLED` | `false` | Allow the engine to place orders (phase 3+) |
 | `SYSTEMATIC_MAX_ORDERS_PER_DAY` | `0` (off) | Global backstop across all runs |
 | `MT5_BRIDGE_URL` | _unset_ | HTTP endpoint of the MT5 sidecar (phase 6+) |
+| `MT5_BRIDGE_SECRET` | _unset_ | Shared secret sent as `X-MT5-Bridge-Secret` on every sidecar request; the sidecar must enforce it |
 | `ALPACA_API_KEY` / `ALPACA_API_SECRET` | _unset_ | Alpaca credentials — both required to register the adapter |
 | `ALPACA_PAPER` | `true` | Alpaca paper vs. live trading endpoint |
 | `OANDA_API_TOKEN` / `OANDA_ACCOUNT_ID` | _unset_ | OANDA credentials — both required to register the adapter |

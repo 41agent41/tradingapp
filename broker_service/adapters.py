@@ -31,6 +31,10 @@ from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 from fastapi import HTTPException
 
+from observability import get_logger
+
+logger = get_logger(__name__)
+
 # Every provider the platform knows about. Membership here means "a valid value
 # for source=/broker="; availability (a registered adapter) is separate.
 SUPPORTED_PROVIDERS = ("ib", "mt5", "alpaca", "oanda")
@@ -97,6 +101,15 @@ def mt5_bridge_url() -> Optional[str]:
     return url or None
 
 
+def mt5_bridge_secret() -> Optional[str]:
+    """Shared secret sent as `X-MT5-Bridge-Secret` on every sidecar request, or
+    None when unset. The sidecar HTTP contract otherwise has no auth story, so
+    anything that can reach `MT5_BRIDGE_URL` can trade the account — see
+    `mt5_adapter.py` for the header contract."""
+    secret = (os.getenv("MT5_BRIDGE_SECRET") or "").strip()
+    return secret or None
+
+
 def alpaca_credentials() -> Optional[tuple[str, str]]:
     """``(key, secret)`` when both Alpaca credentials are set, else None. Read
     live, same as ``mt5_bridge_url()``, so tests can toggle availability
@@ -151,7 +164,18 @@ def _bootstrap() -> None:
     if bridge:
         from mt5_adapter import MT5Adapter
 
-        mt5 = MT5Adapter(bridge)
+        secret = mt5_bridge_secret()
+        if not secret:
+            logger.warning(
+                "mt5_bridge_no_shared_secret",
+                msg=(
+                    "MT5_BRIDGE_URL is set without MT5_BRIDGE_SECRET — the sidecar "
+                    "HTTP contract is unauthenticated; anything that can reach it "
+                    "can query positions/account and place, cancel, or modify "
+                    "orders on the MT5 account."
+                ),
+            )
+        mt5 = MT5Adapter(bridge, shared_secret=secret)
         register("mt5", market_data=mt5, broker=mt5)
 
     alpaca_creds = alpaca_credentials()
