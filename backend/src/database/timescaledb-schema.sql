@@ -433,12 +433,22 @@ CREATE TABLE IF NOT EXISTS strategy_definitions (
     name VARCHAR(128) NOT NULL,
     broker VARCHAR(16) NOT NULL DEFAULT 'ib',
     symbol VARCHAR(32) NOT NULL,
+    sec_type VARCHAR(8) NOT NULL DEFAULT 'STK',
+    exchange VARCHAR(32) NOT NULL DEFAULT 'SMART',
+    currency VARCHAR(8) NOT NULL DEFAULT 'USD',
     timeframe VARCHAR(16) NOT NULL,
     rule_set JSONB NOT NULL,                 -- the declarative rule-set
     version INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Instrument scope for existing deployments (systematic strategies on any
+-- instrument): definitions created before these columns existed default to
+-- the previously-implied STK/SMART/USD contract.
+ALTER TABLE strategy_definitions ADD COLUMN IF NOT EXISTS sec_type VARCHAR(8) NOT NULL DEFAULT 'STK';
+ALTER TABLE strategy_definitions ADD COLUMN IF NOT EXISTS exchange VARCHAR(32) NOT NULL DEFAULT 'SMART';
+ALTER TABLE strategy_definitions ADD COLUMN IF NOT EXISTS currency VARCHAR(8) NOT NULL DEFAULT 'USD';
 
 CREATE INDEX IF NOT EXISTS idx_strategy_definitions_created_desc
     ON strategy_definitions (created_at DESC);

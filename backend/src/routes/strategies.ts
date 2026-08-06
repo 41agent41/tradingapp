@@ -37,6 +37,20 @@ const VALID_TIMEFRAMES = new Set([
   '1day',
 ]);
 const VALID_ACCOUNT_MODES = new Set(['paper', 'live']);
+const VALID_SEC_TYPES = new Set([
+  'STK',
+  'OPT',
+  'FUT',
+  'CASH',
+  'BOND',
+  'CFD',
+  'CMDTY',
+  'CRYPTO',
+  'WAR',
+  'FUND',
+  'IND',
+  'BAG',
+]);
 
 function fail(res: Response, status: number, error: string, detail?: unknown) {
   res.status(status).json({ error, detail, timestamp: new Date().toISOString() });
@@ -46,7 +60,8 @@ function fail(res: Response, status: number, error: string, detail?: unknown) {
 
 router.post('/definitions', async (req: Request, res: Response) => {
   try {
-    const { name, symbol, timeframe, broker, rule_set } = req.body || {};
+    const { name, symbol, timeframe, broker, sec_type, exchange, currency, rule_set } =
+      req.body || {};
     if (!name || !symbol || !timeframe || !rule_set) {
       return fail(res, 400, 'Missing required fields', {
         required: ['name', 'symbol', 'timeframe', 'rule_set'],
@@ -55,10 +70,23 @@ router.post('/definitions', async (req: Request, res: Response) => {
     if (!VALID_TIMEFRAMES.has(timeframe)) {
       return fail(res, 400, 'Invalid timeframe', { valid: [...VALID_TIMEFRAMES] });
     }
+    const secType = String(sec_type ?? 'STK').toUpperCase();
+    if (!VALID_SEC_TYPES.has(secType)) {
+      return fail(res, 400, 'Invalid sec_type', { valid: [...VALID_SEC_TYPES] });
+    }
     if (typeof rule_set !== 'object' || Array.isArray(rule_set) || !('entry' in rule_set)) {
       return fail(res, 400, "rule_set must be an object with an 'entry' group");
     }
-    const row = await repo.createDefinition({ name, symbol, timeframe, broker, rule_set });
+    const row = await repo.createDefinition({
+      name,
+      symbol,
+      timeframe,
+      broker,
+      sec_type: secType,
+      exchange: exchange ? String(exchange) : undefined,
+      currency: currency ? String(currency) : undefined,
+      rule_set,
+    });
     res.status(201).json(row);
   } catch (error: any) {
     fail(res, 500, 'Failed to create definition', error?.message ?? 'unknown');

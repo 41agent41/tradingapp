@@ -26,16 +26,27 @@ jest.mock('../src/services/backtestRunRepository.js', () => {
     __insert: insert,
   };
 });
+jest.mock('../src/services/strategyRepository.js', () => {
+  const findDefinition = jest.fn();
+  return {
+    __esModule: true,
+    StrategyRepository: jest.fn().mockImplementation(() => ({ findDefinition })),
+    __findDefinition: findDefinition,
+  };
+});
 
 import axios from 'axios';
 import backtestingRouter from '../src/routes/backtesting.js';
 
 const axiosMock = axios as jest.Mocked<typeof axios>;
-// Grab the mocked repository at module load — the same registry instance the
+// Grab the mocked repositories at module load — the same registry instances the
 // route imported. `resetModules: true` (jest.config.cjs) makes an in-test
 // `jest.requireMock(...)` hand back a fresh instance the route never uses.
 const repoMock = jest.requireMock('../src/services/backtestRunRepository.js') as {
   __insert: jest.Mock;
+};
+const defRepoMock = jest.requireMock('../src/services/strategyRepository.js') as {
+  __findDefinition: jest.Mock;
 };
 
 function buildApp() {
@@ -50,10 +61,26 @@ describe('POST /api/backtesting/run — validation', () => {
     jest.clearAllMocks();
   });
 
-  it('returns 400 when symbol or strategy is missing', async () => {
+  it('returns 400 when no strategy selector is provided', async () => {
     const res = await request(buildApp()).post('/api/backtesting/run').send({ symbol: 'MSFT' });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Missing required/i);
+    expect(res.body.error).toMatch(/exactly one of 'strategy', 'definition_id' or 'rule_set'/i);
+  });
+
+  it('returns 400 when both a strategy key and a rule_set are provided', async () => {
+    const res = await request(buildApp())
+      .post('/api/backtesting/run')
+      .send({ symbol: 'MSFT', strategy: 'ma_crossover', rule_set: { entry: { all: [] } } });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/exactly one/i);
+  });
+
+  it('returns 400 for an unknown sec_type', async () => {
+    const res = await request(buildApp())
+      .post('/api/backtesting/run')
+      .send({ symbol: 'MSFT', strategy: 'ma_crossover', sec_type: 'BANANA' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Invalid sec_type/i);
   });
 
   it('returns 400 for an unknown timeframe', async () => {
@@ -117,8 +144,99 @@ describe('POST /api/backtesting/run — validation', () => {
           symbol: 'MSFT',
           strategy: 'ma_crossover',
           timeframe: '1day',
+          sec_type: 'STK',
+          exchange: 'SMART',
+          currency: 'USD',
+          source: 'ib',
         }),
       })
+    );
+  });
+
+  it('backtests a saved definition: rule_set body + instrument fields from the row', async () => {
+    defRepoMock.__findDefinition.mockResolvedValueOnce({
+      id: 7,
+      name: 'FX rules',
+      broker: 'oanda',
+      symbol: 'EUR.USD',
+      sec_type: 'CASH',
+      exchange: 'IDEALPRO',
+      currency: 'USD',
+      timeframe: '1hour',
+      rule_set: { entry: { all: [] } },
+    });
+    axiosMock.post.mockResolvedValueOnce({
+      data: {
+        success: true,
+        results: { equity_curve: [], trades_summary: [] },
+        data_points: 120,
+        timeframe: '1hour',
+        period: '1Y',
+      },
+    });
+
+    const res = await request(buildApp()).post('/api/backtesting/run').send({ definition_id: 7 });
+
+    expect(res.status).toBe(200);
+    expect(defRepoMock.__findDefinition).toHaveBeenCalledWith(7);
+    expect(axiosMock.post).toHaveBeenCalledWith(
+      expect.stringContaining('/backtesting/run'),
+      { rule_set: { entry: { all: [] } } },
+      expect.objectContaining({
+        params: expect.objectContaining({
+          symbol: 'EUR.USD',
+          timeframe: '1hour',
+          sec_type: 'CASH',
+          exchange: 'IDEALPRO',
+          currency: 'USD',
+          source: 'oanda',
+        }),
+      })
+    );
+    // No registered-strategy key is forwarded for a rule-set run.
+    const params = axiosMock.post.mock.calls[0][2]?.params as Record<string, unknown>;
+    expect(params.strategy).toBeUndefined();
+    // Persisted under a rules label with the rule-set kept for reproducibility.
+    expect(repoMock.__insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        strategy: 'rules:def:7',
+        symbol: 'EUR.USD',
+        params: expect.objectContaining({ rule_set: { entry: { all: [] } } }),
+      })
+    );
+  });
+
+  it('returns 404 when the definition does not exist', async () => {
+    defRepoMock.__findDefinition.mockResolvedValueOnce(null);
+    const res = await request(buildApp()).post('/api/backtesting/run').send({ definition_id: 99 });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/Definition not found/i);
+  });
+
+  it('backtests an inline rule_set, defaulting symbol/timeframe from it', async () => {
+    axiosMock.post.mockResolvedValueOnce({
+      data: {
+        success: true,
+        results: { equity_curve: [], trades_summary: [] },
+        timeframe: '1day',
+        period: '1Y',
+      },
+    });
+
+    const res = await request(buildApp())
+      .post('/api/backtesting/run')
+      .send({ rule_set: { symbol: 'AAPL', timeframe: '1day', entry: { all: [] } } });
+
+    expect(res.status).toBe(200);
+    expect(axiosMock.post).toHaveBeenCalledWith(
+      expect.stringContaining('/backtesting/run'),
+      { rule_set: expect.objectContaining({ symbol: 'AAPL' }) },
+      expect.objectContaining({
+        params: expect.objectContaining({ symbol: 'AAPL', timeframe: '1day' }),
+      })
+    );
+    expect(repoMock.__insert).toHaveBeenCalledWith(
+      expect.objectContaining({ strategy: 'rules:inline' })
     );
   });
 

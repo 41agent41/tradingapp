@@ -1,10 +1,18 @@
 /**
- * Backtesting proxy routes (GAP_ANALYSIS §5).
+ * Backtesting proxy routes (GAP_ANALYSIS §5 + Systematic Trading roadmap A1).
  *
  * The backtesting engine and strategies live in the IB service
  * (`broker_service/backtesting.py`, exposed at `/backtesting/*`). Going through
  * the backend keeps the feature behind the same auth/CORS perimeter as the
  * rest of the API and gives the frontend a single origin to talk to.
+ *
+ * A run is selected by exactly one of:
+ *   - `strategy`      — a registered strategy key (the original path), or
+ *   - `definition_id` — a saved `strategy_definitions` row, whose rule-set,
+ *     symbol, timeframe and instrument fields become the defaults, or
+ *   - `rule_set`      — an inline declarative rule-set object.
+ * This is what closes the create → backtest → deploy loop: a user-created
+ * definition can be validated in the backtester before it is run live.
  *
  *   GET  /api/backtesting/strategies — list available strategies (cached)
  *   POST /api/backtesting/run        — run a backtest over historical data
@@ -17,6 +25,7 @@ import axios from 'axios';
 import { cacheService } from '../services/cache.js';
 import { dbService } from '../services/database.js';
 import { BacktestRunRepository } from '../services/backtestRunRepository.js';
+import { StrategyRepository } from '../services/strategyRepository.js';
 import { backtestRunsPersisted } from '../services/metrics.js';
 
 const router = express.Router();
@@ -34,7 +43,23 @@ const VALID_TIMEFRAMES = [
   '1day',
 ];
 
+const VALID_SEC_TYPES = new Set([
+  'STK',
+  'OPT',
+  'FUT',
+  'CASH',
+  'BOND',
+  'CFD',
+  'CMDTY',
+  'CRYPTO',
+  'WAR',
+  'FUND',
+  'IND',
+  'BAG',
+]);
+
 const runs = new BacktestRunRepository(dbService);
+const definitions = new StrategyRepository(dbService);
 
 // Translate an axios error from the IB service into a client response using
 // the same shape the other proxy routes use.
@@ -86,21 +111,90 @@ router.get('/strategies', async (_req: Request, res: Response) => {
 router.post('/run', async (req: Request, res: Response) => {
   try {
     const {
-      symbol,
+      symbol: rawSymbol,
       strategy,
-      timeframe = '1hour',
+      definition_id,
+      rule_set: inlineRuleSet,
+      timeframe: rawTimeframe,
       period = '1Y',
       initial_capital = 100000,
       commission = 0.001,
       start_date,
       end_date,
+      sec_type: rawSecType,
+      exchange: rawExchange,
+      currency: rawCurrency,
+      source: rawSource,
     } = req.body || {};
 
-    if (!symbol || !strategy) {
+    // Exactly one way to pick the strategy: a registered key, a saved
+    // definition, or an inline rule-set.
+    const selectors = [strategy, definition_id, inlineRuleSet].filter(
+      (v) => v !== undefined && v !== null && v !== ''
+    );
+    if (selectors.length !== 1) {
+      return res.status(400).json({
+        error: "Provide exactly one of 'strategy', 'definition_id' or 'rule_set'",
+        received: {
+          strategy: strategy ?? null,
+          definition_id: definition_id ?? null,
+          rule_set: inlineRuleSet ? '<object>' : null,
+        },
+      });
+    }
+
+    // Resolve a saved definition: its rule-set always applies; its symbol,
+    // timeframe, broker and instrument fields are defaults the request can
+    // override.
+    let ruleSet: Record<string, unknown> | null = null;
+    let strategyLabel: string;
+    let symbol = rawSymbol;
+    let timeframe = rawTimeframe;
+    let secType = rawSecType;
+    let exchange = rawExchange;
+    let currency = rawCurrency;
+    let source = rawSource;
+
+    if (definition_id !== undefined && definition_id !== null && definition_id !== '') {
+      const defId = Number(definition_id);
+      if (!Number.isInteger(defId) || defId <= 0) {
+        return res.status(400).json({ error: 'definition_id must be a positive integer' });
+      }
+      const definition = await definitions.findDefinition(defId);
+      if (!definition) {
+        return res.status(404).json({ error: 'Definition not found', definition_id: defId });
+      }
+      ruleSet = definition.rule_set ?? {};
+      strategyLabel = `rules:def:${defId}`;
+      symbol = symbol || definition.symbol;
+      timeframe = timeframe || definition.timeframe;
+      secType = secType || definition.sec_type;
+      exchange = exchange || definition.exchange;
+      currency = currency || definition.currency;
+      source = source || definition.broker;
+    } else if (inlineRuleSet !== undefined && inlineRuleSet !== null) {
+      if (typeof inlineRuleSet !== 'object' || Array.isArray(inlineRuleSet)) {
+        return res.status(400).json({ error: 'rule_set must be an object' });
+      }
+      ruleSet = inlineRuleSet as Record<string, unknown>;
+      strategyLabel = 'rules:inline';
+      symbol = symbol || (ruleSet.symbol as string | undefined);
+      timeframe = timeframe || (ruleSet.timeframe as string | undefined);
+    } else {
+      strategyLabel = String(strategy);
+    }
+
+    timeframe = timeframe || '1hour';
+    secType = String(secType || 'STK').toUpperCase();
+    exchange = String(exchange || 'SMART').toUpperCase();
+    currency = String(currency || 'USD').toUpperCase();
+    source = String(source || 'ib').toLowerCase();
+
+    if (!symbol) {
       return res.status(400).json({
         error: 'Missing required parameters',
-        required: ['symbol', 'strategy'],
-        received: { symbol, strategy },
+        required: ['symbol'],
+        received: { symbol: symbol ?? null },
       });
     }
 
@@ -109,6 +203,14 @@ router.post('/run', async (req: Request, res: Response) => {
         error: 'Invalid timeframe',
         valid: VALID_TIMEFRAMES,
         received: timeframe,
+      });
+    }
+
+    if (!VALID_SEC_TYPES.has(secType)) {
+      return res.status(400).json({
+        error: 'Invalid sec_type',
+        valid: [...VALID_SEC_TYPES],
+        received: secType,
       });
     }
 
@@ -126,23 +228,32 @@ router.post('/run', async (req: Request, res: Response) => {
     const hasRange = Boolean(start_date && end_date);
 
     console.log(
-      `Running backtest: ${symbol} ${strategy} ${timeframe} ` +
+      `Running backtest: ${symbol} ${strategyLabel} ${timeframe} ` +
+        `(${secType}/${exchange}/${currency}, source=${source}) ` +
         (hasRange ? `${start_date}..${end_date}` : period)
     );
 
-    const response = await axios.post(`${BROKER_SERVICE_URL}/backtesting/run`, null, {
-      params: {
-        symbol,
-        strategy,
-        timeframe,
-        period,
-        initial_capital: capital,
-        commission: comm,
-        ...(hasRange ? { start_date, end_date } : {}),
-      },
-      timeout: 120000, // backtests pull historical data from IB and can be slow
-      headers: { Connection: 'close' },
-    });
+    const response = await axios.post(
+      `${BROKER_SERVICE_URL}/backtesting/run`,
+      ruleSet ? { rule_set: ruleSet } : null,
+      {
+        params: {
+          symbol,
+          ...(ruleSet ? {} : { strategy }),
+          timeframe,
+          period,
+          initial_capital: capital,
+          commission: comm,
+          sec_type: secType,
+          exchange,
+          currency,
+          source,
+          ...(hasRange ? { start_date, end_date } : {}),
+        },
+        timeout: 120000, // backtests pull historical data from IB and can be slow
+        headers: { Connection: 'close' },
+      }
+    );
 
     const payload = response.data ?? {};
     const results = payload.results ?? {};
@@ -159,7 +270,7 @@ router.post('/run', async (req: Request, res: Response) => {
     let persisted_id: number | null = null;
     try {
       const row = await runs.insert({
-        strategy,
+        strategy: strategyLabel,
         symbol,
         timeframe,
         period: hasRange ? 'CUSTOM' : period,
@@ -167,13 +278,20 @@ router.post('/run', async (req: Request, res: Response) => {
         end_date: hasRange ? end_date : null,
         initial_capital: capital,
         commission: comm,
-        params: { data_points: payload.data_points ?? null },
+        params: {
+          data_points: payload.data_points ?? null,
+          sec_type: secType,
+          exchange,
+          currency,
+          source,
+          ...(ruleSet ? { rule_set: ruleSet } : {}),
+        },
         metrics,
         equity_curve: Array.isArray(equity_curve) ? equity_curve : [],
         trades: Array.isArray(trades_summary) ? trades_summary : [],
       });
       persisted_id = row.id;
-      backtestRunsPersisted.labels(strategy, String(symbol).toUpperCase()).inc();
+      backtestRunsPersisted.labels(strategyLabel, String(symbol).toUpperCase()).inc();
     } catch (persistError: any) {
       console.error('Failed to persist backtest run:', persistError?.message ?? persistError);
     }

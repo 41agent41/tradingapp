@@ -49,6 +49,12 @@ export interface StrategyForm {
   symbol: string;
   timeframe: string;
   broker: string;
+  /** Instrument scope beyond default US stocks — sec_type/exchange/currency
+   *  select the concrete contract on the definition's broker. Optional so
+   *  older callers keep the STK/SMART/USD defaults. */
+  secType?: string;
+  exchange?: string;
+  currency?: string;
   indicators: string; // comma-separated
   entry: ConditionForm[];
   exit: ConditionForm[];
@@ -142,6 +148,9 @@ export function buildDefinitionPayload(form: StrategyForm): BuildResult {
     symbol: form.symbol.trim().toUpperCase(),
     timeframe: form.timeframe,
     broker: form.broker,
+    sec_type: (form.secType ?? 'STK').trim().toUpperCase() || 'STK',
+    exchange: (form.exchange ?? 'SMART').trim().toUpperCase() || 'SMART',
+    currency: (form.currency ?? 'USD').trim().toUpperCase() || 'USD',
     rule_set: ruleSet,
   };
 

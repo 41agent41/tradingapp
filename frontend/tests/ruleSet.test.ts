@@ -72,6 +72,23 @@ describe('buildDefinitionPayload', () => {
     expect(rs.risk).toBeUndefined();
   });
 
+  it('defaults instrument fields to STK/SMART/USD when omitted', () => {
+    const res = buildDefinitionPayload(form());
+    expect(res.payload).toMatchObject({ sec_type: 'STK', exchange: 'SMART', currency: 'USD' });
+  });
+
+  it('uppercases supplied instrument fields', () => {
+    const res = buildDefinitionPayload(
+      form({ secType: 'cash', exchange: 'idealpro', currency: 'usd', symbol: 'eur.usd' })
+    );
+    expect(res.payload).toMatchObject({
+      symbol: 'EUR.USD',
+      sec_type: 'CASH',
+      exchange: 'IDEALPRO',
+      currency: 'USD',
+    });
+  });
+
   it('includes stop_loss_pct when provided', () => {
     const res = buildDefinitionPayload(form({ stopLossPct: '2.5' }));
     const rs = res.payload!.rule_set as Record<string, any>;

@@ -23,6 +23,9 @@ export interface StrategyDefinitionInput {
   symbol: string;
   timeframe: string;
   broker?: string;
+  sec_type?: string;
+  exchange?: string;
+  currency?: string;
   rule_set: Record<string, unknown>;
 }
 
@@ -31,6 +34,9 @@ export interface StrategyDefinitionRow {
   name: string;
   broker: string;
   symbol: string;
+  sec_type: string;
+  exchange: string;
+  currency: string;
   timeframe: string;
   rule_set: Record<string, unknown>;
   version: number;
@@ -62,13 +68,18 @@ export interface StrategyRunRow {
 
 /** A run joined with the fields of its definition the runner needs. The
  *  run-level `sizing`/`risk` blocks (carried from the definition at run
- *  creation) drive the A3 execution layer. */
+ *  creation) drive the A3 execution layer. The instrument fields
+ *  (`sec_type`/`exchange`/`currency`) scope the history fetch to the actual
+ *  contract, and `broker` doubles as the data source for the evaluation. */
 export interface ActiveRun {
   id: number;
   definition_id: number;
   broker: string;
   account_mode: string;
   symbol: string;
+  sec_type: string;
+  exchange: string;
+  currency: string;
   timeframe: string;
   rule_set: Record<string, unknown>;
   sizing: Record<string, unknown>;
@@ -116,14 +127,18 @@ export class StrategyRepository {
 
   async createDefinition(input: StrategyDefinitionInput): Promise<StrategyDefinitionRow> {
     const sql = `
-      INSERT INTO strategy_definitions (name, broker, symbol, timeframe, rule_set)
-      VALUES ($1, $2, $3, $4, $5::jsonb)
+      INSERT INTO strategy_definitions
+        (name, broker, symbol, sec_type, exchange, currency, timeframe, rule_set)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
       RETURNING *
     `;
     const values = [
       input.name,
       input.broker ?? 'ib',
       input.symbol.toUpperCase(),
+      (input.sec_type ?? 'STK').toUpperCase(),
+      (input.exchange ?? 'SMART').toUpperCase(),
+      (input.currency ?? 'USD').toUpperCase(),
       input.timeframe,
       JSON.stringify(input.rule_set ?? {}),
     ];
@@ -196,7 +211,7 @@ export class StrategyRepository {
     const sql = `
       SELECT r.id, r.definition_id, r.broker, r.account_mode,
              r.sizing, r.risk,
-             d.symbol, d.timeframe, d.rule_set
+             d.symbol, d.sec_type, d.exchange, d.currency, d.timeframe, d.rule_set
       FROM strategy_runs r
       JOIN strategy_definitions d ON d.id = r.definition_id
       WHERE r.status = 'running'

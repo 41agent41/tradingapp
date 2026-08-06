@@ -23,6 +23,7 @@ import pandas as pd
 import pytest
 
 from backtesting import AVAILABLE_STRATEGIES, BacktestEngine, SimpleMAStrategy
+from indicators import calculator as indicator_calculator
 from rule_strategy import (
     MA_CROSSOVER_PARITY_RULE_SET,
     RULE_STRATEGY_EXAMPLES,
@@ -563,3 +564,85 @@ class TestEvaluate:
         strat = compile_rule_strategy(MA_CROSSOVER_PARITY_RULE_SET)
         with pytest.raises(ValueError):
             strat.evaluate(pd.DataFrame())
+
+
+# --------------------------------------------------------------------------- #
+# Position-aware rules in the backtest (backtest == live parity)
+# --------------------------------------------------------------------------- #
+
+
+class TestPositionAwareBacktest:
+    """The engine drives ``evaluate_bar`` with its running position.
+
+    Before this, ``generate_signals`` ran once up front with a flat position, so
+    every ``position.*`` operand read 0 on every bar and rules like a -2% stop
+    could never fire in a backtest even though they fire live. These tests pin
+    the position state actually reaching the rules.
+    """
+
+    @staticmethod
+    def _frame(closes: list[float]) -> pd.DataFrame:
+        close = np.array(closes, dtype=float)
+        df = pd.DataFrame(
+            {
+                "open": close,
+                "high": close + 0.5,
+                "low": close - 0.5,
+                "close": close,
+                "volume": np.full(len(close), 1_000.0),
+            }
+        )
+        df.index = pd.date_range("2024-01-01", periods=len(close), freq="D")
+        return df
+
+    # Enter whenever flat; exit only on a 2% unrealised loss.
+    STOP_RULES = {
+        "name": "Stop loss",
+        "entry": {"all": [{"left": "position.size", "op": "<=", "right": 0}]},
+        "exit": {"any": [{"left": "position.unrealized_pct", "op": "<=", "right": -2.0}]},
+    }
+
+    def test_unrealized_pct_stop_fires_during_a_backtest(self) -> None:
+        # Enter at 100, then drift down: -1% at 99, -2% at 98 triggers the stop.
+        df = self._frame([100.0, 100.0, 99.0, 98.0, 98.0, 97.0, 96.0, 96.0])
+        engine = BacktestEngine(initial_capital=100_000, commission=0.0)
+
+        results = engine.run_backtest(df, compile_rule_strategy(self.STOP_RULES), symbol="TEST")
+
+        # With a flat position the stop can never trigger, leaving a single
+        # trade closed by the engine's end-of-backtest flatten.
+        assert results.total_trades > 1
+        stopped = [t for t in results.trades if "exit rules met" in (t.exit_reason or "")]
+        assert stopped, "the -2% stop never fired"
+        for trade in stopped:
+            assert trade.pnl_percent <= -2.0
+
+    def test_avg_price_is_threaded_into_the_rules(self) -> None:
+        # Exit as soon as price trades below the average entry price — only
+        # expressible if avg_price reaches the operand (it is 0 when flat).
+        rules = {
+            "name": "Below entry",
+            "entry": {"all": [{"left": "position.size", "op": "<=", "right": 0}]},
+            "exit": {"any": [{"left": "close", "op": "<", "right": "position.avg_price"}]},
+        }
+        df = self._frame([100.0, 101.0, 102.0, 99.0, 99.0, 98.0])
+        engine = BacktestEngine(initial_capital=100_000, commission=0.0)
+
+        results = engine.run_backtest(df, compile_rule_strategy(rules), symbol="TEST")
+
+        assert any("exit rules met" in (t.exit_reason or "") for t in results.trades)
+
+    def test_evaluate_bar_and_generate_signals_agree_when_flat(self) -> None:
+        """The batch path is implemented in terms of ``evaluate_bar``, so a
+        flat position must produce identical signals through either entry."""
+        strat = compile_rule_strategy(MA_CROSSOVER_PARITY_RULE_SET)
+        df = self._frame(list(np.linspace(100.0, 120.0, 60)))
+        enriched = indicator_calculator.calculate_indicators(df, strat.indicators)
+
+        batch = strat.generate_signals(enriched)
+        signals, in_session = strat.prepare_stateful(enriched)
+
+        for i in range(len(signals)):
+            decision = strat.evaluate_bar(signals, i, in_session, 0.0, 0.0)
+            assert decision["buy"] == bool(batch["buy_signal"].iloc[i])
+            assert decision["sell"] == bool(batch["sell_signal"].iloc[i])

@@ -37,7 +37,29 @@ describe('StrategyRepository.createDefinition', () => {
     expect(calls[0].text).toMatch(/INSERT INTO strategy_definitions/);
     expect(calls[0].params[2]).toBe('MSFT'); // symbol uppercased
     expect(calls[0].params[1]).toBe('ib'); // broker defaults
-    expect(JSON.parse(calls[0].params[4] as string)).toEqual({ entry: { all: [] } });
+    // Instrument fields default to the previously-implied STK/SMART/USD.
+    expect(calls[0].params[3]).toBe('STK');
+    expect(calls[0].params[4]).toBe('SMART');
+    expect(calls[0].params[5]).toBe('USD');
+    expect(JSON.parse(calls[0].params[7] as string)).toEqual({ entry: { all: [] } });
+  });
+
+  it('uppercases supplied instrument fields', async () => {
+    const { db, calls } = fakeDb(() => [{ id: 1 }]);
+    const repo = new StrategyRepository(db);
+    await repo.createDefinition({
+      name: 'FX',
+      symbol: 'eur.usd',
+      timeframe: '1hour',
+      sec_type: 'cash',
+      exchange: 'idealpro',
+      currency: 'usd',
+      rule_set: { entry: { all: [] } },
+    });
+    expect(calls[0].params[2]).toBe('EUR.USD');
+    expect(calls[0].params[3]).toBe('CASH');
+    expect(calls[0].params[4]).toBe('IDEALPRO');
+    expect(calls[0].params[5]).toBe('USD');
   });
 });
 

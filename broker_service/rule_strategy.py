@@ -524,7 +524,72 @@ class RuleStrategy(TradingStrategy):
         in_session = session_mask(signals.index, self.sessions)
         return signals, in_session
 
+    def prepare_stateful(self, df: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
+        """Prepare a frame once for a **bar-by-bar** backtest pass.
+
+        Returns the enriched frame (higher-timeframe columns merged) plus the
+        session mask, so :meth:`evaluate_bar` can be called per bar with the
+        engine's running position. Presence of this method is what tells
+        :class:`backtesting.BacktestEngine` the strategy is position-aware.
+        """
+
+        return self._prepared(df)
+
+    def evaluate_bar(
+        self,
+        signals: pd.DataFrame,
+        i: int,
+        in_session: np.ndarray,
+        position_size: float = 0.0,
+        avg_price: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Evaluate the rules at bar ``i`` against a caller-supplied position.
+
+        The position is passed as plain floats (rather than a :class:`Position`)
+        so the backtest engine never has to import this module — keeping the
+        dependency one-way (``rule_strategy`` → ``backtesting``).
+        """
+
+        row = signals.iloc[i]
+        prev_row = signals.iloc[i - 1] if i >= 1 else None
+        position = Position(
+            size=float(position_size),
+            avg_price=float(avg_price),
+            last_price=float(row.get("close", float("nan"))),
+        )
+        ctx = EvalContext(row=row, prev=prev_row, position=position)
+
+        buy = False
+        sell = False
+        buy_reason = ""
+        sell_reason = ""
+
+        if in_session[i]:
+            if self.entry.evaluate(ctx):
+                buy = True
+                buy_reason = f"{self.name}: entry rules met"
+            if self.exit.evaluate(ctx):
+                sell = True
+                sell_reason = f"{self.name}: exit rules met"
+
+        # Force flat on the last in-session bar of each contiguous window.
+        n = len(signals)
+        if self.flat_at_session_end and in_session[i] and (i == n - 1 or not in_session[i + 1]):
+            sell = True
+            if not sell_reason:
+                sell_reason = f"{self.name}: session-end flat"
+
+        return {"buy": buy, "sell": sell, "buy_reason": buy_reason, "sell_reason": sell_reason}
+
     def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Batch signal pass for engines that don't drive :meth:`evaluate_bar`.
+
+        Position-aware operands see the strategy's static ``self.position``
+        here, so a caller that wants live position semantics (the backtest
+        engine, the live runner) must use :meth:`evaluate_bar` instead. The two
+        share one implementation so they cannot drift.
+        """
+
         # Merge higher-timeframe columns + session mask (no look-ahead — see
         # ``_merge_higher_timeframe``).
         signals, in_session = self._prepared(df)
@@ -535,31 +600,12 @@ class RuleStrategy(TradingStrategy):
         buy_reason = [""] * n
         sell_reason = [""] * n
 
-        # Position is flat throughout the engine's single up-front pass (see the
-        # module docstring). The operands are fully general regardless.
-        position = Position(size=float(self.position))
-        prev_row: pd.Series | None = None
-
         for i in range(n):
-            row = signals.iloc[i]
-            position.last_price = float(row.get("close", float("nan")))
-            ctx = EvalContext(row=row, prev=prev_row, position=position)
-
-            if in_session[i]:
-                if self.entry.evaluate(ctx):
-                    buy[i] = True
-                    buy_reason[i] = f"{self.name}: entry rules met"
-                if self.exit.evaluate(ctx):
-                    sell[i] = True
-                    sell_reason[i] = f"{self.name}: exit rules met"
-
-            # Force flat on the last in-session bar of each contiguous window.
-            if self.flat_at_session_end and in_session[i] and (i == n - 1 or not in_session[i + 1]):
-                sell[i] = True
-                if not sell_reason[i]:
-                    sell_reason[i] = f"{self.name}: session-end flat"
-
-            prev_row = row
+            decision = self.evaluate_bar(signals, i, in_session, float(self.position), 0.0)
+            buy[i] = decision["buy"]
+            sell[i] = decision["sell"]
+            buy_reason[i] = decision["buy_reason"]
+            sell_reason[i] = decision["sell_reason"]
 
         signals["buy_signal"] = buy
         signals["sell_signal"] = sell
