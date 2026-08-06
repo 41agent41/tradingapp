@@ -17,7 +17,7 @@ afterEach(() => {
 describe('usePriceAlerts', () => {
   it('loads alerts scoped to a watchlist item', async () => {
     const fetchMock = vi.fn(
-      async () =>
+      async (_url: string) =>
         new Response(JSON.stringify({ alerts: [{ id: 1, status: 'active' }] }), { status: 200 })
     );
     global.fetch = fetchMock as any;
@@ -26,7 +26,7 @@ describe('usePriceAlerts', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.alerts).toEqual([{ id: 1, status: 'active' }]);
 
-    const url = fetchMock.mock.calls[0][0] as string;
+    const url = fetchMock.mock.calls[0][0];
     expect(url).toContain('watchlist_item_id=5');
   });
 
