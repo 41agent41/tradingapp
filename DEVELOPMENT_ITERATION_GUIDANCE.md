@@ -82,6 +82,8 @@ components, a new `/trade` page, and a compact ticket on `/account`.
 - **Backtest** (`/backtest`): strategy picker, parameter form, metrics
   summary, equity-curve chart, trade-list table.
 - **Account** (`/account`): summary, positions, orders, connection status.
+- **Watchlist** (`/watchlist`): flat, broker-scoped symbol list with
+  per-row live quotes polled from `/api/market-data/realtime`.
 
 ### Quality & hygiene
 - `.gitignore` present; `.env` removed from tracking; `.env.example` is the
@@ -199,7 +201,10 @@ Priority  Task                                                Effort
   ✅      MFA / RBAC on /api/orders (live-trading hardening):    (done)
             opt-in TRADING_TOKENS (X-Trading-Token) + TOTP
             ORDER_MFA_SECRET (X-MFA-Code) on mutating routes
-  2       Watchlists / alerts / scanners                       Large
+  ✅      Watchlist (flat, broker-scoped; /watchlist page +      (done)
+            /api/watchlist CRUD; live quotes via existing
+            /api/market-data/realtime poll)
+  2       Alerts on watchlist symbols; sector / scanner browsing Large
 ```
 
 ---

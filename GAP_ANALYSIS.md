@@ -396,17 +396,25 @@ log.
 - ✅ Loading skeletons (`frontend/app/components/ChartSkeleton.tsx`)
   show on `/historical`, `/msft` and `/backtest` while data is in
   flight; the layout no longer jumps when the chart canvas mounts.
-- No watchlists, alerts, scanners or sector browsing.
+- ✅ **Watchlist.** A flat, broker-scoped watchlist (`watchlist_items`
+  table, `WatchlistRepository`, `/api/watchlist` CRUD) with a `/watchlist`
+  page (`Watchlist` component + `useWatchlist` hook) and a home-page
+  quick-access tile. Each row polls the existing (Redis-cached)
+  `/api/market-data/realtime` endpoint for its live quote — adding a
+  symbol introduces no new IB traffic. Alerts, manual reordering and
+  multiple named lists are not in scope.
+- No alerts, scanners or sector browsing.
 
-**Remaining action:** treat watchlists / alerts / scanners as larger
-follow-on features.
+**Remaining action:** treat alerts / scanners as larger follow-on
+features.
 
 > **Update — the largest follow-on has shipped.** The systematic-trading and
 > multi-broker (IB + MetaTrader) work that this section once hand-waved as
 > "larger follow-on features" is now delivered in full — see
 > [`SYSTEMATIC_TRADING_ROADMAP.md`](SYSTEMATIC_TRADING_ROADMAP.md) for the design
 > and [`FEATURES.md`](FEATURES.md#systematic-trading-rule-driven-auto-execution)
-> for what's live. Watchlists / alerts / scanners remain the open items.
+> for what's live. The watchlist has since shipped too (see §7 above);
+> alerts / scanners remain the open items.
 
 ---
 

@@ -22,6 +22,7 @@ capabilities never get conflated with aspirational plans.
    - [Historical data download](#historical-data-download)
    - [Automated data collection & retention](#automated-data-collection--retention)
    - [Account read endpoints](#account-read-endpoints)
+   - [Watchlist](#watchlist)
    - [Order management](#order-management)
    - [Systematic trading (auto-execution)](#systematic-trading-rule-driven-auto-execution)
    - [Multi-broker: IB + MetaTrader + Alpaca + OANDA](#multi-broker-interactive-brokers-metatrader-mt5-alpaca-oanda)
@@ -209,6 +210,28 @@ frontend:
 > The `/api/account/orders` endpoint is read-only. The write path lives
 > under `/api/orders/*` and requires `LIVE_TRADING_ENABLED=true` for any
 > live order — see the *Order management* section below.
+
+### Watchlist
+
+A single flat list of symbols to keep an eye on, independent of any
+broker/backtest workflow:
+
+- **Page:** `/watchlist`, plus a quick-access tile on the home page.
+- **Component:** [`Watchlist`](frontend/app/components/Watchlist.tsx),
+  backed by the [`useWatchlist`](frontend/app/lib/useWatchlist.ts) hook.
+- **Backend:** `GET /api/watchlist` (list), `POST /api/watchlist` (add —
+  idempotent: adding an already-watched contract returns the existing
+  row instead of erroring), `DELETE /api/watchlist/:id` (remove),
+  persisted in the `watchlist_items` table
+  ([`WatchlistRepository`](backend/src/services/watchlistRepository.ts)).
+- **Live quotes:** each row polls the existing (Redis-cached)
+  `GET /api/market-data/realtime` endpoint every 15s — no new IB traffic
+  or streaming subscription is introduced by adding a symbol here.
+- Symbols are broker-scoped (`broker`/`sec_type`/`exchange`/`currency`,
+  defaulting to `ib`/`STK`/`SMART`/`USD`) so the same ticker on two
+  venues can be tracked as separate rows.
+- **Not yet implemented:** price alerts / notifications, manual
+  reordering, multiple named lists.
 
 ### Order management
 
@@ -491,6 +514,12 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > [Multi-broker: IB + MetaTrader + Alpaca + OANDA](#multi-broker-interactive-brokers-metatrader-mt5-alpaca-oanda).
 > The full design lives in
 > [`SYSTEMATIC_TRADING_ROADMAP.md`](SYSTEMATIC_TRADING_ROADMAP.md).
+>
+> **Also recently shipped (watchlist).** A flat, broker-scoped watchlist
+> (`watchlist_items` table, `/api/watchlist` CRUD, the `/watchlist` page)
+> with per-row live quotes polled from the existing
+> `/api/market-data/realtime` endpoint — see
+> [Watchlist](#watchlist). Alerts/notifications on top of it remain open.
 
 ### Authentication, authorisation & secrets (advanced)
 
@@ -515,7 +544,8 @@ dashboard's metrics). What is still open:
 
 - Loading skeletons on the chart pages.
 - Parquet export from the DataFrame viewer (CSV and JSON ship today).
-- Watchlists and alerts.
+- Price alerts / notifications on watchlist symbols (the watchlist
+  itself has shipped — see [Watchlist](#watchlist)).
 - Sector / scanner browsing.
 
 ### Test coverage expansion
