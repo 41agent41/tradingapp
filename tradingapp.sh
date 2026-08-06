@@ -47,8 +47,8 @@ compose_cmd() {
     fi
 }
 
-# Parse `--with-db` out of the remaining argv so the subcommand dispatch
-# below sees a clean list.
+# Parse `--with-db` / `--non-interactive` out of the remaining argv so the
+# subcommand dispatch below sees a clean list.
 parse_global_flags() {
     local -a remaining=()
     for arg in "$@"; do
@@ -60,6 +60,9 @@ parse_global_flags() {
                 WITH_DB=0
                 rm -f "$WITH_DB_STATE_FILE"
                 ;;
+            --non-interactive)
+                NON_INTERACTIVE=1
+                ;;
             *)
                 remaining+=("$arg")
                 ;;
@@ -68,12 +71,39 @@ parse_global_flags() {
     GLOBAL_ARGS=("${remaining[@]}")
 }
 
+# Upsert `KEY=value` into an env file: replaces the line if `KEY=` already
+# starts a line, otherwise appends it. Every other line — including keys
+# this script has never heard of (POSTGRES_HOST, API_TOKEN,
+# BACKFILL_ENABLED, LIVE_TRADING_ENABLED, ...) — is left untouched, so a
+# hand-edited `.env` survives a re-run of `config`/`env`.
+env_set() {
+    local file="$1" key="$2" value="$3"
+    local tmp
+    tmp=$(mktemp)
+    awk -v k="$key" -v v="$value" '
+        index($0, k"=") == 1 { print k"="v; done=1; next }
+        { print }
+        END { if (!done) print k"="v }
+    ' "$file" > "$tmp"
+    mv "$tmp" "$file"
+}
+
+# Same as env_set, but only writes the key if it is not already present —
+# for defaults the user may have hand-tuned (ports, Postgres/Redis
+# credentials) that `config`/`env` shouldn't silently reset.
+env_set_default() {
+    local file="$1" key="$2" value="$3"
+    if ! grep -qE "^${key}=" "$file" 2>/dev/null; then
+        echo "${key}=${value}" >> "$file"
+    fi
+}
+
 
 show_usage() {
     echo "🚀 TradingApp Unified Management Script"
     echo "======================================"
     echo ""
-    echo "Usage: $0 [COMMAND] [--with-db | --no-db]"
+    echo "Usage: $0 [COMMAND] [--with-db | --no-db] [--non-interactive]"
     echo ""
     echo "Setup & Deployment:"
     echo "  setup       - Install Docker, setup environment, configure IB"
@@ -81,9 +111,12 @@ show_usage() {
     echo "  redeploy    - Clean redeploy (recommended for changes)"
     echo ""
     echo "Global flags:"
-    echo "  --with-db   - Also bring up a local TimescaleDB via"
-    echo "                docker-compose.db.yml (development / self-hosted)"
-    echo "  --no-db     - Stop using the local TimescaleDB override"
+    echo "  --with-db          - Also bring up a local TimescaleDB via"
+    echo "                       docker-compose.db.yml (development / self-hosted)"
+    echo "  --no-db            - Stop using the local TimescaleDB override"
+    echo "  --non-interactive  - Never prompt (setup/config/env use"
+    echo "                       DEFAULT_IB_HOST unless IB_HOST is already"
+    echo "                       exported); for CI / scripted installs"
     echo ""
     echo "Configuration:"
     echo "  config      - Configure IB Gateway connection"
@@ -101,6 +134,7 @@ echo "  test        - Test all connections"
 echo "  diagnose    - Run comprehensive diagnostics"
 echo "  fix         - Auto-fix common issues"
 echo "  ib-help     - IB Gateway setup instructions"
+echo "  verify-timestamps - Check IB timestamp handling end-to-end"
 echo "  clean       - Clean up and reset"
     echo ""
     echo "Examples:"
@@ -156,7 +190,7 @@ install_docker() {
 
 setup_environment() {
     print_info "Setting up environment configuration..."
-    
+
     # Get server IP
     if [[ -z "$SERVER_IP" ]]; then
         SERVER_IP=$(hostname -I | awk '{print $1}' | head -1)
@@ -164,50 +198,58 @@ setup_environment() {
             SERVER_IP="$DEFAULT_SERVER_IP"
         fi
     fi
-    
+
     # Get IB Gateway IP
     if [[ -z "$IB_HOST" ]]; then
-        echo ""
-        print_info "Please enter your IB Gateway IP address:"
-        read -p "IB Gateway IP [$DEFAULT_IB_HOST]: " IB_HOST
-        IB_HOST=${IB_HOST:-$DEFAULT_IB_HOST}
+        if [[ "${NON_INTERACTIVE:-0}" == "1" ]]; then
+            IB_HOST="$DEFAULT_IB_HOST"
+            print_info "Non-interactive mode: using default IB Gateway IP ($IB_HOST)"
+        else
+            echo ""
+            print_info "Please enter your IB Gateway IP address:"
+            read -p "IB Gateway IP [$DEFAULT_IB_HOST]: " IB_HOST
+            IB_HOST=${IB_HOST:-$DEFAULT_IB_HOST}
+        fi
     fi
-    
-    # Create streamlined .env file
-    cat > .env << EOF
+
+    # Merge into .env rather than truncating it: SERVER_IP/IB_HOST (and the
+    # URLs derived from SERVER_IP) are what this command is explicitly
+    # asked to change, so those are force-set; everything else is only
+    # filled in if missing, so hand-edited values (a real POSTGRES_PASSWORD,
+    # POSTGRES_HOST, API_TOKEN, BACKFILL_ENABLED, ...) survive a re-run of
+    # `config`/`env`.
+    if [[ ! -f .env ]]; then
+        print_info "No .env found — creating one."
+        cat > .env << 'HEADER'
 # TradingApp Configuration
-NODE_ENV=production
-SERVER_IP=$SERVER_IP
+# Generated by tradingapp.sh. Re-running `config`/`env` updates SERVER_IP,
+# IB_HOST and the URLs derived from SERVER_IP; every other key here is
+# left alone once set, so it is safe to hand-edit the rest of this file.
+HEADER
+    fi
 
-# Frontend
-FRONTEND_PORT=3000
-NEXT_PUBLIC_API_URL=http://$SERVER_IP:4000
+    env_set .env SERVER_IP "$SERVER_IP"
+    env_set .env NEXT_PUBLIC_API_URL "http://$SERVER_IP:4000"
+    env_set .env CORS_ORIGINS "http://$SERVER_IP:3000"
+    env_set .env IB_HOST "$IB_HOST"
 
-# Backend
-BACKEND_PORT=4000
-CORS_ORIGINS=http://$SERVER_IP:3000
+    env_set_default .env NODE_ENV "production"
+    env_set_default .env FRONTEND_PORT "3000"
+    env_set_default .env BACKEND_PORT "4000"
+    env_set_default .env BROKER_SERVICE_PORT "8000"
+    env_set_default .env IB_PORT "$DEFAULT_IB_PORT"
+    env_set_default .env IB_CLIENT_ID "$DEFAULT_CLIENT_ID"
+    env_set_default .env IB_TIMEOUT "30"
+    env_set_default .env POSTGRES_USER "tradingapp"
+    env_set_default .env POSTGRES_PASSWORD "tradingapp123"
+    env_set_default .env POSTGRES_DB "tradingapp"
+    env_set_default .env REDIS_HOST "redis"
+    env_set_default .env REDIS_PORT "6379"
 
-# IB Service
-BROKER_SERVICE_PORT=8000
-IB_HOST=$IB_HOST
-IB_PORT=$DEFAULT_IB_PORT
-IB_CLIENT_ID=$DEFAULT_CLIENT_ID
-IB_TIMEOUT=30
-
-# Database
-POSTGRES_USER=tradingapp
-POSTGRES_PASSWORD=tradingapp123
-POSTGRES_DB=tradingapp
-
-# Redis
-REDIS_HOST=redis
-REDIS_PORT=6379
-EOF
-    
     print_status "Environment configured:"
     print_info "  Server IP: $SERVER_IP"
-    print_info "  IB Gateway: $IB_HOST:$DEFAULT_IB_PORT"
-    print_info "  Client ID: $DEFAULT_CLIENT_ID"
+    print_info "  IB Gateway: $IB_HOST:$(grep -E '^IB_PORT=' .env | cut -d'=' -f2)"
+    print_info "  Client ID: $(grep -E '^IB_CLIENT_ID=' .env | cut -d'=' -f2)"
 }
 
 test_ib_connection() {
@@ -389,6 +431,9 @@ run_diagnostics() {
     echo ""
     echo "=== Service Tests ==="
     test_deployment
+
+    echo ""
+    print_info "For timestamp/timezone-specific issues, run: $0 verify-timestamps"
 }
 
 fix_issues() {
@@ -573,6 +618,15 @@ case "${1:-}" in
         ;;
     "ib-help")
         show_ib_help
+        ;;
+    "verify-timestamps")
+        if [[ -f verify_timestamp_config.sh ]]; then
+            [[ -f .env ]] && source .env
+            bash verify_timestamp_config.sh
+        else
+            print_error "verify_timestamp_config.sh not found in $(pwd)"
+            exit 1
+        fi
         ;;
     "clean")
         print_warning "This will remove all containers, images, and data. Continue? (y/N)"

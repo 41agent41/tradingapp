@@ -38,6 +38,9 @@ them.
 # Logs
 ./tradingapp.sh logs            # last 20 lines per service
 ./tradingapp.sh logs follow     # stream all services
+
+# Timestamp/timezone check (wrong-year bars, shifted hours)
+./tradingapp.sh verify-timestamps
 ```
 
 If you need an IB Gateway configuration walk-through with values from your
@@ -106,6 +109,20 @@ requested asset, or the server IP not in IB Gateway's trusted list.
 docker compose build --no-cache frontend
 ./tradingapp.sh restart
 ```
+
+### Wrong years / timezone in historical bars
+
+If chart timestamps land on the wrong year (e.g. `57554`) or bars look
+shifted by several hours, run the dedicated timestamp/timezone check —
+it exercises the full chain (frontend → backend → IB service → IB
+Gateway) and the IB service's `/timezone-info` endpoint directly:
+
+```bash
+./tradingapp.sh verify-timestamps
+```
+
+This wraps `verify_timestamp_config.sh` (repo root); see its output for
+whether `IB_FORMAT_DATE` and `TZ=UTC` are set correctly on each hop.
 
 ## Service-Specific Issues
 
