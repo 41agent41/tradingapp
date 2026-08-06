@@ -320,11 +320,18 @@ chmod +x tradingapp.sh
 | `diagnose` | All of `test`, plus Docker, env file and container summaries | Debug a broken host |
 | `fix` | Recreate `.env` if missing, restart services and re-test | Auto-recover |
 | `ib-help` | Print IB Gateway configuration walk-through | Tweaking IB settings |
+| `verify-timestamps` | Run `verify_timestamp_config.sh` against the running stack | Debug wrong-year / wrong-timezone bars |
 | `clean` | Stop, remove project images and prune Docker | Reset before a fresh `deploy` |
 
-> Note: `tradingapp.sh config` **overwrites** `.env` with its own template.
-> If you have hand-edited keys (e.g. `POSTGRES_HOST`, `JWT_SECRET`), copy
-> them aside first and re-apply them after running `config`.
+> `tradingapp.sh config` / `env` **merge** into `.env`: `SERVER_IP`,
+> `IB_HOST` and the `NEXT_PUBLIC_API_URL` / `CORS_ORIGINS` URLs derived
+> from `SERVER_IP` are updated in place, and every other key (ports,
+> Postgres/Redis credentials, and anything you've hand-added like
+> `POSTGRES_HOST`, `API_TOKEN`, `BACKFILL_ENABLED`) is filled in only if
+> missing — a hand-edited `.env` survives a re-run. Pass
+> `--non-interactive` to skip the IB Gateway IP prompt (uses
+> `DEFAULT_IB_HOST` unless `IB_HOST` is already exported), for scripted /
+> CI installs.
 
 ## Manual Deployment
 

@@ -420,18 +420,26 @@ features.
 
 ## 8. Operational / Deployment Gaps
 
-- `tradingapp.sh` rewrites `.env` with `cat > .env` on `config`/`env`,
-  overwriting any hand-added keys (`POSTGRES_HOST`, `API_TOKEN`, …). This is
-  documented as a caveat in `DEPLOYMENT.md` but is still a footgun.
+- ✅ **`tradingapp.sh` env generation footgun — resolved.** `config`/`env`
+  now **merge** into the existing `.env` via `env_set` (force-updates
+  `SERVER_IP`, `IB_HOST` and the URLs derived from `SERVER_IP` — the
+  values the command is explicitly asked to change) and `env_set_default`
+  (fills in everything else — ports, Postgres/Redis credentials — only if
+  missing). Hand-added keys the script has never heard of
+  (`POSTGRES_HOST`, `API_TOKEN`, `BACKFILL_ENABLED`, `LIVE_TRADING_ENABLED`,
+  …) and hand-edited defaults now survive a re-run untouched. A
+  `--non-interactive` global flag skips the IB Gateway IP prompt (falls
+  back to `DEFAULT_IB_HOST` unless `IB_HOST` is already exported) for
+  scripted/CI installs.
+- ✅ **`verify_timestamp_config.sh` wired in.** `./tradingapp.sh
+  verify-timestamps` runs it against the current stack; `diagnose` points
+  at the new subcommand, and `TROUBLESHOOTING.md` documents it under a new
+  *Wrong years / timezone in historical bars* entry.
 - The installer is Linux/Ubuntu-only (`apt`, `usermod`, `systemctl`); the
   README's macOS mention does not hold for `setup`.
-- `verify_timestamp_config.sh` exists at the repo root but is not referenced
-  from any doc or folded into `./tradingapp.sh diagnose`.
 
-**Action:** make environment generation **merge** into the existing `.env`
-(or write `.env.local`); add a `--non-interactive` mode for CI; reference
-`verify_timestamp_config.sh` from `TROUBLESHOOTING.md` or fold it into
-`diagnose`.
+**Remaining action:** none tracked here beyond the macOS installer gap
+above — low priority given the deployment target is a Linux host.
 
 - The multi-broker topology (`DEPLOYMENT.md` §
   [Multi-Broker Host Topology](DEPLOYMENT.md#multi-broker-host-topology-ib--mt5))
