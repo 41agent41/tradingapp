@@ -486,6 +486,32 @@ CREATE INDEX IF NOT EXISTS idx_strategy_signals_acted
     ON strategy_signals (run_id, created_at DESC) WHERE acted;
 
 -- ==============================================
+-- WATCHLIST
+-- ==============================================
+-- A single flat watchlist (no per-user scoping — the app has one operator
+-- today, mirroring the rest of the schema). Each row is a symbol the
+-- operator wants quick access to; live price is fetched on demand from
+-- `/api/market-data/realtime`, not stored here. `sort_order` lets the UI
+-- persist a manual ordering; ties break on `id` (insertion order).
+
+CREATE TABLE IF NOT EXISTS watchlist_items (
+    id BIGSERIAL PRIMARY KEY,
+    broker VARCHAR(16) NOT NULL DEFAULT 'ib',   -- execution venue: 'ib' | 'mt5' | 'alpaca' | 'oanda' (B1)
+    symbol VARCHAR(32) NOT NULL,
+    sec_type VARCHAR(8) NOT NULL DEFAULT 'STK',
+    exchange VARCHAR(16) NOT NULL DEFAULT 'SMART',
+    currency VARCHAR(8) NOT NULL DEFAULT 'USD',
+    notes VARCHAR(256),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT watchlist_items_unique
+        UNIQUE (broker, symbol, sec_type, exchange, currency)
+);
+
+CREATE INDEX IF NOT EXISTS idx_watchlist_items_sort
+    ON watchlist_items (sort_order, id);
+
+-- ==============================================
 -- INITIAL DATA
 -- ==============================================
 
