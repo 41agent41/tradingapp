@@ -575,9 +575,13 @@ on `master` have **shipped** (see
 - Frontend component tests (React Testing Library) beyond the current
   `apiFetch` suite.
 - Backend route/integration coverage beyond the initial validation tests.
-- IB-service tests around the historical-data assembly path (a fake
-  `EClient` / `EWrapper`), on top of the existing indicator and streaming
-  tests.
+- ✅ IB-service tests around the historical-data assembly path — a
+  `FakeIBApp` stand-in for `EClient`/`EWrapper`
+  ([`broker_service/tests/test_market_data_history_route.py`](broker_service/tests/test_market_data_history_route.py))
+  exercises `GET /market-data/history` end-to-end (contract-qualification,
+  the period vs. date-range branches, the 404/503 failure paths, and the
+  hand-off into `bars_processing`) without a real IB Gateway, network
+  call or background thread.
 
 ### Refactors
 
