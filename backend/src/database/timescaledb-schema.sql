@@ -512,6 +512,32 @@ CREATE INDEX IF NOT EXISTS idx_watchlist_items_sort
     ON watchlist_items (sort_order, id);
 
 -- ==============================================
+-- PRICE ALERTS
+-- ==============================================
+-- In-app-only price alerts on a watchlist symbol. There is no delivery
+-- channel (email/SMS/webhook) here by design — the frontend evaluates
+-- `condition`/`target_price` against the quote it already polls for the
+-- watchlist row, flips the alert to 'triggered' via the API when crossed,
+-- and surfaces it in-page (plus a browser Notification when permitted).
+-- Deleting a watchlist item cascades to its alerts.
+
+CREATE TABLE IF NOT EXISTS price_alerts (
+    id BIGSERIAL PRIMARY KEY,
+    watchlist_item_id BIGINT NOT NULL REFERENCES watchlist_items(id) ON DELETE CASCADE,
+    condition VARCHAR(8) NOT NULL,              -- 'above' | 'below'
+    target_price NUMERIC(20,4) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'active', -- 'active' | 'triggered' | 'dismissed'
+    triggered_at TIMESTAMPTZ,
+    triggered_price NUMERIC(20,4),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_alerts_item
+    ON price_alerts (watchlist_item_id);
+CREATE INDEX IF NOT EXISTS idx_price_alerts_status
+    ON price_alerts (status);
+
+-- ==============================================
 -- INITIAL DATA
 -- ==============================================
 

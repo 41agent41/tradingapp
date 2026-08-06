@@ -72,6 +72,11 @@ export class WatchlistRepository {
     return { added: inserted, row: row as WatchlistItemRow };
   }
 
+  async find(id: number): Promise<WatchlistItemRow | null> {
+    const result = await this.db.query('SELECT * FROM watchlist_items WHERE id = $1', [id]);
+    return (result.rows[0] as WatchlistItemRow | undefined) ?? null;
+  }
+
   async remove(id: number): Promise<{ removed: boolean }> {
     const result = await this.db.query('DELETE FROM watchlist_items WHERE id = $1 RETURNING id', [
       id,

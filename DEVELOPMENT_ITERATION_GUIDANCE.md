@@ -83,7 +83,10 @@ components, a new `/trade` page, and a compact ticket on `/account`.
   summary, equity-curve chart, trade-list table.
 - **Account** (`/account`): summary, positions, orders, connection status.
 - **Watchlist** (`/watchlist`): flat, broker-scoped symbol list with
-  per-row live quotes polled from `/api/market-data/realtime`.
+  per-row live quotes polled from `/api/market-data/realtime`, plus
+  in-app price alerts (above/below thresholds, evaluated client-side
+  against the polled quote, a triggered-alerts banner and an optional
+  browser Notification).
 
 ### Quality & hygiene
 - `.gitignore` present; `.env` removed from tracking; `.env.example` is the
@@ -204,7 +207,11 @@ Priority  Task                                                Effort
   ✅      Watchlist (flat, broker-scoped; /watchlist page +      (done)
             /api/watchlist CRUD; live quotes via existing
             /api/market-data/realtime poll)
-  2       Alerts on watchlist symbols; sector / scanner browsing Large
+  ✅      In-app price alerts on watchlist symbols (price_alerts  (done)
+            table, /api/alerts CRUD, client-side threshold check
+            against the polled quote, triggered-alerts banner +
+            optional browser Notification)
+  2       Sector / scanner browsing                              Large
 ```
 
 ---

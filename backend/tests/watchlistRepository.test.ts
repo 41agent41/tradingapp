@@ -34,6 +34,23 @@ describe('WatchlistRepository.list', () => {
   });
 });
 
+describe('WatchlistRepository.find', () => {
+  it('returns the row when found', async () => {
+    const { db, calls } = fakeDb(() => [{ id: 1, symbol: 'MSFT' }]);
+    const repo = new WatchlistRepository(db);
+    const row = await repo.find(1);
+    expect(calls[0].text).toMatch(/WHERE id = \$1/);
+    expect(row?.symbol).toBe('MSFT');
+  });
+
+  it('returns null when not found', async () => {
+    const { db } = fakeDb(() => []);
+    const repo = new WatchlistRepository(db);
+    const row = await repo.find(999);
+    expect(row).toBeNull();
+  });
+});
+
 describe('WatchlistRepository.add', () => {
   it('uppercases the symbol and defaults broker/sec_type/exchange/currency', async () => {
     const { db, calls } = fakeDb(() => [

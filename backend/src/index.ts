@@ -10,6 +10,7 @@ import exportRoutes from './routes/export.js';
 import ordersRoutes from './routes/orders.js';
 import strategiesRoutes from './routes/strategies.js';
 import watchlistRoutes from './routes/watchlist.js';
+import priceAlertsRoutes from './routes/priceAlerts.js';
 import axios from 'axios';
 import { dbService } from './services/database.js';
 import { cacheService } from './services/cache.js';
@@ -200,6 +201,7 @@ app.use('/api/export', exportRoutes);
 app.use('/api/orders', ordersRoutes);
 app.use('/api/strategies', strategiesRoutes);
 app.use('/api/watchlist', watchlistRoutes);
+app.use('/api/alerts', priceAlertsRoutes);
 
 app.get('/', (_req, res) => {
   res.json({

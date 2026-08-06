@@ -230,8 +230,22 @@ broker/backtest workflow:
 - Symbols are broker-scoped (`broker`/`sec_type`/`exchange`/`currency`,
   defaulting to `ib`/`STK`/`SMART`/`USD`) so the same ticker on two
   venues can be tracked as separate rows.
-- **Not yet implemented:** price alerts / notifications, manual
-  reordering, multiple named lists.
+- **Price alerts (in-app only):** set an "above" or "below" target price
+  on any watchlist row. There is no server-side price watcher or external
+  delivery channel — the row already polls its quote every 15s, so the
+  frontend itself compares each active alert against that quote and flips
+  it to `triggered` the moment it crosses
+  (`POST /api/alerts/:id/trigger`). Triggered alerts persist in the
+  `price_alerts` table (`PriceAlertRepository`) — mounted at
+  `/api/alerts` (`GET`/`POST /api/alerts`, `POST /api/alerts/:id/trigger`,
+  `POST /api/alerts/:id/dismiss`, `DELETE /api/alerts/:id`) — so they
+  survive a refresh and show up in a banner at the top of the page (with
+  a **Dismiss** button) even in a second tab. A **Enable browser
+  notifications** control (Web `Notification` API, permission-gated) adds
+  an OS-level toast on top of the in-page banner. Deleting a watchlist
+  item cascades to its alerts.
+- **Not yet implemented:** email/SMS/webhook delivery, manual reordering,
+  multiple named lists.
 
 ### Order management
 
@@ -515,11 +529,14 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > The full design lives in
 > [`SYSTEMATIC_TRADING_ROADMAP.md`](SYSTEMATIC_TRADING_ROADMAP.md).
 >
-> **Also recently shipped (watchlist).** A flat, broker-scoped watchlist
-> (`watchlist_items` table, `/api/watchlist` CRUD, the `/watchlist` page)
-> with per-row live quotes polled from the existing
-> `/api/market-data/realtime` endpoint — see
-> [Watchlist](#watchlist). Alerts/notifications on top of it remain open.
+> **Also recently shipped (watchlist + in-app price alerts).** A flat,
+> broker-scoped watchlist (`watchlist_items` table, `/api/watchlist`
+> CRUD, the `/watchlist` page) with per-row live quotes polled from the
+> existing `/api/market-data/realtime` endpoint, plus in-app-only price
+> alerts (`price_alerts` table, `/api/alerts` CRUD, a triggered-alerts
+> banner and an optional browser Notification) evaluated client-side
+> against that same polled quote — see [Watchlist](#watchlist).
+> Email/SMS/webhook delivery remain open.
 
 ### Authentication, authorisation & secrets (advanced)
 
@@ -544,8 +561,9 @@ dashboard's metrics). What is still open:
 
 - Loading skeletons on the chart pages.
 - Parquet export from the DataFrame viewer (CSV and JSON ship today).
-- Price alerts / notifications on watchlist symbols (the watchlist
-  itself has shipped — see [Watchlist](#watchlist)).
+- Alert delivery beyond the browser tab (email/SMS/webhook) — in-app
+  price alerts with browser notifications have shipped, see
+  [Watchlist](#watchlist).
 - Sector / scanner browsing.
 
 ### Test coverage expansion
