@@ -540,7 +540,14 @@ Phases 1–4 are complete (see §2). Remaining work, ordered by dependency:
 12. ✅ Test breadth expanded: route-level Supertest coverage for
     `/api/backtesting/*` and `/api/export/parquet`, RTL interaction tests
     for the HealthBadge popover, hook tests for `useHistoricalData`, and
-    pytest coverage for `bars_processing`.
+    pytest coverage for `bars_processing`. ✅ IB-service historical-data
+    assembly path now covered too — a `FakeIBApp` stand-in for
+    `EClient`/`EWrapper` drives `GET /market-data/history` through
+    `routes/market_data.py` end-to-end
+    ([`test_market_data_history_route.py`](broker_service/tests/test_market_data_history_route.py)),
+    leaving frontend RTL coverage beyond hooks and broader backend route
+    coverage as the two remaining test-breadth items (see
+    [`FEATURES.md`](FEATURES.md#test-coverage-expansion)).
 
 ---
 
