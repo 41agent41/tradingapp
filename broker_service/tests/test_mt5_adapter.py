@@ -328,7 +328,9 @@ def test_cancel_and_positions_and_account(mt5):
         if method == "DELETE":
             return FakeResponse({"status": "cancel_requested"})
         if url.endswith("/positions"):
-            return FakeResponse({"positions": [{"symbol": "EURUSD", "position": 2}]})
+            return FakeResponse(
+                {"positions": [{"symbol": "EURUSD", "position": 2, "average_cost": 1.1}]}
+            )
         if url.endswith("/account"):
             return FakeResponse({"balance": 10000, "equity": 10100})
         return FakeResponse({})
@@ -336,5 +338,48 @@ def test_cancel_and_positions_and_account(mt5):
     FakeClient.handler = handler
     adapter = _adapter(mt5)
     assert adapter.cancel_order(555)["status"] == "cancel_requested"
-    assert adapter.positions() == [{"symbol": "EURUSD", "position": 2}]
+    # Normalised to the app's Position shape.
+    assert adapter.positions() == [
+        {
+            "symbol": "EURUSD",
+            "position": 2.0,
+            "market_price": None,
+            "market_value": None,
+            "average_cost": 1.1,
+            "unrealized_pnl": None,
+            "currency": "USD",
+        }
+    ]
     assert adapter.account_summary()["equity"] == 10100
+
+
+def test_positions_accept_native_mt5_field_names(mt5):
+    """A sidecar passing MT5's own PositionInfo fields through verbatim:
+    unsigned `volume` with the direction in `type` (0=buy, 1=sell)."""
+
+    def handler(method, url, params, json):
+        if url.endswith("/positions"):
+            return FakeResponse(
+                {
+                    "positions": [
+                        {
+                            "symbol": "EURUSD",
+                            "volume": 0.5,
+                            "type": 1,  # sell
+                            "price_open": 1.2,
+                            "price_current": 1.15,
+                            "profit": 25.0,
+                        },
+                        {"symbol": "GBPUSD", "volume": 1.0, "type": 0, "price_open": 1.3},
+                    ]
+                }
+            )
+        return FakeResponse({})
+
+    FakeClient.handler = handler
+    rows = _adapter(mt5).positions()
+    assert rows[0]["position"] == -0.5  # sell -> negative
+    assert rows[0]["average_cost"] == 1.2
+    assert rows[0]["market_price"] == 1.15
+    assert rows[0]["unrealized_pnl"] == 25.0
+    assert rows[1]["position"] == 1.0  # buy -> positive

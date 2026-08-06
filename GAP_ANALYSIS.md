@@ -657,11 +657,7 @@ hardcoded with a TODO. It now reads the venue's reported average cost from
 
 ### 12.4 Remaining — prioritised
 
-1. **`/account/positions` is IB-only.** It calls `get_ib_connection()` directly
-   instead of `get_broker_adapter(broker)`, though every adapter already
-   implements `positions()`. Until routed, non-IB live runs get
-   `avg_price = 0` and their unrealised-P&L rules stay inert. Natural
-   close-out of B1 and the highest-value next step.
+1. ~~**`/account/positions` is IB-only.**~~ ✅ **Closed** — see §12.5.
 2. **`risk.max_daily_loss` is a silent no-op.** Accepted by the schema and the
    builder, enforced nowhere — the same failure shape as §12.3. Needs realised
    P&L, hence (3).
@@ -674,6 +670,47 @@ hardcoded with a TODO. It now reads the venue's reported average cost from
 4. **The backtester ignores `sizing` and `scale_out`.** `BacktestEngine` is
    all-in / all-out, so backtest returns won't match a live run's even when the
    signals agree.
+
+### 12.5 Positions are venue-aware ✅ fixed (follow-up)
+
+`GET /account/positions` called `get_ib_connection()` unconditionally, so a
+live run on MT5, Alpaca or OANDA read **IB's** positions — which in practice
+meant no match for its symbol, `avg_price = 0`, and every unrealised-P&L rule
+silently inert on exactly the venues where the app had just gained execution
+support.
+
+The route now takes `broker=` and dispatches through `get_broker_adapter()`;
+`broker=ib` keeps the existing synchronous path byte-for-byte, an unknown
+broker is a 400 and a recognised-but-unconfigured one a 501, matching the
+convention everywhere else.
+
+The substance was in normalisation. Each adapter's `positions()` existed but
+had **zero callers**, so it had never been shaped — every venue returned its
+raw payload, none of which matches the app's `Position` model. They now
+normalise, and that is where the per-venue quirks live:
+
+- **Alpaca** signs `qty` directly (negative for a short), so the sign carries
+  through; flat rows are dropped.
+- **OANDA** splits an instrument into independent `long` / `short` legs (short
+  units already negative). The legs are netted into one signed size, and the
+  average price is taken from whichever leg is actually open — averaging the
+  two prices would be meaningless. Instruments come back underscore-separated
+  and map to the app's dotted form, the inverse of the request path.
+- **MT5** is read defensively, since the sidecar is out-of-repo: either MT5's
+  native `volume` (unsigned, direction in `type`) / `price_open` / `profit`, or
+  the app's own vocabulary if the sidecar already speaks it.
+
+The runner's avg-cost cache is keyed per broker and passes `broker=` through,
+so `position.unrealized_pct` stops now fire on every venue.
+
+**Deliberately not changed:** a run's `position.size` still comes from the
+order-audit net, not the venue. The venue's size *is* fill-derived and would
+address §12.4(3), but it reports whole-**account** exposure — a second run on
+the same symbol, or a manual trade, would fold into this run's position and
+change what its sizing and pyramiding rules do. That is a live-behaviour change
+that needs an attribution decision (per-run sub-accounts, an attribution ledger,
+or accepting account-level semantics explicitly), so it is flagged rather than
+slipped in. `/account/summary` and `/account/orders` also remain IB-only.
 
 ---
 

@@ -342,9 +342,49 @@ class MT5Adapter:
         }
 
     def positions(self) -> List[Dict[str, Any]]:
+        """Open positions normalised to the app's ``models.Position`` shape.
+
+        The sidecar is out-of-repo, so the field names are read defensively:
+        MT5's own ``PositionInfo`` uses ``volume`` / ``price_open`` / ``profit``
+        with ``type`` 0=buy 1=sell, while a sidecar that already speaks the
+        app's vocabulary may send ``position`` / ``average_cost`` directly.
+        Both are accepted; an unsigned ``volume`` is signed from ``type``.
+        """
+
         payload = self._get("/positions")
         rows = payload.get("positions", payload) if isinstance(payload, dict) else payload
-        return rows if isinstance(rows, list) else []
+        positions: List[Dict[str, Any]] = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            size = _opt_float(row.get("position"))
+            if size is None:
+                size = _opt_float(row.get("volume"))
+                # MT5 reports volume unsigned with the direction in `type`.
+                if size is not None and _opt_int(row.get("type")) == 1:
+                    size = -size
+            if size is None or size == 0:
+                continue
+            positions.append(
+                {
+                    "symbol": str(row.get("symbol") or "").upper(),
+                    "position": size,
+                    "market_price": _opt_float(row.get("price_current") or row.get("market_price")),
+                    "market_value": _opt_float(row.get("market_value")),
+                    "average_cost": _opt_float(
+                        row.get("price_open")
+                        if row.get("price_open") is not None
+                        else row.get("average_cost")
+                    ),
+                    "unrealized_pnl": _opt_float(
+                        row.get("profit")
+                        if row.get("profit") is not None
+                        else row.get("unrealized_pnl")
+                    ),
+                    "currency": str(row.get("currency") or "USD"),
+                }
+            )
+        return positions
 
     def account_summary(self) -> Dict[str, Any]:
         payload = self._get("/account")

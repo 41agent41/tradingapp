@@ -325,8 +325,35 @@ class AlpacaAdapter:
         }
 
     def positions(self) -> List[Dict[str, Any]]:
+        """Open positions normalised to the app's ``models.Position`` shape.
+
+        Alpaca reports ``qty`` signed (negative for a short), so the sign is
+        carried straight through. Every venue's adapter returns this same shape
+        — the app never sees a raw broker payload, matching how bars and quotes
+        are already normalised.
+        """
+
         payload = self._trading_get("/v2/positions")
-        return payload if isinstance(payload, list) else []
+        rows = payload if isinstance(payload, list) else []
+        positions: List[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            size = _opt_float(row.get("qty"))
+            if size is None or size == 0:
+                continue
+            positions.append(
+                {
+                    "symbol": str(row.get("symbol") or "").upper(),
+                    "position": size,
+                    "market_price": _opt_float(row.get("current_price")),
+                    "market_value": _opt_float(row.get("market_value")),
+                    "average_cost": _opt_float(row.get("avg_entry_price")),
+                    "unrealized_pnl": _opt_float(row.get("unrealized_pl")),
+                    "currency": "USD",
+                }
+            )
+        return positions
 
     def account_summary(self) -> Dict[str, Any]:
         payload = self._trading_get("/v2/account")

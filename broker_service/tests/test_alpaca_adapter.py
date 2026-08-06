@@ -333,7 +333,20 @@ def test_cancel_modify_positions_account(alpaca):
         if method == "PATCH":
             return FakeResponse({"status": "replaced"})
         if url.endswith("/v2/positions"):
-            return FakeResponse([{"symbol": "AAPL", "qty": "2"}])
+            return FakeResponse(
+                [
+                    {
+                        "symbol": "AAPL",
+                        "qty": "2",
+                        "avg_entry_price": "100.5",
+                        "current_price": "120.0",
+                        "market_value": "240.0",
+                        "unrealized_pl": "39.0",
+                    },
+                    # A flat row is dropped rather than reported as a position.
+                    {"symbol": "MSFT", "qty": "0"},
+                ]
+            )
         if url.endswith("/v2/account"):
             return FakeResponse({"equity": "10100"})
         return FakeResponse({})
@@ -343,5 +356,28 @@ def test_cancel_modify_positions_account(alpaca):
     assert adapter.cancel_order("abc-123")["status"] == "cancel_requested"
     out = adapter.modify_order("abc-123", _OrderReq(quantity=5))
     assert out["status"] == "replaced"
-    assert adapter.positions() == [{"symbol": "AAPL", "qty": "2"}]
+    # Normalised to the app's Position shape, not Alpaca's raw payload.
+    assert adapter.positions() == [
+        {
+            "symbol": "AAPL",
+            "position": 2.0,
+            "market_price": 120.0,
+            "market_value": 240.0,
+            "average_cost": 100.5,
+            "unrealized_pnl": 39.0,
+            "currency": "USD",
+        }
+    ]
     assert adapter.account_summary()["equity"] == "10100"
+
+
+def test_positions_carry_a_short_as_a_negative_size(alpaca):
+    def handler(method, url, params, json):
+        if url.endswith("/v2/positions"):
+            return FakeResponse([{"symbol": "AAPL", "qty": "-3", "avg_entry_price": "99"}])
+        return FakeResponse({})
+
+    FakeClient.handler = handler
+    row = _adapter(alpaca).positions()[0]
+    assert row["position"] == -3.0
+    assert row["average_cost"] == 99.0

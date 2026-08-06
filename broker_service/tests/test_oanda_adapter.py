@@ -379,7 +379,16 @@ def test_positions_and_account(oanda):
     def handler(method, url, params, json):
         if url.endswith("/openPositions"):
             return FakeResponse(
-                {"positions": [{"instrument": "EUR_USD", "long": {"units": "1000"}}]}
+                {
+                    "positions": [
+                        {
+                            "instrument": "EUR_USD",
+                            "long": {"units": "1000", "averagePrice": "1.1050"},
+                            "short": {"units": "0"},
+                            "unrealizedPL": "12.5",
+                        }
+                    ]
+                }
             )
         if url.endswith("/summary"):
             return FakeResponse({"account": {"balance": "10000", "NAV": "10100"}})
@@ -387,5 +396,44 @@ def test_positions_and_account(oanda):
 
     FakeClient.handler = handler
     adapter = _adapter(oanda)
-    assert adapter.positions()[0]["instrument"] == "EUR_USD"
+    row = adapter.positions()[0]
+    # Normalised to the app's Position shape + dotted symbol form.
+    assert row["symbol"] == "EUR.USD"
+    assert row["position"] == 1000.0
+    assert row["average_cost"] == 1.1050
+    assert row["unrealized_pnl"] == 12.5
     assert adapter.account_summary()["NAV"] == "10100"
+
+
+def test_positions_net_the_long_and_short_legs(oanda):
+    """OANDA reports each instrument as independent legs; short units are
+    already negative, so a net-short instrument reports a negative size and
+    takes its average price from the short leg."""
+
+    def handler(method, url, params, json):
+        if url.endswith("/openPositions"):
+            return FakeResponse(
+                {
+                    "positions": [
+                        {
+                            "instrument": "GBP_USD",
+                            "long": {"units": "500", "averagePrice": "1.30"},
+                            "short": {"units": "-800", "averagePrice": "1.25"},
+                        },
+                        # Fully closed instrument — not a position.
+                        {
+                            "instrument": "USD_JPY",
+                            "long": {"units": "0"},
+                            "short": {"units": "0"},
+                        },
+                    ]
+                }
+            )
+        return FakeResponse({})
+
+    FakeClient.handler = handler
+    rows = _adapter(oanda).positions()
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "GBP.USD"
+    assert rows[0]["position"] == -300.0
+    assert rows[0]["average_cost"] == 1.25

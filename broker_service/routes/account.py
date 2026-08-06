@@ -182,11 +182,25 @@ async def get_account_summary():
 
 
 @router.get("/account/positions", response_model=list[Position])
-async def get_account_positions():
-    """Get current account positions"""
+async def get_account_positions(broker: str = "ib"):
+    """Get current account positions for a venue (B1 close-out).
+
+    Dispatches through the broker adapter registry, so a run on MT5 / Alpaca /
+    OANDA reads *its own* venue's positions rather than IB's. Each adapter
+    normalises its payload to the app's `Position` shape. `broker=ib` keeps the
+    existing synchronous IB path byte-for-byte; an unknown broker is a 400 and a
+    recognised-but-unconfigured one a 501, same as everywhere else.
+    """
     try:
-        logger.info("Account positions endpoint called")
-        positions = await run_tws_operation(get_positions_sync)
+        logger.info(f"Account positions endpoint called (broker={broker})")
+
+        from adapters import get_broker_adapter, resolve_provider
+
+        if resolve_provider(broker) == "ib":
+            positions = await run_tws_operation(get_positions_sync)
+        else:
+            adapter = get_broker_adapter(broker)
+            positions = await run_tws_operation(adapter.positions)
         logger.info(f"Successfully retrieved {len(positions)} positions")
         return positions
 

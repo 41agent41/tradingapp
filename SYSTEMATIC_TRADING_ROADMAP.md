@@ -597,12 +597,22 @@ All four framing decisions are now resolved:
 
 **Open — highest-priority remaining gaps for systematic deployment:**
 
-1. **`/account/positions` is IB-only.** `get_positions_sync` calls
-   `get_ib_connection()` directly instead of dispatching through the adapter
-   registry, even though every adapter already implements `positions()`. So a
-   run on MT5/Alpaca/OANDA gets `avg_price = 0` and its `unrealized_pct` rules
-   stay inert live. Routing that route through `get_broker_adapter(broker)` is
-   the natural close-out of B1.
+1. ~~**`/account/positions` is IB-only.**~~ ✅ **Closed.** The route now takes
+   `broker=` and dispatches through `get_broker_adapter()`; `broker=ib` keeps
+   the existing synchronous IB path byte-for-byte, an unknown broker is a 400
+   and an unconfigured one a 501. Each adapter's `positions()` — previously
+   dead code returning the raw venue payload — now normalises to the app's
+   `models.Position` shape, which is where the per-venue quirks live: Alpaca
+   signs `qty` directly, OANDA splits an instrument into independent long/short
+   legs that must be netted (taking the average price from whichever leg is
+   open, since averaging the prices would be meaningless) and reports
+   underscore instruments that map back to the app's dotted form, and the MT5
+   sidecar is read defensively for either MT5's native `volume`/`type`/
+   `price_open` fields or the app's own vocabulary. The runner's avg-cost
+   lookup is now keyed per broker, so `position.unrealized_pct` rules fire on
+   every venue rather than IB alone.
+   **Still open here:** `/account/summary` and `/account/orders` remain
+   IB-only, and the run's *size* still comes from the audit log (see 3).
 2. **`risk.max_daily_loss` is accepted but never enforced.** The engine caps
    *order count* per run and globally, not realised loss. A declared
    `max_daily_loss` is currently a silent no-op — the same class of bug as the
@@ -615,6 +625,17 @@ All four framing decisions are now resolved:
    the app all desynchronise it. A fills/executions feed
    (`execDetails`/`commissionReport` on IB, equivalents elsewhere) is the
    foundation for authoritative positions, realised P&L and therefore (2).
+
+   Now that `/account/positions` is venue-aware (1), the venue's own reported
+   size is available and *is* fill-derived — but it is deliberately **not**
+   used for a run's `position.size` yet, because it reports the whole
+   **account's** exposure: a second run on the same symbol, or a manual trade,
+   would silently fold into this run's position and change what its sizing and
+   pyramiding rules do. Making runs venue-authoritative needs a decision on how
+   to attribute account-level exposure to individual runs (per-run sub-accounts,
+   an attribution ledger keyed off `order_audit`, or simply accepting
+   account-level semantics and documenting it). That decision, not the plumbing,
+   is what is left.
 4. **Sizing is ignored by the backtester.** `BacktestEngine` is all-in /
    all-out, so a definition's `sizing` block (and its `scale_out` rungs) does
    not affect backtest results — a backtest's returns therefore won't match a
