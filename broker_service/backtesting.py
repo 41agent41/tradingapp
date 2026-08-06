@@ -287,8 +287,23 @@ class BacktestEngine:
         # Calculate indicators if not present
         df_with_indicators = indicator_calculator.calculate_indicators(df, strategy.indicators)
 
-        # Generate trading signals
-        signals = strategy.generate_signals(df_with_indicators)
+        # Position-aware strategies (rule-sets referencing position.size /
+        # position.avg_price / position.unrealized_pct — e.g. a -2% stop or a
+        # pyramiding cap) must see the *running* position, so their signals are
+        # evaluated bar-by-bar inside the loop below against the open trade.
+        # Evaluating them in a single up-front pass would silently read a flat
+        # position on every bar, so those rules could never fire and a backtest
+        # would disagree with the live runner. A strategy without the stateful
+        # hooks keeps the original one-shot `generate_signals` pass.
+        evaluate_bar = getattr(strategy, "evaluate_bar", None)
+        prepare_stateful = getattr(strategy, "prepare_stateful", None)
+        stateful = callable(evaluate_bar) and callable(prepare_stateful)
+
+        if stateful:
+            signals, in_session = prepare_stateful(df_with_indicators)
+        else:
+            signals = strategy.generate_signals(df_with_indicators)
+            in_session = None
 
         # Initialize tracking variables
         capital = self.initial_capital
@@ -298,19 +313,37 @@ class BacktestEngine:
         open_trade: Trade | None = None
 
         # Process each bar
-        for _i, (timestamp, data) in enumerate(signals.iterrows()):
+        for i, (timestamp, data) in enumerate(signals.iterrows()):
             current_price = data["close"]
             current_time = (
                 timestamp if isinstance(timestamp, datetime) else datetime.fromtimestamp(timestamp)
             )
 
+            if stateful:
+                decision = evaluate_bar(
+                    signals,
+                    i,
+                    in_session,
+                    float(position),
+                    float(open_trade.entry_price) if open_trade else 0.0,
+                )
+                buy_signal = decision["buy"]
+                sell_signal = decision["sell"]
+                buy_reason = decision["buy_reason"]
+                sell_reason = decision["sell_reason"]
+            else:
+                buy_signal = data["buy_signal"]
+                sell_signal = data["sell_signal"]
+                buy_reason = data["buy_reason"]
+                sell_reason = data["sell_reason"]
+
             # Check for exit signals first
-            if open_trade and data["sell_signal"]:
+            if open_trade and sell_signal:
                 # Close position
                 open_trade.exit_time = current_time
                 open_trade.exit_price = current_price
                 open_trade.status = OrderStatus.FILLED
-                open_trade.exit_reason = data["sell_reason"]
+                open_trade.exit_reason = sell_reason
 
                 # Calculate commission
                 trade_value = abs(open_trade.quantity * current_price)
@@ -319,13 +352,14 @@ class BacktestEngine:
                 # Update capital
                 capital += open_trade.pnl - commission_cost
                 position = 0
+                strategy.position = position
                 trades.append(open_trade)
                 open_trade = None
 
                 logger.debug(f"Closed position at {current_price:.2f}, PnL: {trades[-1].pnl:.2f}")
 
             # Check for entry signals
-            if not open_trade and data["buy_signal"]:
+            if not open_trade and buy_signal:
                 # Calculate position size (using all available capital for simplicity)
                 quantity = int(capital / current_price)
 
@@ -342,7 +376,7 @@ class BacktestEngine:
                         quantity=quantity,
                         order_type=OrderType.BUY,
                         status=OrderStatus.FILLED,
-                        entry_reason=data["buy_reason"],
+                        entry_reason=buy_reason,
                     )
 
                     capital -= commission_cost

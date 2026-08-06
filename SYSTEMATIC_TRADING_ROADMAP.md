@@ -167,10 +167,79 @@ requirements:
 > from the runner. This context is also what backtest must simulate, so it is
 > built once and shared.
 
+> **Parity closed — position-aware rules now simulate in backtest.** The first
+> cut of A1 ran `generate_signals` once *up front*, before any trade existed, so
+> every `position.*` operand read a flat position on every bar. A declared stop
+> (`position.unrealized_pct <= -2.0`) or pyramiding cap (`position.size < 300`)
+> therefore **could never fire in a backtest** even though it fires live —
+> silently, with no error, which is the worst possible failure mode for a
+> strategy you are about to deploy. `RuleStrategy` now exposes
+> `prepare_stateful()` + `evaluate_bar()`, and `BacktestEngine.run_backtest`
+> drives them **per bar** with its running position and open-trade entry price.
+> `generate_signals` is reimplemented on top of `evaluate_bar` so the batch and
+> stateful paths cannot drift, and a strategy without the stateful hooks keeps
+> the original one-shot pass. Regression tests assert a -2% stop actually
+> triggers and that `position.avg_price` reaches the operands — both fail
+> against the old engine.
+
 **DoD:** rule-sets register alongside `AVAILABLE_STRATEGIES`; `/backtest`
 selects and parametrises them, including a multi-TF + session + position-aware
 example; unit tests cover the compiler, each operand class, and the
 `SimpleMAStrategy` parity case.
+
+### A1b. Backtesting a *saved* definition (closes the authoring loop) — ✅ delivered
+
+A1 let a rule-set be *compiled*, but only the strategies baked into
+`AVAILABLE_STRATEGIES` could actually be **run** through the backtester — a
+definition a user authored in the `/systematic` rule builder had no route into
+`/backtest` at all. The create → backtest → deploy loop was broken at its first
+hop: you could save a strategy and start trading it live, but you could not
+test it first. Closed by:
+
+- **`POST /backtesting/run` accepts a `rule_set` body** (the same shape
+  `/strategies/evaluate` takes), compiled on the fly via
+  `compile_rule_strategy`. Exactly one of the `strategy` query parameter or a
+  `rule_set` body selects the strategy; a rule-set that fails to compile is a
+  400, not a 500.
+- **`POST /api/backtesting/run` accepts `definition_id` or `rule_set`**
+  alongside the original `strategy` key — exactly one, validated. A
+  `definition_id` loads the saved row and adopts its rule-set, symbol,
+  timeframe, broker and instrument fields (each overridable per request).
+- **Persistence keeps the provenance**: rule-set runs are stored under a
+  `rules:def:<id>` / `rules:inline` strategy label with the rule-set itself in
+  the run's `params`, so a persisted run is reproducible.
+- **UI**: the `/backtest` strategy picker groups *Saved rule-sets* above
+  *Built-in strategies*, selecting one adopts its instrument fields, and each
+  row of the `/systematic` definitions list gains a **Backtest** link
+  (`/backtest?definition=<id>`) that preselects it.
+
+**DoD:** a definition authored in the rule builder can be backtested from the
+UI without being re-keyed, and the run is persisted and replayable.
+
+### A1c. Instrument scope — any instrument, any venue — ✅ delivered
+
+Both the backtester and the live runner were hardwired to US stocks:
+`/backtesting/run` built its contract as a literal `STK`/`SMART`/`USD`, and the
+runner fetched history with no `source=`, so **every** run read IB data
+regardless of the run's broker. A futures, FX or non-USD strategy — or any
+strategy on MT5/Alpaca/OANDA — could be defined and started but would evaluate
+against the wrong instrument or the wrong venue.
+
+- `strategy_definitions` gains `sec_type` / `exchange` / `currency` (with
+  `ADD COLUMN IF NOT EXISTS` so existing rows default to the previously-implied
+  `STK`/`SMART`/`USD`), surfaced through the repository, the create route
+  (validated against the same sec-type whitelist the market-data routes use)
+  and the rule builder.
+- `/backtesting/run` takes `sec_type`/`exchange`/`currency` and **qualifies the
+  contract** via `reqContractDetails` before requesting bars — the same
+  resolution `/market-data/history` performs — and takes `source=` to dispatch
+  non-IB venues through the adapter registry instead of IB.
+- `StrategyRunner.fetchHistory` now receives the whole run and forwards the
+  instrument fields plus `source=run.broker`, so a run's data comes from the
+  venue it will trade on.
+
+**DoD:** a run on a non-STK instrument or a non-IB venue evaluates against that
+instrument's bars from that venue.
 
 ### A2. Live signal runner (signal-only first)
 
@@ -179,10 +248,18 @@ A backend `strategyRunner` service modelled on the opt-in
 
 - Reads active `strategy_runs`; for each, on its **primary** `timeframe`
   cadence pulls the **latest closed bar** (via `useHistoricalData`'s backend
-  route / cache), plus the latest closed bar of any **higher timeframe** the
-  rule-set references (multi-TF operands).
+  route / cache) — scoped to the definition's instrument and fetched from the
+  run's own broker (`source=`, see A1c) — plus the latest closed bar of any
+  **higher timeframe** the rule-set references (multi-TF operands).
 - Passes the run's current **position state** and the wall clock (for
-  `sessions`) into the evaluation call.
+  `sessions`) into the evaluation call. Size comes from the `order_audit` net
+  exposure; **average entry price** comes from the venue's reported average
+  cost (`/account/positions`, cached ~30s so one lookup serves every run rather
+  than one per run per tick), because without it `position.unrealized_pct`
+  reads a constant 0 and a live stop-loss rule can never fire. It is fail-soft
+  — an unreachable positions endpoint degrades to `avg_price = 0` rather than
+  failing the evaluation — and IB-only for now, since `/account/positions` has
+  no adapter dispatch yet (see §9).
 - Calls `broker_service` `POST /strategies/evaluate` → `{signal, reason}` for the
   newest bar only (debounced: one decision per closed bar, never mid-bar;
   rules outside an active session return no signal).
@@ -463,6 +540,7 @@ end-to-end, gated and audited identically to IB.
 | **6** | B2a MetaTrader **data** source ✅ | 5 | none (read-only) |
 | **7** | B2b MetaTrader **execution** venue ✅ | 5, 6 | gated, paper-only |
 | **8** | B3 Alpaca + OANDA data **and** execution venues ✅ | 5 | gated, paper-only |
+| **9** | A1b/A1c: backtest saved definitions; instrument + venue scope; position-aware backtest parity ✅ | 1–5 | none (backtest + read paths) |
 
 Phases 1–4 (systematic engine) and 5–8 (broker venues) are largely
 independent; 5 can start in parallel with 1. Live (non-paper) auto-trading is
@@ -510,9 +588,37 @@ All four framing decisions are now resolved:
 - **Backtesting fidelity for the richer rules** — sessions and multi-TF
   operands must be simulated identically in backtest; intrabar fills and
   higher-TF alignment are the usual sources of backtest↔live drift. Worth a
-  dedicated parity test suite as A1 lands.
+  dedicated parity test suite as A1 lands. *(Position-aware operands are now
+  simulated — see A1's parity note. Sessions and multi-TF share one code path
+  between the two engines. Intrabar fills remain a known divergence: the
+  backtest fills at the bar close, live fills at the market.)*
 - **MT5 account/equity source** for `pct_equity` sizing — confirm the sidecar
   exposes live account equity per run.
+
+**Open — highest-priority remaining gaps for systematic deployment:**
+
+1. **`/account/positions` is IB-only.** `get_positions_sync` calls
+   `get_ib_connection()` directly instead of dispatching through the adapter
+   registry, even though every adapter already implements `positions()`. So a
+   run on MT5/Alpaca/OANDA gets `avg_price = 0` and its `unrealized_pct` rules
+   stay inert live. Routing that route through `get_broker_adapter(broker)` is
+   the natural close-out of B1.
+2. **`risk.max_daily_loss` is accepted but never enforced.** The engine caps
+   *order count* per run and globally, not realised loss. A declared
+   `max_daily_loss` is currently a silent no-op — the same class of bug as the
+   position-aware gap just closed. Enforcing it needs realised P&L per run,
+   which needs fills (see 3).
+3. **The position model is built on submitted orders, not fills.** Both the
+   `ORDER_MAX_POSITION` guard and the runner's position size derive from
+   `order_audit` rows that reached the broker, not from execution reports. A
+   partial fill, a rejection after acknowledgement, or a manual trade outside
+   the app all desynchronise it. A fills/executions feed
+   (`execDetails`/`commissionReport` on IB, equivalents elsewhere) is the
+   foundation for authoritative positions, realised P&L and therefore (2).
+4. **Sizing is ignored by the backtester.** `BacktestEngine` is all-in /
+   all-out, so a definition's `sizing` block (and its `scale_out` rungs) does
+   not affect backtest results — a backtest's returns therefore won't match a
+   live run's even when the signals agree.
 
 ---
 

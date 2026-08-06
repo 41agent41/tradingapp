@@ -106,7 +106,13 @@ export default function DefinitionsPanel({ refreshNonce, onRunStarted }: Definit
                   <td className="py-2 pr-3 text-gray-700 whitespace-nowrap">
                     {new Date(d.created_at).toLocaleString()}
                   </td>
-                  <td className="py-2 text-right">
+                  <td className="py-2 text-right whitespace-nowrap">
+                    <a
+                      href={`/backtest?definition=${d.id}`}
+                      className="text-xs px-2 py-1 mr-2 border border-blue-600 text-blue-600 rounded hover:bg-blue-50"
+                    >
+                      Backtest
+                    </a>
                     <button
                       type="button"
                       onClick={() => startRun(d.id)}

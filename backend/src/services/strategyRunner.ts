@@ -93,7 +93,11 @@ export interface StrategySignalRecord {
  *  repository, the IB service over HTTP and the order-audit net exposure. */
 export interface StrategyRunnerDeps {
   listActiveRuns(): Promise<ActiveRun[]>;
-  fetchHistory(symbol: string, timeframe: string): Promise<RawBar[]>;
+  /** Latest closed bars for the run's instrument, fetched from the run's own
+   *  broker (`source=run.broker`) so an MT5/Alpaca/OANDA run never evaluates
+   *  IB data, with the definition's sec_type/exchange/currency scoping the
+   *  contract beyond default US stocks. */
+  fetchHistory(run: ActiveRun): Promise<RawBar[]>;
   getPosition(run: ActiveRun): Promise<PositionState>;
   evaluate(
     bars: RawBar[],
@@ -151,11 +155,45 @@ function defaultDeps(
     submitOrder: (order, requestId) => submitCreateOrder(order, requestId),
     markActed: (signalId, orderAuditId) => repo.markSignalActed(signalId, orderAuditId),
   });
+  // Venue avg-cost cache: /account/positions costs an IB round-trip, so one
+  // fetch serves every run inside a short window instead of one per run per
+  // tick. Fail-soft — an unreachable endpoint just means avg_price stays 0.
+  let avgCostCache: { at: number; bySymbol: Map<string, number> } | null = null;
+  const AVG_COST_TTL_MS = 30_000;
+  const venueAvgCost = async (symbol: string): Promise<number> => {
+    try {
+      if (!avgCostCache || Date.now() - avgCostCache.at > AVG_COST_TTL_MS) {
+        const response = await axios.get(`${BROKER_SERVICE_URL}/account/positions`, {
+          timeout: 30000,
+          headers: { Connection: 'close' },
+        });
+        const bySymbol = new Map<string, number>();
+        for (const pos of Array.isArray(response.data) ? response.data : []) {
+          const cost = Number(pos?.average_cost);
+          if (pos?.symbol && Number.isFinite(cost) && cost > 0) {
+            bySymbol.set(String(pos.symbol).toUpperCase(), cost);
+          }
+        }
+        avgCostCache = { at: Date.now(), bySymbol };
+      }
+      return avgCostCache.bySymbol.get(symbol.toUpperCase()) ?? 0;
+    } catch {
+      return 0;
+    }
+  };
   return {
     listActiveRuns: () => repo.listActiveRuns(),
-    fetchHistory: async (symbol, timeframe) => {
+    fetchHistory: async (run) => {
       const response = await axios.get(`${BROKER_SERVICE_URL}/market-data/history`, {
-        params: { symbol, timeframe, period: historyPeriodFor(timeframe) },
+        params: {
+          symbol: run.symbol,
+          timeframe: run.timeframe,
+          period: historyPeriodFor(run.timeframe),
+          secType: run.sec_type || 'STK',
+          exchange: run.exchange || 'SMART',
+          currency: run.currency || 'USD',
+          source: run.broker || 'ib',
+        },
         timeout: 60000,
         headers: { Connection: 'close' },
       });
@@ -171,8 +209,10 @@ function defaultDeps(
     },
     getPosition: async (run) => {
       // Net signed exposure from the order-audit log for this symbol +
-      // account_mode. avg_price isn't tracked in the audit log, so it stays 0
-      // (position.unrealized_pct therefore reads 0 until A3 threads fills).
+      // account_mode; the venue's reported average cost (IB positions — the
+      // only venue the /account/positions endpoint serves today) supplies
+      // avg_price so position.unrealized_pct exit rules (e.g. a -2% stop)
+      // evaluate live the same way they do in backtest.
       try {
         const size = await auditRepo.netExposure(
           run.symbol,
@@ -180,7 +220,9 @@ function defaultDeps(
           POSITION_LOOKBACK_HOURS,
           run.broker
         );
-        return { size: Number.isFinite(size) ? size : 0, avg_price: 0 };
+        const netSize = Number.isFinite(size) ? size : 0;
+        const avgPrice = netSize !== 0 && run.broker === 'ib' ? await venueAvgCost(run.symbol) : 0;
+        return { size: netSize, avg_price: avgPrice };
       } catch {
         return { size: 0, avg_price: 0 };
       }
@@ -299,7 +341,7 @@ export class StrategyRunner {
 
   private async evaluateRun(run: ActiveRun): Promise<void> {
     try {
-      const bars = await this.deps.fetchHistory(run.symbol, run.timeframe);
+      const bars = await this.deps.fetchHistory(run);
       if (!bars || bars.length === 0) {
         logger.warn({ run_id: run.id, symbol: run.symbol }, 'no bars for strategy run');
         return;

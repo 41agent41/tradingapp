@@ -13,6 +13,23 @@ interface StrategyInfo {
   description: string;
 }
 
+/** A saved rule-set definition (created on /systematic) offered in the picker
+ *  alongside the registered strategies — select one and the backend backtests
+ *  its rule-set (`definition_id`), closing the create → backtest → deploy loop. */
+interface DefinitionSummary {
+  id: number;
+  name: string;
+  broker: string;
+  symbol: string;
+  sec_type?: string;
+  exchange?: string;
+  currency?: string;
+  timeframe: string;
+}
+
+/** Picker values: a registered strategy key, or `def:<id>` for a saved rule-set. */
+const DEF_PREFIX = 'def:';
+
 interface TradeSummary {
   entry_time: string;
   exit_time: string | null;
@@ -100,6 +117,7 @@ function formatNumber(value: number, digits = 2): string {
 export default function BacktestPage() {
   const [strategies, setStrategies] = useState<Record<string, StrategyInfo>>({});
   const [strategiesError, setStrategiesError] = useState<string | null>(null);
+  const [definitions, setDefinitions] = useState<DefinitionSummary[]>([]);
 
   const [symbol, setSymbol] = useState('MSFT');
   const [strategy, setStrategy] = useState('');
@@ -107,6 +125,9 @@ export default function BacktestPage() {
   const [period, setPeriod] = useState('1Y');
   const [initialCapital, setInitialCapital] = useState('100000');
   const [commission, setCommission] = useState('0.001');
+  const [secType, setSecType] = useState('STK');
+  const [exchange, setExchange] = useState('SMART');
+  const [currency, setCurrency] = useState('USD');
 
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -182,10 +203,52 @@ export default function BacktestPage() {
     }
   }, []);
 
-  // Load available strategies once.
+  // Selecting a saved definition adopts its symbol / timeframe / instrument
+  // fields as the form values (still editable afterwards).
+  const applyDefinition = useCallback((def: DefinitionSummary) => {
+    setSymbol(def.symbol);
+    setTimeframe(def.timeframe);
+    setSecType(def.sec_type || 'STK');
+    setExchange(def.exchange || 'SMART');
+    setCurrency(def.currency || 'USD');
+  }, []);
+
+  const selectStrategy = useCallback(
+    (value: string, defs: DefinitionSummary[]) => {
+      setStrategy(value);
+      if (value.startsWith(DEF_PREFIX)) {
+        const def = defs.find((d) => d.id === Number(value.slice(DEF_PREFIX.length)));
+        if (def) applyDefinition(def);
+      }
+    },
+    [applyDefinition]
+  );
+
+  // Load available strategies + saved definitions once. A `?definition=<id>`
+  // query param (the "Backtest" link on /systematic) preselects that rule-set.
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      let defs: DefinitionSummary[] = [];
+      try {
+        const res = await apiFetch('/api/strategies/definitions?limit=50');
+        if (res.ok) {
+          const body = await res.json();
+          defs = (body.definitions ?? []) as DefinitionSummary[];
+        }
+      } catch {
+        // Saved definitions are optional — the built-in picker still works.
+      }
+      if (cancelled) return;
+      setDefinitions(defs);
+
+      const requested = new URLSearchParams(window.location.search).get('definition');
+      const requestedDef = requested ? defs.find((d) => d.id === Number(requested)) : undefined;
+      if (requestedDef) {
+        setStrategy(`${DEF_PREFIX}${requestedDef.id}`);
+        applyDefinition(requestedDef);
+      }
+
       try {
         const res = await apiFetch('/api/backtesting/strategies', {
           headers: { 'Content-Type': 'application/json' },
@@ -198,7 +261,7 @@ export default function BacktestPage() {
         if (cancelled) return;
         const list: Record<string, StrategyInfo> = data.strategies || {};
         setStrategies(list);
-        const firstKey = Object.keys(list)[0];
+        const firstKey = requestedDef ? `${DEF_PREFIX}${requestedDef.id}` : Object.keys(list)[0];
         if (firstKey) setStrategy((prev) => prev || firstKey);
       } catch (err) {
         if (!cancelled) {
@@ -209,7 +272,7 @@ export default function BacktestPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [applyDefinition]);
 
   const runBacktest = useCallback(async () => {
     if (!symbol.trim() || !strategy) {
@@ -221,16 +284,22 @@ export default function BacktestPage() {
     setResponse(null);
 
     try {
+      const isDefinition = strategy.startsWith(DEF_PREFIX);
       const res = await apiFetch('/api/backtesting/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           symbol: symbol.trim().toUpperCase(),
-          strategy,
+          ...(isDefinition
+            ? { definition_id: Number(strategy.slice(DEF_PREFIX.length)) }
+            : { strategy }),
           timeframe,
           period,
           initial_capital: Number(initialCapital),
           commission: Number(commission),
+          sec_type: secType.trim().toUpperCase() || 'STK',
+          exchange: exchange.trim().toUpperCase() || 'SMART',
+          currency: currency.trim().toUpperCase() || 'USD',
         }),
         signal: AbortSignal.timeout(125000),
       });
@@ -248,7 +317,18 @@ export default function BacktestPage() {
     } finally {
       setRunning(false);
     }
-  }, [symbol, strategy, timeframe, period, initialCapital, commission, loadPreviousRuns]);
+  }, [
+    symbol,
+    strategy,
+    timeframe,
+    period,
+    initialCapital,
+    commission,
+    secType,
+    exchange,
+    currency,
+    loadPreviousRuns,
+  ]);
 
   const results = response?.results;
   const returnPositive = (results?.total_return_percent ?? 0) >= 0;
@@ -296,15 +376,28 @@ export default function BacktestPage() {
               <span className="text-sm font-medium text-gray-700">Strategy</span>
               <select
                 value={strategy}
-                onChange={(e) => setStrategy(e.target.value)}
+                onChange={(e) => selectStrategy(e.target.value, definitions)}
                 className="mt-1 w-full border border-gray-300 rounded px-3 py-2 bg-white"
               >
-                {Object.keys(strategies).length === 0 && <option value="">Loading…</option>}
-                {Object.entries(strategies).map(([key, info]) => (
-                  <option key={key} value={key}>
-                    {info.name}
-                  </option>
-                ))}
+                {Object.keys(strategies).length === 0 && definitions.length === 0 && (
+                  <option value="">Loading…</option>
+                )}
+                {definitions.length > 0 && (
+                  <optgroup label="Saved rule-sets (/systematic)">
+                    {definitions.map((d) => (
+                      <option key={`${DEF_PREFIX}${d.id}`} value={`${DEF_PREFIX}${d.id}`}>
+                        {d.name} — {d.symbol} · {d.timeframe}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                <optgroup label="Built-in strategies">
+                  {Object.entries(strategies).map(([key, info]) => (
+                    <option key={key} value={key}>
+                      {info.name}
+                    </option>
+                  ))}
+                </optgroup>
               </select>
             </label>
 
@@ -360,6 +453,39 @@ export default function BacktestPage() {
                 value={commission}
                 onChange={(e) => setCommission(e.target.value)}
                 className="mt-1 w-full border border-gray-300 rounded px-3 py-2"
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-sm font-medium text-gray-700">Security Type</span>
+              <input
+                type="text"
+                value={secType}
+                onChange={(e) => setSecType(e.target.value)}
+                className="mt-1 w-full border border-gray-300 rounded px-3 py-2 uppercase"
+                placeholder="STK"
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-sm font-medium text-gray-700">Exchange</span>
+              <input
+                type="text"
+                value={exchange}
+                onChange={(e) => setExchange(e.target.value)}
+                className="mt-1 w-full border border-gray-300 rounded px-3 py-2 uppercase"
+                placeholder="SMART"
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-sm font-medium text-gray-700">Currency</span>
+              <input
+                type="text"
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value)}
+                className="mt-1 w-full border border-gray-300 rounded px-3 py-2 uppercase"
+                placeholder="USD"
               />
             </label>
           </div>

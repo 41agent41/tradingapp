@@ -23,11 +23,16 @@ import {
 
 const emptyCondition = (): ConditionForm => ({ left: 'sma_20', op: '>', right: 'sma_50' });
 
+const BROKERS = ['ib', 'mt5', 'alpaca', 'oanda'];
+
 const initialForm: StrategyForm = {
   name: '',
   symbol: 'MSFT',
   timeframe: '5min',
   broker: 'ib',
+  secType: 'STK',
+  exchange: 'SMART',
+  currency: 'USD',
   indicators: 'sma_20, sma_50',
   entry: [{ left: 'sma_20', op: 'crosses_above', right: 'sma_50' }],
   exit: [{ left: 'sma_20', op: 'crosses_below', right: 'sma_50' }],
@@ -135,6 +140,50 @@ export default function StrategyBuilder({ onCreated }: StrategyBuilderProps) {
             onChange={(e) => set('indicators', e.target.value)}
             placeholder="sma_20, sma_50, rsi"
             className="mt-1 w-full border border-gray-300 rounded px-3 py-2"
+          />
+        </label>
+        <label className="block">
+          <span className="text-sm font-medium text-gray-700">Broker</span>
+          <select
+            value={form.broker}
+            onChange={(e) => set('broker', e.target.value)}
+            className="mt-1 w-full border border-gray-300 rounded px-3 py-2 bg-white"
+          >
+            {BROKERS.map((b) => (
+              <option key={b} value={b}>
+                {b}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-sm font-medium text-gray-700">Security type</span>
+          <input
+            type="text"
+            value={form.secType ?? 'STK'}
+            onChange={(e) => set('secType', e.target.value)}
+            placeholder="STK / FUT / CASH…"
+            className="mt-1 w-full border border-gray-300 rounded px-3 py-2 uppercase"
+          />
+        </label>
+        <label className="block">
+          <span className="text-sm font-medium text-gray-700">Exchange</span>
+          <input
+            type="text"
+            value={form.exchange ?? 'SMART'}
+            onChange={(e) => set('exchange', e.target.value)}
+            placeholder="SMART"
+            className="mt-1 w-full border border-gray-300 rounded px-3 py-2 uppercase"
+          />
+        </label>
+        <label className="block">
+          <span className="text-sm font-medium text-gray-700">Currency</span>
+          <input
+            type="text"
+            value={form.currency ?? 'USD'}
+            onChange={(e) => set('currency', e.target.value)}
+            placeholder="USD"
+            className="mt-1 w-full border border-gray-300 rounded px-3 py-2 uppercase"
           />
         </label>
       </div>

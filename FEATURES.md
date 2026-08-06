@@ -140,11 +140,18 @@ sample strategies:
 
 Reachable two ways:
 
+plus every **saved rule-set** authored in the `/systematic` rule builder — see
+[Systematic trading](#systematic-trading-rule-driven-auto-execution).
+
 - **API:** `GET /backtesting/strategies` and `POST /backtesting/run` on the
   IB service, or the validating backend proxy at `GET /api/backtesting/strategies`
   and `POST /api/backtesting/run` (`backend/src/routes/backtesting.ts`).
+  The run endpoint takes exactly one of `strategy`, `definition_id` or
+  `rule_set`, plus optional `sec_type` / `exchange` / `currency` / `source`
+  to scope the instrument and the venue (defaults: `STK`/`SMART`/`USD`/`ib`).
 - **UI:** the `/backtest` page (`frontend/app/backtest/page.tsx`) with a
-  strategy picker, parameter form, metrics summary, equity-curve chart
+  strategy picker (saved rule-sets grouped above the built-ins), parameter
+  form, instrument fields, metrics summary, equity-curve chart
   (`EquityCurveChart`), trade-list table and a **Previous Runs** panel
   that click-to-loads any prior run without re-running the engine.
 
@@ -295,6 +302,24 @@ automatically — paper-first, staged behind gates. See the
   statelessly via `POST /strategies/evaluate`.
 - **Definitions & runs:** create/list rule-sets and start/stop runs through
   `/api/strategies/*`; each run pins a definition to a broker + `account_mode`.
+- **Backtest before you deploy:** a saved definition can be backtested without
+  being re-keyed — the `/backtest` strategy picker lists *Saved rule-sets*
+  above the built-in strategies, and every row of the definitions list on
+  `/systematic` has a **Backtest** link. Under the hood
+  `POST /api/backtesting/run` accepts exactly one of `strategy` (a built-in
+  key), `definition_id` (a saved rule-set) or an inline `rule_set` object.
+- **Any instrument, any venue:** a definition carries `sec_type` / `exchange` /
+  `currency` alongside its symbol and broker (defaulting to `STK`/`SMART`/`USD`),
+  so futures, FX, CFDs and non-USD instruments work the same way US stocks do.
+  The backtester qualifies the contract before requesting bars, and both the
+  backtester and the live runner fetch data from the run's **own** broker
+  rather than always from IB.
+- **Position-aware rules are simulated, not just carried:** the backtest engine
+  evaluates rules bar-by-bar against its running position and entry price, so
+  `position.size`, `position.avg_price` and `position.unrealized_pct` — stops,
+  pyramiding caps, scale-out thresholds — behave in a backtest the way they
+  behave live. Live, the average entry price comes from the venue's reported
+  average cost, so an unrealised-loss stop actually fires.
 - **Live signal runner:** an opt-in backend timer (`SYSTEMATIC_ENABLED=true`)
   evaluates every running strategy on its closed-bar cadence, persists each
   decision to `strategy_signals` (one per bar) and fans it out on the
@@ -368,7 +393,7 @@ other brokers plug in without touching the routes.
 | `/api/market-data/database/clean` | POST | Run retention cleanup |
 | `/api/settings` | GET | Allow-listed, non-credential environment variables (see [Authentication & CORS](#authentication--cors)) |
 | `/api/backtesting/strategies` | GET | Available backtest strategies (cached 1h) |
-| `/api/backtesting/run` | POST | Run a backtest via the IB service |
+| `/api/backtesting/run` | POST | Run a backtest — by `strategy` key, saved `definition_id` or inline `rule_set` |
 | `/api/backtesting/runs` | GET | List persisted runs (filterable, paginated) |
 | `/api/backtesting/runs/:id` | GET | Full record for a persisted run |
 | `/api/export/parquet` | POST | Convert `{ columns, rows }` to a Parquet download |
@@ -377,7 +402,7 @@ other brokers plug in without touching the routes.
 | `/api/orders/:id` | PUT | Modify a working order |
 | `/api/orders/audit` | GET | Persisted order attempts (blotter feed; `broker` filter) |
 | `/api/orders/config` | GET | Live-trading gate + supported enums + brokers |
-| `/api/strategies/definitions` | GET·POST | List / create rule-set definitions |
+| `/api/strategies/definitions` | GET·POST | List / create rule-set definitions (symbol + `sec_type`/`exchange`/`currency`/`broker`) |
 | `/api/strategies/runs` | GET·POST | List / start systematic runs |
 | `/api/strategies/runs/:id/stop` | POST | Stop a run (kill switch) |
 | `/api/strategies/runs/:id/signals` | GET | Recorded signals for a run |
@@ -537,6 +562,26 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > banner and an optional browser Notification) evaluated client-side
 > against that same polled quote — see [Watchlist](#watchlist).
 > Email/SMS/webhook delivery remain open.
+
+### Systematic trading — open follow-ons
+
+The authoring loop (build a rule-set → backtest it → deploy it live on any
+instrument or venue) ships today. What remains, in priority order — see
+[`SYSTEMATIC_TRADING_ROADMAP.md`](SYSTEMATIC_TRADING_ROADMAP.md) §9:
+
+- **`/account/positions` is IB-only** — it calls the IB client directly rather
+  than dispatching through the broker adapter, so a live run on
+  MT5/Alpaca/OANDA can't read an average entry price and its
+  `position.unrealized_pct` rules stay inert.
+- **`risk.max_daily_loss` is accepted but not enforced** — the engine caps
+  order *count* per run and globally, not realised loss.
+- **Positions derive from submitted orders, not fills** — a partial fill,
+  a post-acknowledgement rejection or a manual trade desynchronises both the
+  position-limit guard and the runner's position size. A fills/executions feed
+  is the prerequisite for authoritative positions and realised P&L.
+- **The backtester ignores the `sizing` block** — it is all-in / all-out, so
+  backtest returns won't match a live run's even when the signals agree;
+  `scale_out` rungs likewise aren't simulated.
 
 ### Authentication, authorisation & secrets (advanced)
 

@@ -424,6 +424,11 @@ follow-on feature.
 > for what's live. The watchlist and in-app price alerts have since
 > shipped too (see §7 above); scanners / sector browsing remain the open
 > item.
+>
+> **Update — the systematic authoring loop is now closed end-to-end (§12).**
+> A review of "can this app create and deploy systematic systems on any
+> instrument, in backtest and live?" found three breaks that shipped silently;
+> all three are fixed. See §12 below.
 
 ---
 
@@ -581,6 +586,94 @@ Carried forward from the original analysis; checked items have landed.
       counts.
 - [x] The `technical_indicators` schema/code mismatch is resolved (§3.2 —
       persistence dropped; indicators stay compute-on-demand).
+
+---
+
+## 12. Systematic Strategies — Capability Review (2026-08-06)
+
+_Reviewed on branch `claude/systematic-strategies-review-ov6zx1` against the
+question: **can a user create a systematic strategy on any given instrument,
+validate it in a backtest, and deploy it live?**_
+
+The engine, risk layer, adapter seam and monitoring UI were all present and
+sound. What was missing sat in the seams between them — and each gap failed
+*silently*, which is what made them worth prioritising: nothing errored, the
+results were simply wrong or the feature was unreachable.
+
+### 12.1 The authoring loop was broken at its first hop ✅ fixed
+
+`POST /backtesting/run` accepted only a key from `AVAILABLE_STRATEGIES`. A
+rule-set authored in the `/systematic` rule builder — the app's own primary
+way of creating a strategy — had **no route into the backtester at all**. The
+roadmap's stated rule is "if it can't be backtested, it can't be traded", yet
+a user-created definition could be deployed live having never been tested.
+
+Fixed by teaching `POST /backtesting/run` to compile an inline `rule_set` body,
+and the backend proxy to accept `definition_id` (loading the saved row) or an
+inline `rule_set` — exactly one selector, validated. The `/backtest` picker now
+groups saved rule-sets above the built-ins, and the definitions list links
+straight to `/backtest?definition=<id>`.
+
+### 12.2 Everything was hardwired to US stocks on IB ✅ fixed
+
+Two independent hardcodes defeated the "any given instrument" goal:
+
+- `/backtesting/run` built its contract as a literal `STK`/`SMART`/`USD` and
+  never qualified it, so futures, FX, CFDs and non-USD instruments were
+  un-backtestable.
+- `StrategyRunner.fetchHistory` requested history with no `source=`, so **every
+  live run read IB data** — including runs pinned to MT5, Alpaca or OANDA,
+  which would evaluate against a different venue's prices than they traded on.
+
+Fixed by adding `sec_type`/`exchange`/`currency` to `strategy_definitions`
+(with `ADD COLUMN IF NOT EXISTS` for existing deployments), threading them
+through the repository, routes and rule builder, qualifying the contract in the
+backtest route via `reqContractDetails`, dispatching non-IB `source=` through
+the adapter registry, and passing the whole run (instrument + `source=broker`)
+into `fetchHistory`.
+
+### 12.3 Position-aware rules were inert in backtest ✅ fixed
+
+The most consequential one. `BacktestEngine.run_backtest` called
+`strategy.generate_signals(...)` **once, up front**, before any trade existed,
+then walked the precomputed signal columns. Every `position.*` operand
+therefore read a flat position on every bar. Concretely: a strategy with a -2%
+stop (`position.unrealized_pct <= -2.0`) or a pyramiding cap
+(`position.size < 300`) — both of which appear in the roadmap's own showcase
+example — backtested as though those rules did not exist, then behaved
+differently the moment it went live. No error, no warning.
+
+Fixed by giving `RuleStrategy` a stateful pair (`prepare_stateful()` +
+`evaluate_bar()`) that the engine drives **per bar** with its running position
+and the open trade's entry price. `generate_signals` is reimplemented on top of
+`evaluate_bar` so the two paths cannot drift, and a strategy without the
+stateful hooks keeps the original one-shot pass. Two regression tests assert a
+stop actually triggers and that `avg_price` reaches the operands; both fail
+against the previous engine.
+
+Live, the same rules needed a real entry price — the runner had `avg_price = 0`
+hardcoded with a TODO. It now reads the venue's reported average cost from
+`/account/positions` (cached ~30s, fail-soft to 0).
+
+### 12.4 Remaining — prioritised
+
+1. **`/account/positions` is IB-only.** It calls `get_ib_connection()` directly
+   instead of `get_broker_adapter(broker)`, though every adapter already
+   implements `positions()`. Until routed, non-IB live runs get
+   `avg_price = 0` and their unrealised-P&L rules stay inert. Natural
+   close-out of B1 and the highest-value next step.
+2. **`risk.max_daily_loss` is a silent no-op.** Accepted by the schema and the
+   builder, enforced nowhere — the same failure shape as §12.3. Needs realised
+   P&L, hence (3).
+3. **Positions are inferred from submitted orders, not fills.** Both
+   `ORDER_MAX_POSITION` and the runner's position size read `order_audit` rows
+   that reached the broker. Partial fills, post-acknowledgement rejections and
+   manual trades all desynchronise them. An executions feed
+   (`execDetails`/`commissionReport` and equivalents) is the foundation for
+   authoritative positions, realised P&L and therefore (2).
+4. **The backtester ignores `sizing` and `scale_out`.** `BacktestEngine` is
+   all-in / all-out, so backtest returns won't match a live run's even when the
+   signals agree.
 
 ---
 

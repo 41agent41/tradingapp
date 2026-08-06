@@ -24,6 +24,9 @@ function activeRun(overrides: Partial<ActiveRun> = {}): ActiveRun {
     broker: 'ib',
     account_mode: 'paper',
     symbol: 'MSFT',
+    sec_type: 'STK',
+    exchange: 'SMART',
+    currency: 'USD',
     timeframe: '5min',
     rule_set: { entry: { all: [] } },
     sizing: { type: 'fixed', size: 100 },
@@ -73,7 +76,9 @@ describe('StrategyRunner.runOnce', () => {
 
     await runner.runOnce();
 
-    expect(deps.fetchHistory).toHaveBeenCalledWith('MSFT', '5min');
+    expect(deps.fetchHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ symbol: 'MSFT', timeframe: '5min', broker: 'ib' })
+    );
     expect(deps.evaluate).toHaveBeenCalledWith(
       bars,
       { entry: { all: [] } },
