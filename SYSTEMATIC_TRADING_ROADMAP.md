@@ -20,6 +20,15 @@ around two capabilities the platform does **not** have today:
 > the B1 provider seam. That plan — including three latent correctness bugs
 > that only surface with a second connection — is
 > [`MT5_MULTI_CONNECTION_PLAN.md`](MT5_MULTI_CONNECTION_PLAN.md).
+>
+> **Component D — price action alongside indicators.** Component A's rule
+> engine expresses indicator logic: every operand resolves to one float at one
+> bar, with one bar of lookback. Price action is shaped differently — multi-bar
+> patterns, persistent levels and zones, and structure state carried across
+> arbitrary distance — and its features are the classic source of look-ahead
+> bias in a backtest. How that logic is authored and evaluated, which language
+> it lives in and why, is
+> [`SYSTEMATIC_STRATEGY_IMPLEMENTATION_PLAN.md`](SYSTEMATIC_STRATEGY_IMPLEMENTATION_PLAN.md).
 
 The scope below reflects four decisions taken up front:
 
