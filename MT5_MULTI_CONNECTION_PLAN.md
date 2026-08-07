@@ -290,6 +290,33 @@ legs start.
   without extra work.
 - Group-level *reporting* aggregates legs. Group-level *risk* is C5.
 
+#### C4a. Blast radius — the cost of one strategy on every account
+
+With the fleet confirmed as **the same strategy on all accounts** (§8.3), the
+group is not just a convenience: it is a shared failure domain, and two
+consequences follow that a per-account fleet would not have.
+
+- **Every leg fires the same signal at the same instant.** There is no
+  diversification and no netting — N accounts long the same pair is N times
+  the real exposure at N brokers, and slippage, rejections and requotes
+  correlate across the fleet. This is precisely what C5's portfolio cap is
+  for, which is a second reason it should not have waited for a later phase.
+- **A bad rule-set edit deploys everywhere at once.** Today a mistake costs one
+  account; grouped, it costs the fleet simultaneously. So a group deploy must
+  be **staged, not atomic-all**: land the definition on one nominated canary
+  connection, require it to evaluate cleanly for a configurable settle period,
+  then admit the rest. Note this deliberately contradicts the transactional
+  all-or-nothing deploy above — that rule is right for *creating* legs
+  (partial group creation is just broken state) and wrong for *starting* them.
+  Create all legs transactionally; start them in stages.
+- Group edits are versioned against `strategy_definitions.version`, and a
+  running group pins its version so an in-flight edit cannot half-apply across
+  legs mid-session.
+
+**DoD:** a group deploy starts its canary first and admits the remaining legs
+only after the settle period; a rule-set edit to a running group does not take
+effect on any leg until the group is redeployed.
+
 **DoD:** one definition deployed to three connections yields three runs, one
 group; stopping the group stops all three; a leg erroring does not stop its
 siblings.
@@ -313,20 +340,33 @@ levels are missing, and multi-connection makes both load-bearing:
   same style as the existing ones — an unavailable input refuses the order
   rather than waiving the check (`executionEngine.ts:144-153` is the pattern).
 
-**Currency is an open problem here.** Accounts denominated in USD, AUD and EUR
-cannot have their equity or realised P&L summed without an FX rate, and a
-portfolio-level cap that sums raw numbers across denominations is wrong in a
-way that looks plausible. **Recommendation:** ship per-connection caps first
-(no conversion needed — each cap is evaluated in its own account's currency),
-and gate cross-connection aggregate caps behind an explicit
-`PORTFOLIO_BASE_CURRENCY` plus a rate source, refusing to aggregate rather than
-mixing units when no rate is available. Per-connection caps deliver most of the
-protection; the aggregate is a second increment.
+**Currency: resolved — all accounts share one denomination** (§8.4), so
+aggregate caps need no FX conversion and ship alongside the per-connection
+caps rather than in a later phase.
+
+That homogeneity is an *assumption to enforce, not to trust*. A connection
+opened later in a different denomination would make every aggregate silently
+wrong — the numbers still add up, they just mean nothing. So:
+
+- Each connection declares its `currency` in the manifest, and the registry
+  asserts the adapter's reported `account_summary().currency` matches it at
+  startup and on reconnect. A mismatch marks the connection unusable rather
+  than letting it join the pool.
+- Any cross-connection aggregation asserts a single currency across its
+  inputs, and **refuses to produce a number** if that does not hold. A refused
+  aggregate fails the cap closed, consistent with every other guard.
+- `PORTFOLIO_BASE_CURRENCY` records the expected denomination so the assertion
+  has something to check against, rather than inferring it from whichever
+  connection happens to register first.
+
+This keeps the FX work genuinely out of scope while making the day a
+second currency appears a loud failure instead of a quiet miscalculation.
 
 **DoD:** a connection-level daily loss cap halts every run on that connection
-while other connections continue trading; a breach is visible in the UI with
-the connection named; mixed-currency aggregation refuses rather than
-mis-reporting.
+while other connections continue trading; a portfolio-level cap halts new
+entries fleet-wide; a breach is visible in the UI with the connection named; a
+connection reporting an unexpected currency is refused at registration and its
+runs never start.
 
 ---
 
@@ -403,9 +443,9 @@ Each phase is independently shippable and leaves the system correct.
 | **C-0** | Bug ① and ② fixes alone: `broker_account` column + widened unique keys/indexes, defaulted to `'default'` | Correctness fix; no behaviour change on one connection. **Deploy before any second connection exists.** |
 | **C-1** | C1 remainder + C2 registry + manifest config | Two MT5 connections addressable manually via `/api/orders`, `/account/*`, charts |
 | **C-2** | C3 symbol mapping + per-connection specs | A definition resolves correctly on each connection |
-| **C-3** | C4 run groups + C6 scheduling/isolation | One definition trading on N connections, fault-isolated |
-| **C-4** | C5 per-connection caps + C7 reconciliation | Fleet-safe; prop-firm-style per-account limits enforced |
-| **C-5** | C8 UI/ops + cross-connection aggregate caps (currency-gated) | Operable at fleet scale |
+| **C-3** | C4 run groups + staged deploy (C4a) + C6 scheduling/isolation | One definition trading on N connections, fault-isolated, canary-staged |
+| **C-4** | C5 per-connection **and** portfolio caps + C7 reconciliation | Fleet-safe; per-account and fleet-wide limits enforced |
+| **C-5** | C8 UI/ops | Operable at fleet scale |
 
 Phase C-0 is worth shipping on its own even if the rest is deferred: it is
 small, it is a latent-data-loss fix, and it is the migration that is painful to
@@ -422,7 +462,8 @@ apply late.
 | `MT5_SECRET_<ID>` | Per-connection shared secret, referenced by `secret_env` |
 | `SYSTEMATIC_MAX_CONNECTION_CONCURRENCY` | Bounded pool width for the runner |
 | `SYSTEMATIC_CONNECTION_BREAKER_THRESHOLD` / `_COOLDOWN_SECONDS` | Circuit breaker tuning |
-| `PORTFOLIO_BASE_CURRENCY` | Enables cross-connection aggregate caps; absent ⇒ aggregation refuses rather than mixes units |
+| `PORTFOLIO_BASE_CURRENCY` | The denomination every connection is asserted to report; a mismatch refuses the connection and any aggregate that would span it |
+| `SYSTEMATIC_GROUP_CANARY_SETTLE_SECONDS` | How long a group's canary leg must evaluate cleanly before the remaining legs are admitted |
 
 `MT5_BRIDGE_URL` / `MT5_BRIDGE_SECRET` remain supported as the one-connection
 shorthand and are **deprecated, not removed**.
@@ -437,26 +478,40 @@ shorthand and are **deprecated, not removed**.
 | One run fanning out, or one run per connection? | **One run per connection, grouped** | Reuses the entire tested per-run risk machinery; avoids reimplementing every cap per leg |
 | Connection config in DB or env/manifest? | **Manifest for topology, env for secrets** | Secrets must not reach the DB or the settings endpoint; topology benefits from review in version control |
 | Symbol resolution on mismatch | **Refuse the leg** | A fuzzy match silently trades the wrong instrument |
-| Cross-currency portfolio caps | **Deferred behind explicit base currency** | Summing mixed denominations is wrong in a way that looks right |
+| Portfolio-level caps | **In scope at C-4, asserted single-currency** | All accounts share a denomination (§8.4), so no FX is needed — but the assumption is enforced, not trusted |
+| Group deploy | **Legs created atomically, started in canary stages** | One strategy on every account means one bad edit hits the whole fleet at once |
 | `account_mode` per connection | **Binding constraint, enforced at the registry** | Makes live/demo misrouting a config impossibility |
 
-## 8. Open questions for review
+## 8. Resolved scope questions
 
-1. **Sidecar-per-terminal or one sidecar, many terminals?** This plan assumes
-   one sidecar process per MT5 terminal (each `MetaTrader5` binding attaches to
-   one terminal), which is the officially-supported shape but means N Windows
-   processes and N ports. A multiplexing sidecar is possible but pushes account
-   routing into out-of-repo code, where this repo cannot test it. **Recommend
-   one-per-terminal**; revisit only if host count becomes the constraint.
-2. **How many connections realistically?** Under ~10 the bounded-pool design in
-   C6 is ample. Materially beyond that and the runner should move to a work-queue
-   model — worth knowing the target now, since it changes C6 but nothing else.
-3. **Do the accounts run identical strategies or different ones?** Identical
-   (copy-trading / prop-firm scaling) makes C3 symbol mapping and C4 groups the
-   critical path. Different strategies per account makes C5 per-connection caps
-   the critical path. The phase order above assumes the former; it is cheap to
-   swap C-3 and C-4 if the latter.
-4. **Live trading scope.** The existing engine is gated to paper
-   (`SYSTEMATIC_EXECUTION_ENABLED` + `LIVE_TRADING_ENABLED`). Nothing in this
-   plan changes those gates, and the fleet should run paper across all
-   connections before any live enablement.
+Answered 2026-08-07; each confirms an assumption the plan had already made,
+except §8.4, which pulled portfolio caps forward a phase.
+
+1. **Sidecar per terminal.** One sidecar process per MT5 terminal — the
+   officially-supported shape, since each `MetaTrader5` binding attaches to one
+   terminal. Costs N Windows processes and N ports; keeps account routing
+   in-repo and testable, rather than pushing it into out-of-repo sidecar code
+   this repo cannot cover. The multiplexing alternative is not pursued.
+2. **Under 10 connections.** The bounded-pool design in C6 is sufficient at
+   this scale; the work-queue alternative is dropped from scope. Revisit only
+   if the fleet grows past roughly a dozen — it changes C6 and nothing else.
+3. **Same strategy across all accounts.** Confirms C3 (symbol mapping) and C4
+   (run groups) as the critical path, and the C-2 → C-3 phase order stands. It
+   also makes the group a shared failure domain, which is what C4a's staged
+   canary deploy and version pinning exist to contain.
+4. **All accounts in one currency.** No FX conversion is required, so
+   cross-connection aggregate caps move out of the deferred bucket and ship
+   with the per-connection caps in C-4. The homogeneity is enforced as a
+   startup and reconnect assertion (see C5) so a future second denomination
+   fails loudly rather than quietly corrupting every aggregate.
+
+### Still open
+
+- **Live trading scope.** The engine remains gated to paper
+  (`SYSTEMATIC_EXECUTION_ENABLED` + `LIVE_TRADING_ENABLED`). Nothing in this
+  plan changes those gates, and the fleet should run paper across all
+  connections before any live enablement is considered.
+- **Canary settle period.** `SYSTEMATIC_GROUP_CANARY_SETTLE_SECONDS` needs a
+  default. It should span at least one full bar of the slowest timeframe the
+  fleet trades, so "evaluated cleanly" means the leg actually produced a
+  decision rather than merely started without error.
