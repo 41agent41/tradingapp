@@ -46,7 +46,7 @@ Order placement runs the same `_validate_common` gate the IB path applies
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -74,6 +74,7 @@ _TIMEFRAME_TO_GRANULARITY = {
 
 # App order_type -> OANDA order type. STP_LMT has no clean OANDA equivalent.
 _ORDER_TYPE_TO_OANDA = {"MKT": "MARKET", "LMT": "LIMIT", "STP": "STOP"}
+_OANDA_TO_ORDER_TYPE = {v: k for k, v in _ORDER_TYPE_TO_OANDA.items()}
 # LIMIT/STOP accept the full OANDA TIF vocabulary; a MARKET order only
 # accepts FOK/IOC (OANDA rejects GTC/GFD/GTD on a MarketOrderRequest), so
 # DAY/GTC on a market order fold to FOK — "execute now or don't", the
@@ -96,6 +97,11 @@ _PERIOD_TO_COUNT = {
 }
 
 _FX_PAIR_RE = re.compile(r"^([A-Z]{3})[._/]?([A-Z]{3})$")
+
+# `/transactions` answers with page URLs rather than transactions, so a fills
+# fetch is one request per page. Capped so a wide window degrades into "the
+# most recent N pages" instead of an unbounded fan-out at the venue.
+_MAX_TRANSACTION_PAGES = 10
 
 
 def _to_instrument(symbol: str) -> str:
@@ -163,6 +169,21 @@ class OANDAAdapter:
 
     def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         return self._request("GET", path, params=params)
+
+    def _get_absolute(self, url: str) -> Any:
+        """GET a full URL OANDA handed back (the `/transactions` page links).
+
+        Those URLs are already absolute and already carry their query string,
+        so they can't go through `_request`'s base+path join. The host is
+        pinned to this adapter's configured base first — a page link is
+        venue-supplied data, and following it off-host would send the account
+        token somewhere it doesn't belong.
+        """
+        if not url.startswith(f"{self._base}/"):
+            raise HTTPException(
+                502, "OANDA returned a transaction page URL off the configured host"
+            )
+        return self._request("GET", url[len(self._base) :])
 
     def _account_path(self, suffix: str) -> str:
         return f"/v3/accounts/{self._account_id}{suffix}"
@@ -422,9 +443,110 @@ class OANDAAdapter:
         return positions
 
     def account_summary(self) -> Dict[str, Any]:
+        """Account state normalised to the app's ``models.AccountSummary``.
+
+        OANDA's ``NAV`` is the net asset value — its name for net liquidation,
+        and the figure `pct_equity` sizing needs. ``marginAvailable`` is the
+        closest analogue to buying power; ``marginUsed`` to maintenance margin.
+        """
+
         payload = self._get(self._account_path("/summary"))
-        account = payload.get("account", payload) if isinstance(payload, dict) else payload
-        return account if isinstance(account, dict) else {"account": account}
+        account = payload.get("account", payload) if isinstance(payload, dict) else {}
+        if not isinstance(account, dict):
+            account = {}
+        return {
+            "account_id": str(account.get("id") or self._account_id),
+            "net_liquidation": _opt_float(account.get("NAV")),
+            "currency": str(account.get("currency") or "USD"),
+            "last_updated": datetime.now(UTC).isoformat(),
+            "total_cash_value": _opt_float(account.get("balance")),
+            "buying_power": _opt_float(account.get("marginAvailable")),
+            "maintenance_margin": _opt_float(account.get("marginUsed")),
+        }
+
+    def open_orders(self) -> List[Dict[str, Any]]:
+        """Pending orders normalised to the app's ``models.Order`` shape.
+
+        OANDA has no side field — ``units`` is signed — so direction and size
+        are split back out here, the inverse of what ``place_order`` does.
+        """
+
+        payload = self._get(self._account_path("/pendingOrders"))
+        rows = payload.get("orders", []) if isinstance(payload, dict) else []
+        orders: List[Dict[str, Any]] = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            units = _opt_float(row.get("units")) or 0.0
+            orders.append(
+                {
+                    "order_id": str(row.get("id") or ""),
+                    "symbol": _from_instrument(str(row.get("instrument") or "")),
+                    "action": "SELL" if units < 0 else "BUY",
+                    "quantity": abs(units),
+                    "order_type": _OANDA_TO_ORDER_TYPE.get(
+                        str(row.get("type") or ""), str(row.get("type") or "MKT").upper()
+                    ),
+                    "status": str(row.get("state") or "PENDING"),
+                    "filled_quantity": None,
+                    "remaining_quantity": abs(units),
+                    "avg_fill_price": None,
+                }
+            )
+        return orders
+
+    def executions(self, days: int = 1) -> List[Dict[str, Any]]:
+        """Recent fills, normalised to the app's ``models.Execution`` shape.
+
+        A fill on OANDA is an ``ORDER_FILL`` transaction. The transactions
+        endpoint does not return the transactions themselves — it returns a
+        list of **page URLs** to fetch, so this walks those pages (capped, so a
+        long window can't turn into an unbounded fan-out; the backend polls a
+        short overlapping window anyway).
+
+        Two OANDA-isms are absorbed here. ``units`` is signed rather than
+        carrying a side, so the sign becomes ``side`` and the magnitude becomes
+        ``quantity`` — the inverse of what ``place_order`` does. And OANDA
+        reports commission as a positive ``commission`` alongside a separate
+        ``financing`` charge; only the former is a trade cost, so financing is
+        deliberately left out rather than folded into it.
+        """
+
+        start = (datetime.now(UTC) - timedelta(days=max(1, days))).isoformat()
+        index = self._get(
+            self._account_path("/transactions"),
+            {"from": start, "type": "ORDER_FILL", "pageSize": 500},
+        )
+        pages = index.get("pages", []) if isinstance(index, dict) else []
+        fills: List[Dict[str, Any]] = []
+        for page_url in list(pages)[:_MAX_TRANSACTION_PAGES]:
+            payload = self._get_absolute(str(page_url))
+            transactions = payload.get("transactions", []) if isinstance(payload, dict) else []
+            for row in transactions if isinstance(transactions, list) else []:
+                if not isinstance(row, dict) or row.get("type") != "ORDER_FILL":
+                    continue
+                units = _opt_float(row.get("units"))
+                price = _opt_float(row.get("price"))
+                exec_id = str(row.get("id") or "")
+                if not exec_id or units is None or units == 0 or price is None:
+                    continue
+                fills.append(
+                    {
+                        "exec_id": exec_id,
+                        "order_id": str(row.get("orderID")) if row.get("orderID") else None,
+                        "symbol": _from_instrument(str(row.get("instrument") or "")),
+                        "side": "BUY" if units > 0 else "SELL",
+                        "quantity": abs(units),
+                        "price": price,
+                        "commission": _opt_float(row.get("commission")),
+                        "realized_pnl": _opt_float(row.get("pl")),
+                        "executed_at": _iso_from(row.get("time")),
+                        "account": str(row.get("accountID") or "") or None,
+                        "currency": str(row.get("accountBalanceCurrency") or "USD"),
+                        "broker": "oanda",
+                    }
+                )
+        return fills
 
 
 def _opt_float(v: Any) -> Optional[float]:

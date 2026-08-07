@@ -658,18 +658,14 @@ hardcoded with a TODO. It now reads the venue's reported average cost from
 ### 12.4 Remaining — prioritised
 
 1. ~~**`/account/positions` is IB-only.**~~ ✅ **Closed** — see §12.5.
-2. **`risk.max_daily_loss` is a silent no-op.** Accepted by the schema and the
-   builder, enforced nowhere — the same failure shape as §12.3. Needs realised
-   P&L, hence (3).
-3. **Positions are inferred from submitted orders, not fills.** Both
-   `ORDER_MAX_POSITION` and the runner's position size read `order_audit` rows
-   that reached the broker. Partial fills, post-acknowledgement rejections and
-   manual trades all desynchronise them. An executions feed
-   (`execDetails`/`commissionReport` and equivalents) is the foundation for
-   authoritative positions, realised P&L and therefore (2).
-4. **The backtester ignores `sizing` and `scale_out`.** `BacktestEngine` is
-   all-in / all-out, so backtest returns won't match a live run's even when the
-   signals agree.
+2. ~~**`risk.max_daily_loss` is a silent no-op.**~~ ✅ **Closed** — see §12.7.
+3. ~~**Positions are inferred from submitted orders, not fills.**~~ ✅ **Feed
+   shipped** — see §12.6. One deliberate carry-over remains: a run's
+   `position.size` still reads the order-audit net, because switching it to the
+   (now available) fill-derived venue size needs an attribution decision, not
+   more plumbing. Called out again in §12.8.
+4. ~~**The backtester ignores `sizing` and `scale_out`.**~~ ✅ **Closed** —
+   see §12.7.
 
 ### 12.5 Positions are venue-aware ✅ fixed (follow-up)
 
@@ -711,6 +707,138 @@ change what its sizing and pyramiding rules do. That is a live-behaviour change
 that needs an attribution decision (per-run sub-accounts, an attribution ledger,
 or accepting account-level semantics explicitly), so it is flagged rather than
 slipped in. `/account/summary` and `/account/orders` also remain IB-only.
+
+---
+
+## 12.6 Positions and P&L now come from fills ✅ shipped (2026-08-07)
+
+The foundation §12.4(3) called for. Until now the platform's position model was
+built on **submitted orders**: `order_audit` recorded what the app *asked* a
+venue to trade, and both the `ORDER_MAX_POSITION` guard and a run's
+`position.size` were derived from it. That estimate diverges from the account
+in three well-known ways, all silent — a partial fill, a rejection that lands
+*after* the acknowledgement, and any trade placed outside the app.
+
+**Broker service.** A new venue-agnostic fills endpoint,
+`GET /account/executions?broker=&days=`, normalising every venue into one
+`models.Execution` shape:
+
+- **IB** — `execDetails` + `commissionReport` callbacks on `IBApp`, fetched via
+  `reqExecutions`. Two sharp edges live in
+  [`executions.py`](broker_service/executions.py). IB's `commission` and
+  `realizedPNL` arrive as `UNSET_DOUBLE` (`1.79e308`) rather than null when it
+  has nothing to report — persisting that would poison every P&L sum
+  downstream, so it is coerced to `None`. And its execution timestamps have
+  drifted across API versions (`"YYYYMMDD  HH:MM:SS"`, `"YYYYMMDD-HH:MM:SS"`,
+  and on TWS 10.19+ a trailing timezone name); worse, a timestamp with no
+  timezone is in the **Gateway's** local time, so reading it as UTC shifts
+  every fill by the account's offset. A naive value is now interpreted in
+  `IB_TIMEZONE` — the knob that already documents that timezone.
+- **Alpaca** — `FILL` account activities (both `FILL` and `PARTIAL_FILL` land
+  under that filter, which is exactly the granularity the audit-log estimate
+  was blind to). Commission is a definite `0.0`, not an unknown `None`.
+- **OANDA** — `ORDER_FILL` transactions. `/transactions` returns *page URLs*
+  rather than transactions, so the adapter walks them (capped); each page URL
+  is pinned to the configured host first, since following a venue-supplied
+  link off-host would send the account token somewhere it doesn't belong.
+  Signed `units` split back into side + magnitude, the inverse of the request
+  path.
+- **MT5** — the sidecar's deals, read defensively like `positions()`: MT5's
+  native `TradeDeal` vocabulary or the app's own. Non-trade entries (balance /
+  credit, `type >= 2`) are dropped rather than folded into the position.
+
+**Backend.** An `order_executions` table, an `ExecutionRepository`, and an
+opt-in `ExecutionsPoller` (`EXECUTIONS_SYNC_ENABLED`) modelled on
+`backfillScheduler`. Three things are worth calling out:
+
+- **The overlapping window is the design, not laziness.** Each tick re-reads
+  the last `EXECUTIONS_SYNC_LOOKBACK_DAYS` rather than tracking a high-water
+  mark, because a fill can be reported late and IB delivers a fill's commission
+  on a callback separate from the fill. `(broker, exec_id)` makes re-delivery a
+  no-op; the conflict path uses `COALESCE(EXCLUDED.…, existing)` so a late
+  value can fill a NULL but a later poll that has *lost* it can never blank one
+  already recorded.
+- **Attribution is resolved in SQL at write time**, `broker_order_id →
+  order_audit.ib_order_id → strategy_signals.order_audit_id → run_id`, with a
+  `relinkOrphans()` pass (run *after* ingest each tick) closing the race where
+  a fill is polled in the seconds before its audit row records the venue's
+  order id. Without that pass such a fill would stay permanently unattributed —
+  and its loss would never count against the run that caused it.
+- **Realised P&L is a pure reducer**
+  ([`realisedPnl.ts`](backend/src/services/realisedPnl.ts)), separated from the
+  SQL that feeds it because that is where the subtle rules are: average-cost
+  basis (matching how every venue in the stack reports average cost, so the
+  app's numbers and the venue's agree), commissions subtracted when charged
+  rather than deferred to the close, and reversals through flat handled so a
+  sell of 150 against a long 100 does not realise P&L on 50 shares that were
+  never held.
+
+Surfaced at `GET /api/account/executions` and `GET /api/account/pnl`, and under
+`services.executions` in `/api/health`.
+
+## 12.7 `max_daily_loss` enforced; backtester honours sizing + scale_out ✅
+
+**`risk.max_daily_loss` (§12.4(2)).** Now enforced by the `ExecutionEngine`
+against **realised P&L from this run's fills** — a loss is only a loss once it
+has actually traded, which is why (12.6) had to land first. Scoped per run, so
+a second run on the same symbol or a manual trade never consumes its budget.
+
+Two deliberate choices: it gates **entries only** (blocking an exit would
+strand the position in the very trade that caused the loss — the opposite of
+what a loss limit is for), and it **fails closed**, matching the position-limit
+guard. A declared cap with no P&L source, an unreachable database or a
+non-finite result all block the order rather than waving it through.
+
+**Backtester `sizing` + `scale_out` (§12.4(4)).** `BacktestEngine` was all-in /
+all-out, so a definition sized at 100 shares backtested as though it bought the
+whole account, and a "take half off at +3%" rung reduced nothing. Both are now
+simulated:
+
+- Sizing resolves through [`sizing.py`](broker_service/sizing.py), kept
+  semantically identical to the live `orderSizing.ts` (`fixed` / `notional` /
+  `pct_equity`, whole-unit floor). The one intended divergence: live, an
+  unresolvable size aborts with an auditable reason — refusing to trade is
+  always safe; in backtest it falls back to the historical all-in behaviour,
+  because a silent zero-trade result reads as "the rules never fired", which is
+  the exact failure shape this whole line of work exists to remove. A strategy
+  declaring no sizing (every built-in) is unchanged.
+- Scale-outs are driven per bar via a new `RuleStrategy.evaluate_scale_out`,
+  following the same one-way-dependency pattern as `evaluate_bar` (the engine
+  never imports `rule_strategy`). Each rung fires **at most once per open
+  trade** — tracked per trade, since a threshold rung would otherwise re-fire
+  on every subsequent bar past its level and bleed the position to nothing.
+  A firing rung closes a slice as its own `Trade`, leaving the remainder open
+  at the same entry price, so the trade list and every metric stay coherent.
+  `reduce_pct` is validated at compile time; scale-out operands now contribute
+  to the strategy's indicator requirements, so a rung referencing an indicator
+  the entry/exit rules don't would no longer evaluate against NaN and never
+  fire.
+
+## 12.8 Venue-aware account surface completed ✅
+
+`/account/summary`, `/account/orders` and `/account/all` took `broker=` and now
+dispatch through the adapter registry, finishing what §12.5 started for
+positions. Each adapter's `account_summary()` — previously a raw venue payload
+with no callers — normalises to `models.AccountSummary`, and a new
+`open_orders()` normalises to `models.Order`.
+
+That normalisation has a concrete payoff beyond consistency: `pct_equity`
+sizing was **unreachable**, rejected with "not wired for paper A3" because
+nothing supplied an equity figure. The engine now reads net liquidation from
+the run's own venue (cached per broker, fail-soft) and the sizer resolves.
+
+`models.Order.order_id` widened from `int` to `str` — IB's ids are numeric but
+Alpaca's are UUIDs and OANDA's are numeric strings, so the venue-agnostic
+contract has to be the wider type. IB ids round-trip as their decimal text.
+
+**Still open, deliberately:** a run's `position.size` continues to come from
+the order-audit net rather than the venue's (fill-derived) size. The venue
+reports whole-**account** exposure, so a second run on the same symbol or a
+manual trade would fold into this run's position and change what its sizing and
+pyramiding rules do. That is a live-behaviour change needing an attribution
+decision — per-run sub-accounts, an attribution ledger keyed off
+`order_executions`, or explicitly accepting account-level semantics — so it
+stays flagged rather than slipped in.
 
 ---
 

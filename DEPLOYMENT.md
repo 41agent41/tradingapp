@@ -12,11 +12,12 @@ other deployment scripts in this repository.
 4. [One-Command Deployment](#one-command-deployment)
 5. [Manual Deployment](#manual-deployment)
 6. [Environment Configuration](#environment-configuration)
-7. [Service Verification](#service-verification)
-8. [Common Issues](#common-issues)
-9. [Production Setup](#production-setup)
-10. [Monitoring & Maintenance](#monitoring--maintenance)
-11. [Deployment Checklist](#deployment-checklist)
+7. [Executions (fills) sync](#executions-fills-sync)
+8. [Service Verification](#service-verification)
+9. [Common Issues](#common-issues)
+10. [Production Setup](#production-setup)
+11. [Monitoring & Maintenance](#monitoring--maintenance)
+12. [Deployment Checklist](#deployment-checklist)
 
 ## Upgrading from `ib_service`
 
@@ -596,6 +597,58 @@ curl -fs http://<server-ip>:4000/api/health | jq .services.backfill
 # Per-symbol storage + average quality score.
 curl -fs -H "Authorization: Bearer $API_TOKEN" \
   http://<server-ip>:4000/api/market-data/database/stats | jq
+```
+
+## Executions (fills) sync
+
+Positions and P&L default to being inferred from **submitted orders** — what
+the app asked a venue to trade, recorded in `order_audit`. That estimate
+silently disagrees with the account on a partial fill, on a rejection that
+lands after the acknowledgement, and on any trade placed outside the app.
+Turning on the fills sync replaces the estimate with the venue's own execution
+reports.
+
+**Enable it if** you use a strategy's `risk.max_daily_loss` (the sync is its
+P&L source — with the sync off, a declared cap fails *closed* and the run
+places nothing), or you want `/api/account/executions` and `/api/account/pnl`
+to report anything.
+
+```bash
+# .env
+EXECUTIONS_SYNC_ENABLED=true
+EXECUTIONS_SYNC_INTERVAL_SECONDS=120   # per-venue poll cadence (min 15)
+EXECUTIONS_SYNC_LOOKBACK_DAYS=2        # window per poll (1-30)
+EXECUTIONS_DEFAULT_ACCOUNT_MODE=paper  # for fills with no order of ours behind them
+```
+
+```bash
+./tradingapp.sh redeploy
+```
+
+The poller reads every venue the app has traded at recently plus every venue
+with a running strategy, so an unconfigured broker is never polled. The window
+**overlaps on purpose** — a fill can be reported late, and IB delivers a fill's
+commission on a callback separate from the fill itself, so re-reading is how
+those converge. Rows upsert on `(broker, exec_id)`, so re-delivery never
+duplicates.
+
+> **IB timestamps.** IB reports execution times in the **Gateway's** timezone
+> when it doesn't supply one on the wire. The service interprets those in
+> `IB_TIMEZONE` (default `UTC`) — if your Gateway is not running in UTC, set
+> `IB_TIMEZONE` to its actual zone or every fill will be stamped with the
+> account's offset applied in the wrong direction.
+
+### Diagnostics
+
+```bash
+# Poller state: enabled flag, last run, fetched / inserted / relinked totals.
+curl -fs http://<server-ip>:4000/api/health | jq .services.executions
+
+# Recorded fills, and today's realised P&L.
+curl -fs -H "Authorization: Bearer $API_TOKEN" \
+  "http://<server-ip>:4000/api/account/executions?limit=20" | jq
+curl -fs -H "Authorization: Bearer $API_TOKEN" \
+  http://<server-ip>:4000/api/account/pnl | jq
 ```
 
 ## Service Verification

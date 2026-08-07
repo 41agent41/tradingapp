@@ -2,6 +2,10 @@ import express from 'express';
 import type { Request, Response } from 'express';
 import axios from 'axios';
 
+import { dbService } from '../services/database.js';
+import { ExecutionRepository } from '../services/executionRepository.js';
+import { realisedPnl } from '../services/realisedPnl.js';
+
 const router = express.Router();
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
@@ -29,7 +33,10 @@ interface Position {
 }
 
 interface Order {
-  order_id: number;
+  // A string, not a number — IB's order ids are numeric but Alpaca's are UUIDs
+  // and OANDA's are numeric strings, so the venue-agnostic shape is the wider
+  // type.
+  order_id: string;
   symbol: string;
   action: string;
   quantity: number;
@@ -76,9 +83,14 @@ router.get('/summary', async (req: Request, res: Response) => {
       return handleDisabledDataQuery(res, 'Account summary data querying is disabled');
     }
 
-    console.log('Fetching account summary from IB service');
+    // Broker-scoped: the summary comes from the venue named by `?broker=`,
+    // defaulting to IB. It is also where `pct_equity` sizing gets its equity.
+    const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+
+    console.log(`Fetching account summary from broker service (broker=${broker})`);
 
     const response = await axios.get(`${BROKER_SERVICE_URL}/account/summary`, {
+      params: { broker },
       timeout: 20000, // 20 second timeout for account data
       headers: {
         Connection: 'close',
@@ -181,9 +193,12 @@ router.get('/orders', async (req: Request, res: Response) => {
       return handleDisabledDataQuery(res, 'Account orders data querying is disabled');
     }
 
-    console.log('Fetching account orders from IB service');
+    const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+
+    console.log(`Fetching account orders from broker service (broker=${broker})`);
 
     const response = await axios.get(`${BROKER_SERVICE_URL}/account/orders`, {
+      params: { broker },
       timeout: 20000, // 20 second timeout
       headers: {
         Connection: 'close',
@@ -225,6 +240,118 @@ router.get('/orders', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Fills — read from the local `order_executions` store, not live from the venue.
+ *
+ * Deliberately *not* a proxy to the broker service. The store is the union of
+ * every poll the app has made, so it survives a venue that only serves the
+ * current trading day, and its rows carry the attribution (`order_audit_id` /
+ * `run_id`) that a raw venue payload has no idea about. `?fresh=true` is
+ * available for a live read when the caller genuinely wants what the venue
+ * says right now.
+ *
+ * No `x-data-query-enabled` gate: unlike the other routes here this hits
+ * Postgres, not the IB Gateway, and that header exists to spare IB the load.
+ */
+router.get('/executions', async (req: Request, res: Response) => {
+  try {
+    const broker =
+      typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : undefined;
+    const symbol = typeof req.query.symbol === 'string' ? req.query.symbol : undefined;
+    const accountMode =
+      typeof req.query.account_mode === 'string' ? req.query.account_mode : undefined;
+    const runId = req.query.run_id != null ? Number(req.query.run_id) : undefined;
+
+    if (String(req.query.fresh).toLowerCase() === 'true') {
+      const response = await axios.get(`${BROKER_SERVICE_URL}/account/executions`, {
+        params: { broker: broker || 'ib', days: Number(req.query.days) || 1 },
+        timeout: 45000,
+        headers: { Connection: 'close' },
+      });
+      return res.json({
+        executions: response.data,
+        count: Array.isArray(response.data) ? response.data.length : 0,
+        source: 'broker',
+        last_updated: new Date().toISOString(),
+      });
+    }
+
+    const repo = new ExecutionRepository(dbService);
+    const rows = await repo.list({
+      broker,
+      symbol,
+      account_mode: accountMode,
+      run_id: Number.isFinite(runId) ? runId : undefined,
+      limit: Number(req.query.limit) || undefined,
+      offset: Number(req.query.offset) || undefined,
+    });
+
+    res.json({
+      executions: rows,
+      count: rows.length,
+      source: 'database',
+      last_updated: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    console.error('Error fetching executions:', error);
+    res.status(error.response?.status || 500).json({
+      error: 'Failed to fetch executions',
+      detail: error.response?.data?.detail || error.message || 'Unknown error',
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+/**
+ * Realised P&L over the stored fills, with the net position they imply.
+ *
+ * The numbers the platform previously could not produce: `order_audit` records
+ * intent, and intent has no P&L. Scoping by `run_id` is what backs a strategy's
+ * `max_daily_loss` cap; scoping by `symbol` answers "what has this instrument
+ * actually made".
+ */
+router.get('/pnl', async (req: Request, res: Response) => {
+  try {
+    const broker =
+      typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : undefined;
+    const symbol = typeof req.query.symbol === 'string' ? req.query.symbol : undefined;
+    const accountMode =
+      typeof req.query.account_mode === 'string' ? req.query.account_mode : undefined;
+    const runId = req.query.run_id != null ? Number(req.query.run_id) : undefined;
+    // Default to today, the window the daily-loss cap is measured over.
+    const since =
+      typeof req.query.since === 'string'
+        ? req.query.since
+        : new Date(new Date().setUTCHours(0, 0, 0, 0)).toISOString();
+
+    const repo = new ExecutionRepository(dbService);
+    const fills = await repo.listForPnl({
+      broker,
+      symbol,
+      account_mode: accountMode,
+      run_id: Number.isFinite(runId) ? runId : undefined,
+      since,
+    });
+    const result = realisedPnl(fills);
+
+    res.json({
+      since,
+      fills: fills.length,
+      realised: result.realised,
+      commission: result.commission,
+      by_symbol: result.bySymbol,
+      last_updated: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    console.error('Error computing realised P&L:', error);
+    res.status(500).json({
+      error: 'Failed to compute realised P&L',
+      detail: error.message || 'Unknown error',
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
 // Get all account data in one call
 router.get('/all', async (req: Request, res: Response) => {
   try {
@@ -233,9 +360,12 @@ router.get('/all', async (req: Request, res: Response) => {
       return handleDisabledDataQuery(res, 'All account data querying is disabled');
     }
 
-    console.log('Fetching all account data from IB service');
+    const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+
+    console.log(`Fetching all account data from broker service (broker=${broker})`);
 
     const response = await axios.get(`${BROKER_SERVICE_URL}/account/all`, {
+      params: { broker },
       timeout: 30000, // 30 second timeout for comprehensive data
       headers: {
         Connection: 'close',

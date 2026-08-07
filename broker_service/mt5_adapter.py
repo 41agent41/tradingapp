@@ -387,8 +387,136 @@ class MT5Adapter:
         return positions
 
     def account_summary(self) -> Dict[str, Any]:
+        """Account state normalised to the app's ``models.AccountSummary``.
+
+        MT5's ``equity`` is net liquidation (balance plus floating P&L) — the
+        figure `pct_equity` sizing needs. Read defensively like the rest of the
+        sidecar contract: a bridge that already speaks the app's vocabulary is
+        accepted alongside MT5's own ``AccountInfo`` field names.
+        """
+
         payload = self._get("/account")
-        return payload if isinstance(payload, dict) else {"account": payload}
+        account = payload if isinstance(payload, dict) else {}
+        return {
+            "account_id": str(account.get("account_id") or account.get("login") or "mt5"),
+            "net_liquidation": _opt_float(
+                account.get("net_liquidation")
+                if account.get("net_liquidation") is not None
+                else account.get("equity")
+            ),
+            "currency": str(account.get("currency") or "USD"),
+            "last_updated": datetime.now(UTC).isoformat(),
+            "total_cash_value": _opt_float(account.get("balance")),
+            "buying_power": _opt_float(
+                account.get("buying_power")
+                if account.get("buying_power") is not None
+                else account.get("margin_free")
+            ),
+            "maintenance_margin": _opt_float(
+                account.get("maintenance_margin")
+                if account.get("maintenance_margin") is not None
+                else account.get("margin")
+            ),
+        }
+
+    def open_orders(self) -> List[Dict[str, Any]]:
+        """Working orders normalised to the app's ``models.Order`` shape.
+
+        MT5 order types 0/2/4/6 are buys and 1/3/5/7 are sells (the pairs are
+        market / limit / stop / stop-limit), so direction is the low bit when
+        the sidecar hasn't already translated it.
+        """
+
+        payload = self._get("/orders")
+        rows = payload.get("orders", payload) if isinstance(payload, dict) else payload
+        orders: List[Dict[str, Any]] = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            quantity = _opt_float(row.get("quantity"))
+            if quantity is None:
+                quantity = _opt_float(row.get("volume_current") or row.get("volume_initial")) or 0.0
+            action = str(row.get("action") or "").upper()
+            if action not in ("BUY", "SELL"):
+                order_type = _opt_int(row.get("type"))
+                action = "SELL" if order_type is not None and order_type % 2 == 1 else "BUY"
+            orders.append(
+                {
+                    "order_id": str(row.get("order_id") or row.get("ticket") or ""),
+                    "symbol": str(row.get("symbol") or "").upper(),
+                    "action": action,
+                    "quantity": abs(quantity),
+                    "order_type": str(row.get("order_type") or "MKT").upper(),
+                    "status": str(row.get("status") or row.get("state") or "working"),
+                    "filled_quantity": _opt_float(row.get("filled_quantity")),
+                    "remaining_quantity": _opt_float(row.get("remaining_quantity")),
+                    "avg_fill_price": _opt_float(
+                        row.get("avg_fill_price") or row.get("price_current")
+                    ),
+                }
+            )
+        return orders
+
+    def executions(self, days: int = 1) -> List[Dict[str, Any]]:
+        """Recent fills, normalised to the app's ``models.Execution`` shape.
+
+        MT5 calls a fill a *deal* (``history_deals_get``). The sidecar is
+        out-of-repo, so — as with ``positions()`` — the payload is read
+        defensively: either MT5's native ``TradeDeal`` vocabulary (``ticket`` /
+        ``order`` / ``volume`` / ``price`` / ``commission`` / ``profit``, with
+        the direction in ``type`` where 0=buy 1=sell and ``time`` a unix epoch),
+        or the app's own field names if the sidecar already speaks them.
+
+        MT5 deals include non-trade entries (balance adjustments, credits,
+        ``type`` >= 2) which have no symbol and are not fills; those are
+        dropped rather than folded into the position.
+        """
+
+        payload = self._get("/deals", {"days": max(1, days)})
+        rows = payload.get("deals", payload) if isinstance(payload, dict) else payload
+        if isinstance(rows, dict):
+            rows = rows.get("executions", [])
+        fills: List[Dict[str, Any]] = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            exec_id = str(row.get("exec_id") or row.get("ticket") or row.get("deal") or "")
+            symbol = str(row.get("symbol") or "").upper()
+            quantity = _opt_float(row.get("quantity"))
+            if quantity is None:
+                quantity = _opt_float(row.get("volume"))
+            price = _opt_float(row.get("price"))
+            if not exec_id or not symbol or not quantity or price is None:
+                continue
+
+            side = str(row.get("side") or "").upper()
+            if side not in ("BUY", "SELL"):
+                deal_type = _opt_int(row.get("type"))
+                if deal_type is not None and deal_type > 1:
+                    continue  # balance/credit/charge entry, not a trade
+                side = "SELL" if deal_type == 1 else "BUY"
+
+            fills.append(
+                {
+                    "exec_id": exec_id,
+                    "order_id": str(row.get("order")) if row.get("order") else None,
+                    "symbol": symbol,
+                    "side": side,
+                    "quantity": abs(quantity),
+                    "price": price,
+                    "commission": _opt_float(row.get("commission")),
+                    "realized_pnl": _opt_float(
+                        row.get("profit")
+                        if row.get("profit") is not None
+                        else row.get("realized_pnl")
+                    ),
+                    "executed_at": _iso_from(row.get("executed_at") or row.get("time")),
+                    "account": str(row.get("account") or "") or None,
+                    "currency": str(row.get("currency") or "USD"),
+                    "broker": "mt5",
+                }
+            )
+        return fills
 
 
 def _opt_float(v: Any) -> Optional[float]:

@@ -34,6 +34,14 @@ services:
       - BACKFILL_INTERVAL_MINUTES=${BACKFILL_INTERVAL_MINUTES:-15}
       - BACKFILL_PERIOD=${BACKFILL_PERIOD:-5D}
       - BACKFILL_INITIAL_DELAY_MS=${BACKFILL_INITIAL_DELAY_MS:-30000}
+      # Executions (fills) sync — the source of fill-authoritative positions
+      # and realised P&L, and therefore of risk.max_daily_loss enforcement
+      # (opt-in; makes live venue requests on a timer)
+      - EXECUTIONS_SYNC_ENABLED=${EXECUTIONS_SYNC_ENABLED:-false}
+      - EXECUTIONS_SYNC_INTERVAL_SECONDS=${EXECUTIONS_SYNC_INTERVAL_SECONDS:-120}
+      - EXECUTIONS_SYNC_LOOKBACK_DAYS=${EXECUTIONS_SYNC_LOOKBACK_DAYS:-2}
+      - EXECUTIONS_SYNC_INITIAL_DELAY_MS=${EXECUTIONS_SYNC_INITIAL_DELAY_MS:-20000}
+      - EXECUTIONS_DEFAULT_ACCOUNT_MODE=${EXECUTIONS_DEFAULT_ACCOUNT_MODE:-paper}
     ports:
       - "${BACKEND_PORT:-4000}:${BACKEND_PORT:-4000}"
     depends_on:

@@ -17,6 +17,7 @@ import { cacheService } from './services/cache.js';
 import { createStreamingBridge } from './services/streamingBridge.js';
 import { createBackfillScheduler } from './services/backfillScheduler.js';
 import { createStrategyRunner } from './services/strategyRunner.js';
+import { createExecutionsPoller } from './services/executionsPoller.js';
 import { createAuthMiddleware, checkSocketAuth } from './middleware/auth.js';
 import { observabilityMiddleware } from './middleware/observability.js';
 import { logger, currentRequestId } from './services/logger.js';
@@ -168,6 +169,7 @@ app.get('/api/health', async (_req, res) => {
       streaming: streamingBridge.status(),
       backfill: backfillScheduler.status(),
       systematic: strategyRunner.status(),
+      executions: executionsPoller.status(),
     },
   });
 });
@@ -257,6 +259,13 @@ const backfillScheduler = createBackfillScheduler();
 const strategyRunner = createStrategyRunner({
   emit: (runId, payload) => io.to(`strategy:${runId}`).emit('strategy-signal', payload),
 });
+
+// Executions poller: syncs each active venue's fills into `order_executions`,
+// so positions and realised P&L come from what actually traded rather than
+// from the submitted-order estimate in `order_audit`. It is what makes a
+// strategy's `max_daily_loss` cap enforceable. Opt-in via
+// EXECUTIONS_SYNC_ENABLED — see services/executionsPoller.ts.
+const executionsPoller = createExecutionsPoller();
 
 io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
@@ -379,6 +388,11 @@ async function shutdown(signal: string) {
   } catch (err) {
     console.warn('Error stopping strategy runner:', err);
   }
+  try {
+    executionsPoller.stop();
+  } catch (err) {
+    console.warn('Error stopping executions poller:', err);
+  }
   server.close(() => {
     console.log('Server closed');
     process.exit(0);
@@ -400,6 +414,7 @@ server.listen(PORT, '0.0.0.0', () => {
 
   backfillScheduler.start();
   strategyRunner.start();
+  executionsPoller.start();
 
   void dbService
     .testConnection()

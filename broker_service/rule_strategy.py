@@ -26,12 +26,16 @@ The rule model is intentionally the *rich* one confirmed in
   entry/exit rules only fire inside them, with an optional
   ``flat_at_session_end`` that forces a flat at each session boundary.
 
-What is carried through but **not** simulated in the Phase 1 backtest:
+``sizing`` and ``scale_out`` are now **simulated as well as executed**: the
+backtest engine resolves the sizing block through :mod:`sizing` and drives
+:meth:`RuleStrategy.evaluate_scale_out` per bar for partial exits, so a
+backtest and a live run of the same definition trade the same size and take
+the same partial profits. ``risk`` remains live-only — its caps (orders per
+day, daily loss) are session-scoped concepts a historical backtest has no
+counterpart for.
 
-* ``sizing`` / ``risk`` / ``scale_out`` are validated and stored on the
-  strategy for the live execution + risk layer (A3). The existing
-  :class:`backtesting.BacktestEngine` is all-in / all-out, so partial exits and
-  broker-unit sizing have nowhere to land yet.
+Carried through but **not** simulated:
+
 * **Position-aware operands** evaluate against the strategy's ``self.position``,
   which is ``0`` (flat) throughout the engine's single up-front
   ``generate_signals`` pass — exactly as the existing ``SimpleMAStrategy``
@@ -479,17 +483,33 @@ class RuleStrategy(TradingStrategy):
         self.sessions = _compile_sessions(rule_set.get("sessions"))
         self.flat_at_session_end = bool(rule_set.get("flat_at_session_end", False))
 
-        # Carried through for the live execution + risk layer (A3); not
-        # simulated by the Phase 1 all-in/all-out backtest engine.
+        # `sizing` and `scale_out` are now simulated by the backtest engine as
+        # well as driving live execution, so the rung conditions are compiled
+        # here rather than merely shape-checked — `evaluate_scale_out` below is
+        # what the engine drives per bar. `risk` stays live-only: its caps are
+        # about order rate and daily loss across a *session*, which a backtest
+        # over historical bars has no equivalent of.
         self.sizing = _validate_sizing(rule_set.get("sizing"))
         self.risk = dict(rule_set.get("risk") or {})
         self.scale_out = _validate_scale_out(rule_set.get("scale_out"))
+        self._scale_out_conditions = [_compile_condition(rung["when"]) for rung in self.scale_out]
         self.broker = rule_set.get("broker")
         self.symbol = rule_set.get("symbol")
         self.primary_timeframe = rule_set.get("timeframe")
 
-        # Resolve the indicator requirements from every operand.
-        operands: List[Operand] = list(_walk_operands(self.entry)) + list(_walk_operands(self.exit))
+        # Resolve the indicator requirements from every operand — including the
+        # scale-out rungs, so a rung that references an indicator the entry/exit
+        # rules don't (say an ATR-based profit target) still gets its column
+        # computed instead of evaluating against NaN and never firing.
+        operands: List[Operand] = (
+            list(_walk_operands(self.entry))
+            + list(_walk_operands(self.exit))
+            + [
+                operand
+                for condition in self._scale_out_conditions
+                for operand in _walk_operands(condition)
+            ]
+        )
         primary_requests: set[str] = set()
         higher_tf: Dict[str, set[str]] = {}
         for operand in operands:
@@ -580,6 +600,59 @@ class RuleStrategy(TradingStrategy):
                 sell_reason = f"{self.name}: session-end flat"
 
         return {"buy": buy, "sell": sell, "buy_reason": buy_reason, "sell_reason": sell_reason}
+
+    def evaluate_scale_out(
+        self,
+        signals: pd.DataFrame,
+        i: int,
+        position_size: float = 0.0,
+        avg_price: float = 0.0,
+    ) -> List[Dict[str, Any]]:
+        """Which scale-out rungs fire at bar ``i`` for the given position.
+
+        Returns one entry per firing rung as
+        ``{"index": k, "reduce_pct": float, "reason": str}``. ``index`` is the
+        rung's position in the declared list and is what lets the caller fire
+        each rung **at most once per open trade** — without it, a rung like
+        "reduce 50% at +3%" would re-fire on every subsequent bar that stayed
+        above +3% and bleed the position to nothing.
+
+        A rung is only meaningful against an open position, so a flat position
+        fires nothing. Like :meth:`evaluate_bar`, the position is passed as
+        plain floats so the backtest engine never imports this module.
+        """
+
+        if not self._scale_out_conditions or position_size == 0:
+            return []
+
+        row = signals.iloc[i]
+        prev_row = signals.iloc[i - 1] if i >= 1 else None
+        position = Position(
+            size=float(position_size),
+            avg_price=float(avg_price),
+            last_price=float(row.get("close", float("nan"))),
+        )
+        ctx = EvalContext(row=row, prev=prev_row, position=position)
+
+        fired: List[Dict[str, Any]] = []
+        for index, condition in enumerate(self._scale_out_conditions):
+            if not condition.evaluate(ctx):
+                continue
+            rung = self.scale_out[index]
+            try:
+                reduce_pct = float(rung.get("reduce_pct", 0))
+            except (TypeError, ValueError):
+                reduce_pct = 0.0
+            if reduce_pct <= 0:
+                continue
+            fired.append(
+                {
+                    "index": index,
+                    "reduce_pct": min(reduce_pct, 100.0),
+                    "reason": f"{self.name}: scale-out rung {index + 1} ({reduce_pct:g}%)",
+                }
+            )
+        return fired
 
     def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """Batch signal pass for engines that don't drive :meth:`evaluate_bar`.
@@ -746,6 +819,15 @@ def _validate_scale_out(spec: Any) -> List[Dict[str, Any]]:
         if not isinstance(rung, dict) or "when" not in rung:
             raise RuleSetError("Each scale_out rung needs a 'when' condition.")
         _compile_condition(rung["when"])  # validate the condition shape
+        # `reduce_pct` is what the rung actually *does*, so a malformed one is
+        # rejected at compile time rather than silently reducing by nothing.
+        if "reduce_pct" in rung:
+            try:
+                reduce_pct = float(rung["reduce_pct"])
+            except (TypeError, ValueError):
+                raise RuleSetError(f"scale_out reduce_pct must be a number: {rung['reduce_pct']!r}")
+            if not 0 < reduce_pct <= 100:
+                raise RuleSetError(f"scale_out reduce_pct must be in (0, 100], got {reduce_pct:g}.")
     return list(spec)
 
 

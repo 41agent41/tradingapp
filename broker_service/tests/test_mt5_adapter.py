@@ -350,7 +350,10 @@ def test_cancel_and_positions_and_account(mt5):
             "currency": "USD",
         }
     ]
-    assert adapter.account_summary()["equity"] == 10100
+    # Normalised to the app's AccountSummary shape — MT5's `equity` is
+    # balance plus floating P&L, i.e. net liquidation.
+    summary = adapter.account_summary()
+    assert summary["net_liquidation"] == 10100.0
 
 
 def test_positions_accept_native_mt5_field_names(mt5):
@@ -383,3 +386,121 @@ def test_positions_accept_native_mt5_field_names(mt5):
     assert rows[0]["market_price"] == 1.15
     assert rows[0]["unrealized_pnl"] == 25.0
     assert rows[1]["position"] == 1.0  # buy -> positive
+
+
+# --------------------------------------------------------------------------- #
+# executions (deals)
+# --------------------------------------------------------------------------- #
+def test_executions_read_mt5_native_deal_fields(mt5):
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        {
+            "deals": [
+                {
+                    "ticket": 5001,
+                    "order": 4001,
+                    "symbol": "eurusd",
+                    "type": 0,  # buy
+                    "volume": 1.0,
+                    "price": 1.0925,
+                    "commission": -0.7,
+                    "profit": 0.0,
+                    "time": 1786109400,
+                },
+                {
+                    "ticket": 5002,
+                    "order": 4002,
+                    "symbol": "EURUSD",
+                    "type": 1,  # sell
+                    "volume": 1.0,
+                    "price": 1.0950,
+                    "commission": -0.7,
+                    "profit": 25.0,
+                    "time": 1786113000,
+                },
+            ]
+        }
+    )
+
+    rows = _adapter(mt5).executions(days=3)
+
+    method, url, params, _json, _headers = FakeClient.calls[-1]
+    assert method == "GET"
+    assert url.endswith("/deals")
+    assert params["days"] == 3
+
+    assert [r["exec_id"] for r in rows] == ["5001", "5002"]
+    # MT5 reports volume unsigned with the direction in `type`.
+    assert rows[0]["side"] == "BUY"
+    assert rows[1]["side"] == "SELL"
+    assert rows[0]["symbol"] == "EURUSD"
+    assert rows[1]["realized_pnl"] == 25.0
+    assert rows[0]["executed_at"].startswith("2026-08-07T")
+    assert rows[0]["broker"] == "mt5"
+
+
+def test_executions_accept_a_sidecar_that_speaks_the_app_vocabulary(mt5):
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        {
+            "deals": [
+                {
+                    "exec_id": "abc-1",
+                    "order": "o-1",
+                    "symbol": "EURUSD",
+                    "side": "SELL",
+                    "quantity": 2.0,
+                    "price": 1.1,
+                    "commission": -1.4,
+                    "realized_pnl": 5.0,
+                    "executed_at": "2026-08-07T13:30:00Z",
+                }
+            ]
+        }
+    )
+
+    rows = _adapter(mt5).executions()
+
+    assert rows[0]["exec_id"] == "abc-1"
+    assert rows[0]["side"] == "SELL"
+    assert rows[0]["quantity"] == 2.0
+
+
+def test_executions_drop_non_trade_deal_entries(mt5):
+    """MT5 history includes balance/credit entries (type >= 2) that carry no
+    trade — folding those into a position would corrupt it."""
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        {
+            "deals": [
+                {"ticket": 1, "symbol": "", "type": 2, "volume": 0, "price": 0},
+                {"ticket": 2, "symbol": "EURUSD", "type": 2, "volume": 1, "price": 1.1},
+                {"ticket": 3, "symbol": "EURUSD", "type": 0, "volume": 1, "price": 1.1},
+            ]
+        }
+    )
+
+    rows = _adapter(mt5).executions()
+
+    assert [r["exec_id"] for r in rows] == ["3"]
+
+
+def test_open_orders_derive_direction_from_the_mt5_type_code(mt5):
+    """MT5 order types pair up as buy/sell (0/1 market, 2/3 limit, …), so the
+    direction is the low bit when the sidecar hasn't already translated it."""
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        {
+            "orders": [
+                {"ticket": 900, "symbol": "eurusd", "type": 2, "volume_current": 1.5},
+                {"ticket": 901, "symbol": "EURUSD", "type": 3, "volume_current": 0.5},
+                {"ticket": 902, "symbol": "EURUSD", "action": "SELL", "quantity": 2.0},
+            ]
+        }
+    )
+
+    rows = _adapter(mt5).open_orders()
+
+    assert FakeClient.calls[-1][1].endswith("/orders")
+    assert [(r["order_id"], r["action"], r["quantity"]) for r in rows] == [
+        ("900", "BUY", 1.5),
+        ("901", "SELL", 0.5),
+        ("902", "SELL", 2.0),
+    ]
+    assert rows[0]["symbol"] == "EURUSD"

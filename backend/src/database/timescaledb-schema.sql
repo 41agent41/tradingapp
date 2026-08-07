@@ -496,6 +496,66 @@ CREATE INDEX IF NOT EXISTS idx_strategy_signals_acted
     ON strategy_signals (run_id, created_at DESC) WHERE acted;
 
 -- ==============================================
+-- EXECUTIONS (FILLS)
+-- ==============================================
+-- `order_audit` records what the app *asked* a venue to trade. This table
+-- records what actually **traded** — the venue's own execution reports, polled
+-- from `/account/executions` on the broker service and upserted here.
+--
+-- The distinction is the whole point. Positions and realised P&L used to be
+-- inferred from submitted orders, which silently disagrees with the account on
+-- a partial fill, on a rejection that lands after the acknowledgement, and on
+-- any trade placed outside the app. Deriving them from fills instead is what
+-- makes them authoritative — and is what lets `risk.max_daily_loss` be
+-- enforced rather than accepted and ignored.
+--
+-- `(broker, exec_id)` is unique: the poller deliberately re-fetches an
+-- overlapping window every tick (a fill can be reported late, and IB's
+-- commission arrives on a separate callback from the fill itself), so
+-- re-delivery of a row already seen must be a no-op rather than a duplicate.
+--
+-- `order_audit_id` / `run_id` are the attribution links, resolved from the
+-- venue's order id at upsert time and re-resolved for any row that arrived
+-- before its audit row had one. They are nullable by design: a manual trade
+-- placed directly at the venue is a real fill with no order of ours behind it,
+-- and it *should* count toward the account position.
+
+CREATE TABLE IF NOT EXISTS order_executions (
+    id BIGSERIAL PRIMARY KEY,
+    broker VARCHAR(16) NOT NULL DEFAULT 'ib',
+    account_mode VARCHAR(8) NOT NULL DEFAULT 'paper',   -- 'paper' | 'live'
+    exec_id VARCHAR(128) NOT NULL,                      -- the venue's own fill id
+    broker_order_id VARCHAR(64),                        -- venue order id (IB's is numeric, others aren't)
+    order_audit_id BIGINT REFERENCES order_audit(id) ON DELETE SET NULL,
+    run_id BIGINT REFERENCES strategy_runs(id) ON DELETE SET NULL,
+    symbol VARCHAR(32) NOT NULL,
+    side VARCHAR(4) NOT NULL,                           -- 'BUY' | 'SELL'
+    quantity NUMERIC(20,6) NOT NULL,                    -- always positive; direction is in `side`
+    price NUMERIC(20,6) NOT NULL,
+    commission NUMERIC(20,6),                           -- NULL = not reported (yet)
+    realized_pnl NUMERIC(20,6),                         -- the venue's own figure, when it supplies one
+    currency VARCHAR(8) NOT NULL DEFAULT 'USD',
+    executed_at TIMESTAMPTZ NOT NULL,
+    raw JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (broker, exec_id)
+);
+
+-- Backs the position / realised-P&L reducers, which always scope by venue +
+-- instrument + account and walk fills in execution order.
+CREATE INDEX IF NOT EXISTS idx_order_executions_position_key
+    ON order_executions (broker, symbol, account_mode, executed_at);
+CREATE INDEX IF NOT EXISTS idx_order_executions_executed_desc
+    ON order_executions (executed_at DESC);
+-- Backs per-run realised P&L (the `max_daily_loss` cap).
+CREATE INDEX IF NOT EXISTS idx_order_executions_run
+    ON order_executions (run_id, executed_at) WHERE run_id IS NOT NULL;
+-- Backs the re-link pass over fills whose audit row had no venue order id yet.
+CREATE INDEX IF NOT EXISTS idx_order_executions_unlinked
+    ON order_executions (broker, broker_order_id)
+    WHERE order_audit_id IS NULL AND broker_order_id IS NOT NULL;
+
+-- ==============================================
 -- WATCHLIST
 -- ==============================================
 -- A single flat watchlist (no per-user scoping — the app has one operator
