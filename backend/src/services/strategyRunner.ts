@@ -155,28 +155,33 @@ function defaultDeps(
     submitOrder: (order, requestId) => submitCreateOrder(order, requestId),
     markActed: (signalId, orderAuditId) => repo.markSignalActed(signalId, orderAuditId),
   });
-  // Venue avg-cost cache: /account/positions costs an IB round-trip, so one
-  // fetch serves every run inside a short window instead of one per run per
-  // tick. Fail-soft — an unreachable endpoint just means avg_price stays 0.
-  let avgCostCache: { at: number; bySymbol: Map<string, number> } | null = null;
+  // Venue avg-cost cache, keyed per broker. `/account/positions` costs a
+  // round-trip to the venue, so one fetch serves every run on that broker
+  // inside a short window instead of one per run per tick. Fail-soft — an
+  // unreachable or unconfigured venue just means avg_price stays 0, which is
+  // exactly how this behaved before the endpoint became broker-aware.
+  const avgCostCache = new Map<string, { at: number; bySymbol: Map<string, number> }>();
   const AVG_COST_TTL_MS = 30_000;
-  const venueAvgCost = async (symbol: string): Promise<number> => {
+  const venueAvgCost = async (broker: string, symbol: string): Promise<number> => {
     try {
-      if (!avgCostCache || Date.now() - avgCostCache.at > AVG_COST_TTL_MS) {
+      const cached = avgCostCache.get(broker);
+      let bySymbol = cached && Date.now() - cached.at <= AVG_COST_TTL_MS ? cached.bySymbol : null;
+      if (!bySymbol) {
         const response = await axios.get(`${BROKER_SERVICE_URL}/account/positions`, {
+          params: { broker },
           timeout: 30000,
           headers: { Connection: 'close' },
         });
-        const bySymbol = new Map<string, number>();
+        bySymbol = new Map<string, number>();
         for (const pos of Array.isArray(response.data) ? response.data : []) {
           const cost = Number(pos?.average_cost);
           if (pos?.symbol && Number.isFinite(cost) && cost > 0) {
             bySymbol.set(String(pos.symbol).toUpperCase(), cost);
           }
         }
-        avgCostCache = { at: Date.now(), bySymbol };
+        avgCostCache.set(broker, { at: Date.now(), bySymbol });
       }
-      return avgCostCache.bySymbol.get(symbol.toUpperCase()) ?? 0;
+      return bySymbol.get(symbol.toUpperCase()) ?? 0;
     } catch {
       return 0;
     }
@@ -208,11 +213,19 @@ function defaultDeps(
       }));
     },
     getPosition: async (run) => {
-      // Net signed exposure from the order-audit log for this symbol +
-      // account_mode; the venue's reported average cost (IB positions — the
-      // only venue the /account/positions endpoint serves today) supplies
-      // avg_price so position.unrealized_pct exit rules (e.g. a -2% stop)
-      // evaluate live the same way they do in backtest.
+      // Size: net signed exposure from the order-audit log for this
+      // (broker, symbol, account_mode).
+      // Average price: the *venue's* reported average cost, now for whichever
+      // broker the run targets — so position.unrealized_pct exit rules (e.g. a
+      // -2% stop) evaluate live the same way they do in backtest on MT5 /
+      // Alpaca / OANDA, not just IB.
+      //
+      // Size deliberately still comes from the audit log rather than the
+      // venue: the venue reports the whole *account's* position, which would
+      // fold in exposure this run did not create (a second run on the same
+      // symbol, or a manual trade). Switching to venue-authoritative sizing is
+      // the right end state but changes live semantics, so it is called out as
+      // a follow-on rather than slipped in here.
       try {
         const size = await auditRepo.netExposure(
           run.symbol,
@@ -221,7 +234,7 @@ function defaultDeps(
           run.broker
         );
         const netSize = Number.isFinite(size) ? size : 0;
-        const avgPrice = netSize !== 0 && run.broker === 'ib' ? await venueAvgCost(run.symbol) : 0;
+        const avgPrice = netSize !== 0 ? await venueAvgCost(run.broker || 'ib', run.symbol) : 0;
         return { size: netSize, avg_price: avgPrice };
       } catch {
         return { size: 0, avg_price: 0 };

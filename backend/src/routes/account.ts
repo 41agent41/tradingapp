@@ -124,9 +124,14 @@ router.get('/positions', async (req: Request, res: Response) => {
       return handleDisabledDataQuery(res, 'Account positions data querying is disabled');
     }
 
-    console.log('Fetching account positions from IB service');
+    // Broker-scoped (B1): positions come from the venue named by `?broker=`,
+    // defaulting to IB. Each adapter normalises its payload to the same shape.
+    const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+
+    console.log(`Fetching account positions from broker service (broker=${broker})`);
 
     const response = await axios.get(`${BROKER_SERVICE_URL}/account/positions`, {
+      params: { broker },
       timeout: 20000, // 20 second timeout
       headers: {
         Connection: 'close',

@@ -384,9 +384,42 @@ class OANDAAdapter:
         return {"order_id": new_order_id, "broker": "oanda", "status": "modify_requested"}
 
     def positions(self) -> List[Dict[str, Any]]:
+        """Open positions normalised to the app's ``models.Position`` shape.
+
+        OANDA splits each instrument into independent ``long`` and ``short``
+        legs (short ``units`` are already negative), so the two are netted into
+        one signed size and the average price is taken from whichever leg is
+        actually open — netting the *prices* would be meaningless. Instruments
+        come back in OANDA's underscore form and are mapped to the app's dotted
+        form, the inverse of what the request path does.
+        """
+
         payload = self._get(self._account_path("/openPositions"))
         rows = payload.get("positions", []) if isinstance(payload, dict) else []
-        return rows if isinstance(rows, list) else []
+        positions: List[Dict[str, Any]] = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            long_leg = row.get("long") if isinstance(row.get("long"), dict) else {}
+            short_leg = row.get("short") if isinstance(row.get("short"), dict) else {}
+            long_units = _opt_float(long_leg.get("units")) or 0.0
+            short_units = _opt_float(short_leg.get("units")) or 0.0
+            size = long_units + short_units
+            if size == 0:
+                continue
+            open_leg = long_leg if size > 0 else short_leg
+            positions.append(
+                {
+                    "symbol": _from_instrument(str(row.get("instrument") or "")),
+                    "position": size,
+                    "market_price": None,  # not carried on openPositions
+                    "market_value": None,
+                    "average_cost": _opt_float(open_leg.get("averagePrice")),
+                    "unrealized_pnl": _opt_float(row.get("unrealizedPL")),
+                    "currency": str(row.get("currency") or "USD"),
+                }
+            )
+        return positions
 
     def account_summary(self) -> Dict[str, Any]:
         payload = self._get(self._account_path("/summary"))

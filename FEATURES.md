@@ -209,7 +209,8 @@ The backend proxies the following read-only IB account endpoints to the
 frontend:
 
 - `GET /api/account/summary` — account balances and key metrics.
-- `GET /api/account/positions` — current positions.
+- `GET /api/account/positions` — current positions (accepts `?broker=`,
+  default `ib`; each venue's payload is normalised to one shape).
 - `GET /api/account/orders` — open orders.
 - `GET /api/account/all` — all of the above in one call.
 - `GET /api/account/connection` — IB connection state.
@@ -569,16 +570,18 @@ The authoring loop (build a rule-set → backtest it → deploy it live on any
 instrument or venue) ships today. What remains, in priority order — see
 [`SYSTEMATIC_TRADING_ROADMAP.md`](SYSTEMATIC_TRADING_ROADMAP.md) §9:
 
-- **`/account/positions` is IB-only** — it calls the IB client directly rather
-  than dispatching through the broker adapter, so a live run on
-  MT5/Alpaca/OANDA can't read an average entry price and its
-  `position.unrealized_pct` rules stay inert.
+- **`/account/summary` and `/account/orders` are still IB-only** — they call
+  the IB client directly rather than dispatching through the broker adapter.
+  (`/account/positions` now takes `broker=` and dispatches properly, so
+  `position.unrealized_pct` rules fire on every venue.)
 - **`risk.max_daily_loss` is accepted but not enforced** — the engine caps
   order *count* per run and globally, not realised loss.
 - **Positions derive from submitted orders, not fills** — a partial fill,
   a post-acknowledgement rejection or a manual trade desynchronises both the
   position-limit guard and the runner's position size. A fills/executions feed
-  is the prerequisite for authoritative positions and realised P&L.
+  is the prerequisite for authoritative positions and realised P&L. The venue's
+  own (fill-derived) size is now reachable, but it reports whole-**account**
+  exposure, so adopting it per run needs an attribution decision first.
 - **The backtester ignores the `sizing` block** — it is all-in / all-out, so
   backtest returns won't match a live run's even when the signals agree;
   `scale_out` rungs likewise aren't simulated.
