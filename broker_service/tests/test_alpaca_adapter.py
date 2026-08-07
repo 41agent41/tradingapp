@@ -368,7 +368,11 @@ def test_cancel_modify_positions_account(alpaca):
             "currency": "USD",
         }
     ]
-    assert adapter.account_summary()["equity"] == "10100"
+    # Normalised to the app's AccountSummary shape — `equity` is Alpaca's
+    # name for net liquidation, which is what pct_equity sizing reads.
+    summary = adapter.account_summary()
+    assert summary["net_liquidation"] == 10100.0
+    assert summary["currency"] == "USD"
 
 
 def test_positions_carry_a_short_as_a_negative_size(alpaca):
@@ -381,3 +385,107 @@ def test_positions_carry_a_short_as_a_negative_size(alpaca):
     row = _adapter(alpaca).positions()[0]
     assert row["position"] == -3.0
     assert row["average_cost"] == 99.0
+
+
+# --------------------------------------------------------------------------- #
+# executions (fills)
+# --------------------------------------------------------------------------- #
+def test_executions_normalise_fill_activities(alpaca):
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        [
+            {
+                "id": "20260807133000000::abc",
+                "activity_type": "FILL",
+                "transaction_time": "2026-08-07T13:30:00Z",
+                "type": "fill",
+                "price": "250.50",
+                "qty": "100",
+                "side": "buy",
+                "symbol": "msft",
+                "order_id": "order-1",
+            },
+            {
+                "id": "20260807140000000::def",
+                "activity_type": "FILL",
+                "transaction_time": "2026-08-07T14:00:00Z",
+                "type": "partial_fill",
+                "price": "251.00",
+                "qty": "40",
+                "side": "sell_short",
+                "symbol": "MSFT",
+                "order_id": "order-2",
+            },
+        ]
+    )
+
+    rows = _adapter(alpaca).executions(days=2)
+
+    method, url, _headers, params, _json = FakeClient.calls[-1]
+    assert method == "GET"
+    assert url.endswith("/v2/account/activities/FILL")
+    assert "after" in params
+
+    assert [r["exec_id"] for r in rows] == ["20260807133000000::abc", "20260807140000000::def"]
+    assert rows[0]["symbol"] == "MSFT"
+    assert rows[0]["side"] == "BUY"
+    assert rows[0]["quantity"] == 100.0
+    assert rows[0]["price"] == 250.5
+    # Alpaca charges no equity commission — a definite 0, not an unknown None.
+    assert rows[0]["commission"] == 0.0
+    assert rows[0]["broker"] == "alpaca"
+    # A partial fill is a first-class row (the audit-log estimate this replaces
+    # could not see it), and `sell_short` is just a SELL.
+    assert rows[1]["side"] == "SELL"
+    assert rows[1]["quantity"] == 40.0
+
+
+def test_executions_skip_rows_without_a_usable_price_or_id(alpaca):
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        [
+            {"id": "", "qty": "10", "price": "1", "side": "buy", "symbol": "AAA"},
+            {"id": "keep", "qty": "10", "price": "1", "side": "buy", "symbol": "AAA"},
+            {"id": "no-price", "qty": "10", "side": "buy", "symbol": "AAA"},
+        ]
+    )
+
+    rows = _adapter(alpaca).executions()
+
+    assert [r["exec_id"] for r in rows] == ["keep"]
+
+
+def test_open_orders_normalise_to_the_app_shape(alpaca):
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        [
+            {
+                "id": "9f0f2a4e-0c2d-4d2b-9a7e-000000000001",
+                "symbol": "aapl",
+                "side": "sell",
+                "qty": "10",
+                "filled_qty": "4",
+                "type": "limit",
+                "status": "partially_filled",
+                "filled_avg_price": "190.25",
+            }
+        ]
+    )
+
+    rows = _adapter(alpaca).open_orders()
+
+    _method, url, _headers, params, _json = FakeClient.calls[-1]
+    assert url.endswith("/v2/orders")
+    assert params["status"] == "open"
+
+    assert rows == [
+        {
+            "order_id": "9f0f2a4e-0c2d-4d2b-9a7e-000000000001",
+            "symbol": "AAPL",
+            "action": "SELL",
+            "quantity": 10.0,
+            # Alpaca's lowercase vocabulary maps back to the app's.
+            "order_type": "LMT",
+            "status": "partially_filled",
+            "filled_quantity": 4.0,
+            "remaining_quantity": 6.0,
+            "avg_fill_price": 190.25,
+        }
+    ]

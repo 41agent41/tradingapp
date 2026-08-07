@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from indicators import calculator as indicator_calculator
+from sizing import resolve_backtest_quantity
 
 logger = logging.getLogger(__name__)
 
@@ -305,12 +306,31 @@ class BacktestEngine:
             signals = strategy.generate_signals(df_with_indicators)
             in_session = None
 
+        # A definition's `sizing` block and `scale_out` rungs used to be inert
+        # here — the engine was all-in / all-out, so a strategy sized at 100
+        # shares backtested as though it bought the whole account, and a
+        # "take half off at +3%" rung never reduced anything. A backtest could
+        # therefore disagree with the live run of the *same definition* even
+        # when every signal matched. Both are now simulated: the size comes
+        # from the sizing block (falling back to the historical all-in
+        # behaviour when a strategy declares none, which is what the built-in
+        # strategies do), and rungs fire per bar against the open trade.
+        sizing_spec = getattr(strategy, "sizing", None)
+        evaluate_scale_out = getattr(strategy, "evaluate_scale_out", None)
+        scale_out_enabled = callable(evaluate_scale_out) and bool(
+            getattr(strategy, "scale_out", None)
+        )
+
         # Initialize tracking variables
         capital = self.initial_capital
         position = 0
         trades: List[Trade] = []
         equity_curve = []
         open_trade: Trade | None = None
+        # Rungs already taken on the currently-open trade. Cleared on every new
+        # entry so a rung fires at most once per trade rather than on every
+        # subsequent bar that stays past its threshold.
+        fired_rungs: set[int] = set()
 
         # Process each bar
         for i, (timestamp, data) in enumerate(signals.iterrows()):
@@ -358,10 +378,60 @@ class BacktestEngine:
 
                 logger.debug(f"Closed position at {current_price:.2f}, PnL: {trades[-1].pnl:.2f}")
 
+            # Partial exits. Checked *after* the full exit — if both fire on the
+            # same bar the exit wins and there is nothing left to scale out of.
+            if open_trade and scale_out_enabled:
+                for rung in evaluate_scale_out(
+                    signals, i, float(position), float(open_trade.entry_price)
+                ):
+                    if rung["index"] in fired_rungs:
+                        continue
+                    fired_rungs.add(rung["index"])
+                    slice_qty = int(open_trade.quantity * rung["reduce_pct"] / 100)
+                    if slice_qty < 1:
+                        continue
+                    remaining = open_trade.quantity - slice_qty
+                    closed = Trade(
+                        entry_time=open_trade.entry_time,
+                        exit_time=current_time,
+                        entry_price=open_trade.entry_price,
+                        exit_price=current_price,
+                        quantity=slice_qty,
+                        order_type=open_trade.order_type,
+                        status=OrderStatus.FILLED,
+                        entry_reason=open_trade.entry_reason,
+                        exit_reason=rung["reason"],
+                    )
+                    capital += closed.pnl - abs(slice_qty * current_price) * self.commission
+                    trades.append(closed)
+
+                    if remaining <= 0:
+                        # The rung took the whole position — the trade is done.
+                        open_trade = None
+                        position = 0
+                        strategy.position = position
+                        break
+                    open_trade.quantity = remaining
+                    position = remaining
+                    strategy.position = position
+                    logger.debug(
+                        f"Scaled out {slice_qty} at {current_price:.2f}, {remaining} remaining"
+                    )
+
             # Check for entry signals
             if not open_trade and buy_signal:
-                # Calculate position size (using all available capital for simplicity)
-                quantity = int(capital / current_price)
+                # Size the entry from the strategy's `sizing` block; a strategy
+                # without one keeps the original "use all available capital"
+                # behaviour so the built-in strategies backtest unchanged.
+                sized, sizing_reason = resolve_backtest_quantity(
+                    sizing_spec, current_price, capital
+                )
+                if sized is None:
+                    quantity = int(capital / current_price)
+                else:
+                    quantity = sized
+                    if quantity < 1:
+                        logger.debug(f"Entry skipped: {sizing_reason}")
 
                 if quantity > 0:
                     # Open position
@@ -382,6 +452,7 @@ class BacktestEngine:
                     capital -= commission_cost
                     position = quantity
                     strategy.position = position
+                    fired_rungs.clear()
 
                     logger.debug(f"Opened position at {current_price:.2f}, Quantity: {quantity}")
 

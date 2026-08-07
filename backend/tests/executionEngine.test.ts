@@ -193,3 +193,114 @@ describe('ExecutionEngine — sizing & submit failures', () => {
     expect(deps.markActed).not.toHaveBeenCalled();
   });
 });
+
+describe('ExecutionEngine — max_daily_loss (realised P&L from fills)', () => {
+  const lossRun = () => run({ risk: { max_daily_loss: 500 } });
+
+  it('is inert when no cap is declared', async () => {
+    const deps = makeDeps({ realisedPnlToday: jest.fn().mockResolvedValue(-10_000) });
+    const result = await new ExecutionEngine(deps).execute(ctx());
+    expect(result.placed).toBe(true);
+    expect(deps.realisedPnlToday).not.toHaveBeenCalled();
+  });
+
+  it('allows an entry while the day is still inside the cap', async () => {
+    const deps = makeDeps({ realisedPnlToday: jest.fn().mockResolvedValue(-499.99) });
+    const result = await new ExecutionEngine(deps).execute(ctx({ run: lossRun() }));
+    expect(result.placed).toBe(true);
+  });
+
+  it('blocks a new entry once the realised loss reaches the cap', async () => {
+    // The regression this closes: `max_daily_loss` was accepted by the schema
+    // and the rule builder and enforced nowhere at all.
+    const deps = makeDeps({ realisedPnlToday: jest.fn().mockResolvedValue(-500) });
+    const result = await new ExecutionEngine(deps).execute(ctx({ run: lossRun() }));
+    expect(result.placed).toBe(false);
+    if (!result.placed) expect(result.reason).toMatch(/max_daily_loss/);
+    expect(deps.submitOrder).not.toHaveBeenCalled();
+  });
+
+  it('reads the cap as a magnitude however it is written', async () => {
+    const deps = makeDeps({ realisedPnlToday: jest.fn().mockResolvedValue(-600) });
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ run: run({ risk: { max_daily_loss: -500 } }) })
+    );
+    expect(result.placed).toBe(false);
+  });
+
+  it('still lets the run EXIT after breaching the cap', async () => {
+    // Blocking an exit would strand the position in the very trade that caused
+    // the loss — the opposite of what a loss limit is for.
+    const deps = makeDeps({ realisedPnlToday: jest.fn().mockResolvedValue(-5_000) });
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ run: lossRun(), signal: 'sell', position: { size: 100, avg_price: 90 } })
+    );
+    expect(result.placed).toBe(true);
+    expect(deps.realisedPnlToday).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when realised P&L cannot be computed', async () => {
+    const deps = makeDeps({
+      realisedPnlToday: jest.fn().mockRejectedValue(new Error('db down')),
+    });
+    const result = await new ExecutionEngine(deps).execute(ctx({ run: lossRun() }));
+    expect(result.placed).toBe(false);
+    if (!result.placed) expect(result.reason).toMatch(/db down/);
+    expect(deps.submitOrder).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a cap is declared but no P&L source is wired', async () => {
+    const deps = makeDeps();
+    delete (deps as { realisedPnlToday?: unknown }).realisedPnlToday;
+    const result = await new ExecutionEngine(deps).execute(ctx({ run: lossRun() }));
+    expect(result.placed).toBe(false);
+    expect(deps.submitOrder).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on a non-finite P&L', async () => {
+    const deps = makeDeps({ realisedPnlToday: jest.fn().mockResolvedValue(Number.NaN) });
+    const result = await new ExecutionEngine(deps).execute(ctx({ run: lossRun() }));
+    expect(result.placed).toBe(false);
+    expect(deps.submitOrder).not.toHaveBeenCalled();
+  });
+});
+
+describe('ExecutionEngine — pct_equity sizing', () => {
+  const pctRun = () => run({ sizing: { type: 'pct_equity', size: 10 } });
+
+  it('sizes from the venue-reported equity', async () => {
+    // Previously unreachable: every pct_equity size was rejected outright
+    // because no equity source was wired.
+    const deps = makeDeps({ accountEquity: jest.fn().mockResolvedValue(100_000) });
+    const result = await new ExecutionEngine(deps).execute(ctx({ run: pctRun() }));
+
+    // 10% of 100_000 = 10_000 at a close of 100 -> 100 shares.
+    expect(result).toEqual(expect.objectContaining({ placed: true, quantity: 100 }));
+    expect(deps.accountEquity).toHaveBeenCalledWith('ib');
+  });
+
+  it('does not spend a venue round-trip on other sizing types', async () => {
+    const deps = makeDeps({ accountEquity: jest.fn().mockResolvedValue(100_000) });
+    await new ExecutionEngine(deps).execute(ctx());
+    expect(deps.accountEquity).not.toHaveBeenCalled();
+  });
+
+  it('refuses rather than guessing when the venue reports no equity', async () => {
+    const deps = makeDeps({ accountEquity: jest.fn().mockResolvedValue(null) });
+    const result = await new ExecutionEngine(deps).execute(ctx({ run: pctRun() }));
+
+    expect(result.placed).toBe(false);
+    if (!result.placed) expect(result.reason).toMatch(/equity/);
+    expect(deps.submitOrder).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the equity lookup throws', async () => {
+    const deps = makeDeps({
+      accountEquity: jest.fn().mockRejectedValue(new Error('venue unreachable')),
+    });
+    const result = await new ExecutionEngine(deps).execute(ctx({ run: pctRun() }));
+
+    expect(result.placed).toBe(false);
+    expect(deps.submitOrder).not.toHaveBeenCalled();
+  });
+});

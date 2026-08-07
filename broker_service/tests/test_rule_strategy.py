@@ -646,3 +646,155 @@ class TestPositionAwareBacktest:
             decision = strat.evaluate_bar(signals, i, in_session, 0.0, 0.0)
             assert decision["buy"] == bool(batch["buy_signal"].iloc[i])
             assert decision["sell"] == bool(batch["sell_signal"].iloc[i])
+
+
+# --------------------------------------------------------------------------- #
+# Sizing + scale-out simulated in the backtest (backtest == live parity)
+# --------------------------------------------------------------------------- #
+
+
+class TestSizingAndScaleOutBacktest:
+    """A definition's ``sizing`` block and ``scale_out`` rungs affect the run.
+
+    Before this, ``BacktestEngine`` was all-in / all-out: a strategy sized at
+    100 shares backtested as though it bought the whole account, and a rung
+    like "take half off at +3%" reduced nothing. A backtest could therefore
+    disagree with a live run of the *same definition* even when every signal
+    matched — the same silent-divergence shape as the position-aware gap above.
+    """
+
+    _frame = staticmethod(TestPositionAwareBacktest._frame)
+
+    # Enter whenever flat; never exit on rules (the engine flattens at the end).
+    _ENTRY_ONLY = {"all": [{"left": "position.size", "op": "<=", "right": 0}]}
+
+    def test_fixed_sizing_is_honoured(self) -> None:
+        rules = {"name": "Fixed 10", "entry": self._ENTRY_ONLY, "sizing": {"size": 10}}
+        df = self._frame([100.0, 101.0, 102.0])
+        engine = BacktestEngine(initial_capital=100_000, commission=0.0)
+
+        results = engine.run_backtest(df, compile_rule_strategy(rules), symbol="TEST")
+
+        assert [t.quantity for t in results.trades] == [10]
+
+    def test_notional_sizing_converts_through_price(self) -> None:
+        rules = {
+            "name": "Notional 1000",
+            "entry": self._ENTRY_ONLY,
+            "sizing": {"type": "notional", "size": 1000},
+        }
+        df = self._frame([100.0, 101.0, 102.0])
+        engine = BacktestEngine(initial_capital=100_000, commission=0.0)
+
+        results = engine.run_backtest(df, compile_rule_strategy(rules), symbol="TEST")
+
+        # 1000 / 100 = 10 whole units at the entry bar's close.
+        assert [t.quantity for t in results.trades] == [10]
+
+    def test_no_sizing_block_keeps_the_all_in_behaviour(self) -> None:
+        """The built-in strategies declare no sizing; they must not change."""
+        rules = {"name": "Unsized", "entry": self._ENTRY_ONLY}
+        df = self._frame([100.0, 101.0, 102.0])
+        engine = BacktestEngine(initial_capital=100_000, commission=0.0)
+
+        results = engine.run_backtest(df, compile_rule_strategy(rules), symbol="TEST")
+
+        assert [t.quantity for t in results.trades] == [1000]  # 100_000 / 100
+
+    def test_scale_out_rung_takes_a_partial_profit(self) -> None:
+        rules = {
+            "name": "Half off at +3%",
+            "entry": self._ENTRY_ONLY,
+            "sizing": {"size": 100},
+            "scale_out": [
+                {
+                    "when": {"left": "position.unrealized_pct", "op": ">=", "right": 3.0},
+                    "reduce_pct": 50,
+                }
+            ],
+        }
+        # Enter at 100, reach +3% at 103, then run to 110.
+        df = self._frame([100.0, 101.0, 103.0, 105.0, 110.0])
+        engine = BacktestEngine(initial_capital=100_000, commission=0.0)
+
+        results = engine.run_backtest(df, compile_rule_strategy(rules), symbol="TEST")
+
+        scaled = [t for t in results.trades if "scale-out" in (t.exit_reason or "")]
+        assert len(scaled) == 1, "the +3% rung did not fire"
+        assert scaled[0].quantity == 50
+        assert scaled[0].exit_price == 103.0
+        # The remaining half rides to the end-of-backtest flatten at 110.
+        remainder = [t for t in results.trades if t.exit_reason == "End of backtest"]
+        assert [t.quantity for t in remainder] == [50]
+
+    def test_a_rung_fires_at_most_once_per_trade(self) -> None:
+        """Without per-trade rung tracking a threshold rung would re-fire on
+        every subsequent bar that stayed past it and bleed the position out."""
+        rules = {
+            "name": "Half off at +3%",
+            "entry": self._ENTRY_ONLY,
+            "sizing": {"size": 100},
+            "scale_out": [
+                {
+                    "when": {"left": "position.unrealized_pct", "op": ">=", "right": 3.0},
+                    "reduce_pct": 50,
+                }
+            ],
+        }
+        # Six consecutive bars all sitting above +3%.
+        df = self._frame([100.0, 104.0, 105.0, 106.0, 107.0, 108.0])
+        engine = BacktestEngine(initial_capital=100_000, commission=0.0)
+
+        results = engine.run_backtest(df, compile_rule_strategy(rules), symbol="TEST")
+
+        scaled = [t for t in results.trades if "scale-out" in (t.exit_reason or "")]
+        assert len(scaled) == 1
+
+    def test_scale_out_is_inert_when_the_rung_never_triggers(self) -> None:
+        rules = {
+            "name": "Half off at +30%",
+            "entry": self._ENTRY_ONLY,
+            "sizing": {"size": 100},
+            "scale_out": [
+                {
+                    "when": {"left": "position.unrealized_pct", "op": ">=", "right": 30.0},
+                    "reduce_pct": 50,
+                }
+            ],
+        }
+        df = self._frame([100.0, 101.0, 102.0])
+        engine = BacktestEngine(initial_capital=100_000, commission=0.0)
+
+        results = engine.run_backtest(df, compile_rule_strategy(rules), symbol="TEST")
+
+        assert [t.quantity for t in results.trades] == [100]
+
+    def test_scale_out_operands_get_their_indicator_columns(self) -> None:
+        """A rung may reference an indicator the entry/exit rules don't — it
+        still has to be computed, or the rung silently evaluates against NaN."""
+        strat = compile_rule_strategy(
+            {
+                "name": "ATR rung",
+                "entry": self._ENTRY_ONLY,
+                "scale_out": [
+                    {"when": {"left": "atr", "op": ">", "right": 0}, "reduce_pct": 25},
+                ],
+            }
+        )
+        assert "atr" in strat.indicators
+
+    def test_malformed_reduce_pct_is_rejected_at_compile_time(self) -> None:
+        for bad in (0, -10, 150, "half"):
+            with pytest.raises(RuleSetError):
+                compile_rule_strategy(
+                    {
+                        "name": "Bad rung",
+                        "entry": self._ENTRY_ONLY,
+                        "scale_out": [
+                            {
+                                "when": {"left": "close", "op": ">", "right": 0},
+                                "reduce_pct": bad,
+                            }
+                        ],
+                    }
+                )

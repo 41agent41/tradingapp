@@ -31,7 +31,7 @@ Order placement runs the same `_validate_common` gate the IB path applies
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -58,6 +58,7 @@ _TIMEFRAME_TO_ALPACA = {
 # App order_type/tif -> Alpaca's lowercase vocabulary. A clean 1:1 map (unlike
 # OANDA, Alpaca supports all four IB order types).
 _ORDER_TYPE_TO_ALPACA = {"MKT": "market", "LMT": "limit", "STP": "stop", "STP_LMT": "stop_limit"}
+_ALPACA_TO_ORDER_TYPE = {v: k for k, v in _ORDER_TYPE_TO_ALPACA.items()}
 _TIF_TO_ALPACA = {"DAY": "day", "GTC": "gtc", "IOC": "ioc", "FOK": "fok"}
 _ACTION_TO_ALPACA = {"BUY": "buy", "SELL": "sell"}
 
@@ -356,8 +357,101 @@ class AlpacaAdapter:
         return positions
 
     def account_summary(self) -> Dict[str, Any]:
+        """Account state normalised to the app's ``models.AccountSummary``.
+
+        `equity` is Alpaca's net liquidation value — the figure `pct_equity`
+        sizing needs, which is why this is normalised rather than passed through
+        raw: the engine can't be asked to learn each venue's field names.
+        """
+
         payload = self._trading_get("/v2/account")
-        return payload if isinstance(payload, dict) else {"account": payload}
+        account = payload if isinstance(payload, dict) else {}
+        return {
+            "account_id": str(account.get("account_number") or account.get("id") or "alpaca"),
+            "net_liquidation": _opt_float(account.get("equity")),
+            "currency": str(account.get("currency") or "USD"),
+            "last_updated": datetime.now(UTC).isoformat(),
+            "total_cash_value": _opt_float(account.get("cash")),
+            "buying_power": _opt_float(account.get("buying_power")),
+            "maintenance_margin": _opt_float(account.get("maintenance_margin")),
+        }
+
+    def open_orders(self) -> List[Dict[str, Any]]:
+        """Working orders normalised to the app's ``models.Order`` shape."""
+
+        payload = self._trading_get("/v2/orders", params={"status": "open", "limit": 500})
+        rows = payload if isinstance(payload, list) else []
+        orders: List[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            quantity = _opt_float(row.get("qty")) or 0.0
+            filled = _opt_float(row.get("filled_qty"))
+            orders.append(
+                {
+                    "order_id": str(row.get("id") or ""),
+                    "symbol": str(row.get("symbol") or "").upper(),
+                    "action": (
+                        "SELL" if str(row.get("side") or "").lower().startswith("sell") else "BUY"
+                    ),
+                    "quantity": quantity,
+                    "order_type": _ALPACA_TO_ORDER_TYPE.get(
+                        str(row.get("type") or ""), str(row.get("type") or "MKT").upper()
+                    ),
+                    "status": str(row.get("status") or "unknown"),
+                    "filled_quantity": filled,
+                    "remaining_quantity": (quantity - filled) if filled is not None else None,
+                    "avg_fill_price": _opt_float(row.get("filled_avg_price")),
+                }
+            )
+        return orders
+
+    def executions(self, days: int = 1) -> List[Dict[str, Any]]:
+        """Recent fills, normalised to the app's ``models.Execution`` shape.
+
+        Alpaca reports fills as account *activities* of type ``FILL``. Both
+        ``FILL`` and ``PARTIAL_FILL`` come back under that filter, each with its
+        own activity id — which is exactly the per-fill granularity the app
+        needs, and why the audit-log estimate it replaces was wrong about
+        partials. Alpaca charges no commission on equities, so the field is a
+        definite ``0.0`` here rather than an unknown ``None``.
+
+        ``sell_short`` is a SELL like any other: the app models direction with
+        ``side`` plus a signed running position, not with a third state.
+        """
+
+        after = (datetime.now(UTC) - timedelta(days=max(1, days))).isoformat()
+        payload = self._trading_get(
+            "/v2/account/activities/FILL", params={"after": after, "page_size": 500}
+        )
+        rows = payload if isinstance(payload, list) else []
+        fills: List[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            exec_id = str(row.get("id") or "")
+            quantity = _opt_float(row.get("qty"))
+            price = _opt_float(row.get("price"))
+            if not exec_id or quantity is None or price is None:
+                continue
+            side = "SELL" if str(row.get("side") or "").lower().startswith("sell") else "BUY"
+            fills.append(
+                {
+                    "exec_id": exec_id,
+                    "order_id": str(row.get("order_id")) if row.get("order_id") else None,
+                    "symbol": str(row.get("symbol") or "").upper(),
+                    "side": side,
+                    "quantity": abs(quantity),
+                    "price": price,
+                    "commission": 0.0,
+                    "realized_pnl": None,
+                    "executed_at": _iso_from(row.get("transaction_time")),
+                    "account": None,
+                    "currency": "USD",
+                    "broker": "alpaca",
+                }
+            )
+        return fills
 
 
 def _opt_float(v: Any) -> Optional[float]:

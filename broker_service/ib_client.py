@@ -77,6 +77,12 @@ class IBApp(EWrapper, EClient):
         self.account_summary: Dict[str, Dict[str, Any]] = {}
         self.positions: list = []
         self.orders: list = []
+        self.executions: list = []
+        # execId -> CommissionReport. IB delivers commission/realised-PnL for a
+        # fill on a *separate* callback that can arrive either side of its
+        # execDetails, so the two are collected independently and joined by
+        # execId when the route assembles its response.
+        self.commissions: Dict[str, Any] = {}
         self.managed_accounts: list = []
         self.next_order_id: Optional[int] = None
         self.connection_ready = threading.Event()
@@ -161,6 +167,18 @@ class IBApp(EWrapper, EClient):
         mktCapPrice,
     ):
         logger.debug("tws_order_status", order_id=orderId, status=status)
+
+    # ----- execution reports (fills) -------------------------------------- #
+    def execDetails(self, reqId, contract, execution):  # noqa: N802
+        """A fill. Keeps the contract alongside it — the execution itself
+        carries no currency, and only the contract knows the instrument."""
+        self.executions.append({"contract": contract, "execution": execution})
+
+    def execDetailsEnd(self, reqId):  # noqa: N802
+        logger.info("tws_exec_details_end", req_id=reqId, count=len(self.executions))
+
+    def commissionReport(self, commissionReport):  # noqa: N802,N803
+        self.commissions[commissionReport.execId] = commissionReport
 
 
 # ---------------------------------------------------------------------------

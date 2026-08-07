@@ -8,6 +8,11 @@
  * on IB/Alpaca (shares) vs MT5 (lots) vs OANDA (units). Phase 3 ships the
  * share-based path (IB, Alpaca); MT5 lots and OANDA units resolve later.
  *
+ * `pct_equity` needs an account equity figure, which the engine now supplies
+ * from the run's own venue (`/account/summary?broker=`, normalised per venue
+ * so this code never sees a raw broker payload). It was previously unreachable
+ * — every `pct_equity` size was rejected with "not wired for paper A3".
+ *
  * A pure function returning a discriminated result: a positive integer
  * quantity, or a reason the size can't be resolved (so the engine skips the
  * order with an auditable explanation rather than guessing a quantity).
@@ -92,7 +97,9 @@ export function resolveOrderQuantity(spec: SizingSpec, ctx: SizingContext): Size
       if (ctx.equity == null || !Number.isFinite(ctx.equity) || ctx.equity <= 0) {
         return {
           ok: false,
-          reason: 'pct_equity sizing needs account equity, which is not wired for paper A3',
+          reason:
+            'pct_equity sizing needs account equity — the venue reported none ' +
+            "(check /account/summary for this run's broker)",
         };
       }
       if (!Number.isFinite(ctx.price) || ctx.price <= 0) {

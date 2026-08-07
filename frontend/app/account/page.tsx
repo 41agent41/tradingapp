@@ -38,7 +38,10 @@ interface Position {
 }
 
 interface Order {
-  order_id: number;
+  // A string, not a number: IB's order ids are numeric but Alpaca's are UUIDs
+  // and OANDA's are numeric strings, so the venue-agnostic shape is the wider
+  // type (IB ids arrive as their decimal text).
+  order_id: string;
   symbol: string;
   action: string;
   quantity: number;

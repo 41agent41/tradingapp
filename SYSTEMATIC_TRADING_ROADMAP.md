@@ -306,8 +306,11 @@ New, engine-level:
   same `fixed` / `notional` / `pct_equity` *type* therefore means different
   concrete quantities on IB vs MT5 — resolution lives in the adapter, not the
   rule.
-- **Per-run risk caps** — `max_orders_per_day`, `max_daily_loss`, optional
-  `stop_loss_pct` / `take_profit_pct` bracket.
+- **Per-run risk caps** — `max_orders_per_day` and `max_daily_loss` are both
+  enforced (`max_daily_loss` against realised P&L from the run's own fills,
+  gating entries only and failing closed); optional `stop_loss_pct` /
+  `take_profit_pct` brackets are still expressed as exit rules rather than as
+  broker-side bracket orders.
 - **Kill switch** — a run flips to `stopped` and the runner refuses new orders
   within one cycle; a global env kill (`SYSTEMATIC_EXECUTION_ENABLED=false`)
   halts everything.
@@ -611,35 +614,72 @@ All four framing decisions are now resolved:
    `price_open` fields or the app's own vocabulary. The runner's avg-cost
    lookup is now keyed per broker, so `position.unrealized_pct` rules fire on
    every venue rather than IB alone.
-   **Still open here:** `/account/summary` and `/account/orders` remain
-   IB-only, and the run's *size* still comes from the audit log (see 3).
-2. **`risk.max_daily_loss` is accepted but never enforced.** The engine caps
-   *order count* per run and globally, not realised loss. A declared
-   `max_daily_loss` is currently a silent no-op — the same class of bug as the
-   position-aware gap just closed. Enforcing it needs realised P&L per run,
-   which needs fills (see 3).
-3. **The position model is built on submitted orders, not fills.** Both the
-   `ORDER_MAX_POSITION` guard and the runner's position size derive from
-   `order_audit` rows that reached the broker, not from execution reports. A
-   partial fill, a rejection after acknowledgement, or a manual trade outside
-   the app all desynchronise it. A fills/executions feed
-   (`execDetails`/`commissionReport` on IB, equivalents elsewhere) is the
-   foundation for authoritative positions, realised P&L and therefore (2).
+   ✅ **Now fully closed.** `/account/summary`, `/account/orders` and
+   `/account/all` also take `broker=` and dispatch through the registry, and
+   each adapter's `account_summary()` / new `open_orders()` normalise to
+   `models.AccountSummary` / `models.Order`. That normalisation made
+   `pct_equity` sizing reachable for the first time — it had been rejected
+   outright because nothing supplied an equity figure; the engine now reads net
+   liquidation from the run's own venue. (`models.Order.order_id` widened to a
+   string: IB's ids are numeric, Alpaca's are UUIDs, OANDA's are numeric
+   strings.) The run's *size* still comes from the audit log — see 3.
+2. ~~**`risk.max_daily_loss` is accepted but never enforced.**~~ ✅ **Closed.**
+   The `ExecutionEngine` now measures it against **realised P&L from the run's
+   own fills** — a loss is only a loss once it has traded, which is why (3) had
+   to land first. It gates **entries only**: blocking an exit would strand the
+   position in the very trade that caused the loss. It **fails closed**, like
+   the position-limit guard — a declared cap with no P&L source, an unreachable
+   database, or a non-finite result all block the order.
+3. ~~**The position model is built on submitted orders, not fills.**~~
+   ✅ **Feed shipped.** `GET /account/executions?broker=&days=` normalises every
+   venue's execution reports into one shape (IB `execDetails` +
+   `commissionReport`, Alpaca `FILL` activities, OANDA `ORDER_FILL`
+   transactions, MT5 sidecar deals), and an opt-in backend poller
+   (`EXECUTIONS_SYNC_ENABLED`) syncs them into `order_executions`. The window
+   overlaps deliberately — a fill can be reported late and IB delivers a fill's
+   commission on a separate callback — with `(broker, exec_id)` making
+   re-delivery a no-op and a `COALESCE` conflict path letting a late value fill
+   a NULL without a later poll erasing one. Fills are attributed back to
+   `order_audit` and thence to the run, with a re-link pass for fills polled
+   before their order id was recorded. Realised P&L is a pure average-cost
+   reducer handling partial exits, reversals through flat and commissions.
+   Exposed at `/api/account/executions` and `/api/account/pnl`.
 
-   Now that `/account/positions` is venue-aware (1), the venue's own reported
-   size is available and *is* fill-derived — but it is deliberately **not**
-   used for a run's `position.size` yet, because it reports the whole
-   **account's** exposure: a second run on the same symbol, or a manual trade,
-   would silently fold into this run's position and change what its sizing and
-   pyramiding rules do. Making runs venue-authoritative needs a decision on how
-   to attribute account-level exposure to individual runs (per-run sub-accounts,
-   an attribution ledger keyed off `order_audit`, or simply accepting
-   account-level semantics and documenting it). That decision, not the plumbing,
-   is what is left.
-4. **Sizing is ignored by the backtester.** `BacktestEngine` is all-in /
-   all-out, so a definition's `sizing` block (and its `scale_out` rungs) does
-   not affect backtest results — a backtest's returns therefore won't match a
-   live run's even when the signals agree.
+   **The one carry-over:** a run's `position.size` still reads the order-audit
+   net. The venue's size *is* fill-derived and now trivially available — but it
+   reports the whole **account's** exposure, so a second run on the same symbol,
+   or a manual trade, would silently fold into this run's position and change
+   what its sizing and pyramiding rules do. Making runs venue-authoritative
+   needs a decision on how to attribute account-level exposure to individual
+   runs (per-run sub-accounts, an attribution ledger keyed off
+   `order_executions`, or simply accepting account-level semantics and
+   documenting it). That decision, not the plumbing, is what is left.
+4. ~~**Sizing is ignored by the backtester.**~~ ✅ **Closed.** `BacktestEngine`
+   resolves the definition's `sizing` block through `broker_service/sizing.py`
+   (kept semantically identical to the live `orderSizing.ts`) and drives
+   `scale_out` rungs per bar via a new `RuleStrategy.evaluate_scale_out`,
+   following the same one-way-dependency pattern as `evaluate_bar`. Each rung
+   fires at most once per open trade — a threshold rung would otherwise re-fire
+   on every subsequent bar past its level and bleed the position out — and a
+   firing rung closes a slice as its own `Trade`, leaving the remainder open at
+   the same entry price so the trade list and every metric stay coherent. A
+   strategy declaring no sizing keeps the all-in behaviour, so the built-ins
+   are unchanged.
+
+**Open — what is actually left:**
+
+1. **Per-run vs account-level position attribution** — the decision described
+   in 3 above. Everything else about fill-authoritative positions is built.
+2. **Intrabar fills.** The backtester fills at the bar close, live fills happen
+   at the market. Sessions, multi-timeframe operands, position-aware rules,
+   sizing and scale-outs now share one code path between the two engines, so
+   this is the main remaining source of backtest↔live drift.
+3. **MT5 `lots` / OANDA `units` sizing** still resolve to a refusal rather than
+   a broker-native quantity, in the live sizer and the backtester alike —
+   pricing a lot as if it were a share would be worse than declining.
+4. **The MT5 sidecar's own auth.** `MT5Adapter` sends `X-MT5-Bridge-Secret`
+   when configured; the sidecar rejecting requests that lack it has to be
+   implemented on the Windows host, outside this repo.
 
 ---
 

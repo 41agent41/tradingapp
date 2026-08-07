@@ -85,6 +85,10 @@ class BrokerAdapter(Protocol):
 
     def account_summary(self) -> Dict[str, Any]: ...
 
+    def open_orders(self) -> List[Dict[str, Any]]: ...
+
+    def executions(self, days: int = 1) -> List[Dict[str, Any]]: ...
+
 
 # --------------------------------------------------------------------------- #
 # Registry

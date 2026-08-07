@@ -402,7 +402,11 @@ def test_positions_and_account(oanda):
     assert row["position"] == 1000.0
     assert row["average_cost"] == 1.1050
     assert row["unrealized_pnl"] == 12.5
-    assert adapter.account_summary()["NAV"] == "10100"
+    # Normalised to the app's AccountSummary shape — OANDA's `NAV` is its
+    # name for net liquidation.
+    summary = adapter.account_summary()
+    assert summary["net_liquidation"] == 10100.0
+    assert summary["total_cash_value"] == 10000.0
 
 
 def test_positions_net_the_long_and_short_legs(oanda):
@@ -437,3 +441,123 @@ def test_positions_net_the_long_and_short_legs(oanda):
     assert rows[0]["symbol"] == "GBP.USD"
     assert rows[0]["position"] == -300.0
     assert rows[0]["average_cost"] == 1.25
+
+
+# --------------------------------------------------------------------------- #
+# executions (fills)
+# --------------------------------------------------------------------------- #
+_TX_BASE = "https://api-fxpractice.oanda.com/v3/accounts/101-001-999999-001/transactions"
+
+
+def _fills_handler(pages, transactions):
+    """Serve the page-index request, then the page URLs OANDA points at."""
+
+    def handler(method, url, params, json):
+        if url.endswith("/transactions"):
+            return FakeResponse({"pages": pages})
+        return FakeResponse({"transactions": transactions})
+
+    return handler
+
+
+def test_executions_walk_the_transaction_pages(oanda):
+    FakeClient.handler = _fills_handler(
+        [f"{_TX_BASE}/idrange?from=1&to=2"],
+        [
+            {
+                "id": "44",
+                "type": "ORDER_FILL",
+                "orderID": "43",
+                "instrument": "EUR_USD",
+                "units": "-1000",
+                "price": "1.09250",
+                "commission": "0.15",
+                "pl": "-2.40",
+                "time": "2026-08-07T13:30:00.123456789Z",
+                "accountID": "101-001-999999-001",
+            }
+        ],
+    )
+
+    rows = _adapter(oanda).executions(days=1)
+
+    # The index request asks for ORDER_FILL only, then the page is fetched.
+    assert FakeClient.calls[0][3]["type"] == "ORDER_FILL"
+    assert FakeClient.calls[1][1].startswith(_TX_BASE)
+
+    assert len(rows) == 1
+    row = rows[0]
+    # Signed `units` becomes side + magnitude — the inverse of place_order().
+    assert row["side"] == "SELL"
+    assert row["quantity"] == 1000.0
+    # Instruments come back underscored and map to the app's dotted form.
+    assert row["symbol"] == "EUR.USD"
+    assert row["price"] == 1.0925
+    assert row["commission"] == 0.15
+    assert row["realized_pnl"] == -2.40
+    assert row["executed_at"].startswith("2026-08-07T13:30:00")
+    assert row["broker"] == "oanda"
+
+
+def test_executions_ignore_non_fill_transactions(oanda):
+    FakeClient.handler = _fills_handler(
+        [f"{_TX_BASE}/idrange?from=1&to=3"],
+        [
+            {"id": "1", "type": "DAILY_FINANCING", "financing": "0.02"},
+            {
+                "id": "2",
+                "type": "ORDER_FILL",
+                "instrument": "EUR_USD",
+                "units": "500",
+                "price": "1.1",
+            },
+        ],
+    )
+
+    rows = _adapter(oanda).executions()
+
+    assert [r["exec_id"] for r in rows] == ["2"]
+
+
+def test_executions_refuse_an_off_host_page_url(oanda):
+    """Page links are venue-supplied data; following one off-host would send
+    the account token somewhere it doesn't belong."""
+    FakeClient.handler = _fills_handler(["https://evil.example.com/steal"], [])
+
+    with pytest.raises(HTTPException) as exc:
+        _adapter(oanda).executions()
+
+    assert exc.value.status_code == 502
+
+
+def test_open_orders_split_signed_units_into_side_and_size(oanda):
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        {
+            "orders": [
+                {
+                    "id": "77",
+                    "instrument": "EUR_USD",
+                    "units": "-2000",
+                    "type": "LIMIT",
+                    "state": "PENDING",
+                }
+            ]
+        }
+    )
+
+    rows = _adapter(oanda).open_orders()
+
+    assert FakeClient.calls[-1][1].endswith("/pendingOrders")
+    assert rows == [
+        {
+            "order_id": "77",
+            "symbol": "EUR.USD",
+            "action": "SELL",
+            "quantity": 2000.0,
+            "order_type": "LMT",
+            "status": "PENDING",
+            "filled_quantity": None,
+            "remaining_quantity": 2000.0,
+            "avg_fill_price": None,
+        }
+    ]

@@ -1,15 +1,17 @@
-"""Read-only account endpoints (summary / positions / orders / combined)."""
+"""Read-only account endpoints (summary / positions / orders / executions)."""
 
 from __future__ import annotations
 
 import math
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
+from ibapi.execution import ExecutionFilter
 
+from executions import normalise_ib_execution
 from ib_client import get_ib_connection, verify_connection_health
-from models import AccountData, AccountSummary, Position
+from models import AccountData, AccountSummary, Execution, Position
 from models import Order as OrderModel
 from observability import get_logger
 
@@ -139,7 +141,7 @@ def get_orders_sync():
         for order_data in ib.orders:
             order_list.append(
                 OrderModel(
-                    order_id=order_data["orderId"],
+                    order_id=str(order_data["orderId"]),
                     symbol=order_data["contract"].symbol,
                     action=order_data["order"].action,
                     quantity=order_data["order"].totalQuantity,
@@ -159,12 +161,122 @@ def get_orders_sync():
         raise Exception(f"Failed to get orders: {str(e)}")
 
 
-@router.get("/account/summary", response_model=AccountSummary)
-async def get_account_summary():
-    """Get account summary information"""
+def get_executions_sync(days: int = 1):
+    """Fetch recent fills from IB via `reqExecutions`.
+
+    IB only serves executions for the *current* trading day plus, via the
+    filter's `time`, whatever it still holds — it is not an unbounded history
+    API. That is fine for the caller: the backend polls a small overlapping
+    window and dedupes on `exec_id`, so the feed converges without ever needing
+    a full replay.
+
+    `execDetails` and `commissionReport` arrive on separate callbacks, so both
+    buffers are cleared up front and joined by `execId` afterwards.
+    """
     try:
-        logger.info("Account summary endpoint called")
-        summary = await run_tws_operation(get_account_summary_sync)
+        ib = get_ib_connection()
+
+        if not verify_connection_health(ib):
+            raise Exception("TWS API connection is not healthy - reconnection required")
+
+        logger.info(f"Requesting executions using TWS API (days={days})")
+
+        ib.executions = []
+        ib.commissions = {}
+
+        exec_filter = ExecutionFilter()
+        # IB expects the filter time in the Gateway's own timezone; naive local
+        # time is what the API has always accepted here.
+        exec_filter.time = (datetime.now() - timedelta(days=max(1, days))).strftime(
+            "%Y%m%d %H:%M:%S"
+        )
+        ib.reqExecutions(9001, exec_filter)
+        time.sleep(3)
+
+        rows = []
+        for entry in ib.executions:
+            execution = entry.get("execution")
+            exec_id = str(getattr(execution, "execId", "") or "")
+            if not exec_id:
+                continue
+            rows.append(
+                Execution(
+                    **normalise_ib_execution(
+                        entry.get("contract"),
+                        execution,
+                        ib.commissions.get(exec_id),
+                    )
+                )
+            )
+
+        logger.info(f"Retrieved {len(rows)} executions")
+        return rows
+
+    except Exception as e:
+        logger.error(f"Error getting executions: {e}")
+        raise Exception(f"Failed to get executions: {str(e)}")
+
+
+@router.get("/account/executions", response_model=list[Execution])
+async def get_account_executions(
+    broker: str = "ib",
+    days: int = Query(default=1, ge=1, le=30),
+):
+    """Recent **fills** for a venue — the authoritative record of what traded.
+
+    Distinct from `/account/orders`, which reports what is *working*. Every
+    venue normalises to the same `Execution` shape and every row carries the
+    venue's own `exec_id`, so the backend can poll an overlapping window and
+    upsert without duplicating. `broker=ib` uses the synchronous `reqExecutions`
+    path; other venues dispatch through the adapter registry, with an unknown
+    broker a 400 and a recognised-but-unconfigured one a 501.
+    """
+    try:
+        logger.info(f"Account executions endpoint called (broker={broker}, days={days})")
+
+        from adapters import get_broker_adapter, resolve_provider
+
+        if resolve_provider(broker) == "ib":
+            rows = await run_tws_operation(lambda: get_executions_sync(days))
+        else:
+            adapter = get_broker_adapter(broker)
+            rows = await run_tws_operation(lambda: adapter.executions(days))
+        logger.info(f"Successfully retrieved {len(rows)} executions")
+        return rows
+
+    except HTTPException as he:
+        logger.error(f"HTTP Exception in account executions: {he.detail}")
+        raise he
+    except Exception as e:
+        error_str = str(e)
+        logger.error(f"Error in account executions endpoint: {error_str}")
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get account executions: {error_str}",
+        )
+
+
+@router.get("/account/summary", response_model=AccountSummary)
+async def get_account_summary(broker: str = "ib"):
+    """Account summary for a venue.
+
+    Broker-aware for the same reason positions are: a run on MT5 / Alpaca /
+    OANDA reading IB's account is simply the wrong account. It also supplies
+    the **equity** that `pct_equity` sizing needs, which is why each adapter
+    normalises to this shape rather than returning its raw venue payload —
+    the sizer can't be asked to learn four vocabularies for "net liquidation".
+    """
+    try:
+        logger.info(f"Account summary endpoint called (broker={broker})")
+
+        from adapters import get_broker_adapter, resolve_provider
+
+        if resolve_provider(broker) == "ib":
+            summary = await run_tws_operation(get_account_summary_sync)
+        else:
+            adapter = get_broker_adapter(broker)
+            summary = AccountSummary(**await run_tws_operation(adapter.account_summary))
         logger.info(f"Successfully retrieved account summary for account: {summary.account_id}")
         return summary
 
@@ -218,11 +330,22 @@ async def get_account_positions(broker: str = "ib"):
 
 
 @router.get("/account/orders", response_model=list[OrderModel])
-async def get_account_orders():
-    """Get current account orders"""
+async def get_account_orders(broker: str = "ib"):
+    """Working orders for a venue.
+
+    These are orders still *open* at the venue, as opposed to `/account/executions`
+    (what filled) and the backend's `order_audit` (what the app submitted).
+    """
     try:
-        logger.info("Account orders endpoint called")
-        orders = await run_tws_operation(get_orders_sync)
+        logger.info(f"Account orders endpoint called (broker={broker})")
+
+        from adapters import get_broker_adapter, resolve_provider
+
+        if resolve_provider(broker) == "ib":
+            orders = await run_tws_operation(get_orders_sync)
+        else:
+            adapter = get_broker_adapter(broker)
+            orders = await run_tws_operation(adapter.open_orders)
         logger.info(f"Successfully retrieved {len(orders)} orders")
         return orders
 
@@ -240,14 +363,27 @@ async def get_account_orders():
 
 
 @router.get("/account/all", response_model=AccountData)
-async def get_all_account_data():
-    """Get all account data (summary, positions, orders) in one call - sequential for stability"""
+async def get_all_account_data(broker: str = "ib"):
+    """All account data (summary, positions, orders) in one call for a venue.
+
+    Sequential rather than concurrent: the IB path shares one synchronous
+    client, so overlapping requests serialise anyway and racing them only
+    makes failures harder to attribute.
+    """
     try:
-        logger.info("All account data endpoint called - using sequential approach for stability")
+        logger.info(f"All account data endpoint called (broker={broker})")
+
+        from adapters import get_broker_adapter, resolve_provider
+
+        is_ib = resolve_provider(broker) == "ib"
+        adapter = None if is_ib else get_broker_adapter(broker)
 
         # Get account summary first (most important)
         try:
-            summary = await run_tws_operation(get_account_summary_sync)
+            if is_ib:
+                summary = await run_tws_operation(get_account_summary_sync)
+            else:
+                summary = AccountSummary(**await run_tws_operation(adapter.account_summary))
             logger.info(f"✅ Account summary retrieved for: {summary.account_id}")
         except Exception as e:
             logger.error(f"❌ Failed to get account summary: {e}")
@@ -259,7 +395,7 @@ async def get_all_account_data():
         # Get positions (optional - continue if fails)
         positions = []
         try:
-            positions = await run_tws_operation(get_positions_sync)
+            positions = await run_tws_operation(get_positions_sync if is_ib else adapter.positions)
             logger.info(f"✅ Positions retrieved: {len(positions)} positions")
         except Exception as e:
             logger.warning(f"⚠️ Failed to get positions (continuing): {e}")
@@ -267,7 +403,7 @@ async def get_all_account_data():
         # Get orders (optional - continue if fails)
         orders = []
         try:
-            orders = await run_tws_operation(get_orders_sync)
+            orders = await run_tws_operation(get_orders_sync if is_ib else adapter.open_orders)
             logger.info(f"✅ Orders retrieved: {len(orders)} orders")
         except Exception as e:
             logger.warning(f"⚠️ Failed to get orders (continuing): {e}")

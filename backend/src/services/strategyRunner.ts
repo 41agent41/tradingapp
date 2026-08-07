@@ -34,6 +34,7 @@ import { logger } from './logger.js';
 import { dbService } from './database.js';
 import { StrategyRepository, type ActiveRun } from './strategyRepository.js';
 import { OrderAuditRepository } from './orderAuditRepository.js';
+import { ExecutionRepository } from './executionRepository.js';
 import { submitCreateOrder } from './orderService.js';
 import { isSystematicExecutionEnabled, systematicMaxOrdersPerDay } from './orderTypes.js';
 import { ExecutionEngine, type ExecutionContext, type ExecutionResult } from './executionEngine.js';
@@ -146,6 +147,7 @@ function defaultDeps(
 ): StrategyRunnerDeps {
   const repo = new StrategyRepository(dbService);
   const auditRepo = new OrderAuditRepository(dbService);
+  const executionRepo = new ExecutionRepository(dbService);
   const engine = new ExecutionEngine({
     executionEnabled: isSystematicExecutionEnabled,
     globalMaxOrdersPerDay: systematicMaxOrdersPerDay,
@@ -154,6 +156,11 @@ function defaultDeps(
     countOrdersTodayAllRuns: () => repo.countActedSignalsTodayAllRuns(),
     submitOrder: (order, requestId) => submitCreateOrder(order, requestId),
     markActed: (signalId, orderAuditId) => repo.markSignalActed(signalId, orderAuditId),
+    // Backs the `max_daily_loss` cap. Reads this run's own fills, so a second
+    // run on the same symbol or a manual trade never consumes its budget.
+    realisedPnlToday: async (runId) => (await executionRepo.realisedPnlTodayForRun(runId)).realised,
+    // Backs `pct_equity` sizing, from the run's own venue.
+    accountEquity: (broker) => venueEquity(broker),
   });
   // Venue avg-cost cache, keyed per broker. `/account/positions` costs a
   // round-trip to the venue, so one fetch serves every run on that broker
@@ -162,6 +169,30 @@ function defaultDeps(
   // exactly how this behaved before the endpoint became broker-aware.
   const avgCostCache = new Map<string, { at: number; bySymbol: Map<string, number> }>();
   const AVG_COST_TTL_MS = 30_000;
+  // Venue equity cache, same shape and rationale as the avg-cost one: one
+  // `/account/summary` round-trip serves every `pct_equity`-sized run on that
+  // broker inside a short window. Fail-soft to null — the sizer then refuses
+  // with a reason rather than sizing off an invented equity figure.
+  const equityCache = new Map<string, { at: number; equity: number | null }>();
+  const EQUITY_TTL_MS = 60_000;
+  const venueEquity = async (broker: string): Promise<number | null> => {
+    const cached = equityCache.get(broker);
+    if (cached && Date.now() - cached.at <= EQUITY_TTL_MS) return cached.equity;
+    let equity: number | null = null;
+    try {
+      const response = await axios.get(`${BROKER_SERVICE_URL}/account/summary`, {
+        params: { broker },
+        timeout: 30000,
+        headers: { Connection: 'close' },
+      });
+      const value = Number(response.data?.net_liquidation);
+      equity = Number.isFinite(value) && value > 0 ? value : null;
+    } catch {
+      equity = null;
+    }
+    equityCache.set(broker, { at: Date.now(), equity });
+    return equity;
+  };
   const venueAvgCost = async (broker: string, symbol: string): Promise<number> => {
     try {
       const cached = avgCostCache.get(broker);

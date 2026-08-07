@@ -125,7 +125,10 @@ class Position(BaseModel):
 
 
 class Order(BaseModel):
-    order_id: int
+    # A string, not an int: IB's order ids are numeric but Alpaca's are UUIDs
+    # and OANDA's are numeric *strings*, so the venue-agnostic contract has to
+    # be the wider type. IB ids still round-trip as their decimal text.
+    order_id: str
     symbol: str
     action: str  # BUY/SELL
     quantity: float
@@ -134,6 +137,40 @@ class Order(BaseModel):
     filled_quantity: Optional[float] = None
     remaining_quantity: Optional[float] = None
     avg_fill_price: Optional[float] = None
+
+
+class Execution(BaseModel):
+    """One **fill** (execution report) from a venue.
+
+    This is the authoritative record of what actually traded, as opposed to
+    `order_audit`'s record of what the app *asked* to trade. Partial fills,
+    post-acknowledgement rejections and manual trades placed outside the app
+    all show up here and nowhere else, which is why positions and realised P&L
+    are derived from this feed rather than from submitted orders.
+
+    Every venue normalises into this shape (same contract as `Position`):
+
+    - ``exec_id`` is the venue's own unique id for the fill and is what makes
+      polling idempotent — re-fetching an overlapping window re-delivers the
+      same ids and the backend upserts them away.
+    - ``quantity`` is always **positive**; direction lives in ``side``.
+    - ``commission`` / ``realized_pnl`` are optional because not every venue
+      reports them per fill (IB sends them in a separate `commissionReport`
+      callback; Alpaca is commission-free).
+    """
+
+    exec_id: str
+    order_id: Optional[str] = None
+    symbol: str
+    side: str  # BUY/SELL
+    quantity: float
+    price: float
+    commission: Optional[float] = None
+    realized_pnl: Optional[float] = None
+    executed_at: str  # ISO-8601, UTC
+    account: Optional[str] = None
+    currency: str = "USD"
+    broker: str = "ib"
 
 
 class AccountData(BaseModel):

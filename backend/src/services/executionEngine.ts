@@ -11,6 +11,7 @@
  *   - `SYSTEMATIC_EXECUTION_ENABLED` gate (distinct from `LIVE_TRADING_ENABLED`)
  *   - a kill-switch re-check of the run's status *immediately* before placing
  *   - per-run `max_orders_per_day` and a global `SYSTEMATIC_MAX_ORDERS_PER_DAY`
+ *   - per-run `max_daily_loss`, measured against **realised P&L from fills**
  *   - signal→order dedupe (the `acted`/`order_audit_id` link on the signal row)
  *
  * Every abort is a fail-closed, auditable *reason* — never an order. A pure
@@ -52,6 +53,13 @@ export interface ExecutionEngineDeps {
   countOrdersTodayAllRuns(): Promise<number>;
   submitOrder(order: ValidatedOrder, requestId: string | null): Promise<SubmitCreateOutcome>;
   markActed(signalId: number, orderAuditId: number): Promise<{ updated: boolean }>;
+  /** Realised P&L for this run today, derived from its fills. Only called when
+   *  the run declares a `max_daily_loss`; throwing fails the check closed. */
+  realisedPnlToday?(runId: number): Promise<number>;
+  /** Net liquidation at the run's venue, for `pct_equity` sizing. Only called
+   *  when the sizing block actually needs it; `null` means the venue reported
+   *  none and the sizer refuses rather than guessing a size. */
+  accountEquity?(broker: string): Promise<number | null>;
 }
 
 export class ExecutionEngine {
@@ -109,16 +117,70 @@ export class ExecutionEngine {
       }
     }
 
+    // Per-run daily loss cap. Declared `max_daily_loss` used to be accepted by
+    // the schema and the rule builder and enforced nowhere — a silent no-op,
+    // the same failure shape as a stop rule that never fires. It is measured
+    // against **realised P&L from this run's fills**, not from submitted
+    // orders: a loss is only a loss once it has actually traded.
+    //
+    // It gates **entries only**. Blocking an exit because the day went badly
+    // would strand the position in the trade that caused the loss — the exact
+    // opposite of what a loss limit is for. So a breached cap stops the run
+    // taking on new risk and leaves its exits (and the strategy's own stop
+    // rules) free to run.
+    const lossCap = Math.abs(Number((run.risk ?? {}).max_daily_loss) || 0);
+    if (lossCap > 0 && ctx.signal === 'buy') {
+      if (!this.deps.realisedPnlToday) {
+        return {
+          placed: false,
+          reason: `max_daily_loss (${lossCap}) declared but realised P&L is unavailable`,
+        };
+      }
+      let realised: number;
+      try {
+        realised = await this.deps.realisedPnlToday(run.id);
+      } catch (err) {
+        // Fail closed, exactly like the position-limit guard: a cap we can't
+        // evaluate must block the order, never wave it through.
+        return {
+          placed: false,
+          reason: `max_daily_loss check failed (${String((err as Error)?.message ?? err)})`,
+        };
+      }
+      if (!Number.isFinite(realised)) {
+        return { placed: false, reason: 'max_daily_loss check returned a non-finite P&L' };
+      }
+      if (realised <= -lossCap) {
+        return {
+          placed: false,
+          reason: `per-run max_daily_loss (${lossCap}) reached (realised ${realised.toFixed(2)})`,
+        };
+      }
+    }
+
     // Resolve the concrete action + quantity. A `buy` opens (size from the
     // sizing block); a `sell` exits, closing the current long position.
     let action: OrderAction;
     let quantity: number;
     if (ctx.signal === 'buy') {
       action = 'BUY';
+      // Equity is only fetched when the sizing block asks for it — every other
+      // sizing type resolves from the bar price alone, and a venue round-trip
+      // per signal would be pure cost.
+      let equity: number | null = null;
+      if ((run.sizing ?? {}).type === 'pct_equity' && this.deps.accountEquity) {
+        try {
+          equity = await this.deps.accountEquity(run.broker);
+        } catch {
+          // Leave it null: the sizer then refuses with a clear reason rather
+          // than sizing off a stale or invented equity figure.
+          equity = null;
+        }
+      }
       const sized = resolveOrderQuantity(run.sizing ?? {}, {
         price: ctx.lastBar.close,
         broker: run.broker,
-        equity: null,
+        equity,
       });
       if (!sized.ok) return { placed: false, reason: `sizing: ${sized.reason}` };
       quantity = sized.quantity;
