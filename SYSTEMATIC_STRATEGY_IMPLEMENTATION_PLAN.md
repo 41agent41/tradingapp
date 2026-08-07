@@ -57,7 +57,7 @@ strong enough to move it.
 The frontend's `ruleSet.ts` already holds a *vocabulary mirror*
 (`OPERATORS`, `OPERAND_SUGGESTIONS`) for the builder UI. That mirror is
 authoring-only and must stay that way. It is also a duplication hazard in its
-own right — see §7.3.
+own right — see §8.3.
 
 ---
 
@@ -91,20 +91,83 @@ mostly:
 | Price-action concept | Why the current model struggles |
 |---|---|
 | Engulfing, pin bar, inside bar | Needs 2–3 bars; `EvalContext` exposes 1 |
-| Swing high / swing low | Needs a *confirmation window* — and is the source of the look-ahead bug in §4 |
+| Swing high / swing low | Needs a *confirmation window* — and is the source of the look-ahead bug in §5 |
 | Support/resistance level | A level **persists across many bars** and has attributes (age, touch count, strength). Not a per-bar scalar |
 | Supply/demand zone, order block | A price *region*, not a value; "inside" is a relation, not a comparison |
 | Fair value gap / imbalance | Created at bar *i*, referenced at bar *i+30*, invalidated when filled — stateful over arbitrary distance |
 | Market structure (BOS / CHoCH) | A state machine over swing sequence, carried forward indefinitely |
 | Trendline | Geometry fitted over a variable window |
 
-Every one of these can be *projected* to a per-bar scalar (see §3.2), and that
+Every one of these can be *projected* to a per-bar scalar (see §6.2), and that
 projection is what makes the cheap path work. But the projection is lossy, and
 knowing where it loses is what keeps the plan honest.
 
 ---
 
-## 3. The options
+## 3. The actual requirement: accommodate a plan nobody has written yet
+
+The trading plan is **not fixed**. It will combine indicators and price action,
+and beyond that it should be assumed to change. So the deliverable is not a
+feature catalogue matching one strategy — it is a set of **structures general
+enough that a future plan lands in one of them** rather than requiring the
+engine to be reopened.
+
+That changes what "done" means. Success is not "the engine can express our
+strategy"; it is "for any rule someone writes on a whiteboard, there is a
+known place it goes, or a loud answer that it does not fit yet." A plan that
+optimises for a guessed strategy shape fails the moment the strategy changes,
+which — for a discretionary trader systematising their process — is
+continuously.
+
+### 3.1 Expressiveness classes
+
+Sorting strategy logic by *shape* rather than by concept gives the checklist
+the architecture actually has to satisfy. This is the table to review, because
+the honest entries are the bottom four:
+
+| # | Class | Example | Status today | Projectable to per-bar float? |
+|---|---|---|---|---|
+| 1 | Per-bar scalar | `rsi < 30`, `body_pct > 60` | ✅ works | Native |
+| 2 | Fixed multi-bar pattern | engulfing, 3-bar reversal | ⚠️ needs bar offsets (§6.3, item 1) | Yes — precompute |
+| 3 | Confirmed-later structure | swing points, BOS | ⚠️ needs causal features + lag | Yes, with lag |
+| 4 | Persistent objects | S/R levels, zones, FVGs, order blocks | ⚠️ lossy projection | **Partially** — see §3.2 |
+| 5 | Carried state | trailing stop, high-water mark, "bars since X" | ❌ **impossible today** | No — needs state |
+| 6 | Event sequences | "sweep, *then* BOS within 5 bars, *then* retrace" | ❌ **impossible today** | No — needs state + ordering |
+| 7 | Multi-instrument | DXY filter on EURUSD; correlation; spreads | ❌ **impossible today** | No — one run is one symbol |
+| 8 | Non-bar inputs | tick/order flow, DOM, economic calendar | ❌ out of scope | No — different data pipeline |
+
+Classes 1–3 are what the current plan already handled. Classes **5, 6 and 7 are
+structural gaps**, not missing features: no amount of feature-writing reaches
+them, because the engine has nowhere to keep the information they need. Under a
+fixed strategy they might never have come up. Under "any plan," they are close
+to certain — trailing stops (5) and sequenced setups (6) are staples of exactly
+the price-action trading this system is for.
+
+**This is the substantive change from the previous draft.** Feature phasing by
+concept (candles → swings → zones) was the wrong axis; phasing by capability
+class is the one that determines whether an unwritten plan fits.
+
+### 3.2 Where the per-bar projection genuinely loses
+
+Class 4 is the subtle one, because projection *appears* to work. Reducing zones
+to `dist_to_demand_pct` / `in_demand_zone` handles "enter when price reaches
+demand" perfectly, and hides three limits:
+
+- **Nearest-only.** "The second untested demand zone below" has no expression;
+  the projection collapses a collection to one number.
+- **No object identity.** "The order block created by the impulse that broke
+  structure" requires referring to a *specific* object, not the closest one.
+- **Attributes beyond the projection are gone.** Age, touch count and strength
+  each need their own column, decided in advance by whoever wrote the feature.
+
+The fix is not to abandon the projection — it is the right default and covers
+most rules. It is to let a feature publish **objects with attributes**, and
+give operands a way to select among them (§6.5). The projection then becomes
+the common shorthand rather than the only option.
+
+---
+
+## 4. The options
 
 ### Option 1 — Extend the declarative rule-set with price-action features
 
@@ -177,7 +240,7 @@ is an arbitrary-code-execution hole next to the order router.
 
 ---
 
-## 4. The hazard that matters most: look-ahead in price-action features
+## 5. The hazard that matters most: look-ahead in price-action features
 
 **This section is the reason to be careful, and it deserves to outrank
 everything else in review.**
@@ -224,9 +287,9 @@ extend to every price-action feature.
 
 ---
 
-## 5. Recommended design
+## 6. Recommended design
 
-### 5.1 A feature registry alongside the indicator calculator
+### 6.1 A feature registry alongside the indicator calculator
 
 New module `broker_service/price_action.py`, structured like
 `indicators.py`'s `IndicatorCalculator`:
@@ -249,7 +312,7 @@ collected the same way, and `_prepared()` materialises them. Because
 identically, by construction**. That is the whole reason to put them there
 rather than anywhere else.
 
-### 5.2 Projecting price action onto per-bar floats
+### 6.2 Projecting price action onto per-bar floats
 
 Every feature reduces to numeric columns so the existing operators work
 unchanged. Booleans become 0/1; regions become distances; state machines become
@@ -271,7 +334,7 @@ C's fleet runs one strategy across many brokers — the same rule meets slightly
 different quotes on each connection. Absolute-price thresholds would need
 per-instrument, per-connection retuning; percentages do not.
 
-### 5.3 Small operand-model extensions
+### 6.3 Small operand-model extensions
 
 Two additions, both contained:
 
@@ -284,11 +347,112 @@ Two additions, both contained:
 
 Both are additive; existing rule-sets keep compiling.
 
-### 5.4 What is deliberately *not* changed
+### 6.4 Strategy state — the structural gap that unlocks classes 5 and 6
+
+**The most important addition in this plan, and the one with the most ways to
+get it wrong.**
+
+Classes 5 (carried state) and 6 (event sequences) are impossible today for one
+reason: `evaluate()` is deliberately **stateless**, described in its own
+docstring as "the stateless signal the live runner polls per closed bar"
+(`rule_strategy.py:689-699`). Each evaluation sees bars, position and nothing
+else. There is no place to record that a high-water mark was set, that a
+liquidity sweep happened four bars ago, or that the strategy is waiting for
+leg two of a three-leg setup.
+
+Almost every trailing-stop and multi-leg-setup rule needs exactly that.
+
+**Design: a per-run state dict, derived and reproducible.**
+
+- A run carries `strategy_state` — a small JSON object, persisted per run and
+  updated on each evaluated bar.
+- Rules read it through a `state.<key>` operand namespace, mirroring the
+  existing `position.<field>` namespace, which is the precedent to copy.
+- Rule-sets declare state transitions declaratively — `set`, `max`, `min`,
+  `increment`, `clear`, each conditional on the same rule groups already
+  supported. A trailing stop is then `state.high_water = max(state.high_water,
+  high)` plus an exit condition against it, with no new evaluation model.
+- Sequence operators (`happened_within(N)`, `then_within(N)`) compile down to
+  state transitions rather than being a separate mechanism.
+
+**The three hazards, because state is where this design can quietly break:**
+
+1. **Backtest/live divergence.** State makes evaluation order-dependent, so the
+   parity that §1 protects is no longer free. The backtest already drives
+   `evaluate_bar()` bar-by-bar with running position, so state fits that loop —
+   but `generate_signals()`'s batch pass and the live path must be proven to
+   produce identical state sequences over the same bars. This deserves the same
+   treatment as the look-ahead harness: a replay test, not a code review.
+2. **Restart and warmup.** A run restarting mid-session must rebuild state.
+   **Make it derivable by replay** — state is a pure function of the bar
+   history and the rule-set, so a restart recomputes it over the warmup window
+   rather than trusting a persisted snapshot. Persist it as a cache and a
+   diagnostic, never as the source of truth. Otherwise a crash mid-setup
+   produces state that no history explains.
+3. **Unbounded growth.** State keys must be declared in the rule-set and bounded
+   in size. A strategy that accumulates a list per bar becomes a memory leak
+   with a per-run blast radius.
+
+Note the interaction with Component C: state is **per run**, and one run is one
+connection, so a fleet of legs each keeps its own. That is correct — each
+account's trailing stop tracks its own fills — and it falls out of the
+run-per-connection choice made there rather than needing new machinery.
+
+### 6.5 Feature objects and selectors — closing class 4 properly
+
+Beyond emitting columns, a feature may publish a **collection of objects** for
+the current bar: zones, levels, gaps, each with attributes and a lifecycle
+(created, tested, invalidated). Operands then select from a collection instead
+of reading a pre-flattened column:
+
+```jsonc
+{ "feature": "demand_zone", "select": "nearest_below",
+  "where": { "untested": true }, "attr": "distance_pct" }
+```
+
+This recovers exactly what §3.2 said the projection loses — the second zone
+down, an object's age or touch count, a specific object rather than the closest
+— without abandoning the column shorthand, which stays the common case. The
+selector vocabulary (`nearest_above` / `nearest_below` / `nth` / `most_recent`,
+plus attribute filters) is small and closed, so it stays declarative and
+UI-representable.
+
+### 6.6 Multi-instrument operands — the seam, not the implementation
+
+Class 7 (an index filter, a correlated pair, a spread) needs the runner to
+fetch more than one series per run, which is a real change to
+`fetchHistory`/`getPosition` in `strategyRunner.ts` and to the caching in C6.
+
+**Recommendation: build the seam, defer the implementation.** Define the
+operand form now — `{"symbol": "DXY", "indicator": "sma_50"}` — so that
+`RuleStrategy.__init__`'s requirement walk collects *symbols* alongside
+indicators and timeframes, exactly as it already collects
+`higher_tf_columns()`. Reject it at compile time with a clear "not yet
+supported" until the runner can satisfy it.
+
+This is the cheapest way to honour "accommodate any plan": the vocabulary and
+the requirement-collection admit it, the compiler says plainly that it is not
+wired up, and enabling it later touches the runner rather than the rule model.
+A rule-set written against it stays valid.
+
+### 6.7 Schema versioning and capability reporting
+
+If the grammar is going to grow, stored definitions must survive its growth:
+
+- `rule_set.schema_version`, with the compiler accepting known older versions.
+  Definitions are persisted rows that outlive deploys.
+- A **capability endpoint** the builder and a human can query: which features,
+  operators, selectors and classes this build supports. This makes "can the
+  engine express my plan?" an answerable question rather than a code-reading
+  exercise, which is the practical form of the §3 requirement.
+- **Compile-time rejection over silent non-firing** — see §8.4, which is the
+  trap this closes.
+
+### 6.8 What is deliberately *not* changed
 
 - No new service, process, or language runtime.
 - No user-authored Python in the live path.
-- No change to the operator grammar beyond §5.3.
+- No change to the operator grammar beyond §6.3, §6.4 and §6.5.
 - No new indicator library dependency (TA-Lib / pandas-ta). The existing
   `indicators.py` covers 12 indicators hand-rolled with tests; price-action
   libraries in the wild are mostly low-quality and would need the same
@@ -297,25 +461,42 @@ Both are additive; existing rule-sets keep compiling.
 
 ---
 
-## 6. Phasing
+## 7. Phasing
 
-| Phase | Contents | Ships |
-|---|---|---|
-| **D-0** | Look-ahead test harness (§4.3) + feature registry skeleton + bar-offset operands (§5.3.1) | The safety net and the grammar gap, before any feature exists to get it wrong |
-| **D-1** | Candle-geometry + single/two-bar patterns: `body_pct`, wicks, `pin_bar`, `engulfing`, `inside_bar`, `atr_pct` | Real price-action rules, all confirmation-lag 0 — no repaint risk at all |
-| **D-2** | Causal swing detection + `bars_since_*`; structure state (BOS/CHoCH) | The first features with a confirmation lag; harness earns its keep |
-| **D-3** | Levels and zones: S/R, supply/demand, FVG, order blocks + `in_range` operator | The stateful, longest-lived features |
-| **D-4** | Builder UI vocabulary, feature introspection endpoint (§7.3), backtest-vs-live replay diff | Authorable and verifiable by a non-engineer |
+Phased by **capability class** (§3.1), not by price-action concept. Each phase
+opens a *shape* of rule; the individual features inside it are then small,
+independent additions that need no further architectural work. This is what
+makes the plan robust to a trading plan nobody has written yet — a new idea
+lands in an existing class rather than reopening the engine.
 
-D-0 before D-1 is the point of the ordering: the harness must exist before
-there is a feature to be wrong, or the first repainting feature will be found
-in production.
+| Phase | Opens | Contents | Unblocks |
+|---|---|---|---|
+| **D-0** | *safety + the grammar floor* | Look-ahead harness (§5, mitigation 3), feature registry skeleton, bar-offset operands (§6.3, item 1), `schema_version`, compile-time rejection of unknown vocabulary (§8.4) | Everything after it, safely |
+| **D-1** | classes 1–2 | Candle geometry and fixed multi-bar patterns: `body_pct`, wicks, `pin_bar`, `engulfing`, `inside_bar`, `atr_pct` | All same-bar price action — zero confirmation lag, so no repaint risk at all |
+| **D-2** | class 3 | Causal swing detection, `bars_since_*`, structure state (BOS/CHoCH) | Every confirmed-later structure concept; the harness earns its keep here |
+| **D-3** | class 5–6 | Strategy state channel (§6.4) + sequence operators, with the replay-parity test | Trailing stops, breakeven moves, multi-leg setups — **the largest jump in what a plan can say** |
+| **D-4** | class 4 | Feature objects + selectors (§6.5), zones/levels/FVG/order blocks, `in_range` | Object-level rules, not just nearest-distance shorthand |
+| **D-5** | authoring | Capability endpoint (§6.7), builder vocabulary served from the registry (§8.3), backtest-vs-live replay diff | A non-engineer can author and verify |
+| **D-6** | class 7 | Multi-instrument implementation behind the D-0 seam (§6.6) | Index filters, correlation, spreads |
+
+Two ordering choices worth challenging in review:
+
+- **D-0 before everything** is non-negotiable: the harness must exist before
+  there is a feature to be wrong, or the first repainting feature is found in
+  production rather than in CI.
+- **D-3 (state) before D-4 (zones)** is a change from the concept-ordered
+  draft. State unlocks two whole classes and is the prerequisite for sequence
+  logic, whereas zones — though more visible — are one class that already has a
+  usable projection from D-2 onward. If the first real plan turns out to be
+  zone-centric, swapping D-3 and D-4 costs little; if it is sequence-centric,
+  the order is already right. Under an unknown plan, opening more classes
+  earlier is the better bet.
 
 ---
 
-## 7. Consequences to plan for
+## 8. Consequences to plan for
 
-### 7.1 Per-tick cost, and the interaction with Component C
+### 8.1 Per-tick cost, and the interaction with Component C
 
 `evaluate()` recomputes indicators over the **whole window** on every poll
 (`rule_strategy.py:711`). Price-action features add to that, and the stateful
@@ -336,7 +517,7 @@ cache:
 Worth measuring before optimising — but worth measuring *early*, because the
 answer changes C6's cache design and it is cheaper to know now.
 
-### 7.2 Backtest realism gets more load-bearing
+### 8.2 Backtest realism gets more load-bearing
 
 Indicator strategies on closed bars are relatively forgiving. Price-action
 strategies trade at levels, which is exactly where spread widens, stops cluster
@@ -347,7 +528,7 @@ substantially more than it flatters an indicator one. Whether
 `backtesting.py`'s fill model is adequate for this should be assessed at D-2,
 before the results are trusted for sizing decisions.
 
-### 7.3 The frontend vocabulary mirror becomes a real duplication cost
+### 8.3 The frontend vocabulary mirror becomes a real duplication cost
 
 `ruleSet.ts` hand-mirrors the Python vocabulary. That is tolerable for 16
 indicator columns and 6 operators. With a growing feature library it becomes a
@@ -360,15 +541,47 @@ invisible to authors; one removed leaves a UI option that fails validation.
 source of truth for what a strategy can say — the same principle that put rule
 semantics in one place in §1.
 
+### 8.4 A rule that cannot fire fails silently — and a growing vocabulary makes that worse
+
+`Condition.evaluate` returns `False` when either side is non-finite
+(`rule_strategy.py:303-312`), and `EvalContext._column` returns `NaN` for a
+column that is not present (`rule_strategy.py:158-165`). Today an unknown
+operand *name* is caught at compile time by `parse_operand`, so the exposure is
+small. But the runtime behaviour is that **a condition referencing a column
+that failed to materialise never fires, forever, with no error** — it simply
+evaluates false on every bar.
+
+That is correct during indicator warmup, where NaN genuinely means "not enough
+data yet." It is dangerous everywhere else, and an extensible feature library
+adds exactly the cases where it bites: a feature whose computation failed, a
+feature that returned the wrong column name, a feature unavailable in this
+build, a state key never initialised. The strategy looks alive — it evaluates,
+it records signals, it reports no error — and one leg of its entry condition is
+permanently false. This is the same failure shape as the `max_daily_loss`
+no-op the roadmap already had to fix once.
+
+**Recommendations:**
+
+- **Distinguish "not ready" from "broken."** Warmup NaN is expected and stays
+  false; a column that should exist and does not is a **run error**, not a
+  false condition.
+- **Reject at compile time whatever can be rejected there** — unknown features,
+  unknown selectors, unknown state keys, unsupported classes (§6.6). The
+  capability endpoint (§6.7) and the compiler must agree.
+- **Report per-condition evaluation counts** in the run diagnostics. A
+  condition that has never once been true over thousands of bars is worth
+  surfacing to the author; it is occasionally the strategy, and often a bug.
+
 ---
 
-## 8. Open questions
+## 9. Open questions
 
-1. **Which price-action concepts do you actually trade?** The D-1→D-3 ordering
-   assumes the common progression (candles → swings → structure → zones). If
-   the strategy centres on, say, order blocks and FVGs specifically, D-3 should
-   be pulled forward and D-2 trimmed to only the swing detection those need.
-   This is the one answer that would most change the plan.
+1. **~~Which price-action concepts do you actually trade?~~ Answered: the plan
+   is not fixed and must be assumed to change.** That is what §3 and the
+   capability-class phasing now reflect. The follow-on question is narrower but
+   still worth an answer: is the *first* plan to go live sequence-heavy
+   (favouring D-3 before D-4) or zone-heavy (the reverse)? The architecture
+   accommodates both; only the order changes.
 2. **Discretionary rules that resist formalisation.** Some price-action
    judgement ("a clean level", "a decisive break") has no crisp definition.
    Each needs pinning to something measurable — touch count, close-beyond
@@ -386,3 +599,17 @@ semantics in one place in §1.
    entry). Extending the merge to feature columns is mechanical but needs the
    same no-look-ahead care the indicator merge already has — assume it is in
    scope at D-2 unless the strategy is genuinely single-timeframe.
+5. **Where is the escape hatch when a plan genuinely does not fit?** §3 promises
+   "a known place it goes, or a loud answer that it does not fit yet." The loud
+   answer is the compiler plus the capability endpoint. But some plan will
+   eventually need something no class covers, and the options are: extend a
+   class (slow, correct), or allow a reviewed Python strategy for
+   **backtest-only** research while the declarative version is built. The
+   latter already exists via `AVAILABLE_STRATEGIES` and is worth keeping open
+   deliberately — provided it never acquires a live path (§4, Option 2).
+6. **How much unknown-plan generality is worth paying for up front?** D-3
+   (state) and D-4 (objects) are real engineering, justified by classes the
+   current plan cannot express *at all*. D-6 (multi-instrument) is the one
+   where the seam is cheap and the implementation is not — hence building only
+   the seam. If the plan is confidently single-instrument, D-6 can be dropped
+   entirely and the seam left as a compile-time refusal.
