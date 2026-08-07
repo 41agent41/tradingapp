@@ -13,19 +13,25 @@ jest.mock('../src/services/database.js', () => ({
 }));
 jest.mock('../src/services/orderAuditRepository.js', () => {
   const create = jest.fn();
-  // update / list / netExposure return promises in production; default them
-  // to resolved so the route's `audit.update(...).catch(...)` chains don't
-  // blow up on a bare jest.fn() returning undefined. (jest.clearAllMocks
-  // keeps these defaults.)
+  // update / list return promises in production; default them to resolved so
+  // the route's `audit.update(...).catch(...)` chains don't blow up on a bare
+  // jest.fn() returning undefined. (jest.clearAllMocks keeps these defaults.)
   const update = jest.fn().mockResolvedValue(undefined);
   const list = jest.fn().mockResolvedValue([]);
-  const netExposure = jest.fn().mockResolvedValue(0);
   return {
     __esModule: true,
-    OrderAuditRepository: jest
-      .fn()
-      .mockImplementation(() => ({ create, update, list, netExposure })),
-    __mocks: { create, update, list, netExposure },
+    OrderAuditRepository: jest.fn().mockImplementation(() => ({ create, update, list })),
+    __mocks: { create, update, list },
+  };
+});
+// The position guard now reads account exposure from fills + still-working
+// orders rather than from submitted quantities, so it lives here.
+jest.mock('../src/services/executionRepository.js', () => {
+  const netPositionWithOpenOrders = jest.fn().mockResolvedValue(0);
+  return {
+    __esModule: true,
+    ExecutionRepository: jest.fn().mockImplementation(() => ({ netPositionWithOpenOrders })),
+    __mocks: { netPositionWithOpenOrders },
   };
 });
 
@@ -34,7 +40,10 @@ import ordersRouter from '../src/routes/orders.js';
 
 const axiosMock = axios as jest.Mocked<typeof axios>;
 const auditMock = jest.requireMock('../src/services/orderAuditRepository.js') as {
-  __mocks: { create: jest.Mock; update: jest.Mock; list: jest.Mock; netExposure: jest.Mock };
+  __mocks: { create: jest.Mock; update: jest.Mock; list: jest.Mock };
+};
+const executionMock = jest.requireMock('../src/services/executionRepository.js') as {
+  __mocks: { netPositionWithOpenOrders: jest.Mock };
 };
 // Capture the mocked dbService here at module load — the same registry
 // instance the route imported. `resetModules: true` (jest.config.cjs) makes
@@ -160,12 +169,12 @@ describe('POST /api/orders — position-limit guard', () => {
       order_type: 'MKT',
     });
     expect(res.status).toBe(201);
-    expect(auditMock.__mocks.netExposure).not.toHaveBeenCalled();
+    expect(executionMock.__mocks.netPositionWithOpenOrders).not.toHaveBeenCalled();
   });
 
   it('lets an order through when the projected net is within the cap', async () => {
     process.env.ORDER_MAX_POSITION = '1000';
-    auditMock.__mocks.netExposure.mockResolvedValueOnce(100);
+    executionMock.__mocks.netPositionWithOpenOrders.mockResolvedValueOnce(100);
     auditMock.__mocks.create.mockResolvedValueOnce({ id: 21 });
     axiosMock.post.mockResolvedValueOnce({ data: { order_id: 51, status: 'submitted' } });
     const res = await request(buildApp()).post('/api/orders').send({
@@ -175,17 +184,21 @@ describe('POST /api/orders — position-limit guard', () => {
       order_type: 'MKT',
     });
     expect(res.status).toBe(201);
-    expect(auditMock.__mocks.netExposure).toHaveBeenCalledWith(
-      'MSFT',
-      'paper',
-      expect.any(Number),
-      'ib'
+    expect(executionMock.__mocks.netPositionWithOpenOrders).toHaveBeenCalledWith(
+      expect.objectContaining({
+        symbol: 'MSFT',
+        accountMode: 'paper',
+        broker: 'ib',
+        // Account-wide, not scoped to a strategy run — a fat-finger cap is
+        // about the account's exposure, so a manual trade counts too.
+        runId: null,
+      })
     );
   });
 
   it('rejects with 422 when the order would breach the cap (no IB call, no audit)', async () => {
     process.env.ORDER_MAX_POSITION = '1000';
-    auditMock.__mocks.netExposure.mockResolvedValueOnce(900);
+    executionMock.__mocks.netPositionWithOpenOrders.mockResolvedValueOnce(900);
     const res = await request(buildApp()).post('/api/orders').send({
       symbol: 'MSFT',
       action: 'BUY',
@@ -202,7 +215,7 @@ describe('POST /api/orders — position-limit guard', () => {
 
   it('fails closed (503) when the net cannot be computed', async () => {
     process.env.ORDER_MAX_POSITION = '1000';
-    auditMock.__mocks.netExposure.mockRejectedValueOnce(new Error('db down'));
+    executionMock.__mocks.netPositionWithOpenOrders.mockRejectedValueOnce(new Error('db down'));
     const res = await request(buildApp()).post('/api/orders').send({
       symbol: 'MSFT',
       action: 'BUY',

@@ -649,7 +649,33 @@ curl -fs -H "Authorization: Bearer $API_TOKEN" \
   "http://<server-ip>:4000/api/account/executions?limit=20" | jq
 curl -fs -H "Authorization: Bearer $API_TOKEN" \
   http://<server-ip>:4000/api/account/pnl | jq
+
+# Reconciliation: what the app believes it holds vs what the venue reports.
+curl -fs -H "Authorization: Bearer $API_TOKEN" \
+  "http://<server-ip>:4000/api/account/reconciliation?broker=ib" | jq
 ```
+
+### Positions come from fills *plus* working orders
+
+Once the sync is on, a position is the recorded fills **plus the unfilled
+remainder of any still-working orders** — not one or the other. Fills alone lag
+the poll interval, so a freshly-placed order would read as flat and a strategy
+could re-enter a position it already holds; submitted orders alone cannot see a
+partial fill. Both halves together mean an order moves from "in flight" to
+"filled" without ever being double-counted or briefly invisible.
+
+A **strategy run** sees only the exposure it created (fills carry the run id of
+the signal behind them), so a second run on the same symbol, or a trade you
+place by hand, cannot change what its sizing and pyramiding rules do.
+`ORDER_MAX_POSITION` is the opposite by design: it caps *account* exposure at
+the venue, so manual trades count toward it.
+
+Per-run attribution can therefore drift from the account — a manual trade
+belongs to no run, a corporate action to no order. `GET /api/account/reconciliation`
+exists to surface that: it lists every symbol either side knows about with a
+`matched` flag, so a divergence is something you can see rather than something
+that quietly accumulates. Worth a periodic check (or a cron alert on
+`.mismatches > 0`) on any account that is also traded by hand.
 
 ## Service Verification
 

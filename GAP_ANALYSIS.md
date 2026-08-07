@@ -659,11 +659,9 @@ hardcoded with a TODO. It now reads the venue's reported average cost from
 
 1. ~~**`/account/positions` is IB-only.**~~ ✅ **Closed** — see §12.5.
 2. ~~**`risk.max_daily_loss` is a silent no-op.**~~ ✅ **Closed** — see §12.7.
-3. ~~**Positions are inferred from submitted orders, not fills.**~~ ✅ **Feed
-   shipped** — see §12.6. One deliberate carry-over remains: a run's
-   `position.size` still reads the order-audit net, because switching it to the
-   (now available) fill-derived venue size needs an attribution decision, not
-   more plumbing. Called out again in §12.8.
+3. ~~**Positions are inferred from submitted orders, not fills.**~~ ✅ **Fully
+   closed** — the feed shipped in §12.6, and the attribution decision it left
+   open is resolved in §12.9.
 4. ~~**The backtester ignores `sizing` and `scale_out`.**~~ ✅ **Closed** —
    see §12.7.
 
@@ -831,14 +829,102 @@ the run's own venue (cached per broker, fail-soft) and the sizer resolves.
 Alpaca's are UUIDs and OANDA's are numeric strings, so the venue-agnostic
 contract has to be the wider type. IB ids round-trip as their decimal text.
 
-**Still open, deliberately:** a run's `position.size` continues to come from
-the order-audit net rather than the venue's (fill-derived) size. The venue
-reports whole-**account** exposure, so a second run on the same symbol or a
-manual trade would fold into this run's position and change what its sizing and
-pyramiding rules do. That is a live-behaviour change needing an attribution
-decision — per-run sub-accounts, an attribution ledger keyed off
-`order_executions`, or explicitly accepting account-level semantics — so it
-stays flagged rather than slipped in.
+**Followed up in §12.9:** the attribution decision this section flagged is now
+made, and a run's `position.size` comes from its own fills.
+
+---
+
+## 12.9 Positions are fill-authoritative; sizing is broker-native ✅ (2026-08-07)
+
+### The attribution decision
+
+§12.5 and §12.6 both stopped at the same question: the venue's fill-derived
+size was available, but it reports whole-**account** exposure, so adopting it
+per run would let a second run on the same symbol — or a manual trade — change
+what a strategy's sizing and pyramiding rules do. Three options were named;
+the **attribution ledger** is the one that ships. Per-run sub-accounts need
+venue-side provisioning not every broker offers, and accepting account-level
+semantics is wrong the moment two runs share an instrument. The ledger was
+already latent in the data: every fill carries the `run_id` of the signal that
+caused it.
+
+What made it *correct* rather than merely available was recognising that
+neither source is sufficient alone:
+
+- **Fills lag.** The poller runs on its own timer, so an order placed seconds
+  ago has not been reported and the position reads flat — which would let a
+  strategy re-enter a position it already holds. This is a real regression risk
+  that a naive "just use the fills" switch would have shipped.
+- **Submitted orders are wrong.** That is the estimate this work replaced: it
+  cannot see a partial fill, and it drops a partially-filled-then-cancelled
+  order entirely, losing shares that are genuinely held.
+
+So a position is **fills plus the unfilled remainder of still-working orders**
+(`ExecutionRepository.netPositionWithOpenOrders`). Every fill counts whatever
+became of its order; every alive order contributes only what has not yet
+filled. An order transitions smoothly from "in flight" to "filled" without
+being double-counted or briefly invisible — and the partially-cancelled case
+that the old estimate got wrong now resolves correctly, because its fills sit
+in the first half and its dead order contributes nothing to the second.
+
+The decomposition has a property worth stating plainly: **with the fills feed
+disabled it degrades byte-for-byte to the old `netExposure` estimate** (no
+fills exist, so every alive order contributes its full quantity). Enabling
+`EXECUTIONS_SYNC_ENABLED` is what makes positions authoritative; deploying this
+change alone alters nothing.
+
+Scope selects the model. **With** a run id it is that run's own ledger — used by
+the strategy runner, so pyramiding and sizing see only what the run created.
+**Without** one it is whole-account exposure at the venue, including manual
+trades — used by `ORDER_MAX_POSITION`, because a fat-finger cap is about the
+account, not one strategy.
+
+Per-run attribution can still drift from the account (a manual trade belongs to
+no run; a corporate action to no order). That drift is inherent to the model, so
+`GET /api/account/reconciliation?broker=` compares the app's recorded net
+against the venue's reported positions per symbol and flags mismatches —
+visible rather than silent.
+
+### Broker-native sizing units
+
+`lots` and `units` sizing was refused outright, in the live sizer and the
+backtester alike, because pricing a lot as if it were a share is not a rounding
+error: at a standard contract size a single MT5 lot controls 100,000 units of
+the base currency.
+
+The venue now answers the question directly. `GET /instrument/spec?symbol=&broker=`
+returns a [`models.InstrumentSpec`](broker_service/models.py) with:
+
+- `contract_size` — what one quantity unit controls (1 for a share and for an
+  OANDA unit, which *is* one unit of the base currency; typically 100000 for an
+  MT5 lot). Notional and percent-of-equity sizing divide by
+  `price × contract_size` — the missing factor.
+- `size_step` / `min_size` — the venue's increment and floor.
+
+Sizes **floor** onto the step and are refused below the minimum: rounding up
+would place a larger order than the strategy asked for, which is never the safe
+direction to err. Floating-point care is needed here — `0.07 / 0.01` is
+6.999999999999999 in IEEE754, so a naive floor silently loses a whole step.
+
+`orderSizing.ts` (live) and `sizing.py` (backtest) share the semantics, so an FX
+strategy backtests at the size it would actually trade. An exit closes the
+position rounded onto the step rather than floored to a whole number — flooring
+0.07 lots to 0 would have stranded the position open forever. Scale-out rungs
+reduce onto the step too, so a partial exit is a size the venue would accept.
+
+Adapters: MT5 reads its `SymbolInfo` (`volume_min` / `volume_step` /
+`volume_max` / `trade_contract_size`) defensively with MT5's conventional
+defaults as fallbacks; OANDA derives the step from `tradeUnitsPrecision`; IB and
+Alpaca return the whole-share constant rather than paying a round-trip for a
+fixed answer. Futures and options multipliers on IB would need
+`reqContractDetails` and are flagged, not implemented.
+
+### Venue account surface, completed
+
+`/account/summary`, `/account/orders` and `/account/all` already dispatch by
+broker (§12.8); `IBAdapter` now implements `open_orders()`, `executions()` and
+`instrument_spec()` too, so the IB path is reachable through the registry
+rather than only through its route.
 
 ---
 

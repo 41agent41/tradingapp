@@ -33,10 +33,10 @@ import axios from 'axios';
 import { logger } from './logger.js';
 import { dbService } from './database.js';
 import { StrategyRepository, type ActiveRun } from './strategyRepository.js';
-import { OrderAuditRepository } from './orderAuditRepository.js';
 import { ExecutionRepository } from './executionRepository.js';
 import { submitCreateOrder } from './orderService.js';
 import { isSystematicExecutionEnabled, systematicMaxOrdersPerDay } from './orderTypes.js';
+import type { InstrumentSpec } from './orderSizing.js';
 import { ExecutionEngine, type ExecutionContext, type ExecutionResult } from './executionEngine.js';
 
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
@@ -146,7 +146,6 @@ function defaultDeps(
   emit: (runId: number, payload: Record<string, unknown>) => void
 ): StrategyRunnerDeps {
   const repo = new StrategyRepository(dbService);
-  const auditRepo = new OrderAuditRepository(dbService);
   const executionRepo = new ExecutionRepository(dbService);
   const engine = new ExecutionEngine({
     executionEnabled: isSystematicExecutionEnabled,
@@ -161,6 +160,9 @@ function defaultDeps(
     realisedPnlToday: async (runId) => (await executionRepo.realisedPnlTodayForRun(runId)).realised,
     // Backs `pct_equity` sizing, from the run's own venue.
     accountEquity: (broker) => venueEquity(broker),
+    // Backs broker-native sizing: what one quantity unit means at this venue
+    // and what sizes it accepts.
+    instrumentSpec: (broker, symbol) => venueInstrumentSpec(broker, symbol),
   });
   // Venue avg-cost cache, keyed per broker. `/account/positions` costs a
   // round-trip to the venue, so one fetch serves every run on that broker
@@ -175,6 +177,39 @@ function defaultDeps(
   // with a reason rather than sizing off an invented equity figure.
   const equityCache = new Map<string, { at: number; equity: number | null }>();
   const EQUITY_TTL_MS = 60_000;
+  // Instrument specs barely change, so they are cached for far longer than
+  // equity or average cost — a venue's lot step is a property of the
+  // instrument, not of the account.
+  const specCache = new Map<string, { at: number; spec: InstrumentSpec | null }>();
+  const SPEC_TTL_MS = 15 * 60_000;
+  const venueInstrumentSpec = async (
+    broker: string,
+    symbol: string
+  ): Promise<InstrumentSpec | null> => {
+    const key = `${broker}:${symbol.toUpperCase()}`;
+    const cached = specCache.get(key);
+    if (cached && Date.now() - cached.at <= SPEC_TTL_MS) return cached.spec;
+    let spec: InstrumentSpec | null = null;
+    try {
+      const response = await axios.get(`${BROKER_SERVICE_URL}/instrument/spec`, {
+        params: { broker, symbol },
+        timeout: 30000,
+        headers: { Connection: 'close' },
+      });
+      const data = response.data ?? {};
+      spec = {
+        unit: String(data.unit || 'shares'),
+        minSize: Number(data.min_size) || 1,
+        sizeStep: Number(data.size_step) || 1,
+        maxSize: data.max_size == null ? null : Number(data.max_size),
+        contractSize: Number(data.contract_size) || 1,
+      };
+    } catch {
+      spec = null;
+    }
+    specCache.set(key, { at: Date.now(), spec });
+    return spec;
+  };
   const venueEquity = async (broker: string): Promise<number | null> => {
     const cached = equityCache.get(broker);
     if (cached && Date.now() - cached.at <= EQUITY_TTL_MS) return cached.equity;
@@ -244,26 +279,27 @@ function defaultDeps(
       }));
     },
     getPosition: async (run) => {
-      // Size: net signed exposure from the order-audit log for this
-      // (broker, symbol, account_mode).
-      // Average price: the *venue's* reported average cost, now for whichever
+      // Size: this run's own exposure — its recorded fills plus the unfilled
+      // remainder of its still-working orders, scoped by `runId` so a second
+      // run on the same symbol (or a manual trade) can never change what this
+      // run's sizing and pyramiding rules do. See
+      // `ExecutionRepository.netPositionWithOpenOrders` for why both halves are
+      // needed: fills alone lag the poller, submitted orders alone can't see a
+      // partial fill. With the fills feed off this is byte-for-byte the old
+      // order-audit estimate.
+      //
+      // Average price: the *venue's* reported average cost for whichever
       // broker the run targets — so position.unrealized_pct exit rules (e.g. a
       // -2% stop) evaluate live the same way they do in backtest on MT5 /
       // Alpaca / OANDA, not just IB.
-      //
-      // Size deliberately still comes from the audit log rather than the
-      // venue: the venue reports the whole *account's* position, which would
-      // fold in exposure this run did not create (a second run on the same
-      // symbol, or a manual trade). Switching to venue-authoritative sizing is
-      // the right end state but changes live semantics, so it is called out as
-      // a follow-on rather than slipped in here.
       try {
-        const size = await auditRepo.netExposure(
-          run.symbol,
-          run.account_mode,
-          POSITION_LOOKBACK_HOURS,
-          run.broker
-        );
+        const size = await executionRepo.netPositionWithOpenOrders({
+          broker: run.broker || 'ib',
+          symbol: run.symbol,
+          accountMode: run.account_mode,
+          runId: run.id,
+          lookbackHours: POSITION_LOOKBACK_HOURS,
+        });
         const netSize = Number.isFinite(size) ? size : 0;
         const avgPrice = netSize !== 0 ? await venueAvgCost(run.broker || 'ib', run.symbol) : 0;
         return { size: netSize, avg_price: avgPrice };

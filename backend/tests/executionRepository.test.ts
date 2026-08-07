@@ -173,3 +173,108 @@ describe('ExecutionRepository.activeBrokers', () => {
     expect(brokers).toEqual(['ib', 'alpaca']);
   });
 });
+
+describe('ExecutionRepository.netPositionWithOpenOrders', () => {
+  function netFor(rowsFor: (call: Call) => any[]) {
+    const { db, calls } = fakeDb(rowsFor);
+    return { repo: new ExecutionRepository(db), calls };
+  }
+
+  it('sums recorded fills and the unfilled remainder of working orders', async () => {
+    // Neither half is sufficient alone: fills lag the poller, and submitted
+    // quantities can't see a partial fill.
+    const { repo, calls } = netFor(() => [{ net: '140' }]);
+
+    const net = await repo.netPositionWithOpenOrders({
+      broker: 'ib',
+      symbol: 'msft',
+      accountMode: 'paper',
+      lookbackHours: 168,
+    });
+
+    expect(net).toBe(140);
+    expect(calls[0].text).toMatch(/WITH filled AS/);
+    expect(calls[0].text).toMatch(/GREATEST\(o\.quantity - COALESCE\(f\.filled, 0\), 0\)/);
+    expect(calls[0].params).toEqual(['ib', 'MSFT', 'paper', null, 168]);
+  });
+
+  it('scopes to one run when asked — the attribution ledger', async () => {
+    // A second run on the same symbol, or a manual trade, must not change what
+    // this run's sizing and pyramiding rules do.
+    const { repo, calls } = netFor(() => [{ net: '0' }]);
+
+    await repo.netPositionWithOpenOrders({
+      broker: 'ib',
+      symbol: 'MSFT',
+      accountMode: 'paper',
+      runId: 9,
+      lookbackHours: 24,
+    });
+
+    expect(calls[0].params[3]).toBe(9);
+    expect(calls[0].text).toMatch(/run_id = \$4::bigint/);
+    expect(calls[0].text).toMatch(/FROM strategy_signals s/);
+  });
+
+  it('excludes dead orders from the working half but never from the fills half', async () => {
+    // A partially-filled-then-cancelled order still leaves shares held; the
+    // old submitted-order estimate dropped it entirely.
+    const { repo, calls } = netFor(() => [{ net: '40' }]);
+    await repo.netPositionWithOpenOrders({
+      broker: 'ib',
+      symbol: 'MSFT',
+      accountMode: 'paper',
+      lookbackHours: 168,
+    });
+
+    const filledHalf = calls[0].text.slice(0, calls[0].text.indexOf('latest_orders'));
+    expect(filledHalf).not.toMatch(/rejected/);
+    expect(calls[0].text).toMatch(/o\.status NOT IN \(/);
+  });
+
+  it('keeps only the latest audit row per venue order id', async () => {
+    // A MODIFY writes a new row sharing the original's id; counting both would
+    // double the order.
+    const { repo, calls } = netFor(() => [{ net: '0' }]);
+    await repo.netPositionWithOpenOrders({
+      broker: 'ib',
+      symbol: 'MSFT',
+      accountMode: 'paper',
+      lookbackHours: 168,
+    });
+
+    expect(calls[0].text).toMatch(/DISTINCT ON \(a\.ib_order_id\)/);
+  });
+
+  it('returns 0 rather than NaN when the query yields nothing usable', async () => {
+    const { repo } = netFor(() => []);
+    const net = await repo.netPositionWithOpenOrders({
+      broker: 'ib',
+      symbol: 'MSFT',
+      accountMode: 'paper',
+      lookbackHours: 168,
+    });
+    expect(net).toBe(0);
+  });
+});
+
+describe('ExecutionRepository.netPositionsByBroker', () => {
+  it('groups the venue-wide fill net per symbol', async () => {
+    const { db, calls } = fakeDb(() => [
+      { symbol: 'msft', net: '100' },
+      { symbol: 'AAPL', net: '-50' },
+    ]);
+
+    const net = await new ExecutionRepository(db).netPositionsByBroker('ib', 'paper');
+
+    expect(net).toEqual({ MSFT: 100, AAPL: -50 });
+    expect(calls[0].params).toEqual(['ib', 'paper']);
+  });
+
+  it('omits the account-mode filter when none is given', async () => {
+    const { db, calls } = fakeDb(() => []);
+    await new ExecutionRepository(db).netPositionsByBroker('ib');
+    expect(calls[0].params).toEqual(['ib']);
+    expect(calls[0].text).not.toMatch(/account_mode/);
+  });
+});

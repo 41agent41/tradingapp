@@ -259,3 +259,50 @@ def test_all_dispatches_every_section_to_the_same_venue(monkeypatch):
 
     assert res.status_code == 200
     assert sorted(adapter.calls) == ["account_summary", "open_orders", "positions"]
+
+
+# --------------------------------------------------------------------------- #
+# `/instrument/spec`
+# --------------------------------------------------------------------------- #
+def test_instrument_spec_dispatches_to_the_named_venue(monkeypatch):
+    """What one unit of quantity *means* is a per-venue fact — 100 is 100
+    shares on IB but 100 lots on MT5."""
+
+    class SpecAdapter:
+        def __init__(self) -> None:
+            self.symbols: List[str] = []
+
+        def instrument_spec(self, symbol: str) -> Dict[str, Any]:
+            self.symbols.append(symbol)
+            return {
+                "symbol": symbol.upper(),
+                "broker": "mt5",
+                "unit": "lots",
+                "min_size": 0.01,
+                "size_step": 0.01,
+                "max_size": 100.0,
+                "contract_size": 100000.0,
+                "currency": "USD",
+            }
+
+    adapter = SpecAdapter()
+    monkeypatch.setattr("adapters.get_broker_adapter", lambda broker: adapter)
+
+    res = _client().get("/instrument/spec", params={"symbol": "eurusd", "broker": "mt5"})
+
+    assert res.status_code == 200
+    assert adapter.symbols == ["eurusd"]
+    body = res.json()
+    assert body["unit"] == "lots"
+    assert body["contract_size"] == 100000.0
+
+
+def test_instrument_spec_requires_a_symbol():
+    assert _client().get("/instrument/spec").status_code == 422
+
+
+def test_instrument_spec_unknown_broker_is_a_400():
+    assert (
+        _client().get("/instrument/spec", params={"symbol": "MSFT", "broker": "nope"}).status_code
+        == 400
+    )

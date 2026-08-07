@@ -304,3 +304,67 @@ describe('ExecutionEngine — pct_equity sizing', () => {
     expect(deps.submitOrder).not.toHaveBeenCalled();
   });
 });
+
+describe('ExecutionEngine — broker-native sizing', () => {
+  const lotSpec = { unit: 'lots', minSize: 0.01, sizeStep: 0.01, contractSize: 100_000 };
+  const fxBar = { ...lastBar, close: 1.1 };
+  const mt5Run = (sizing: Record<string, unknown>) =>
+    run({ broker: 'mt5', symbol: 'EURUSD', sizing });
+
+  it('sizes a notional block in lots, honouring the contract size', async () => {
+    const deps = makeDeps({ instrumentSpec: jest.fn().mockResolvedValue(lotSpec) });
+
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ run: mt5Run({ type: 'notional', size: 110_000 }), lastBar: fxBar })
+    );
+
+    // 110_000 / (1.1 x 100_000) = 1.0 lots. Sized as shares this would have
+    // been 100_000 — five orders of magnitude of extra exposure.
+    expect(result).toEqual(expect.objectContaining({ placed: true, quantity: 1 }));
+    expect(deps.instrumentSpec).toHaveBeenCalledWith('mt5', 'EURUSD');
+  });
+
+  it('refuses a size below the venue minimum instead of rounding it up', async () => {
+    const deps = makeDeps({ instrumentSpec: jest.fn().mockResolvedValue(lotSpec) });
+
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ run: mt5Run({ type: 'fixed', size: 0.005 }), lastBar: fxBar })
+    );
+
+    expect(result.placed).toBe(false);
+    if (!result.placed) expect(result.reason).toMatch(/minimum/);
+    expect(deps.submitOrder).not.toHaveBeenCalled();
+  });
+
+  it('falls back to whole shares when the venue spec is unavailable', async () => {
+    // The safe fallback: a fixed size still has to clear the minimum, so a
+    // wrong guess errs toward refusing rather than toward an oversized order.
+    const deps = makeDeps({
+      instrumentSpec: jest.fn().mockRejectedValue(new Error('venue unreachable')),
+    });
+
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ run: mt5Run({ type: 'fixed', size: 2 }), lastBar: fxBar })
+    );
+
+    expect(result).toEqual(expect.objectContaining({ placed: true, quantity: 2 }));
+  });
+
+  it('closes a fractional position exactly, not floored to a whole number', async () => {
+    // Flooring 0.07 lots to 0 would strand the position open forever.
+    const deps = makeDeps({ instrumentSpec: jest.fn().mockResolvedValue(lotSpec) });
+
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({
+        run: mt5Run({ type: 'fixed', size: 0.07 }),
+        signal: 'sell',
+        position: { size: 0.07, avg_price: 1.05 },
+        lastBar: fxBar,
+      })
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({ placed: true, action: 'SELL', quantity: 0.07 })
+    );
+  });
+});

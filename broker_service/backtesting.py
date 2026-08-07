@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from indicators import calculator as indicator_calculator
-from sizing import resolve_backtest_quantity
+from sizing import resolve_backtest_quantity, round_to_step
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,10 @@ class Trade:
     exit_time: datetime | None
     entry_price: float
     exit_price: float | None
-    quantity: int
+    # A float, not an int: venue-native sizing means a quantity can be 0.07
+    # lots on MT5 or 1500.5 units on OANDA. Whole-share venues still produce
+    # whole numbers.
+    quantity: float
     order_type: OrderType
     status: OrderStatus
     entry_reason: str
@@ -279,9 +282,20 @@ class BacktestEngine:
         self.commission = commission  # Commission as percentage of trade value
 
     def run_backtest(
-        self, df: pd.DataFrame, strategy: TradingStrategy, symbol: str = "UNKNOWN"
+        self,
+        df: pd.DataFrame,
+        strategy: TradingStrategy,
+        symbol: str = "UNKNOWN",
+        spec: Dict[str, Any] | None = None,
     ) -> BacktestResults:
-        """Run backtest on historical data"""
+        """Run backtest on historical data.
+
+        ``spec`` is the venue's :class:`models.InstrumentSpec` for the symbol,
+        which is what lets a `sizing` block mean the same thing here as it does
+        live — "100" is 100 shares on IB but 100 *lots* on MT5. Omitted, sizing
+        resolves in whole shares, the behaviour every equity backtest has
+        always had.
+        """
 
         logger.info(f"Starting backtest for {strategy.name} on {symbol}")
 
@@ -316,6 +330,9 @@ class BacktestEngine:
         # behaviour when a strategy declares none, which is what the built-in
         # strategies do), and rungs fire per bar against the open trade.
         sizing_spec = getattr(strategy, "sizing", None)
+        # The venue's size increment, used both to size an entry and to round a
+        # partial exit. Defaults to whole units when no spec is supplied.
+        size_step = float((spec or {}).get("size_step") or 1.0) or 1.0
         evaluate_scale_out = getattr(strategy, "evaluate_scale_out", None)
         scale_out_enabled = callable(evaluate_scale_out) and bool(
             getattr(strategy, "scale_out", None)
@@ -387,10 +404,15 @@ class BacktestEngine:
                     if rung["index"] in fired_rungs:
                         continue
                     fired_rungs.add(rung["index"])
-                    slice_qty = int(open_trade.quantity * rung["reduce_pct"] / 100)
-                    if slice_qty < 1:
+                    # Reduce onto the venue's own size step, so a partial exit
+                    # is an order the venue would actually accept rather than
+                    # an arbitrary fraction of the position.
+                    slice_qty = round_to_step(
+                        open_trade.quantity * rung["reduce_pct"] / 100, size_step
+                    )
+                    if slice_qty <= 0:
                         continue
-                    remaining = open_trade.quantity - slice_qty
+                    remaining = round_to_step(open_trade.quantity - slice_qty, size_step)
                     closed = Trade(
                         entry_time=open_trade.entry_time,
                         exit_time=current_time,
@@ -424,13 +446,13 @@ class BacktestEngine:
                 # without one keeps the original "use all available capital"
                 # behaviour so the built-in strategies backtest unchanged.
                 sized, sizing_reason = resolve_backtest_quantity(
-                    sizing_spec, current_price, capital
+                    sizing_spec, current_price, capital, spec
                 )
                 if sized is None:
-                    quantity = int(capital / current_price)
+                    quantity = float(int(capital / current_price))
                 else:
                     quantity = sized
-                    if quantity < 1:
+                    if quantity <= 0:
                         logger.debug(f"Entry skipped: {sizing_reason}")
 
                 if quantity > 0:

@@ -321,8 +321,26 @@ async def run_backtest(
         # Create backtest engine with specified parameters
         engine = backtest_engine.__class__(initial_capital=initial_capital, commission=commission)
 
+        # The venue's instrument spec is what makes a `sizing` block mean the
+        # same thing here as it does live: "100" is 100 shares on IB but 100
+        # lots on MT5. Fail-soft — a venue that can't answer leaves the spec
+        # unset and the sizer falls back to whole shares, which is the
+        # behaviour every equity backtest has always had.
+        spec = None
+        try:
+            from adapters import get_broker_adapter
+
+            spec = get_broker_adapter(provider).instrument_spec(symbol.upper())
+        except Exception as spec_err:  # noqa: BLE001
+            logger.warning(
+                "instrument_spec_unavailable",
+                symbol=symbol.upper(),
+                broker=provider,
+                error=str(spec_err),
+            )
+
         # Run backtest
-        results = engine.run_backtest(df, strategy_instance, symbol)
+        results = engine.run_backtest(df, strategy_instance, symbol, spec=spec)
 
         # Return results
         return {

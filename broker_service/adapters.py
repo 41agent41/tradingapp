@@ -89,6 +89,8 @@ class BrokerAdapter(Protocol):
 
     def executions(self, days: int = 1) -> List[Dict[str, Any]]: ...
 
+    def instrument_spec(self, symbol: str) -> Dict[str, Any]: ...
+
 
 # --------------------------------------------------------------------------- #
 # Registry

@@ -173,6 +173,37 @@ class Execution(BaseModel):
     broker: str = "ib"
 
 
+class InstrumentSpec(BaseModel):
+    """What one unit of quantity *means* at a venue, and how it may be sized.
+
+    Sizing is only abstract until it has to become a number. "Buy 100" means
+    100 shares on IB or Alpaca, but 100 **lots** on MT5 — which, at a standard
+    contract size, is ten million units of the base currency. That is why
+    `lots` and `units` sizing was refused outright rather than approximated:
+    pricing a lot as if it were a share is not a rounding error.
+
+    This is the venue's own answer, so the sizer can convert instead of guess:
+
+    - ``unit`` — what a quantity of 1 is called here (`shares` / `lots` / `units`).
+    - ``contract_size`` — how many units of the underlying one quantity unit
+      controls. 1 for shares and for OANDA units (an OANDA "unit" *is* one unit
+      of the base currency); typically 100000 for a standard FX lot on MT5.
+      Notional and percent-of-equity sizing divide by ``price * contract_size``.
+    - ``min_size`` / ``size_step`` — the venue's smallest tradable size and its
+      increment. A resolved size is floored onto the step and refused below the
+      minimum, rather than being rounded up into an order larger than intended.
+    """
+
+    symbol: str
+    broker: str
+    unit: str = "shares"
+    min_size: float = 1.0
+    size_step: float = 1.0
+    max_size: Optional[float] = None
+    contract_size: float = 1.0
+    currency: str = "USD"
+
+
 class AccountData(BaseModel):
     account: AccountSummary
     positions: List[Position]

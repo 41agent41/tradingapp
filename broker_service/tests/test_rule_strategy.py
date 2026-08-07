@@ -798,3 +798,91 @@ class TestSizingAndScaleOutBacktest:
                         ],
                     }
                 )
+
+
+class TestBrokerNativeSizingBacktest:
+    """The backtest sizes in the *venue's* units, not shares.
+
+    "Buy 1" means one share on IB but one **lot** on MT5 — at a standard
+    contract size, 100,000 units of the base currency. Backtesting a lot-sized
+    strategy as though it bought shares would understate its exposure by five
+    orders of magnitude.
+    """
+
+    _frame = staticmethod(TestPositionAwareBacktest._frame)
+    _ENTRY_ONLY = {"all": [{"left": "position.size", "op": "<=", "right": 0}]}
+
+    LOT_SPEC = {
+        "unit": "lots",
+        "min_size": 0.01,
+        "size_step": 0.01,
+        "contract_size": 100_000,
+    }
+
+    def test_notional_sizing_accounts_for_the_contract_size(self) -> None:
+        rules = {
+            "name": "One lot",
+            "entry": self._ENTRY_ONLY,
+            "sizing": {"type": "notional", "size": 110_000},
+        }
+        df = self._frame([1.1, 1.12, 1.15])
+        engine = BacktestEngine(initial_capital=100_000, commission=0.0)
+
+        results = engine.run_backtest(
+            df, compile_rule_strategy(rules), symbol="EURUSD", spec=self.LOT_SPEC
+        )
+
+        # 110_000 / (1.1 x 100_000) = 1.0 lots. Without the contract size this
+        # would have been 100_000 "shares".
+        assert [t.quantity for t in results.trades] == [1.0]
+
+    def test_a_fractional_lot_survives_the_round_trip(self) -> None:
+        rules = {
+            "name": "Fractional lot",
+            "entry": self._ENTRY_ONLY,
+            "sizing": {"type": "fixed", "unit": "lots", "size": 0.07},
+        }
+        df = self._frame([1.1, 1.12, 1.15])
+        engine = BacktestEngine(initial_capital=100_000, commission=0.0)
+
+        results = engine.run_backtest(
+            df, compile_rule_strategy(rules), symbol="EURUSD", spec=self.LOT_SPEC
+        )
+
+        assert [t.quantity for t in results.trades] == [0.07]
+
+    def test_a_scale_out_reduces_onto_the_venue_step(self) -> None:
+        """A partial exit must be a size the venue would actually accept."""
+        rules = {
+            "name": "Half a lot off at +3%",
+            "entry": self._ENTRY_ONLY,
+            "sizing": {"type": "fixed", "unit": "lots", "size": 0.07},
+            "scale_out": [
+                {
+                    "when": {"left": "position.unrealized_pct", "op": ">=", "right": 3.0},
+                    "reduce_pct": 50,
+                }
+            ],
+        }
+        # Enter at 1.00, cross +3% at 1.03.
+        df = self._frame([1.00, 1.01, 1.03, 1.05])
+        engine = BacktestEngine(initial_capital=100_000, commission=0.0)
+
+        results = engine.run_backtest(
+            df, compile_rule_strategy(rules), symbol="EURUSD", spec=self.LOT_SPEC
+        )
+
+        scaled = [t for t in results.trades if "scale-out" in (t.exit_reason or "")]
+        # Half of 0.07 is 0.035, floored onto the 0.01 step.
+        assert [t.quantity for t in scaled] == [0.03]
+        remainder = [t for t in results.trades if t.exit_reason == "End of backtest"]
+        assert [t.quantity for t in remainder] == [0.04]
+
+    def test_no_spec_keeps_whole_share_sizing(self) -> None:
+        rules = {"name": "Shares", "entry": self._ENTRY_ONLY, "sizing": {"size": 10}}
+        df = self._frame([100.0, 101.0, 102.0])
+        engine = BacktestEngine(initial_capital=100_000, commission=0.0)
+
+        results = engine.run_backtest(df, compile_rule_strategy(rules), symbol="TEST")
+
+        assert [t.quantity for t in results.trades] == [10]

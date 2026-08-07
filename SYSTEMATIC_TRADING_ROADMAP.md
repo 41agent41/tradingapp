@@ -666,20 +666,64 @@ All four framing decisions are now resolved:
    strategy declaring no sizing keeps the all-in behaviour, so the built-ins
    are unchanged.
 
+**Position attribution — decided ✅.** Of the three options named above, the
+**attribution ledger** is the one that ships. Per-run sub-accounts need
+venue-side provisioning not every broker offers, and accepting account-level
+semantics is wrong the moment a second run touches the same instrument. The
+ledger was already latent in the data: each fill carries the `run_id` of the
+signal that caused it.
+
+What made it correct rather than merely available was recognising that neither
+source is sufficient alone. **Fills lag** — the poller runs on its own timer, so
+an order placed seconds ago reads as flat and a strategy could re-enter a
+position it already holds. **Submitted orders are wrong** — that is the estimate
+this work replaced, blind to a partial fill and dropping a
+partially-filled-then-cancelled order entirely, losing shares genuinely held.
+
+So a position is **fills plus the unfilled remainder of still-working orders**.
+Every fill counts whatever became of its order; every alive order contributes
+only what has *not* yet filled. An order therefore transitions smoothly from
+"in flight" to "filled" without ever being double-counted or briefly invisible.
+With the fills feed off this degrades *exactly* to the old estimate, so enabling
+the feed — not deploying this — is what changes behaviour.
+
+The scope of the ledger is the decision itself: **with** a run id it is that
+run's own exposure (so a second run on the same symbol, or a manual trade,
+cannot change its sizing and pyramiding); **without** one it is whole-account
+exposure at that venue, which is the right basis for a fat-finger cap like
+`ORDER_MAX_POSITION`. Per-run attribution can still drift from the account — a
+manual trade belongs to no run, a corporate action to no order — so that drift
+is made *visible* at `GET /api/account/reconciliation` rather than hidden.
+
 **Open — what is actually left:**
 
-1. **Per-run vs account-level position attribution** — the decision described
-   in 3 above. Everything else about fill-authoritative positions is built.
-2. **Intrabar fills.** The backtester fills at the bar close, live fills happen
+1. **Intrabar fills.** The backtester fills at the bar close, live fills happen
    at the market. Sessions, multi-timeframe operands, position-aware rules,
    sizing and scale-outs now share one code path between the two engines, so
    this is the main remaining source of backtest↔live drift.
-3. **MT5 `lots` / OANDA `units` sizing** still resolve to a refusal rather than
-   a broker-native quantity, in the live sizer and the backtester alike —
-   pricing a lot as if it were a share would be worse than declining.
-4. **The MT5 sidecar's own auth.** `MT5Adapter` sends `X-MT5-Bridge-Secret`
+2. **Futures/options contract multipliers on IB.** `IBAdapter.instrument_spec`
+   returns the whole-share constant rather than calling `reqContractDetails`,
+   which is right for the STK path the app trades and would need revisiting to
+   size a futures contract natively.
+3. **The MT5 sidecar's own auth.** `MT5Adapter` sends `X-MT5-Bridge-Secret`
    when configured; the sidecar rejecting requests that lack it has to be
-   implemented on the Windows host, outside this repo.
+   implemented on the Windows host, outside this repo. The sidecar contract now
+   also expects `GET /orders`, `GET /deals` and `GET /symbol` — likewise
+   implemented there.
+
+~~**MT5 `lots` / OANDA `units` sizing**~~ ✅ **Closed.** Both resolve to a
+broker-native quantity now. The venue supplies an `InstrumentSpec`
+(`GET /instrument/spec?symbol=&broker=`) carrying `contract_size` (what one
+quantity unit controls — 1 for a share and for an OANDA unit, typically 100000
+for a standard FX lot), `size_step` and `min_size`. Notional and
+percent-of-equity sizing divide by `price × contract_size`, which is exactly
+the factor that made lot sizing un-approximable: getting it wrong is a
+five-order-of-magnitude error, not a rounding one. Sizes **floor** onto the
+step and are refused below the minimum — rounding up would place a larger order
+than the strategy asked for. The live sizer (`orderSizing.ts`) and the
+backtester (`sizing.py`) share the semantics, and an exit closes the position
+rounded onto the step rather than floored to a whole number, which would have
+stranded a fractional lot open forever.
 
 ---
 
