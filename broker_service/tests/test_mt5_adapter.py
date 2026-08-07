@@ -504,3 +504,43 @@ def test_open_orders_derive_direction_from_the_mt5_type_code(mt5):
         ("902", "SELL", 2.0),
     ]
     assert rows[0]["symbol"] == "EURUSD"
+
+
+def test_instrument_spec_reads_mt5_symbol_info(mt5):
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        {
+            "volume_min": 0.01,
+            "volume_step": 0.01,
+            "volume_max": 100.0,
+            "trade_contract_size": 100000.0,
+            "currency_profit": "USD",
+        }
+    )
+
+    spec = _adapter(mt5).instrument_spec("eurusd")
+
+    assert FakeClient.calls[-1][1].endswith("/symbol")
+    assert spec == {
+        "symbol": "EURUSD",
+        "broker": "mt5",
+        "unit": "lots",
+        "min_size": 0.01,
+        "size_step": 0.01,
+        "max_size": 100.0,
+        # The factor that makes a lot not a share: one lot controls 100k units.
+        "contract_size": 100000.0,
+        "currency": "USD",
+    }
+
+
+def test_instrument_spec_falls_back_to_mt5_conventional_defaults(mt5):
+    """The sidecar is out-of-repo; an incomplete response must still yield a
+    usable, conservative spec rather than an error."""
+    FakeClient.handler = lambda method, url, params, json: FakeResponse({})
+
+    spec = _adapter(mt5).instrument_spec("EURUSD")
+
+    assert spec["min_size"] == 0.01
+    assert spec["size_step"] == 0.01
+    assert spec["contract_size"] == 100000.0
+    assert spec["max_size"] is None

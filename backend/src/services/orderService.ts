@@ -20,6 +20,7 @@ import axios from 'axios';
 
 import { dbService } from './database.js';
 import { OrderAuditRepository } from './orderAuditRepository.js';
+import { ExecutionRepository } from './executionRepository.js';
 import {
   isLiveTradingEnabled,
   positionCap,
@@ -48,7 +49,18 @@ export type SubmitCreateOutcome =
   | { ok: false; kind: 'ib_error'; error: unknown; auditId: number };
 
 export interface SubmitCreateDeps {
-  audit: Pick<OrderAuditRepository, 'create' | 'update' | 'netExposure'>;
+  audit: Pick<OrderAuditRepository, 'create' | 'update'>;
+  /**
+   * Account exposure at the venue for the order's symbol, backing
+   * `ORDER_MAX_POSITION`. Reads recorded **fills** plus the unfilled remainder
+   * of still-working orders, so a partial fill is counted for what it actually
+   * was — the submitted-order estimate this replaces could not see one, and
+   * dropped a partially-filled-then-cancelled order entirely.
+   *
+   * Deliberately *not* scoped to a strategy run: a fat-finger cap is about the
+   * account's total exposure at that venue, so a manual trade counts too.
+   */
+  netPosition(order: ValidatedOrder): Promise<number>;
   /** POST the IB-shaped payload to the IB service; defaults to axios. */
   ibPost: (payload: Record<string, unknown>) => Promise<{ data: Record<string, unknown> }>;
   /** Structured warn logger for best-effort audit updates. */
@@ -58,8 +70,17 @@ export interface SubmitCreateDeps {
 }
 
 function defaultDeps(): SubmitCreateDeps {
+  const executions = new ExecutionRepository(dbService);
   return {
     audit: new OrderAuditRepository(dbService),
+    netPosition: (order) =>
+      executions.netPositionWithOpenOrders({
+        broker: order.broker,
+        symbol: order.symbol,
+        accountMode: order.account_mode,
+        runId: null,
+        lookbackHours: positionLookbackHours(),
+      }),
     ibPost: (payload) =>
       axios.post(`${BROKER_SERVICE_URL}/orders`, payload, { timeout: 30_000 }) as Promise<{
         data: Record<string, unknown>;
@@ -74,7 +95,9 @@ function defaultDeps(): SubmitCreateDeps {
  * that used to live in `POST /api/orders`, step for step:
  *
  *   1. live-trading gate (only `account_mode='live'` is affected)
- *   2. opt-in position-limit guard (fails closed if the net can't be computed)
+ *   2. opt-in position-limit guard, now measured against fills + working
+ *      orders rather than submissions alone (fails closed if it can't be
+ *      computed)
  *   3. `order_audit` insert *before* the IB hop (refuses to send if it fails)
  *   4. IB `/orders` POST; audit row updated with the outcome either way
  */
@@ -96,12 +119,7 @@ export async function submitCreateOrder(
   if (cap > 0) {
     let net: number;
     try {
-      net = await deps.audit.netExposure(
-        order.symbol,
-        order.account_mode,
-        positionLookbackHours(),
-        order.broker
-      );
+      net = await deps.netPosition(order);
     } catch (limitErr) {
       deps.error(
         { err: String((limitErr as Error)?.message ?? limitErr) },

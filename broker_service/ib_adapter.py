@@ -50,6 +50,38 @@ class IBAdapter:
 
         return get_account_summary_sync()
 
+    def open_orders(self) -> List[Dict[str, Any]]:
+        from routes.account import get_orders_sync
+
+        return get_orders_sync()
+
+    def executions(self, days: int = 1) -> List[Dict[str, Any]]:
+        from routes.account import get_executions_sync
+
+        return get_executions_sync(days)
+
+    def instrument_spec(self, symbol: str) -> Dict[str, Any]:
+        """IB stock orders are whole shares, so the spec is a constant rather
+        than a round-trip to the Gateway.
+
+        This is deliberately not derived from `reqContractDetails`: that would
+        cost a Gateway call per sizing decision, and for the STK path the app
+        actually trades the answer is fixed. Futures and options have real
+        multipliers, and when the order path grows to size those natively this
+        is where their contract multiplier belongs.
+        """
+
+        return {
+            "symbol": symbol.upper(),
+            "broker": "ib",
+            "unit": "shares",
+            "min_size": 1.0,
+            "size_step": 1.0,
+            "max_size": None,
+            "contract_size": 1.0,
+            "currency": "USD",
+        }
+
     # -- MarketDataAdapter ------------------------------------------------- #
     def search_contracts(self, request: Any) -> Dict[str, Any]:
         from routes.contracts import search_contracts_sync

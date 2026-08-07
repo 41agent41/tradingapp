@@ -489,3 +489,13 @@ def test_open_orders_normalise_to_the_app_shape(alpaca):
             "avg_fill_price": 190.25,
         }
     ]
+
+
+def test_instrument_spec_is_whole_shares(alpaca):
+    spec = _adapter(alpaca).instrument_spec("aapl")
+
+    assert spec["unit"] == "shares"
+    assert spec["min_size"] == 1.0
+    assert spec["size_step"] == 1.0
+    assert spec["contract_size"] == 1.0
+    assert spec["symbol"] == "AAPL"

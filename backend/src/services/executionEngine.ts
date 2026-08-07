@@ -19,7 +19,7 @@
  * unit-testable with no DB, IB service or network.
  */
 
-import { resolveOrderQuantity } from './orderSizing.js';
+import { resolveOrderQuantity, roundToStep, type InstrumentSpec } from './orderSizing.js';
 import { validateOrder, type OrderAction, type ValidatedOrder } from './orderTypes.js';
 import type { SubmitCreateOutcome } from './orderService.js';
 import type { ActiveRun } from './strategyRepository.js';
@@ -60,6 +60,10 @@ export interface ExecutionEngineDeps {
    *  when the sizing block actually needs it; `null` means the venue reported
    *  none and the sizer refuses rather than guessing a size. */
   accountEquity?(broker: string): Promise<number | null>;
+  /** The venue's unit semantics and size constraints for the instrument —
+   *  what makes "100" mean 100 shares on IB but 100 *lots* on MT5. `null`
+   *  falls back to whole shares. */
+  instrumentSpec?(broker: string, symbol: string): Promise<InstrumentSpec | null>;
 }
 
 export class ExecutionEngine {
@@ -177,17 +181,42 @@ export class ExecutionEngine {
           equity = null;
         }
       }
+      // The venue's unit semantics. Fetched for every sizing type, because
+      // even a `fixed` size has to conform to the venue's step and minimum.
+      let instrument: InstrumentSpec | null = null;
+      if (this.deps.instrumentSpec) {
+        try {
+          instrument = await this.deps.instrumentSpec(run.broker, run.symbol);
+        } catch {
+          // Whole shares is the safe fallback: it is what every equity venue
+          // uses, and on a lot-based venue a `fixed` size still has to clear
+          // the minimum, so a wrong guess errs toward refusing.
+          instrument = null;
+        }
+      }
       const sized = resolveOrderQuantity(run.sizing ?? {}, {
         price: ctx.lastBar.close,
         broker: run.broker,
         equity,
+        spec: instrument,
       });
       if (!sized.ok) return { placed: false, reason: `sizing: ${sized.reason}` };
       quantity = sized.quantity;
     } else {
       action = 'SELL';
-      quantity = Math.floor(Math.abs(ctx.position.size));
-      if (quantity < 1) {
+      // Close exactly what is held, rounded onto the venue's step — flooring
+      // to a whole number would strand a fractional lot open forever.
+      let spec: InstrumentSpec | null = null;
+      if (this.deps.instrumentSpec) {
+        try {
+          spec = await this.deps.instrumentSpec(run.broker, run.symbol);
+        } catch {
+          spec = null;
+        }
+      }
+      const step = Number(spec?.sizeStep) > 0 ? Number(spec?.sizeStep) : 1;
+      quantity = roundToStep(Math.abs(ctx.position.size), step);
+      if (quantity <= 0) {
         return { placed: false, reason: 'exit signal but no open long position to close' };
       }
     }

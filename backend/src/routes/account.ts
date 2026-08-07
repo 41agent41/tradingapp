@@ -352,6 +352,70 @@ router.get('/pnl', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Compare what the app believes it holds at a venue against what the venue
+ * says it holds.
+ *
+ * Attributing a run's position to its own fills is the right model — it stops a
+ * second run on the same symbol, or a manual trade, silently changing what a
+ * strategy's sizing and pyramiding rules do. But it means the sum of the parts
+ * can drift from the account: a trade placed by hand belongs to no run, and a
+ * corporate action belongs to no order at all. That drift is inherent, so the
+ * honest response is to make it *visible* rather than to pretend it can't
+ * happen.
+ *
+ * Reports every symbol either side knows about, with `matched: false` on any
+ * row where they disagree beyond a rounding tolerance.
+ */
+router.get('/reconciliation', async (req: Request, res: Response) => {
+  try {
+    const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+    const accountMode =
+      typeof req.query.account_mode === 'string' ? req.query.account_mode : undefined;
+    // Fractional venue quantities (FX units, MT5 lots) never compare exactly.
+    const tolerance = Math.abs(Number(req.query.tolerance)) || 1e-6;
+
+    const repo = new ExecutionRepository(dbService);
+    const [ours, venueResponse] = await Promise.all([
+      repo.netPositionsByBroker(broker, accountMode),
+      axios.get(`${BROKER_SERVICE_URL}/account/positions`, {
+        params: { broker },
+        timeout: 20000,
+        headers: { Connection: 'close' },
+      }),
+    ]);
+
+    const theirs: Record<string, number> = {};
+    for (const row of Array.isArray(venueResponse.data) ? venueResponse.data : []) {
+      const symbol = String(row?.symbol ?? '').toUpperCase();
+      if (symbol) theirs[symbol] = Number(row?.position) || 0;
+    }
+
+    const symbols = [...new Set([...Object.keys(ours), ...Object.keys(theirs)])].sort();
+    const positions = symbols.map((symbol) => {
+      const recorded = ours[symbol] ?? 0;
+      const venue = theirs[symbol] ?? 0;
+      const difference = recorded - venue;
+      return { symbol, recorded, venue, difference, matched: Math.abs(difference) <= tolerance };
+    });
+
+    res.json({
+      broker,
+      account_mode: accountMode ?? null,
+      positions,
+      mismatches: positions.filter((p) => !p.matched).length,
+      last_updated: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    console.error('Error reconciling positions:', error);
+    res.status(error.response?.status || 500).json({
+      error: 'Failed to reconcile positions',
+      detail: error.response?.data?.detail || error.message || 'Unknown error',
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
 // Get all account data in one call
 router.get('/all', async (req: Request, res: Response) => {
   try {

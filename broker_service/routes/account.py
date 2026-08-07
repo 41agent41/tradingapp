@@ -11,7 +11,7 @@ from ibapi.execution import ExecutionFilter
 
 from executions import normalise_ib_execution
 from ib_client import get_ib_connection, verify_connection_health
-from models import AccountData, AccountSummary, Execution, Position
+from models import AccountData, AccountSummary, Execution, InstrumentSpec, Position
 from models import Order as OrderModel
 from observability import get_logger
 
@@ -254,6 +254,35 @@ async def get_account_executions(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get account executions: {error_str}",
+        )
+
+
+@router.get("/instrument/spec", response_model=InstrumentSpec)
+async def get_instrument_spec(symbol: str = Query(..., min_length=1), broker: str = "ib"):
+    """What one unit of quantity means for an instrument at a venue.
+
+    Sizing is abstract until it has to become a number, and "100" means 100
+    shares on IB but 100 *lots* on MT5 — millions of units of the base
+    currency. This is the venue's own answer, so the sizer can convert rather
+    than approximate. See `models.InstrumentSpec`.
+    """
+    try:
+        from adapters import get_broker_adapter
+
+        adapter = get_broker_adapter(broker)
+        spec = await run_tws_operation(lambda: adapter.instrument_spec(symbol))
+        return InstrumentSpec(**spec)
+
+    except HTTPException as he:
+        logger.error(f"HTTP Exception in instrument spec: {he.detail}")
+        raise he
+    except Exception as e:
+        error_str = str(e)
+        logger.error(f"Error in instrument spec endpoint: {error_str}")
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get instrument spec: {error_str}",
         )
 
 

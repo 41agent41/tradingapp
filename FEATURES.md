@@ -231,6 +231,20 @@ that gap:
   subtracted at the time they are charged, handling partial exits and
   reversals through flat. Exposed at `GET /api/account/pnl`, and consumed by a
   strategy run's `max_daily_loss` cap.
+- **Positions come from fills *plus* still-working orders.** Neither alone is
+  right: fills lag the poller, so an order placed seconds ago would read as
+  flat and a strategy could re-enter a position it already holds; submitted
+  orders can't see a partial fill and drop a partially-filled-then-cancelled
+  order entirely. Every fill counts whatever became of its order, and every
+  live order contributes only its *unfilled remainder* — so an order moves
+  from "in flight" to "filled" without ever being double-counted or briefly
+  invisible. Scoped to a run it is that run's own ledger (a second run on the
+  same symbol can't change its pyramiding); unscoped it is account exposure at
+  the venue, which is what `ORDER_MAX_POSITION` caps.
+- **Reconciliation.** Per-run attribution can drift from the account — a manual
+  trade belongs to no run. `GET /api/account/reconciliation?broker=` compares
+  the app's recorded net against the venue's reported positions per symbol and
+  flags every mismatch, so the drift is visible rather than silent.
 
 Progress and errors surface under `services.executions` in `/api/health`. The
 poller is **off** by default because it makes live venue requests on a timer.
@@ -258,6 +272,8 @@ Two further endpoints read the local **fills** store rather than the venue:
 - `GET /api/account/pnl` — realised P&L and per-symbol breakdown over those
   fills (defaults to today, the window a run's `max_daily_loss` is measured
   over).
+- `GET /api/account/reconciliation` — the app's recorded net position per
+  symbol against the venue's, with a `matched` flag per row.
 
 > These endpoints are read-only. The write path lives under `/api/orders/*`
 > and requires `LIVE_TRADING_ENABLED=true` for any live order — see the
@@ -373,6 +389,15 @@ automatically — paper-first, staged behind gates. See the
   sequence in backtest as it does live. A strategy that declares no sizing
   keeps the original all-in behaviour, so the built-in strategies are
   unchanged.
+- **Sizing is in the venue's own units.** "Buy 1" is one share on IB or Alpaca,
+  one unit of the base currency on OANDA, and one *lot* on MT5 — which at a
+  standard contract size controls 100,000 units. The venue supplies an
+  instrument spec (`GET /instrument/spec`) with its `contract_size`,
+  `size_step` and `min_size`; notional and percent-of-equity sizing divide by
+  `price × contract_size`, sizes floor onto the step (never round up past what
+  was asked for) and are refused below the minimum. The live sizer and the
+  backtester share these semantics, so an FX strategy backtests at the size it
+  would actually trade.
 - **Live signal runner:** an opt-in backend timer (`SYSTEMATIC_ENABLED=true`)
   evaluates every running strategy on its closed-bar cadence, persists each
   decision to `strategy_signals` (one per bar) and fans it out on the
@@ -383,9 +408,9 @@ automatically — paper-first, staged behind gates. See the
   caps and the position-limit guard. Engine-level guards on top: a per-run kill
   switch, per-run `max_orders_per_day` + a global `SYSTEMATIC_MAX_ORDERS_PER_DAY`
   backstop, a per-run `max_daily_loss` measured against **realised P&L from
-  fills**, broker-unit-aware sizing (`fixed` / `notional` / `pct_equity`, the
-  last now fed by the venue's own equity), and signal→order dedupe. Both gates
-  default **off**; live (vs paper) auto-trading additionally needs
+  fills**, broker-unit-aware sizing (`fixed` / `notional` / `pct_equity`, fed by
+  the venue's own equity and instrument spec), and signal→order dedupe. Both
+  gates default **off**; live (vs paper) auto-trading additionally needs
   `LIVE_TRADING_ENABLED`.
 
   `max_daily_loss` gates **entries only** — blocking an exit would strand the
@@ -629,21 +654,15 @@ The authoring loop (build a rule-set → backtest it → deploy it live on any
 instrument or venue) ships today. What remains, in priority order — see
 [`SYSTEMATIC_TRADING_ROADMAP.md`](SYSTEMATIC_TRADING_ROADMAP.md) §9:
 
-- **A run's `position.size` still comes from the order-audit net, not the
-  fills.** The fills feed exists and is authoritative (see *Fills, positions &
-  realised P&L*), and `ORDER_MAX_POSITION` / the runner's position size could
-  read it — but the venue reports whole-**account** exposure, so a second run
-  on the same symbol or a manual trade would fold into this run's position and
-  change what its sizing and pyramiding rules do. Switching needs an
-  attribution decision (per-run sub-accounts, an attribution ledger, or
-  explicitly accepting account-level semantics), not more plumbing.
 - **Intrabar fills.** The backtester fills at the bar close; live fills happen
   at the market. Sessions, multi-timeframe operands, position-aware rules,
   sizing and scale-outs now share one code path between the two engines, so
   this is the main remaining source of backtest↔live drift.
-- **MT5 `lots` and OANDA `units` sizing** still resolve to a refusal rather
-  than a broker-native quantity, in both the live sizer and the backtester —
-  pricing a lot as if it were a share would be worse than declining.
+- **Futures / options contract multipliers on IB.** The IB instrument spec is
+  the whole-share constant — right for the equity path the app trades, but a
+  futures contract's multiplier would need `reqContractDetails`.
+- **The MT5 sidecar's own auth**, and its `GET /orders` / `/deals` / `/symbol`
+  endpoints — all implemented on the Windows host, outside this repo.
 
 ### Authentication, authorisation & secrets (advanced)
 

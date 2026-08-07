@@ -27,7 +27,11 @@ no auth story otherwise, so anything that can reach it can trade the account).
     DELETE {base}/orders/{id}                            -> {status}
     PUT    {base}/orders/{id}  {symbol,action,quantity,...}             -> {status}
     GET  {base}/positions                                -> {"positions": [...]} | [...]
+    GET  {base}/orders                                   -> {"orders": [...]} | [...]
     GET  {base}/account                                  -> {balance, equity, ...}
+    GET  {base}/deals?days=<n>                           -> {"deals": [...]} | [...]
+    GET  {base}/symbol?symbol=                           -> {volume_min, volume_step,
+                                                             volume_max, trade_contract_size, ...}
 
 `timeframe` is sent in MT5's native form (`M1`, `H1`, `D1`, …); `time` fields
 may be unix seconds/millis or ISO — all are coerced to unix **seconds**.
@@ -456,6 +460,45 @@ class MT5Adapter:
                 }
             )
         return orders
+
+    def instrument_spec(self, symbol: str) -> Dict[str, Any]:
+        """MT5 sizes in **lots**, and a lot is not one unit of anything — at a
+        standard ``trade_contract_size`` of 100000 a single lot controls
+        100,000 units of the base currency. That factor is exactly why lot
+        sizing could not be approximated as shares, and it is what notional and
+        percent-of-equity sizing divide by.
+
+        Read defensively like the rest of the sidecar contract: MT5's own
+        ``SymbolInfo`` names (``volume_min`` / ``volume_step`` / ``volume_max``
+        / ``trade_contract_size``) or the app's vocabulary if the bridge
+        already speaks it. The fallbacks are MT5's conventional defaults —
+        0.01-lot minimum and step, 100000 contract size — so an incomplete
+        sidecar response yields a usable, conservative spec rather than an
+        error.
+        """
+
+        payload = self._get("/symbol", {"symbol": symbol.upper()})
+        row = payload.get("symbol", payload) if isinstance(payload, dict) else {}
+        if not isinstance(row, dict):
+            row = {}
+
+        def _first(*keys: str, default: Optional[float] = None) -> Optional[float]:
+            for key in keys:
+                value = _opt_float(row.get(key))
+                if value is not None and value > 0:
+                    return value
+            return default
+
+        return {
+            "symbol": symbol.upper(),
+            "broker": "mt5",
+            "unit": "lots",
+            "min_size": _first("min_size", "volume_min", default=0.01),
+            "size_step": _first("size_step", "volume_step", default=0.01),
+            "max_size": _first("max_size", "volume_max"),
+            "contract_size": _first("contract_size", "trade_contract_size", default=100000.0),
+            "currency": str(row.get("currency") or row.get("currency_profit") or "USD"),
+        }
 
     def executions(self, days: int = 1) -> List[Dict[str, Any]]:
         """Recent fills, normalised to the app's ``models.Execution`` shape.

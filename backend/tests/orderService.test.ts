@@ -27,15 +27,18 @@ function order(overrides: Partial<ValidatedOrder> = {}): ValidatedOrder {
 function makeDeps() {
   const create = jest.fn().mockResolvedValue({ id: 7 });
   const update = jest.fn().mockResolvedValue(undefined);
-  const netExposure = jest.fn().mockResolvedValue(0);
+  // The account-exposure source for the position guard: fills plus the
+  // unfilled remainder of still-working orders, not submitted quantities.
+  const netPosition = jest.fn().mockResolvedValue(0);
   const ibPost = jest.fn().mockResolvedValue({ data: { order_id: 42, status: 'submitted' } });
   return {
     create,
     update,
-    netExposure,
+    netPosition,
     ibPost,
     overrides: {
-      audit: { create, update, netExposure },
+      audit: { create, update },
+      netPosition,
       ibPost,
       warn: () => undefined,
       error: () => undefined,
@@ -67,12 +70,14 @@ describe('submitCreateOrder', () => {
     expect(d.ibPost).toHaveBeenCalledWith(expect.objectContaining({ broker: 'ib' }));
   });
 
-  it('keys the position guard net exposure per broker (B1)', async () => {
+  it('keys the position guard per broker (B1)', async () => {
     process.env.ORDER_MAX_POSITION = '1000';
     const d = makeDeps();
-    d.netExposure.mockResolvedValueOnce(100);
+    d.netPosition.mockResolvedValueOnce(100);
     await submitCreateOrder(order({ broker: 'mt5' }), null, d.overrides);
-    expect(d.netExposure).toHaveBeenCalledWith('MSFT', 'paper', expect.any(Number), 'mt5');
+    expect(d.netPosition).toHaveBeenCalledWith(
+      expect.objectContaining({ symbol: 'MSFT', account_mode: 'paper', broker: 'mt5' })
+    );
   });
 
   it('blocks a live order when LIVE_TRADING_ENABLED is false', async () => {
@@ -86,7 +91,7 @@ describe('submitCreateOrder', () => {
   it('rejects on a position-limit breach without touching IB or the audit log', async () => {
     process.env.ORDER_MAX_POSITION = '1000';
     const d = makeDeps();
-    d.netExposure.mockResolvedValueOnce(900);
+    d.netPosition.mockResolvedValueOnce(900);
     const outcome = await submitCreateOrder(order({ quantity: 200 }), null, d.overrides);
     expect(outcome).toMatchObject({
       ok: false,
@@ -101,7 +106,7 @@ describe('submitCreateOrder', () => {
   it('fails closed when the net exposure cannot be computed', async () => {
     process.env.ORDER_MAX_POSITION = '1000';
     const d = makeDeps();
-    d.netExposure.mockRejectedValueOnce(new Error('db down'));
+    d.netPosition.mockRejectedValueOnce(new Error('db down'));
     const outcome = await submitCreateOrder(order(), null, d.overrides);
     expect(outcome).toEqual({ ok: false, kind: 'position_check_failed' });
     expect(d.create).not.toHaveBeenCalled();

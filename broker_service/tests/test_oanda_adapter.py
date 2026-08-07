@@ -561,3 +561,42 @@ def test_open_orders_split_signed_units_into_side_and_size(oanda):
             "avg_fill_price": None,
         }
     ]
+
+
+def test_instrument_spec_derives_the_step_from_units_precision(oanda):
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        {
+            "instruments": [
+                {
+                    "name": "EUR_USD",
+                    "tradeUnitsPrecision": 0,
+                    "minimumTradeSize": "1",
+                    "maximumOrderUnits": "100000000",
+                }
+            ]
+        }
+    )
+
+    spec = _adapter(oanda).instrument_spec("EUR.USD")
+
+    assert FakeClient.calls[-1][3]["instruments"] == "EUR_USD"
+    assert spec["symbol"] == "EUR.USD"
+    assert spec["unit"] == "units"
+    assert spec["size_step"] == 1
+    assert spec["min_size"] == 1
+    assert spec["max_size"] == 100000000
+    # An OANDA "unit" already IS one unit of the base currency, unlike a lot.
+    assert spec["contract_size"] == 1.0
+    assert spec["currency"] == "USD"
+
+
+def test_instrument_spec_handles_fractional_units_precision(oanda):
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        {"instruments": [{"name": "XAU_USD", "tradeUnitsPrecision": 2}]}
+    )
+
+    spec = _adapter(oanda).instrument_spec("XAU.USD")
+
+    assert spec["size_step"] == 0.01
+    # No minimumTradeSize reported: the step is the floor.
+    assert spec["min_size"] == 0.01

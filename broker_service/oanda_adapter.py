@@ -495,6 +495,36 @@ class OANDAAdapter:
             )
         return orders
 
+    def instrument_spec(self, symbol: str) -> Dict[str, Any]:
+        """OANDA sizes in **units of the base currency**, so a "unit" already
+        is one unit of the underlying — hence ``contract_size`` 1, unlike MT5's
+        lots. What varies per instrument is the granularity:
+        ``tradeUnitsPrecision`` gives the number of decimals allowed, which is
+        the step, and ``minimumTradeSize`` the floor.
+        """
+
+        instrument = _to_instrument(symbol)
+        payload = self._get(self._account_path("/instruments"), {"instruments": instrument})
+        rows = payload.get("instruments", []) if isinstance(payload, dict) else []
+        row = rows[0] if isinstance(rows, list) and rows else {}
+        if not isinstance(row, dict):
+            row = {}
+
+        precision = _opt_float(row.get("tradeUnitsPrecision"))
+        step = 10 ** -int(precision) if precision is not None else 1.0
+        minimum = _opt_float(row.get("minimumTradeSize"))
+        maximum = _opt_float(row.get("maximumOrderUnits"))
+        return {
+            "symbol": _from_instrument(instrument),
+            "broker": "oanda",
+            "unit": "units",
+            "min_size": minimum if minimum and minimum > 0 else step,
+            "size_step": step,
+            "max_size": maximum,
+            "contract_size": 1.0,
+            "currency": instrument.split("_")[-1] if "_" in instrument else "USD",
+        }
+
     def executions(self, days: int = 1) -> List[Dict[str, Any]]:
         """Recent fills, normalised to the app's ``models.Execution`` shape.
 

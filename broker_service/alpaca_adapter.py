@@ -406,6 +406,23 @@ class AlpacaAdapter:
             )
         return orders
 
+    def instrument_spec(self, symbol: str) -> Dict[str, Any]:
+        """Alpaca trades US equities in whole shares — the same unit semantics
+        as IB, which is why the two already share the live sizer's share path.
+        Fractional shares exist on Alpaca but are deliberately not modelled
+        here: the app's order path is whole-share throughout."""
+
+        return {
+            "symbol": symbol.upper(),
+            "broker": "alpaca",
+            "unit": "shares",
+            "min_size": 1.0,
+            "size_step": 1.0,
+            "max_size": None,
+            "contract_size": 1.0,
+            "currency": "USD",
+        }
+
     def executions(self, days: int = 1) -> List[Dict[str, Any]]:
         """Recent fills, normalised to the app's ``models.Execution`` shape.
 
