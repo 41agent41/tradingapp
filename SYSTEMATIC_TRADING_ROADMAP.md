@@ -12,6 +12,15 @@ around two capabilities the platform does **not** have today:
 2. **MetaTrader (MT5) as a first-class broker** — quote **and** trade through
    MT5 alongside Interactive Brokers.
 
+> **Component C — many MT5 connections at once.** Components A and B below
+> deliver systematic trading against *one* MT5 account: `broker='mt5'` names
+> both the protocol and the single connection behind `MT5_BRIDGE_URL`. Running
+> the fleet across several MT5 brokers (IC Markets, Pepperstone, a prop-firm
+> challenge, a demo terminal) needs a connection-identity seam one level below
+> the B1 provider seam. That plan — including three latent correctness bugs
+> that only surface with a second connection — is
+> [`MT5_MULTI_CONNECTION_PLAN.md`](MT5_MULTI_CONNECTION_PLAN.md).
+
 The scope below reflects four decisions taken up front:
 
 | Decision | Choice |
