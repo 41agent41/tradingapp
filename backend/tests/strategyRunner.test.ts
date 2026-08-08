@@ -67,6 +67,12 @@ function makeDeps(overrides: Partial<StrategyRunnerDeps> = {}): StrategyRunnerDe
     now: () => NOW,
     // The runner merges injected deps over the real ones, so a fake dep set
     // must be complete — an omitted dep silently reaches the live DB.
+    setCurrentStop: jest.fn().mockResolvedValue(undefined),
+    getCurrentStop: jest.fn().mockResolvedValue(null),
+    lastFillPrice: jest.fn().mockResolvedValue(null),
+    connectionEquity: jest.fn().mockResolvedValue(null),
+    sendAlert: jest.fn().mockResolvedValue({ sent: true }),
+    modifyStop: jest.fn().mockResolvedValue(undefined),
     listStagingGroups: jest.fn().mockResolvedValue([]),
     admitGroup: jest.fn().mockResolvedValue(0),
     abandonGroup: jest.fn().mockResolvedValue(0),

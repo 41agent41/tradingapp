@@ -546,6 +546,16 @@ CREATE TABLE IF NOT EXISTS strategy_runs (
     -- runner only picks up 'running', so a pending leg is inert without any
     -- change to the evaluation loop.
     status VARCHAR(16) NOT NULL DEFAULT 'running',   -- 'pending' | 'running' | 'stopped' | 'error'
+    -- The protective stop the app last set for this run's open position (E-5).
+    -- Recorded so a *closed* position can be compared against the stop that was
+    -- in force: a fill materially worse than it is evidence the market gapped
+    -- through, which is the case the kill switch exists to catch and cannot be
+    -- reconstructed after the fact from anything else.
+    --
+    -- One strategy per instrument per account (E10) is what makes the run row
+    -- the right home for this: there is only ever one position to describe.
+    -- NULL means the run holds no protected position.
+    current_stop NUMERIC(20,8),
     sizing JSONB NOT NULL DEFAULT '{}'::jsonb,           -- carried through for A3
     risk JSONB NOT NULL DEFAULT '{}'::jsonb,             -- carried through for A3
     last_evaluated_at TIMESTAMPTZ,
@@ -559,6 +569,7 @@ ALTER TABLE strategy_runs ADD COLUMN IF NOT EXISTS broker_account VARCHAR(64) NO
 ALTER TABLE strategy_runs ADD COLUMN IF NOT EXISTS native_symbol VARCHAR(64);
 ALTER TABLE strategy_runs ADD COLUMN IF NOT EXISTS run_group_id BIGINT REFERENCES strategy_run_groups(id) ON DELETE SET NULL;
 ALTER TABLE strategy_runs ADD COLUMN IF NOT EXISTS is_canary BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE strategy_runs ADD COLUMN IF NOT EXISTS current_stop NUMERIC(20,8);
 
 CREATE INDEX IF NOT EXISTS idx_strategy_runs_group
     ON strategy_runs (run_group_id) WHERE run_group_id IS NOT NULL;
