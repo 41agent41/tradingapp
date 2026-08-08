@@ -474,11 +474,11 @@ def _rising_ohlcv(n: int = 60) -> pd.DataFrame:
 
 
 class TestEvaluate:
-    def test_buy_when_flat_and_entry_fires(self) -> None:
+    def test_long_when_flat_and_entry_fires(self) -> None:
         # Rising series -> sma_20 > sma_50 on the last bar; flat position -> buy.
         strat = compile_rule_strategy(MA_CROSSOVER_PARITY_RULE_SET)
         result = strat.evaluate(_rising_ohlcv(), Position(size=0.0))
-        assert result["signal"] == "buy"
+        assert result["signal"] == "long"
         assert result["entry"] is True
         assert result["in_session"] is True
 
@@ -489,7 +489,7 @@ class TestEvaluate:
         assert result["signal"] == "none"
         assert result["entry"] is False
 
-    def test_sell_on_unrealized_stop_when_long(self) -> None:
+    def test_flat_on_unrealized_stop_when_long(self) -> None:
         strat = compile_rule_strategy(
             {
                 "name": "stop",
@@ -503,7 +503,7 @@ class TestEvaluate:
         last_close = float(df["close"].iloc[-1])
         result = strat.evaluate(df, Position(size=100.0, avg_price=last_close * 1.05))
         assert result["exit"] is True
-        assert result["signal"] == "sell"
+        assert result["signal"] == "flat"
 
     def test_no_sell_when_flat_even_if_exit_fires(self) -> None:
         strat = compile_rule_strategy(
@@ -886,3 +886,116 @@ class TestBrokerNativeSizingBacktest:
         results = engine.run_backtest(df, compile_rule_strategy(rules), symbol="TEST")
 
         assert [t.quantity for t in results.trades] == [10]
+
+
+class TestDirection:
+    """Long / short / both (Component E — E1).
+
+    A short is a **negative position size**, not an absent one, so the whole
+    point of these cases is that the sign is respected end to end.
+    """
+
+    ALWAYS = {"all": [{"left": "close", "op": ">", "right": 0}]}
+    NEVER = {"all": [{"left": "close", "op": ">", "right": 1_000_000}]}
+
+    def test_defaults_to_long_so_pre_e1_rule_sets_are_unchanged(self) -> None:
+        strat = compile_rule_strategy({"name": "d", "entry": self.ALWAYS})
+        assert strat.direction == "long"
+        result = strat.evaluate(_rising_ohlcv(), Position(size=0.0))
+        assert result["signal"] == "long"
+
+    def test_short_direction_opens_a_short_from_flat(self) -> None:
+        strat = compile_rule_strategy(
+            {"name": "s", "direction": "short", "entry": self.ALWAYS, "exit": self.NEVER}
+        )
+        result = strat.evaluate(_rising_ohlcv(), Position(size=0.0))
+        assert result["signal"] == "short"
+
+    def test_short_direction_exits_a_short_with_flat(self) -> None:
+        strat = compile_rule_strategy(
+            {"name": "s", "direction": "short", "entry": self.NEVER, "exit": self.ALWAYS}
+        )
+        result = strat.evaluate(_rising_ohlcv(), Position(size=-2.0, avg_price=100.0))
+        assert result["signal"] == "flat"
+
+    def test_a_long_exit_rule_does_not_close_a_short(self) -> None:
+        # direction='both' keeps the two sides' exits separate; using the long
+        # exit to close a short would close positions the rules never targeted.
+        strat = compile_rule_strategy(
+            {
+                "name": "b",
+                "direction": "both",
+                "entry": self.NEVER,
+                "exit": self.ALWAYS,
+                "short_entry": self.NEVER,
+                "short_exit": self.NEVER,
+            }
+        )
+        result = strat.evaluate(_rising_ohlcv(), Position(size=-2.0, avg_price=100.0))
+        assert result["signal"] == "none"
+
+    def test_both_uses_the_short_groups_for_the_short_side(self) -> None:
+        strat = compile_rule_strategy(
+            {
+                "name": "b",
+                "direction": "both",
+                "entry": self.NEVER,
+                "exit": self.NEVER,
+                "short_entry": self.ALWAYS,
+            }
+        )
+        assert strat.evaluate(_rising_ohlcv(), Position(size=0.0))["signal"] == "short"
+
+    def test_no_entry_is_considered_while_a_position_is_open(self) -> None:
+        # E12: no direct reversal. A short signal while long must not flip the
+        # position — the strategy exits first and re-enters on a later bar.
+        strat = compile_rule_strategy(
+            {
+                "name": "b",
+                "direction": "both",
+                "entry": self.NEVER,
+                "exit": self.NEVER,
+                "short_entry": self.ALWAYS,
+            }
+        )
+        result = strat.evaluate(_rising_ohlcv(), Position(size=5.0, avg_price=100.0))
+        assert result["signal"] == "none"
+
+    def test_both_sides_firing_at_once_refuses_rather_than_picking_one(self) -> None:
+        # A rule-set bug, not a choice to make on its behalf.
+        strat = compile_rule_strategy(
+            {
+                "name": "b",
+                "direction": "both",
+                "entry": self.ALWAYS,
+                "exit": self.NEVER,
+                "short_entry": self.ALWAYS,
+            }
+        )
+        result = strat.evaluate(_rising_ohlcv(), Position(size=0.0))
+        assert result["signal"] == "none"
+        assert result["conflict"] is True
+
+    def test_both_without_short_entry_is_rejected_at_compile_time(self) -> None:
+        # Silently trading long-only under direction='both' is the worst
+        # outcome available here.
+        with pytest.raises(RuleSetError, match="short_entry"):
+            compile_rule_strategy({"name": "b", "direction": "both", "entry": self.ALWAYS})
+
+    def test_unknown_direction_is_rejected(self) -> None:
+        with pytest.raises(RuleSetError, match="direction"):
+            compile_rule_strategy({"name": "x", "direction": "sideways", "entry": self.ALWAYS})
+
+    def test_short_indicators_are_collected_for_the_precompute_pass(self) -> None:
+        # A short rule referencing an indicator the long rules do not use must
+        # still get its column computed, or it evaluates against NaN and never
+        # fires — silently, since a non-finite comparison is simply False.
+        strat = compile_rule_strategy(
+            {
+                "name": "b",
+                "direction": "both",
+                "entry": self.ALWAYS,
+                "short_entry": {"all": [{"left": "rsi", "op": ">", "right": 70}]},
+            }
+        )
+        assert "rsi" in strat.indicators

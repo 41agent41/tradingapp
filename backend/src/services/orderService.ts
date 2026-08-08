@@ -167,6 +167,8 @@ export async function submitCreateOrder(
       tif: order.tif,
       limit_price: order.limit_price,
       stop_price: order.stop_price,
+      stop_loss: order.stop_loss,
+      take_profit: order.take_profit,
       account_mode: order.account_mode,
       broker: order.broker,
       account: order.broker_account,

@@ -224,3 +224,24 @@ class ConnectionInfo(BaseModel):
 # NOTE: StreamSubscribeRequest / StreamSymbolRequest are kept in main.py
 # alongside the streaming route handlers because they apply stricter
 # Field() validation than the rest of the schemas here.
+
+
+class ResolveTarget(BaseModel):
+    """One connection to resolve a canonical symbol against."""
+
+    broker: str = "ib"
+    account: Optional[str] = None
+
+
+class ResolvePreviewRequest(BaseModel):
+    """Resolve one canonical symbol across several connections at once.
+
+    Backs the deploy-time review step: before a definition is deployed to N
+    accounts, the operator sees exactly which native symbol each leg would
+    trade — and which legs cannot resolve — rather than discovering it from a
+    rejected order hours later.
+    """
+
+    symbol: str = Field(..., min_length=1, max_length=64)
+    targets: List[ResolveTarget] = Field(default_factory=list)
+    include_spec: bool = True

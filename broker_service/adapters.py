@@ -331,6 +331,32 @@ def list_connections() -> List[Connection]:
     return list(_connections.values())
 
 
+def currency_consistency() -> Dict[str, Any]:
+    """Whether every connection reports the one denomination the fleet expects.
+
+    The fleet is configured single-currency, which is what lets portfolio-level
+    caps aggregate without FX conversion. That is an assumption to **enforce,
+    not trust**: a connection opened later in another denomination makes every
+    aggregate silently wrong — the numbers still add up, they just stop meaning
+    anything.
+
+    Reports rather than raises, so an inconsistency is visible on /health and
+    the caps that depend on it can refuse individually.
+    """
+    _bootstrap()
+    expected = (os.getenv("PORTFOLIO_BASE_CURRENCY") or "").strip().upper() or None
+    currencies = sorted({c.currency for c in _connections.values() if c.currency})
+    mismatched = [
+        c.label for c in _connections.values() if expected and c.currency != expected
+    ] or [c.label for c in _connections.values() if len(currencies) > 1]
+    return {
+        "expected": expected,
+        "currencies": currencies,
+        "consistent": len(currencies) <= 1 and (not expected or currencies in ([], [expected])),
+        "mismatched": sorted(set(mismatched)),
+    }
+
+
 def same_funds_groups() -> List[List[str]]:
     """Groups of connection labels that reach the same underlying money.
 
@@ -408,6 +434,7 @@ def provider_health() -> Dict[str, Any]:
         "providers": providers,
         "connections": connections,
         "same_funds_groups": same_funds_groups(),
+        "currency": currency_consistency(),
     }
 
 

@@ -23,7 +23,10 @@ no auth story otherwise, so anything that can reach it can trade the account).
              &start=<iso>&end=<iso>
     GET  {base}/quote?symbol=                            -> {bid, ask, last, volume, time}
     GET  {base}/tick?symbol=                             -> {bid, ask, last, volume, time, ...}
-    POST   {base}/orders   {symbol,action,quantity,order_type,tif,...}  -> {order_id|ticket, status}
+    POST   {base}/orders   {symbol,action,quantity,order_type,tif,
+                            sl,tp,...}                                -> {order_id|ticket, status,
+                                                                          sl, tp}
+    POST   {base}/positions/{symbol}/stop  {sl,tp}                    -> {status, sl, tp}
     DELETE {base}/orders/{id}                            -> {status}
     PUT    {base}/orders/{id}  {symbol,action,quantity,...}             -> {status}
     GET  {base}/positions                                -> {"positions": [...]} | [...]
@@ -35,6 +38,26 @@ no auth story otherwise, so anything that can reach it can trade the account).
 
 `timeframe` is sent in MT5's native form (`M1`, `H1`, `D1`, …); `time` fields
 may be unix seconds/millis or ISO — all are coerced to unix **seconds**.
+
+### Protective stops (E-2/E-3) — sidecar work required
+
+``POST /orders`` accepts ``sl`` and ``tp`` (absolute prices, or null) and must
+attach them to the position **atomically with the entry**. Placing the order and
+then setting the stop in a second call leaves a window where the position is
+open and unprotected, which is the one state this design refuses to accept.
+
+The response should echo the ``sl``/``tp`` the venue actually recorded. The app
+compares them against what it asked for and treats a missing stop as a failed
+entry (see ``orders.py``), because a silently-dropped stop is indistinguishable
+from a working one until it is needed.
+
+``POST /positions/{symbol}/stop`` modifies an open position's stop — MT5's
+``TRADE_ACTION_SLTP``. Used by the bar-close trail, which only calls it when the
+new stop is more protective than the current one, so the broker holds the
+ratchet.
+
+``GET /positions`` should include each position's current ``sl``/``tp`` so the
+trail can compare without a second round trip.
 
 Both sides of the protocol are implemented: market data (B2a) **and** execution
 (B2b). Order placement runs the same validation + live-trading gate as the IB
@@ -297,6 +320,10 @@ class MT5Adapter:
             "tif": request.tif,
             "limit_price": request.limit_price,
             "stop_price": request.stop_price,
+            # Protective stop / target attached to the position at entry (E-2).
+            # Distinct from `stop_price`, which is the *trigger* of a STP order.
+            "sl": getattr(request, "stop_loss", None),
+            "tp": getattr(request, "take_profit", None),
             "account_mode": request.account_mode,
             "audit_id": getattr(request, "audit_id", None),
         }
@@ -312,6 +339,37 @@ class MT5Adapter:
             "account_mode": request.account_mode,
             "broker": "mt5",
             "status": resp.get("status", "submitted"),
+            # Echoed back so the caller can verify the venue actually recorded
+            # the protection it asked for — a silently-dropped stop looks
+            # exactly like a working one until it is needed.
+            "sl": _opt_float(resp.get("sl")),
+            "tp": _opt_float(resp.get("tp")),
+        }
+
+    def modify_position_stop(
+        self,
+        symbol: str,
+        *,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Move an open position's protective stop (E-3's trail).
+
+        The caller only issues this when the new stop is **more protective**
+        than the current one, so the ratchet — never move a stop backwards —
+        is held by the broker rather than by carried state in the app.
+        """
+        resp = self._request(
+            "POST",
+            f"/positions/{symbol.upper()}/stop",
+            json={"sl": stop_loss, "tp": take_profit},
+        )
+        return {
+            "symbol": symbol.upper(),
+            "broker": "mt5",
+            "status": resp.get("status", "modified"),
+            "sl": _opt_float(resp.get("sl")),
+            "tp": _opt_float(resp.get("tp")),
         }
 
     def cancel_order(self, order_id: int) -> Dict[str, Any]:
@@ -385,6 +443,11 @@ class MT5Adapter:
                         if row.get("profit") is not None
                         else row.get("unrealized_pnl")
                     ),
+                    # The protection currently attached at the venue (E-2/E-3).
+                    # The trail compares against this, and its absence on a
+                    # position that should have one is a kill-switch trigger.
+                    "stop_loss": _opt_float(row.get("sl") or row.get("stop_loss")),
+                    "take_profit": _opt_float(row.get("tp") or row.get("take_profit")),
                     "currency": str(row.get("currency") or "USD"),
                 }
             )
@@ -497,6 +560,18 @@ class MT5Adapter:
             "size_step": _first("size_step", "volume_step", default=0.01),
             "max_size": _first("max_size", "volume_max"),
             "contract_size": _first("contract_size", "trade_contract_size", default=100000.0),
+            # Minimum distance a stop must sit from the market, in points
+            # (MT5's `trade_stops_level`). A stop inside this band is rejected
+            # by the venue, so the engine refuses the entry rather than sending
+            # an order it knows will fail.
+            "stops_level": _first("stops_level", "trade_stops_level", default=0.0),
+            "point": _first("point", "trade_tick_size", default=0.0),
+            # Value of one tick in the **account** currency, and the tick size
+            # it applies to. Risk-based sizing (E-4) divides by these rather
+            # than by contract_size, because a price move is denominated in the
+            # quote currency while the risk budget is in the account's.
+            "tick_value": _first("tick_value", "trade_tick_value", default=0.0),
+            "tick_size": _first("tick_size", "trade_tick_size", default=0.0),
             "currency": str(row.get("currency") or row.get("currency_profit") or "USD"),
         }
 

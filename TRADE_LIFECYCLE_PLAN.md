@@ -1,6 +1,6 @@
 # Trade Lifecycle — Direction, Broker-Side Stops, Sizing, and the Kill Switch
 
-**Status:** plan / not yet implemented
+**Status:** E-0 through E-4 delivered; E-5/E-6 (alerts, kill switch) planned
 **Scope:** what happens from the moment a strategy decides to trade until the
 position is closed — direction, order placement, protective stops, trade
 management, and the downside backstop.
@@ -321,11 +321,11 @@ that achieves it wins.
 
 | Phase | Contents | Ships |
 |---|---|---|
-| **E-0** | Broker position as truth (§7) + reconciliation check | Correct position tracking, prerequisite for everything else |
-| **E-1** | Signed positions and the `long`/`short`/`flat` vocabulary (§3) | Shorts, without stops yet |
-| **E-2** | Broker-side SL at entry (§4.1) + sidecar contract change + fail-closed protection | Every position protected at the venue |
-| **E-3** | Bar-close stop management and the ratchet (§4.2) | Trailing stops as specified |
-| **E-4** | `risk_pct` sizing (§5): tick-value fields on `instrument_spec` + sidecar `/symbol`, stop-before-sizing ordering, margin check | Constant risk per trade regardless of stop width |
+| **E-0** ✅ | Broker position as truth (§7) + reconciliation check | **Delivered.** Correct position tracking, prerequisite for everything else |
+| **E-1** ✅ | Signed positions and the `long`/`short`/`flat` vocabulary (§3) | **Delivered.** Shorts, without stops yet |
+| **E-2** ✅ | Broker-side SL at entry (§4.1) + sidecar contract change + fail-closed protection | **Delivered.** Every position protected at the venue |
+| **E-3** ✅ | Bar-close stop management and the ratchet (§4.2) | **Delivered.** Trailing stops as specified |
+| **E-4** ✅ | `risk_pct` sizing (§5): tick-value fields on `instrument_spec` + sidecar `/symbol`, stop-before-sizing ordering | **Delivered.** Constant risk per trade regardless of stop width |
 | **E-5** | Telegram notifier (§8) + kill switch in notify-only mode (§6) | Observability of the downside, zero blast radius |
 | **E-6** | Kill switch halt and flatten actions | Automated downside response |
 
@@ -341,6 +341,144 @@ Until then, strategies size with the existing `pct_equity` type.
 E-4's tick value/size). They are the only work in any of these plans that falls
 outside this repository, so they are worth batching into a single update of the
 Windows-side service rather than two.
+
+> **E-0 delivered.** `getPosition` now reads the venue's reported position for
+> the run's `(connection, native_symbol)` and returns it signed, with the
+> venue's average price. The fills-derived figure is computed alongside as
+> `derived_size` and compared, never used as the position.
+>
+> Two decisions carry the weight:
+>
+> - **An unreachable venue fails the evaluation; it does not report flat.** The
+>   old code caught the error and returned `{size: 0}`, which was defensible
+>   when the figure came from fills ("no fills" really does mean flat) and is
+>   dangerous now: flat is an *actionable* state, and a strategy told it is flat
+>   while holding a position will open a second one on top. The failure is
+>   recorded on the run and counted against the connection's breaker, since an
+>   unreadable position is nearly always the venue being unreachable.
+> - **A reconciliation mismatch reports, it does not refuse.** Divergence is
+>   expected and benign in two cases — a broker-side stop closed the position
+>   (the app placed no order, so no fill is attributed) and a manual trade — but
+>   a *persistent* mismatch means fills are being missed, which is what silently
+>   corrupts realised P&L and therefore `max_daily_loss`. Surfaced in the runner
+>   status and logs; C-4 turns it into a per-connection report.
+
+> **E-1 delivered.** Rule-sets gain `direction` (`long` default / `short` /
+> `both`, the last requiring a `short_entry` group). `evaluate()` emits
+> `long` / `short` / `flat` / `none`; `normaliseSignal()` in the engine owns
+> the vocabulary in one place and still accepts pre-E1 `buy` / `sell`, because
+> stored `strategy_signals` rows outlive the deploy that wrote them. Entries
+> open in the signal's direction, and an exit closes whatever is held by
+> reading the position's **sign** — a short is covered with a BUY.
+>
+> **Shorts work in the backtester too.** Shipping live shorts against a
+> long-only engine would have made a short strategy impossible to backtest,
+> which is a worse version of the parity problem Component D exists to protect.
+> `Trade.pnl` already computed the SELL side correctly; the engine simply never
+> created one. Two sign bugs surfaced in paths that were not obviously part of
+> the change and would each have been silent: a partially scaled-out short
+> reverted to a positive `position` (reading as long to every position-aware
+> rule on the next bar), and the equity curve used the long formula (moving the
+> wrong way for every short trade).
+>
+> Two refusals worth recording:
+>
+> - **Reversal is refused, not performed** (E12). An entry signal while a
+>   position is open returns a reason rather than flipping; silently reversing
+>   would double the traded size and take a position the rules never asked for
+>   on that bar.
+> - **Both sides firing on one bar refuses.** Under `direction: both`, a bar
+>   where the long and short entries both fire is a rule-set bug, not a choice
+>   to make on its behalf.
+
+> **E-2 delivered.** `broker_service/stops.py` resolves a rule-declared stop to
+> a price: `pct`, `atr`, `bar_extreme` (the structure trail — "stop at the
+> 2-bar low") and `fixed`, each expressed as a distance so the **sign comes
+> from the direction** rather than from whoever wrote the rule. It sits beside
+> the rule engine, not in the execution layer, so the backtester and the live
+> runner compute a stop the same way.
+>
+> `evaluate()` returns `stop_price` with the signal, and the engine attaches it
+> to the entry. `stop_loss` / `take_profit` thread through `ValidatedOrder` and
+> the order path, and the MT5 adapter sends them as `sl`/`tp`.
+>
+> **Three distinct cases, deliberately not collapsed:** no stop rule → place
+> without one (unchanged); stop rule resolved → attach; stop rule *unresolved* →
+> **refuse the entry**. Treating the third as the first is the failure this
+> exists to prevent — it opens a position the operator believes is protected.
+> A stop that resolves on the wrong side of the market is refused for the same
+> reason, since it would trigger the instant it was placed.
+>
+> The venue's minimum stop distance (`stops_level` × `point`) is checked before
+> sending, so a stop inside the band is a refused entry with a reason rather
+> than an order we already knew would bounce. A venue reporting neither field
+> yields no check — refusing against a limit we do not actually know would be
+> worse than letting the venue reject the rare breach.
+>
+> **⚠️ Sidecar work required.** `POST /orders` must accept `sl`/`tp` and attach
+> them **atomically with the entry** — placing the order and setting the stop
+> in a second call leaves a window where the position is open and unprotected.
+> It should echo back what the venue recorded; `orders.py` flags a missing stop
+> so a silently-dropped one is not mistaken for a working one. `GET /positions`
+> should include each position's `sl`/`tp`, and `POST /positions/{symbol}/stop`
+> (MT5's `TRADE_ACTION_SLTP`) backs the E-3 trail. The contract is documented in
+> `mt5_adapter.py`.
+
+> **E-3 delivered.** `RuleStrategy.trail_stop()` resolves the stop the rules
+> want for an **open** position — same spec, same bars, same resolver as the
+> entry stop, so a trail can never drift from the stop it is tightening. It
+> rides along on `/strategies/evaluate` so a bar costs one round trip.
+>
+> `stopManager.ts` decides and applies. `decideTrail` is pure, which matters
+> because with the stop held at the broker there is no high-water mark in the
+> app to check — **the correctness of "never move backwards" rests entirely on
+> that one comparison**, so it is testable without a venue and tested from both
+> directions.
+>
+> Trailing is deliberately **not a signal**: it runs on every bar a position is
+> open, including bars the rules say nothing about. It runs *before* the signal
+> is acted on, so a bar that both tightens and exits stays protected in the
+> moment between the two.
+>
+> Three refusals beyond the ratchet: a trail that has crossed the market is
+> skipped (a `bar_extreme` on a sharp reversal can resolve past price, and
+> sending it would close the position at market while appearing to protect it);
+> a trail inside the venue's minimum distance is skipped, since a rejected
+> modify leaves the old stop in place anyway; and an unchanged stop is not
+> re-sent, which would otherwise be a pointless modify every bar for the life
+> of the position.
+>
+> A failed modify is counted and logged, never fatal. The previous stop remains
+> in place — degraded but protected — and failing the evaluation would stop the
+> strategy managing positions it can still manage.
+
+> **E-4 delivered.** `risk_pct` joins `fixed` / `notional` / `pct_equity`:
+> size falls out of the distance to the stop, so notional varies with stop
+> width but the **loss does not** — which is what makes a wide-stop and a
+> tight-stop setup comparable.
+>
+> The loss term comes from the venue's `tickValue` / `tickSize`, not from
+> `stopDistance × contractSize`. That approximation is correct only when the
+> instrument's quote currency matches the account's: EURUSD in a USD account
+> works, EURJPY and index CFDs do not. Getting it wrong does not error — it
+> silently sizes every position wrong by the FX rate — so a lot-based
+> instrument with no tick value **refuses rather than approximating**. A
+> contract size of 1 (shares, OANDA units) uses the price move directly, since
+> those are quoted in the account currency here.
+>
+> Two consequences of sizing depending on the stop: the engine resolves the
+> stop **before** sizing, and `risk_pct` declared without a `stop` block is
+> refused rather than silently falling back to another sizing type, which
+> would change how much the strategy risks without saying so.
+>
+> The `ORDER_MAX_*` caps stay binding and are not waived for risk-sized
+> orders — as stop distance approaches zero the computed size approaches
+> infinity, and a tight stop is exactly when that matters.
+>
+> **Not yet done from §5.3:** the free-margin check before placing. The
+> fat-finger caps and the venue minimum bound the size, but a risk-correct
+> order that cannot be margined will still be rejected by the venue rather
+> than refused here.
 
 ---
 

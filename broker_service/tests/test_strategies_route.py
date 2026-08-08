@@ -48,7 +48,7 @@ MA_RULES = {
 }
 
 
-def test_evaluate_inline_rule_set_returns_buy_when_flat() -> None:
+def test_evaluate_inline_rule_set_returns_long_when_flat() -> None:
     res = _client().post(
         "/strategies/evaluate",
         json={"bars": _rising_bars(), "rule_set": MA_RULES},
@@ -56,7 +56,7 @@ def test_evaluate_inline_rule_set_returns_buy_when_flat() -> None:
     assert res.status_code == 200
     body = res.json()
     assert body["success"] is True
-    assert body["signal"] == "buy"
+    assert body["signal"] == "long"
     assert body["bars_evaluated"] == 60
     assert body["in_session"] is True
 

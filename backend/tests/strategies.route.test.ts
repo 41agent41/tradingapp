@@ -22,6 +22,10 @@ const repoImpl = {
   findRun: jest.fn(),
   updateRunStatus: jest.fn(),
   listSignals: jest.fn(),
+  createGroup: jest.fn(),
+  listGroupRuns: jest.fn(),
+  stopGroup: jest.fn(),
+  stopConnection: jest.fn(),
 };
 jest.mock('../src/services/strategyRepository.js', () => ({
   __esModule: true,
@@ -165,5 +169,203 @@ describe('POST /api/strategies/evaluate (proxy)', () => {
     const res = await request(buildApp()).post('/api/strategies/evaluate').send({ bars: [] });
     expect(res.status).toBe(400);
     expect(res.body.detail).toBe('bad');
+  });
+});
+
+// --------------------------------------------------------------------------- //
+// Deploy to many connections (C-3)
+// --------------------------------------------------------------------------- //
+describe('POST /api/strategies/definitions/:id/deploy', () => {
+  const definition = {
+    id: 1,
+    symbol: 'EURUSD',
+    broker: 'mt5',
+    rule_set: { sizing: { type: 'fixed', size: 1 }, risk: {} },
+  };
+
+  function previewOf(rows: any[]) {
+    return {
+      data: {
+        symbol: 'EURUSD',
+        results: rows,
+        resolved: rows.filter((r) => r.ok).length,
+        refused: rows.filter((r) => !r.ok).length,
+      },
+    };
+  }
+
+  const okLeg = (account: string, native: string) => ({
+    ok: true,
+    broker: 'mt5',
+    account,
+    native,
+    canonical: 'EURUSD',
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    repoImpl.findDefinition.mockResolvedValue(definition);
+    repoImpl.createGroup.mockResolvedValue({ group: { id: 9 }, runs: [{ id: 1 }, { id: 2 }] });
+  });
+
+  it('resolves each leg and creates the group with per-connection symbols', async () => {
+    axiosMock.post.mockResolvedValue(
+      previewOf([okLeg('icmarkets', 'EURUSD.a'), okLeg('pepperstone', 'EURUSD_i')])
+    );
+
+    const res = await request(buildApp())
+      .post('/api/strategies/definitions/1/deploy')
+      .send({
+        targets: [
+          { broker: 'mt5', account: 'icmarkets', canary: true },
+          { broker: 'mt5', account: 'pepperstone' },
+        ],
+      });
+
+    expect(res.status).toBe(201);
+    const legs = repoImpl.createGroup.mock.calls[0][0].legs;
+    expect(legs.map((l: any) => l.native_symbol)).toEqual(['EURUSD.a', 'EURUSD_i']);
+    expect(legs.filter((l: any) => l.is_canary)).toHaveLength(1);
+  });
+
+  it('refuses the whole deploy when a leg cannot resolve', async () => {
+    // With one strategy across accounts, silently running on a subset is
+    // usually not what was intended.
+    axiosMock.post.mockResolvedValue(
+      previewOf([
+        okLeg('icmarkets', 'EURUSD.a'),
+        { ok: false, broker: 'mt5', account: 'ftmo', error: 'no symbol matching EURUSD' },
+      ])
+    );
+
+    const res = await request(buildApp())
+      .post('/api/strategies/definitions/1/deploy')
+      .send({
+        targets: [
+          { broker: 'mt5', account: 'icmarkets', canary: true },
+          { broker: 'mt5', account: 'ftmo' },
+        ],
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.detail.refused[0].account).toBe('ftmo');
+    expect(repoImpl.createGroup).not.toHaveBeenCalled();
+  });
+
+  it('starts the resolvable legs when allow_partial is set', async () => {
+    axiosMock.post.mockResolvedValue(
+      previewOf([
+        okLeg('icmarkets', 'EURUSD.a'),
+        { ok: false, broker: 'mt5', account: 'ftmo', error: 'no symbol matching EURUSD' },
+      ])
+    );
+
+    const res = await request(buildApp())
+      .post('/api/strategies/definitions/1/deploy')
+      .send({
+        allow_partial: true,
+        targets: [
+          { broker: 'mt5', account: 'icmarkets', canary: true },
+          { broker: 'mt5', account: 'ftmo' },
+        ],
+      });
+
+    expect(res.status).toBe(201);
+    expect(repoImpl.createGroup.mock.calls[0][0].legs).toHaveLength(1);
+    expect(res.body.refused[0].account).toBe('ftmo');
+  });
+
+  it('refuses when the nominated canary is the leg that could not resolve', async () => {
+    // Promoting another leg silently would move the first risk onto an account
+    // the operator did not choose.
+    axiosMock.post.mockResolvedValue(
+      previewOf([
+        { ok: false, broker: 'mt5', account: 'icmarkets', error: 'ambiguous' },
+        okLeg('pepperstone', 'EURUSD_i'),
+      ])
+    );
+
+    const res = await request(buildApp())
+      .post('/api/strategies/definitions/1/deploy')
+      .send({
+        allow_partial: true,
+        targets: [
+          { broker: 'mt5', account: 'icmarkets', canary: true },
+          { broker: 'mt5', account: 'pepperstone' },
+        ],
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/canary/i);
+    expect(repoImpl.createGroup).not.toHaveBeenCalled();
+  });
+
+  it('requires exactly one canary', async () => {
+    const app = buildApp();
+    const none = await request(app)
+      .post('/api/strategies/definitions/1/deploy')
+      .send({ targets: [{ broker: 'mt5', account: 'a' }] });
+    expect(none.status).toBe(400);
+
+    const two = await request(app)
+      .post('/api/strategies/definitions/1/deploy')
+      .send({
+        targets: [
+          { broker: 'mt5', account: 'a', canary: true },
+          { broker: 'mt5', account: 'b', canary: true },
+        ],
+      });
+    expect(two.status).toBe(400);
+  });
+
+  it('carries per-leg sizing so accounts of different size are not forced to match', async () => {
+    axiosMock.post.mockResolvedValue(
+      previewOf([okLeg('small', 'EURUSD.a'), okLeg('large', 'EURUSD.a')])
+    );
+
+    await request(buildApp())
+      .post('/api/strategies/definitions/1/deploy')
+      .send({
+        targets: [
+          { broker: 'mt5', account: 'small', canary: true, sizing: { type: 'risk_pct', pct: 0.5 } },
+          { broker: 'mt5', account: 'large', sizing: { type: 'risk_pct', pct: 2 } },
+        ],
+      });
+
+    const legs = repoImpl.createGroup.mock.calls[0][0].legs;
+    expect(legs[0].sizing).toEqual({ type: 'risk_pct', pct: 0.5 });
+    expect(legs[1].sizing).toEqual({ type: 'risk_pct', pct: 2 });
+  });
+
+  it('surfaces a resolution outage as a 502 rather than deploying blind', async () => {
+    axiosMock.post.mockRejectedValue(new Error('broker service down'));
+
+    const res = await request(buildApp())
+      .post('/api/strategies/definitions/1/deploy')
+      .send({ targets: [{ broker: 'mt5', account: 'a', canary: true }] });
+
+    expect(res.status).toBe(502);
+    expect(repoImpl.createGroup).not.toHaveBeenCalled();
+  });
+});
+
+describe('group and connection lifecycle (C-3)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('stops every leg of a group', async () => {
+    repoImpl.stopGroup.mockResolvedValue(3);
+    const res = await request(buildApp()).post('/api/strategies/groups/9/stop').send({});
+    expect(res.status).toBe(200);
+    expect(res.body.stopped).toBe(3);
+  });
+
+  it('panic-stops a whole connection regardless of group', async () => {
+    repoImpl.stopConnection.mockResolvedValue(2);
+    const res = await request(buildApp())
+      .post('/api/strategies/connections/mt5/pepperstone/stop')
+      .send({});
+    expect(res.status).toBe(200);
+    expect(repoImpl.stopConnection).toHaveBeenCalledWith('mt5', 'pepperstone');
+    expect(res.body.connection).toBe('mt5:pepperstone');
   });
 });

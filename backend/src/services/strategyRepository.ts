@@ -14,6 +14,9 @@ import { DEFAULT_BROKER_ACCOUNT } from './orderTypes.js';
 
 export interface Querier {
   query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
+  /** Optional so unit-test fakes stay a single method. `dbService` supplies it;
+   *  see `StrategyRepository.inTransaction` for what its absence means. */
+  transaction?<T>(callback: (client: Querier) => Promise<T>): Promise<T>;
 }
 
 // --------------------------------------------------------------------------- //
@@ -52,6 +55,9 @@ export interface StrategyRunInput {
   definition_id: number;
   broker?: string;
   broker_account?: string;
+  /** The connection's own name for the definition's canonical symbol (C-2),
+   *  resolved at deploy time. Omitted means "use the definition's symbol". */
+  native_symbol?: string | null;
   account_mode?: string;
   sizing?: Record<string, unknown>;
   risk?: Record<string, unknown>;
@@ -62,6 +68,9 @@ export interface StrategyRunRow {
   definition_id: number;
   broker: string;
   broker_account: string;
+  native_symbol: string | null;
+  run_group_id: number | null;
+  is_canary: boolean;
   account_mode: string;
   status: string;
   sizing: Record<string, unknown>;
@@ -84,6 +93,11 @@ export interface ActiveRun {
   /** The account within `broker` this run executes on (C-0). One run is one
    *  instrument on one connection. */
   broker_account: string;
+  /** What this connection calls the definition's symbol (C-2). Null on runs
+   *  created before C-2, which fall back to the definition's own symbol. */
+  native_symbol: string | null;
+  /** The group this leg belongs to (C-3); null for a standalone run. */
+  run_group_id: number | null;
   account_mode: string;
   symbol: string;
   sec_type: string;
@@ -121,6 +135,44 @@ export interface StrategySignalRow {
   created_at: string;
 }
 
+// --------------------------------------------------------------------------- //
+// Run groups (C-3)
+// --------------------------------------------------------------------------- //
+
+/** One leg of a deploy: which connection, trading what, sized how. */
+export interface DeployLeg {
+  broker: string;
+  broker_account: string;
+  native_symbol: string;
+  account_mode?: string;
+  sizing?: Record<string, unknown>;
+  risk?: Record<string, unknown>;
+  /** Exactly one leg per deploy must be the canary. */
+  is_canary?: boolean;
+}
+
+export interface StrategyRunGroupRow {
+  id: number;
+  definition_id: number;
+  status: string; // 'staging' | 'running' | 'stopped'
+  settle_seconds: number;
+  admitted_at: string | null;
+  last_error: string | null;
+  created_at: string;
+}
+
+/** A group whose canary is running and whose siblings are still pending. */
+export interface StagingGroup {
+  id: number;
+  settle_seconds: number;
+  canary_run_id: number;
+  canary_status: string;
+  canary_started_at: string;
+  canary_last_evaluated_at: string | null;
+  canary_last_error: string | null;
+  pending_legs: number;
+}
+
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
 
@@ -131,6 +183,22 @@ function clampLimit(raw: unknown): number {
 
 export class StrategyRepository {
   constructor(private db: Querier) {}
+
+  /**
+   * Run a callback inside a DB transaction when the querier supports one.
+   *
+   * Every caller here needs atomicity for a real reason — a half-created group
+   * means some accounts trade a definition others never got. `dbService`
+   * always provides `transaction`, so production is always transactional; the
+   * fallback exists only for the single-method fakes the SQL tests inject,
+   * where there is no concurrent writer to be atomic against.
+   */
+  private async inTransaction<T>(callback: (client: Querier) => Promise<T>): Promise<T> {
+    if (typeof this.db.transaction === 'function') {
+      return this.db.transaction(callback);
+    }
+    return callback(this.db);
+  }
 
   // ---- definitions ------------------------------------------------------- //
 
@@ -176,8 +244,8 @@ export class StrategyRepository {
   async createRun(input: StrategyRunInput): Promise<StrategyRunRow> {
     const sql = `
       INSERT INTO strategy_runs
-        (definition_id, broker, broker_account, account_mode, sizing, risk)
-      VALUES ($1, $2, $6, $3, $4::jsonb, $5::jsonb)
+        (definition_id, broker, broker_account, native_symbol, account_mode, sizing, risk)
+      VALUES ($1, $2, $6, $7, $3, $4::jsonb, $5::jsonb)
       RETURNING *
     `;
     const values = [
@@ -187,6 +255,7 @@ export class StrategyRepository {
       JSON.stringify(input.sizing ?? {}),
       JSON.stringify(input.risk ?? {}),
       input.broker_account ?? DEFAULT_BROKER_ACCOUNT,
+      input.native_symbol ?? null,
     ];
     const result = await this.db.query(sql, values);
     return result.rows[0] as StrategyRunRow;
@@ -221,8 +290,8 @@ export class StrategyRepository {
    *  definition fields it needs (symbol, timeframe, rule_set). */
   async listActiveRuns(): Promise<ActiveRun[]> {
     const sql = `
-      SELECT r.id, r.definition_id, r.broker, r.broker_account, r.account_mode,
-             r.sizing, r.risk,
+      SELECT r.id, r.definition_id, r.broker, r.broker_account, r.native_symbol,
+             r.run_group_id, r.account_mode, r.sizing, r.risk,
              d.symbol, d.sec_type, d.exchange, d.currency, d.timeframe, d.rule_set
       FROM strategy_runs r
       JOIN strategy_definitions d ON d.id = r.definition_id
@@ -256,6 +325,188 @@ export class StrategyRepository {
 
   async markRunError(id: number, error: string): Promise<void> {
     await this.db.query('UPDATE strategy_runs SET last_error = $2 WHERE id = $1', [id, error]);
+  }
+
+  // ---- run groups (C-3) --------------------------------------------------- //
+
+  /**
+   * Create a group and all its legs **in one transaction**.
+   *
+   * Atomic creation and staged starting are deliberately different things. A
+   * half-created group is broken state — some accounts trading a definition
+   * others never got — so creation is all-or-nothing. But *starting* every leg
+   * at once means a bad rule-set edit reaches every account simultaneously, so
+   * only the canary starts; the rest are created `pending` and admitted later
+   * by `admitSettledGroups`.
+   *
+   * The caller must have resolved each leg's native symbol first (C-2): a leg
+   * that cannot resolve is refused before this is called, not created broken.
+   */
+  async createGroup(input: {
+    definition_id: number;
+    legs: DeployLeg[];
+    settle_seconds?: number;
+  }): Promise<{ group: StrategyRunGroupRow; runs: StrategyRunRow[] }> {
+    const legs = input.legs ?? [];
+    if (legs.length === 0) {
+      throw new Error('a deploy needs at least one leg');
+    }
+    const canaries = legs.filter((l) => l.is_canary);
+    if (canaries.length !== 1) {
+      // Not a defaultable choice: the canary is the account that takes the
+      // first real risk from an unproven edit, so it is named explicitly.
+      throw new Error(`exactly one leg must be the canary (got ${canaries.length})`);
+    }
+
+    return this.inTransaction(async (client) => {
+      const groupResult = await client.query(
+        `INSERT INTO strategy_run_groups (definition_id, settle_seconds, status)
+         VALUES ($1, $2, 'staging') RETURNING *`,
+        [input.definition_id, Math.max(0, Number(input.settle_seconds) || 0)]
+      );
+      const group = groupResult.rows[0] as StrategyRunGroupRow;
+
+      const runs: StrategyRunRow[] = [];
+      for (const leg of legs) {
+        const runResult = await client.query(
+          `INSERT INTO strategy_runs
+             (definition_id, broker, broker_account, native_symbol, account_mode,
+              sizing, risk, run_group_id, is_canary, status)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10)
+           RETURNING *`,
+          [
+            input.definition_id,
+            leg.broker,
+            leg.broker_account,
+            leg.native_symbol,
+            leg.account_mode ?? 'paper',
+            JSON.stringify(leg.sizing ?? {}),
+            JSON.stringify(leg.risk ?? {}),
+            group.id,
+            Boolean(leg.is_canary),
+            leg.is_canary ? 'running' : 'pending',
+          ]
+        );
+        runs.push(runResult.rows[0] as StrategyRunRow);
+      }
+      return { group, runs };
+    });
+  }
+
+  /** Groups whose canary is running and whose siblings are still pending. */
+  async listStagingGroups(): Promise<StagingGroup[]> {
+    const sql = `
+      SELECT g.id,
+             g.settle_seconds,
+             c.id                 AS canary_run_id,
+             c.status             AS canary_status,
+             c.started_at         AS canary_started_at,
+             c.last_evaluated_at  AS canary_last_evaluated_at,
+             c.last_error         AS canary_last_error,
+             (SELECT COUNT(*) FROM strategy_runs p
+               WHERE p.run_group_id = g.id AND p.status = 'pending') AS pending_legs
+        FROM strategy_run_groups g
+        JOIN strategy_runs c ON c.run_group_id = g.id AND c.is_canary
+       WHERE g.status = 'staging'
+       ORDER BY g.id ASC
+    `;
+    const result = await this.db.query(sql, []);
+    return (result.rows as any[]).map((r) => ({
+      id: Number(r.id),
+      settle_seconds: Number(r.settle_seconds),
+      canary_run_id: Number(r.canary_run_id),
+      canary_status: String(r.canary_status),
+      canary_started_at: String(r.canary_started_at),
+      canary_last_evaluated_at: r.canary_last_evaluated_at
+        ? String(r.canary_last_evaluated_at)
+        : null,
+      canary_last_error: r.canary_last_error ? String(r.canary_last_error) : null,
+      pending_legs: Number(r.pending_legs) || 0,
+    }));
+  }
+
+  /** Promote a group's pending legs to running. Returns how many started. */
+  async admitGroup(groupId: number): Promise<number> {
+    return this.inTransaction(async (client) => {
+      const result = await client.query(
+        `UPDATE strategy_runs
+            SET status = 'running', started_at = NOW()
+          WHERE run_group_id = $1 AND status = 'pending'`,
+        [groupId]
+      );
+      await client.query(
+        `UPDATE strategy_run_groups
+            SET status = 'running', admitted_at = NOW()
+          WHERE id = $1`,
+        [groupId]
+      );
+      return (result as { rowCount?: number }).rowCount ?? 0;
+    });
+  }
+
+  /**
+   * Abandon a staging group whose canary failed: its pending legs are stopped
+   * rather than left to start later.
+   *
+   * The canary exists to catch exactly this, so a failure must **not** fall
+   * through to admission — the whole point is that the remaining accounts
+   * never take the risk.
+   */
+  async abandonGroup(groupId: number, reason: string): Promise<number> {
+    return this.inTransaction(async (client) => {
+      const result = await client.query(
+        `UPDATE strategy_runs
+            SET status = 'stopped', stopped_at = NOW(), last_error = $2
+          WHERE run_group_id = $1 AND status = 'pending'`,
+        [groupId, reason]
+      );
+      await client.query(
+        `UPDATE strategy_run_groups SET status = 'stopped', last_error = $2 WHERE id = $1`,
+        [groupId, reason]
+      );
+      return (result as { rowCount?: number }).rowCount ?? 0;
+    });
+  }
+
+  /** Stop every leg of a group — the group-level kill switch. */
+  async stopGroup(groupId: number): Promise<number> {
+    return this.inTransaction(async (client) => {
+      const result = await client.query(
+        `UPDATE strategy_runs
+            SET status = 'stopped', stopped_at = NOW()
+          WHERE run_group_id = $1 AND status IN ('pending', 'running')`,
+        [groupId]
+      );
+      await client.query(`UPDATE strategy_run_groups SET status = 'stopped' WHERE id = $1`, [
+        groupId,
+      ]);
+      return (result as { rowCount?: number }).rowCount ?? 0;
+    });
+  }
+
+  /**
+   * Stop every run on one connection — the per-connection panic stop.
+   *
+   * Deliberately not group-scoped: when an account is misbehaving the operator
+   * wants everything on *that account* halted, whichever groups the legs
+   * belong to.
+   */
+  async stopConnection(broker: string, brokerAccount: string): Promise<number> {
+    const result = await this.db.query(
+      `UPDATE strategy_runs
+          SET status = 'stopped', stopped_at = NOW()
+        WHERE broker = $1 AND broker_account = $2 AND status IN ('pending', 'running')`,
+      [broker, brokerAccount]
+    );
+    return (result as { rowCount?: number }).rowCount ?? 0;
+  }
+
+  async listGroupRuns(groupId: number): Promise<StrategyRunRow[]> {
+    const result = await this.db.query(
+      'SELECT * FROM strategy_runs WHERE run_group_id = $1 ORDER BY is_canary DESC, id ASC',
+      [groupId]
+    );
+    return result.rows as StrategyRunRow[];
   }
 
   // ---- signals ----------------------------------------------------------- //
@@ -356,6 +607,28 @@ export class StrategyRepository {
         WHERE acted = TRUE
           AND created_at >= date_trunc('day', NOW())`,
       []
+    );
+    return Number(result.rows[0]?.n ?? 0);
+  }
+
+  /** Orders placed today across every run on one **connection** (C-4).
+   *
+   *  The level a broker — and a prop firm — actually enforces limits at is the
+   *  account, not the strategy. A connection hosting several runs can breach
+   *  an account-level cap while every individual run is well inside its own. */
+  async countActedSignalsTodayForConnection(
+    broker: string,
+    brokerAccount: string
+  ): Promise<number> {
+    const result = await this.db.query(
+      `SELECT COUNT(*)::int AS n
+         FROM strategy_signals s
+         JOIN strategy_runs r ON r.id = s.run_id
+        WHERE r.broker = $1
+          AND r.broker_account = $2
+          AND s.acted = TRUE
+          AND s.created_at >= date_trunc('day', NOW())`,
+      [broker, brokerAccount]
     );
     return Number(result.rows[0]?.n ?? 0);
   }

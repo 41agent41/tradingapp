@@ -58,6 +58,7 @@ import pytz
 
 from backtesting import TradingStrategy
 from indicators import calculator as indicator_calculator
+from stops import StopSpecError, resolve_stop, stop_indicator_requests, validate_stop
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,11 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 BAR_FIELDS = {"open", "high", "low", "close", "volume"}
+# Which directions a rule-set may trade (Component E — E1).
+#   long  — `entry` opens a long, `exit` closes it (the pre-E1 behaviour)
+#   short — `entry` opens a short, `exit` closes it
+#   both  — `entry`/`exit` are the long side; `short_entry`/`short_exit` the short
+DIRECTIONS = {"long", "short", "both"}
 POSITION_FIELDS = {"size", "avg_price", "unrealized_pct"}
 COMPARISON_OPERATORS = {">", "<", ">=", "<="}
 CROSS_OPERATORS = {"crosses_above", "crosses_below"}
@@ -480,6 +486,30 @@ class RuleStrategy(TradingStrategy):
         # engine's end-of-backtest close.
         self.exit = _compile_group(rule_set["exit"]) if rule_set.get("exit") else Group("any", [])
 
+        # Direction (E1). Defaults to long, so every pre-E1 rule-set compiles
+        # and behaves exactly as before.
+        self.direction = str(rule_set.get("direction") or "long").strip().lower()
+        if self.direction not in DIRECTIONS:
+            raise RuleSetError(
+                f"Unknown direction '{self.direction}'. Valid: {sorted(DIRECTIONS)}."
+            )
+        if self.direction == "both":
+            if "short_entry" not in rule_set:
+                raise RuleSetError(
+                    "direction='both' requires a 'short_entry' group; without one the short "
+                    "side has no rules and the strategy would silently trade long-only."
+                )
+            self.short_entry = _compile_group(rule_set["short_entry"])
+            self.short_exit = (
+                _compile_group(rule_set["short_exit"])
+                if rule_set.get("short_exit")
+                else Group("any", [])
+            )
+        else:
+            # For 'short', the primary entry/exit groups *are* the short side.
+            self.short_entry = Group("any", [])
+            self.short_exit = Group("any", [])
+
         self.sessions = _compile_sessions(rule_set.get("sessions"))
         self.flat_at_session_end = bool(rule_set.get("flat_at_session_end", False))
 
@@ -489,6 +519,9 @@ class RuleStrategy(TradingStrategy):
         # what the engine drives per bar. `risk` stays live-only: its caps are
         # about order rate and daily loss across a *session*, which a backtest
         # over historical bars has no equivalent of.
+        # Protective stop (E-2). Rule-defined, not engine config: each
+        # strategy carries its own risk model.
+        self.stop = validate_stop(rule_set.get("stop"))
         self.sizing = _validate_sizing(rule_set.get("sizing"))
         self.risk = dict(rule_set.get("risk") or {})
         self.scale_out = _validate_scale_out(rule_set.get("scale_out"))
@@ -504,6 +537,8 @@ class RuleStrategy(TradingStrategy):
         operands: List[Operand] = (
             list(_walk_operands(self.entry))
             + list(_walk_operands(self.exit))
+            + list(_walk_operands(self.short_entry))
+            + list(_walk_operands(self.short_exit))
             + [
                 operand
                 for condition in self._scale_out_conditions
@@ -516,6 +551,10 @@ class RuleStrategy(TradingStrategy):
             primary_requests |= operand.primary_requests()
             for tf, col in operand.higher_tf_columns():
                 higher_tf.setdefault(tf, set()).add(col)
+
+        # An ATR stop needs its column computed like any operand's, or it
+        # resolves to NaN and the position is placed unprotected.
+        primary_requests |= stop_indicator_requests(self.stop)
 
         # Union in any explicitly-declared indicators (validated as requests).
         declared = rule_set.get("indicators") or []
@@ -581,25 +620,58 @@ class RuleStrategy(TradingStrategy):
 
         buy = False
         sell = False
+        short = False
         buy_reason = ""
         sell_reason = ""
+        short_reason = ""
 
         if in_session[i]:
-            if self.entry.evaluate(ctx):
-                buy = True
-                buy_reason = f"{self.name}: entry rules met"
-            if self.exit.evaluate(ctx):
-                sell = True
-                sell_reason = f"{self.name}: exit rules met"
+            entry_fires = self.entry.evaluate(ctx)
+            exit_fires = self.exit.evaluate(ctx)
+
+            if self.direction == "short":
+                # The primary groups *are* the short side for a short-only
+                # rule-set — there is no second set of rules to write.
+                if entry_fires:
+                    short = True
+                    short_reason = f"{self.name}: entry rules met (short)"
+                if exit_fires:
+                    sell = True
+                    sell_reason = f"{self.name}: exit rules met"
+            else:
+                if entry_fires:
+                    buy = True
+                    buy_reason = f"{self.name}: entry rules met"
+                if exit_fires:
+                    sell = True
+                    sell_reason = f"{self.name}: exit rules met"
+
+                if self.direction == "both":
+                    if self.short_entry.evaluate(ctx):
+                        short = True
+                        short_reason = f"{self.name}: short entry rules met"
+                    if self.short_exit.evaluate(ctx):
+                        sell = True
+                        if not sell_reason:
+                            sell_reason = f"{self.name}: short exit rules met"
 
         # Force flat on the last in-session bar of each contiguous window.
+        # Direction-agnostic: a session-end flat closes a short exactly as it
+        # closes a long.
         n = len(signals)
         if self.flat_at_session_end and in_session[i] and (i == n - 1 or not in_session[i + 1]):
             sell = True
             if not sell_reason:
                 sell_reason = f"{self.name}: session-end flat"
 
-        return {"buy": buy, "sell": sell, "buy_reason": buy_reason, "sell_reason": sell_reason}
+        return {
+            "buy": buy,
+            "sell": sell,
+            "short": short,
+            "buy_reason": buy_reason,
+            "sell_reason": sell_reason,
+            "short_reason": short_reason,
+        }
 
     def evaluate_scale_out(
         self,
@@ -720,28 +792,121 @@ class RuleStrategy(TradingStrategy):
         position.last_price = float(row.get("close", float("nan")))
         ctx = EvalContext(row=row, prev=prev_row, position=position)
 
-        entry = bool(in_session[last] and self.entry.evaluate(ctx))
-        exit_ = bool(in_session[last] and self.exit.evaluate(ctx))
+        entry_fires = bool(in_session[last] and self.entry.evaluate(ctx))
+        exit_fires = bool(in_session[last] and self.exit.evaluate(ctx))
 
-        if entry and position.size <= 0:
-            signal = "buy"
-        elif exit_ and position.size > 0:
-            signal = "sell"
+        # Which side each group belongs to (E1).
+        if self.direction == "short":
+            long_entry, short_entry = False, entry_fires
+            long_exit = short_exit = exit_fires
+        elif self.direction == "both":
+            long_entry, long_exit = entry_fires, exit_fires
+            short_entry = bool(in_session[last] and self.short_entry.evaluate(ctx))
+            short_exit = bool(in_session[last] and self.short_exit.evaluate(ctx))
+        else:  # long
+            long_entry, long_exit = entry_fires, exit_fires
+            short_entry = short_exit = False
+
+        # Position-aware, and **signed**: a short is a negative size, not an
+        # absent one. Entries are only considered from flat — E12 defers direct
+        # reversal, so flipping long→short means exiting first and entering on a
+        # later bar rather than silently doing something surprising here.
+        conflict = False
+        if position.size == 0:
+            if long_entry and short_entry:
+                # Both sides firing on one bar is a rule-set bug, not a choice
+                # to make on its behalf. Refusing is the safe reading.
+                conflict = True
+                signal = "none"
+            elif long_entry:
+                signal = "long"
+            elif short_entry:
+                signal = "short"
+            else:
+                signal = "none"
+        elif position.size > 0:
+            signal = "flat" if long_exit else "none"
         else:
-            signal = "none"
+            signal = "flat" if short_exit else "none"
+
+        entry = long_entry or short_entry
+        exit_ = long_exit or short_exit
+        entry_reason = ""
+        if long_entry:
+            entry_reason = f"{self.name}: entry rules met"
+        elif short_entry:
+            entry_reason = f"{self.name}: short entry rules met"
+
+        # The stop price for an entry, resolved from the same bars the signal
+        # was derived from (E-2). Failure is reported rather than swallowed:
+        # the caller must be able to tell "no stop declared" from "stop
+        # declared but unresolvable", because placing the order anyway would
+        # leave the position unprotected.
+        stop_price: float | None = None
+        stop_error: str | None = None
+        if signal in ("long", "short") and self.stop is not None:
+            try:
+                stop_price = resolve_stop(
+                    self.stop,
+                    signals,
+                    direction=signal,
+                    reference_price=float(row.get("close", float("nan"))),
+                )
+            except StopSpecError as exc:
+                stop_error = str(exc)
 
         bar_time = signals.index[last]
         return {
             "signal": signal,
+            "direction": self.direction,
+            "stop_price": stop_price,
+            "stop_error": stop_error,
+            "has_stop_rule": self.stop is not None,
+            "conflict": conflict,
             "entry": entry,
             "exit": exit_,
-            "entry_reason": f"{self.name}: entry rules met" if entry else "",
+            "entry_reason": entry_reason,
             "exit_reason": f"{self.name}: exit rules met" if exit_ else "",
             "in_session": bool(in_session[last]),
             "bar_time": (bar_time.isoformat() if hasattr(bar_time, "isoformat") else str(bar_time)),
             "position": {"size": position.size, "avg_price": position.avg_price},
             "strategy": self.name,
         }
+
+    def trail_stop(self, df: pd.DataFrame, position: Position | None = None) -> Dict[str, Any]:
+        """The stop this strategy wants for an **open** position right now.
+
+        Separate from :meth:`evaluate` because trailing is not a signal: it
+        happens on every bar a position is open, including bars where the rules
+        produce nothing at all. Same spec, same bars, same resolver as the
+        entry stop — so a trail can never drift from the stop it is tightening.
+
+        The **ratchet is not applied here**. The caller compares against what
+        the broker currently holds and only issues a modify when this is more
+        protective, which is what lets the broker hold the high-water mark
+        instead of the app carrying it as state.
+        """
+
+        position = position or Position()
+        if self.stop is None or position.size == 0:
+            return {"stop_price": None, "direction": None, "error": None}
+
+        if df is None or len(df) == 0:
+            return {"stop_price": None, "direction": None, "error": "no bars"}
+
+        enriched = indicator_calculator.calculate_indicators(df, self.indicators)
+        signals, _ = self._prepared(enriched)
+        direction = "long" if position.size > 0 else "short"
+        reference = float(signals.iloc[-1].get("close", float("nan")))
+
+        try:
+            price = resolve_stop(self.stop, signals, direction=direction, reference_price=reference)
+        except StopSpecError as exc:
+            # Reported, never swallowed: a trail that silently fails leaves the
+            # position on a stop that is no longer the one the rules describe.
+            return {"stop_price": None, "direction": direction, "error": str(exc)}
+
+        return {"stop_price": price, "direction": direction, "error": None}
 
     def _merge_higher_timeframe(
         self, signals: pd.DataFrame, timeframe: str, columns: set[str]

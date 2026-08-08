@@ -5,7 +5,8 @@ and an optional live position, return the signal for the **newest closed bar**.
 No IB gateway, no database and no order placement — it just runs the compiled
 rules, so the backend strategy runner (A2) can poll it once per closed bar.
 
-  POST /strategies/evaluate — evaluate a rule-set against the latest bar
+  POST /strategies/evaluate — evaluate a rule-set against the latest bar,
+                              plus the trail stop for an open position (E-3)
 """
 
 from __future__ import annotations
@@ -102,4 +103,15 @@ async def evaluate_strategy(request: EvaluateRequest) -> Dict[str, Any]:
     except (RuleSetError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
-    return {"success": True, "bars_evaluated": len(df), **result}
+    # The trail rides along with the evaluation (E-3). Trailing is not a
+    # signal — it happens on every bar a position is open, including bars the
+    # rules say nothing about — but computing it here means the caller gets the
+    # decision and the desired stop from one round trip, off the same bars.
+    trail: Dict[str, Any] = {"stop_price": None, "direction": None, "error": None}
+    if position.size != 0:
+        try:
+            trail = strat.trail_stop(df, position)
+        except (RuleSetError, ValueError) as exc:
+            trail = {"stop_price": None, "direction": None, "error": str(exc)}
+
+    return {"success": True, "bars_evaluated": len(df), "trail": trail, **result}

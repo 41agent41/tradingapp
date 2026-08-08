@@ -31,8 +31,9 @@
 
 import axios from 'axios';
 import { logger } from './logger.js';
+import { applyTrail } from './stopManager.js';
 import { dbService } from './database.js';
-import { StrategyRepository, type ActiveRun } from './strategyRepository.js';
+import { StrategyRepository, type ActiveRun, type StagingGroup } from './strategyRepository.js';
 import { ExecutionRepository } from './executionRepository.js';
 import { submitCreateOrder } from './orderService.js';
 import { isSystematicExecutionEnabled, systematicMaxOrdersPerDay } from './orderTypes.js';
@@ -43,7 +44,14 @@ import {
   connectionOf,
   type Connection,
 } from './orderTypes.js';
-import { ExecutionEngine, type ExecutionContext, type ExecutionResult } from './executionEngine.js';
+import {
+  ExecutionEngine,
+  normaliseSignal,
+  type ConnectionLimits,
+  type ExecutionContext,
+  type ExecutionResult,
+  type PortfolioLimits,
+} from './executionEngine.js';
 
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
@@ -56,6 +64,23 @@ const SYSTEMATIC_INITIAL_DELAY_MS = Math.max(
   0,
   parseInt(process.env.SYSTEMATIC_INITIAL_DELAY_MS || '15000', 10) || 15000
 );
+// Connections are processed concurrently, bounded. Under ~10 connections this
+// is ample; materially beyond that the runner wants a work-queue instead.
+const SYSTEMATIC_MAX_CONNECTION_CONCURRENCY = Math.max(
+  1,
+  parseInt(process.env.SYSTEMATIC_MAX_CONNECTION_CONCURRENCY || '4', 10) || 4
+);
+const SYSTEMATIC_BREAKER_THRESHOLD = Math.max(
+  1,
+  parseInt(process.env.SYSTEMATIC_CONNECTION_BREAKER_THRESHOLD || '3', 10) || 3
+);
+const SYSTEMATIC_BREAKER_COOLDOWN_SECONDS = Math.max(
+  10,
+  parseInt(process.env.SYSTEMATIC_CONNECTION_BREAKER_COOLDOWN_SECONDS || '300', 10) || 300
+);
+// Fractional lot sizes do not compare exactly, so the reconciliation check
+// needs a tolerance rather than strict equality.
+const RECONCILIATION_TOLERANCE = Number(process.env.POSITION_RECONCILIATION_TOLERANCE || '0.0001');
 const POSITION_LOOKBACK_HOURS = Math.max(
   1,
   parseInt(process.env.ORDER_POSITION_LOOKBACK_HOURS || '168', 10) || 168
@@ -73,16 +98,40 @@ export interface RawBar {
 export interface PositionState {
   size: number;
   avg_price: number;
+  /** What the app's own fills imply it holds, for the reconciliation check.
+   *  Null when unavailable. Never used as the position itself (E-0). */
+  derived_size?: number | null;
+  /** The protective stop currently attached at the venue (E-3). The trail
+   *  compares against this rather than against carried state. */
+  stop_loss?: number | null;
+}
+
+/** One position as the venue reports it. */
+interface VenuePosition {
+  size: number;
+  avgPrice: number;
+  stopLoss: number | null;
 }
 
 export interface EvaluateResult {
-  signal: string; // 'buy' | 'sell' | 'none'
+  /** 'long' | 'short' | 'flat' | 'none' (pre-E1: 'buy' | 'sell'). */
+  signal: string;
   entry: boolean;
   exit: boolean;
   entry_reason?: string;
   exit_reason?: string;
   in_session: boolean;
   bar_time: string;
+  /** Protective stop the rule engine resolved for this entry (E-2). */
+  stop_price?: number | null;
+  /** Set when a stop was declared but could not be resolved — the engine
+   *  refuses the entry rather than opening unprotected. */
+  stop_error?: string | null;
+  has_stop_rule?: boolean;
+  /** The stop the rules want for an **open** position on this bar (E-3).
+   *  Independent of the signal: trailing happens on bars the rules say
+   *  nothing about. */
+  trail?: { stop_price: number | null; direction: string | null; error: string | null };
 }
 
 export interface StrategySignalRecord {
@@ -120,6 +169,13 @@ export interface StrategyRunnerDeps {
   /** A3 execution: map an actionable signal to a gated, audited paper order.
    *  Optional so the signal-only path (and its tests) run without it. */
   executeSignal?(ctx: ExecutionContext): Promise<ExecutionResult>;
+  /** E-3: move an open position's stop at the venue. Optional so a runner
+   *  without stop management behaves as before. */
+  modifyStop?(connection: Connection, symbol: string, stopPrice: number): Promise<void>;
+  /** C-3 staged deploy. Optional so a runner without groups behaves as before. */
+  listStagingGroups?(): Promise<StagingGroup[]>;
+  admitGroup?(groupId: number): Promise<number>;
+  abandonGroup?(groupId: number, reason: string): Promise<number>;
 }
 
 export interface StrategyRunnerOptions {
@@ -128,6 +184,9 @@ export interface StrategyRunnerOptions {
   intervalSeconds?: number;
   initialDelayMs?: number;
   emit?: (runId: number, payload: Record<string, unknown>) => void;
+  maxConnectionConcurrency?: number;
+  breakerThreshold?: number;
+  breakerCooldownSeconds?: number;
 }
 
 // Fetch a history window generous enough that the longest indicator (e.g.
@@ -146,6 +205,89 @@ export function historyPeriodFor(timeframe: string): string {
     default: // 1min / 5min / 15min / 30min
       return '10D';
   }
+}
+
+/** The symbol a run actually trades at its connection.
+ *
+ * A definition names a **canonical** instrument; each connection resolves that
+ * to its own native symbol at deploy time (C-2) — EURUSD may be `EURUSD.a`
+ * here and `EURUSD_i` on the next account. Runs created before C-2 have no
+ * resolved symbol and fall back to the definition's, which is exactly the
+ * single-connection behaviour they were created under.
+ */
+export function runSymbol(run: Pick<ActiveRun, 'symbol' | 'native_symbol'>): string {
+  const native = (run.native_symbol ?? '').trim();
+  return native || run.symbol;
+}
+
+/**
+ * Fleet-level caps (C-4), read from the connection manifest the broker service
+ * already owns plus environment defaults.
+ *
+ * Kept here rather than in the manifest schema because the manifest describes
+ * *topology* — where an account is and how to reach it — while a cap is a
+ * risk decision that changes far more often than the wiring does.
+ */
+function connectionLimitsFor(connection: Connection): ConnectionLimits | null {
+  const envKey = `${connection.broker}_${connection.brokerAccount}`
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '_');
+  const orders = Number(
+    process.env[`CONNECTION_MAX_ORDERS_PER_DAY__${envKey}`] ??
+      process.env.CONNECTION_MAX_ORDERS_PER_DAY ??
+      ''
+  );
+  const loss = Number(
+    process.env[`CONNECTION_MAX_DAILY_LOSS__${envKey}`] ??
+      process.env.CONNECTION_MAX_DAILY_LOSS ??
+      ''
+  );
+  const limits: ConnectionLimits = {};
+  if (Number.isFinite(orders) && orders > 0) limits.max_orders_per_day = orders;
+  if (Number.isFinite(loss) && loss > 0) limits.max_daily_loss = loss;
+  return Object.keys(limits).length > 0 ? limits : null;
+}
+
+/**
+ * Fleet-wide caps, plus the currency check any aggregate depends on (C-4).
+ *
+ * The fleet is configured as single-currency, which is what makes a portfolio
+ * cap possible without FX conversion. That is an assumption to **enforce, not
+ * trust**: a connection opened later in another denomination would make every
+ * aggregate silently wrong — the numbers still add up, they just stop meaning
+ * anything. So the connections' reported currencies are checked against
+ * `PORTFOLIO_BASE_CURRENCY`, and a mismatch makes the cap refuse rather than
+ * sum mixed units.
+ */
+async function fleetPortfolioLimits(): Promise<PortfolioLimits | null> {
+  const cap = Number(process.env.PORTFOLIO_MAX_DAILY_LOSS ?? '');
+  if (!Number.isFinite(cap) || cap <= 0) return null;
+
+  const expected = (process.env.PORTFOLIO_BASE_CURRENCY || '').trim().toUpperCase();
+  let currencies: string[] = [];
+  try {
+    const response = await axios.get(`${BROKER_SERVICE_URL}/providers`, {
+      timeout: 15000,
+      headers: { Connection: 'close' },
+    });
+    const connections = (response.data?.connections ?? {}) as Record<string, { currency?: string }>;
+    currencies = [
+      ...new Set(
+        Object.values(connections)
+          .map((c) => String(c.currency || '').toUpperCase())
+          .filter(Boolean)
+      ),
+    ];
+  } catch {
+    // Unknown is not the same as consistent. Report inconsistent so the cap
+    // refuses — a portfolio limit that cannot verify its own units must not
+    // quietly wave orders through.
+    return { max_daily_loss: cap, currency_consistent: false, currencies: [] };
+  }
+
+  const consistent =
+    currencies.length <= 1 && (!expected || currencies.every((c) => c === expected));
+  return { max_daily_loss: cap, currency_consistent: consistent, currencies };
 }
 
 function defaultDeps(
@@ -169,6 +311,20 @@ function defaultDeps(
     // Backs broker-native sizing: what one quantity unit means at this
     // connection and what sizes it accepts.
     instrumentSpec: (connection, symbol) => venueInstrumentSpec(connection, symbol),
+    // C-4 account- and fleet-level caps.
+    connectionLimits: async (connection) => connectionLimitsFor(connection),
+    countOrdersTodayForConnection: (connection) =>
+      repo.countActedSignalsTodayForConnection(connection.broker, connection.brokerAccount),
+    realisedPnlTodayForConnection: async (connection) =>
+      (
+        await executionRepo.realisedPnlTodayForConnection(
+          connection.broker,
+          connection.brokerAccount
+        )
+      ).realised,
+    portfolioLimits: () => fleetPortfolioLimits(),
+    realisedPnlTodayPortfolio: async () =>
+      (await executionRepo.realisedPnlTodayAllConnections()).realised,
   });
   // Venue caches, keyed per **connection** (platform + account), not per
   // platform. Two accounts on one platform have different equity, different
@@ -180,8 +336,8 @@ function defaultDeps(
   // that connection inside a short window instead of one per run per tick.
   // Fail-soft — an unreachable or unconfigured connection just means avg_price
   // stays 0, exactly as this behaved before the endpoint became venue-aware.
-  const avgCostCache = new Map<string, { at: number; bySymbol: Map<string, number> }>();
-  const AVG_COST_TTL_MS = 30_000;
+  const positionCache = new Map<string, { at: number; bySymbol: Map<string, VenuePosition> }>();
+  const POSITION_TTL_MS = 30_000;
   // Equity cache, same shape and rationale: one `/account/summary` round-trip
   // serves every equity-sized run on that connection inside a short window.
   // Fail-soft to null — the sizer then refuses with a reason rather than
@@ -214,6 +370,10 @@ function defaultDeps(
         sizeStep: Number(data.size_step) || 1,
         maxSize: data.max_size == null ? null : Number(data.max_size),
         contractSize: Number(data.contract_size) || 1,
+        stopsLevel: data.stops_level == null ? null : Number(data.stops_level),
+        point: data.point == null ? null : Number(data.point),
+        tickValue: data.tick_value == null ? null : Number(data.tick_value),
+        tickSize: data.tick_size == null ? null : Number(data.tick_size),
       };
     } catch {
       spec = null;
@@ -240,37 +400,49 @@ function defaultDeps(
     equityCache.set(key, { at: Date.now(), equity });
     return equity;
   };
-  const venueAvgCost = async (connection: Connection, symbol: string): Promise<number> => {
+  /** Every position the venue reports for a connection, keyed by symbol.
+   *
+   *  Throws rather than returning empty on failure. An unreachable venue is
+   *  **not evidence of a flat account** — see `getPosition` below, where
+   *  treating it as flat is the difference between holding a position and
+   *  opening a second one on top of it. */
+  const venuePositions = async (connection: Connection): Promise<Map<string, VenuePosition>> => {
     const key = connectionLabel(connection.broker, connection.brokerAccount);
-    try {
-      const cached = avgCostCache.get(key);
-      let bySymbol = cached && Date.now() - cached.at <= AVG_COST_TTL_MS ? cached.bySymbol : null;
-      if (!bySymbol) {
-        const response = await axios.get(`${BROKER_SERVICE_URL}/account/positions`, {
-          params: { broker: connection.broker, account: connection.brokerAccount },
-          timeout: 30000,
-          headers: { Connection: 'close' },
-        });
-        bySymbol = new Map<string, number>();
-        for (const pos of Array.isArray(response.data) ? response.data : []) {
-          const cost = Number(pos?.average_cost);
-          if (pos?.symbol && Number.isFinite(cost) && cost > 0) {
-            bySymbol.set(String(pos.symbol).toUpperCase(), cost);
-          }
-        }
-        avgCostCache.set(key, { at: Date.now(), bySymbol });
-      }
-      return bySymbol.get(symbol.toUpperCase()) ?? 0;
-    } catch {
-      return 0;
+    const cached = positionCache.get(key);
+    if (cached && Date.now() - cached.at <= POSITION_TTL_MS) return cached.bySymbol;
+
+    const response = await axios.get(`${BROKER_SERVICE_URL}/account/positions`, {
+      params: { broker: connection.broker, account: connection.brokerAccount },
+      timeout: 30000,
+      headers: { Connection: 'close' },
+    });
+    const bySymbol = new Map<string, VenuePosition>();
+    for (const pos of Array.isArray(response.data) ? response.data : []) {
+      const symbol = String(pos?.symbol ?? '').toUpperCase();
+      if (!symbol) continue;
+      const size = Number(pos?.position);
+      const cost = Number(pos?.average_cost);
+      const stop = Number(pos?.stop_loss);
+      bySymbol.set(symbol, {
+        size: Number.isFinite(size) ? size : 0,
+        avgPrice: Number.isFinite(cost) && cost > 0 ? cost : 0,
+        stopLoss: Number.isFinite(stop) && stop > 0 ? stop : null,
+      });
     }
+    positionCache.set(key, { at: Date.now(), bySymbol });
+    return bySymbol;
   };
+
   return {
     listActiveRuns: () => repo.listActiveRuns(),
     fetchHistory: async (run) => {
       const response = await axios.get(`${BROKER_SERVICE_URL}/market-data/history`, {
         params: {
-          symbol: run.symbol,
+          // The connection's own name for the instrument (C-2). EURUSD is
+          // EURUSD.a at one broker and EURUSD_i at the next, so fetching the
+          // definition's canonical symbol would 404 — or worse, silently
+          // return a different instrument's bars.
+          symbol: runSymbol(run),
           timeframe: run.timeframe,
           period: historyPeriodFor(run.timeframe),
           secType: run.sec_type || 'STK',
@@ -293,34 +465,59 @@ function defaultDeps(
       }));
     },
     getPosition: async (run) => {
-      // Size: this run's own exposure — its recorded fills plus the unfilled
-      // remainder of its still-working orders, scoped by `runId` so a second
-      // run on the same symbol (or a manual trade) can never change what this
-      // run's sizing and pyramiding rules do. See
-      // `ExecutionRepository.netPositionWithOpenOrders` for why both halves are
-      // needed: fills alone lag the poller, submitted orders alone can't see a
-      // partial fill. With the fills feed off this is byte-for-byte the old
-      // order-audit estimate.
+      // **The venue is the source of truth** (Component E — E-0).
       //
-      // Average price: the *venue's* reported average cost for whichever
-      // broker the run targets — so position.unrealized_pct exit rules (e.g. a
-      // -2% stop) evaluate live the same way they do in backtest on MT5 /
-      // Alpaca / OANDA, not just IB.
+      // This used to derive the position from the run's own recorded fills
+      // plus its working orders, deliberately scoped by `runId` so a second
+      // run on the same symbol could not interfere. Two things changed:
+      //
+      //  - E10 makes that isolation unnecessary — one strategy per instrument
+      //    per account means the venue's net position for this connection and
+      //    symbol *is* this run's position, with no attribution to do.
+      //  - E-2 puts stops at the broker, so **the broker closes positions the
+      //    app did not close**. A fills-derived figure counting only orders
+      //    this run placed would never see that exit, and the run would keep
+      //    trading against a position that no longer exists.
+      //
+      // It also means a manual intervention — closing a trade yourself in the
+      // terminal — is picked up correctly on the next bar instead of
+      // desynchronising the run.
+      const connection = connectionOf(run);
+      const symbol = runSymbol(run).toUpperCase();
+
+      // No try/catch. An unreachable venue must **fail the evaluation**, not
+      // report flat: flat is an actionable state that would let the strategy
+      // open a position on top of one it already holds. The caller records the
+      // error on the run and counts it against the connection's breaker.
+      const positions = await venuePositions(connection);
+      const venue = positions.get(symbol) ?? { size: 0, avgPrice: 0, stopLoss: null };
+
+      // Reconciliation, not authority. The fills-derived figure is what the
+      // app *believes* it holds; a persistent disagreement means fills are
+      // being missed — exactly the class of bug C-0 addressed — so it is
+      // surfaced rather than silently reconciled away. Fail-soft: losing the
+      // check must not stop trading on a position the venue reported fine.
+      let derived: number | null = null;
       try {
         const size = await executionRepo.netPositionWithOpenOrders({
-          broker: run.broker || 'ib',
-          brokerAccount: run.broker_account || DEFAULT_BROKER_ACCOUNT,
-          symbol: run.symbol,
+          broker: connection.broker,
+          brokerAccount: connection.brokerAccount,
+          symbol,
           accountMode: run.account_mode,
           runId: run.id,
           lookbackHours: POSITION_LOOKBACK_HOURS,
         });
-        const netSize = Number.isFinite(size) ? size : 0;
-        const avgPrice = netSize !== 0 ? await venueAvgCost(connectionOf(run), run.symbol) : 0;
-        return { size: netSize, avg_price: avgPrice };
+        derived = Number.isFinite(size) ? size : null;
       } catch {
-        return { size: 0, avg_price: 0 };
+        derived = null;
       }
+
+      return {
+        size: venue.size,
+        avg_price: venue.avgPrice,
+        stop_loss: venue.stopLoss,
+        derived_size: derived,
+      };
     },
     evaluate: async (bars, ruleSet, position) => {
       const response = await axios.post(
@@ -340,6 +537,20 @@ function defaultDeps(
     emit,
     now: () => Date.now(),
     executeSignal: (ctx) => engine.execute(ctx),
+    modifyStop: async (connection, symbol, stopPrice) => {
+      await axios.post(
+        `${BROKER_SERVICE_URL}/positions/${encodeURIComponent(symbol)}/stop`,
+        { stop_loss: stopPrice },
+        {
+          params: { broker: connection.broker, account: connection.brokerAccount },
+          timeout: 30000,
+          headers: { Connection: 'close' },
+        }
+      );
+    },
+    listStagingGroups: () => repo.listStagingGroups(),
+    admitGroup: (groupId) => repo.admitGroup(groupId),
+    abandonGroup: (groupId, reason) => repo.abandonGroup(groupId, reason),
   };
 }
 
@@ -348,6 +559,12 @@ export class StrategyRunner {
   private readonly enabled: boolean;
   private readonly intervalMs: number;
   private readonly initialDelayMs: number;
+
+  private readonly maxConnectionConcurrency: number;
+  private readonly breakerThreshold: number;
+  private readonly breakerCooldownMs: number;
+  /** Consecutive failures and cooldown deadline, keyed by connection label. */
+  private readonly breakers = new Map<string, { failures: number; openUntil: number }>();
 
   private timer: NodeJS.Timeout | null = null;
   private initialTimer: NodeJS.Timeout | null = null;
@@ -362,6 +579,16 @@ export class StrategyRunner {
   public signalsRecorded = 0;
   public ordersPlaced = 0;
   public errors = 0;
+  public skipped = 0;
+  public groupsAdmitted = 0;
+  public groupsAbandoned = 0;
+  public positionDivergences = 0;
+  public stopsTightened = 0;
+  /** Runs whose venue and fills-derived positions currently disagree. */
+  private readonly divergentRuns = new Map<
+    number,
+    { connection: string; symbol: string; venue: number; derived: number }
+  >();
 
   constructor(opts: StrategyRunnerOptions = {}) {
     const emit = opts.emit ?? (() => undefined);
@@ -369,6 +596,11 @@ export class StrategyRunner {
     this.enabled = opts.enabled ?? SYSTEMATIC_ENABLED;
     this.intervalMs = (opts.intervalSeconds ?? SYSTEMATIC_INTERVAL_SECONDS) * 1000;
     this.initialDelayMs = opts.initialDelayMs ?? SYSTEMATIC_INITIAL_DELAY_MS;
+    this.maxConnectionConcurrency =
+      opts.maxConnectionConcurrency ?? SYSTEMATIC_MAX_CONNECTION_CONCURRENCY;
+    this.breakerThreshold = opts.breakerThreshold ?? SYSTEMATIC_BREAKER_THRESHOLD;
+    this.breakerCooldownMs =
+      (opts.breakerCooldownSeconds ?? SYSTEMATIC_BREAKER_COOLDOWN_SECONDS) * 1000;
   }
 
   // -------------------------------------------------------------------
@@ -421,9 +653,11 @@ export class StrategyRunner {
     this.runs++;
     try {
       const activeRuns = await this.deps.listActiveRuns();
-      for (const run of activeRuns) {
-        await this.evaluateRun(run);
-      }
+      await this.evaluateByConnection(activeRuns);
+      // After evaluation, so a canary that just produced its first clean
+      // decision can admit its siblings on the same tick rather than waiting
+      // a full interval.
+      await this.admitSettledGroups();
     } catch (err) {
       this.errors++;
       this.lastError = err instanceof Error ? err.message : String(err);
@@ -434,16 +668,243 @@ export class StrategyRunner {
     }
   }
 
-  private async evaluateRun(run: ActiveRun): Promise<void> {
+  /**
+   * Evaluate every active run, grouped by connection (C-3 / C6).
+   *
+   * Connections run **concurrently**, bounded; runs within one connection run
+   * **sequentially**. That split is the point: one MT5 sidecar is one terminal,
+   * so hammering it in parallel helps nothing — but a sidecar that is powered
+   * on and not answering (the common failure, since the terminal is a GUI app
+   * that can sit at a login dialog) used to cost its full timeout *per run,
+   * per tick*, with every other account's runs queued behind it. Three stuck
+   * runs on the default 60s interval meant the healthy accounts stopped
+   * evaluating altogether.
+   */
+  private async evaluateByConnection(runs: ActiveRun[]): Promise<void> {
+    const byConnection = new Map<string, ActiveRun[]>();
+    for (const run of runs) {
+      const conn = connectionOf(run);
+      const key = connectionLabel(conn.broker, conn.brokerAccount);
+      const bucket = byConnection.get(key);
+      if (bucket) bucket.push(run);
+      else byConnection.set(key, [run]);
+    }
+
+    const queue = [...byConnection.entries()];
+    const width = Math.max(1, Math.min(this.maxConnectionConcurrency, queue.length));
+
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const next = queue.shift();
+        if (!next) return;
+        const [label, connectionRuns] = next;
+        if (this.breakerIsOpen(label)) {
+          this.skipped += connectionRuns.length;
+          continue;
+        }
+        for (const run of connectionRuns) {
+          await this.evaluateRun(run, label);
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: width }, () => worker()));
+  }
+
+  /**
+   * Move an open position's stop to what the rules want on this bar (E-3).
+   *
+   * Only tightens: `decideTrail` compares against the stop the venue already
+   * holds, so the broker keeps the high-water mark and the app carries no
+   * state. Failure is logged and counted, never fatal — a venue that refuses a
+   * modify leaves the previous stop in place, which is degraded but still
+   * protected, and failing the evaluation would stop the strategy managing
+   * positions it can still manage.
+   */
+  private async trailStop(
+    run: ActiveRun,
+    position: PositionState,
+    result: EvaluateResult,
+    lastBar: RawBar,
+    label: string
+  ): Promise<void> {
+    if (!this.deps.modifyStop) return;
+    if (position.size === 0) return;
+    const desired = result.trail?.stop_price ?? null;
+    if (result.trail?.error) {
+      logger.warn(
+        { run_id: run.id, connection: label, err: result.trail.error },
+        'trail stop could not be resolved — the existing stop remains'
+      );
+      return;
+    }
+    if (desired == null) return;
+
+    const outcome = await applyTrail(
+      { modifyStop: this.deps.modifyStop },
+      {
+        connection: connectionOf(run),
+        position: {
+          symbol: runSymbol(run),
+          size: position.size,
+          avgPrice: position.avg_price,
+          stopLoss: position.stop_loss ?? null,
+        },
+        desiredStop: desired,
+        referencePrice: lastBar.close,
+      }
+    );
+    if (outcome.moved) this.stopsTightened++;
+    if (outcome.error) this.errors++;
+  }
+
+  /**
+   * Compare what the venue says this run holds against what its own fills
+   * imply (E-0).
+   *
+   * The venue is authoritative, so a mismatch never changes the position used
+   * for the decision — it is a **signal that the fills feed is wrong**, which
+   * is the class of bug that silently corrupts realised P&L and therefore the
+   * `max_daily_loss` cap. Divergence is expected and benign in two cases: a
+   * broker-side stop or take-profit closed the position (the app placed no
+   * order, so no fill is attributed to the run), and a manual trade. Both are
+   * worth seeing; neither is worth halting for, which is why this reports
+   * rather than refuses.
+   */
+  private checkReconciliation(run: ActiveRun, position: PositionState, label: string): void {
+    const derived = position.derived_size;
+    if (derived == null) return;
+    // A tolerance, because fractional lot sizes do not compare exactly.
+    if (Math.abs(derived - position.size) <= RECONCILIATION_TOLERANCE) {
+      this.divergentRuns.delete(run.id);
+      return;
+    }
+    this.positionDivergences++;
+    this.divergentRuns.set(run.id, {
+      connection: label,
+      symbol: runSymbol(run),
+      venue: position.size,
+      derived,
+    });
+    logger.warn(
+      {
+        run_id: run.id,
+        connection: label,
+        symbol: runSymbol(run),
+        venue_position: position.size,
+        fills_derived_position: derived,
+      },
+      'position reconciliation mismatch — venue is authoritative, fills feed may be incomplete'
+    );
+  }
+
+  // -------------------------------------------------------------------
+  // Per-connection circuit breaker
+  // -------------------------------------------------------------------
+  /** Whether this connection is currently being skipped, and for how long. */
+  private breakerIsOpen(label: string): boolean {
+    const state = this.breakers.get(label);
+    if (!state || state.failures < this.breakerThreshold) return false;
+    if (this.deps.now() >= state.openUntil) {
+      // Cooldown elapsed — let one tick through to probe. Failures are not
+      // reset yet: a still-broken connection re-opens immediately rather than
+      // getting a fresh budget of full-timeout attempts every cooldown.
+      return false;
+    }
+    return true;
+  }
+
+  private recordConnectionFailure(label: string): void {
+    const state = this.breakers.get(label) ?? { failures: 0, openUntil: 0 };
+    state.failures += 1;
+    if (state.failures >= this.breakerThreshold) {
+      state.openUntil = this.deps.now() + this.breakerCooldownMs;
+      logger.warn(
+        { connection: label, failures: state.failures },
+        'connection breaker open — skipping its runs until cooldown elapses'
+      );
+    }
+    this.breakers.set(label, state);
+  }
+
+  private recordConnectionSuccess(label: string): void {
+    if (this.breakers.has(label)) this.breakers.delete(label);
+  }
+
+  /**
+   * Start the pending legs of any staging group whose canary has settled.
+   *
+   * The canary must have **evaluated at least once without error** and have
+   * been running for `settle_seconds`. Both conditions matter: elapsed time
+   * alone would admit a leg that started and immediately errored, and a clean
+   * evaluation alone would admit before a full bar has closed on the slowest
+   * timeframe in the group.
+   *
+   * A failed canary **abandons** the group rather than falling through to
+   * admission — catching a bad edit before it reaches every account is the
+   * entire purpose.
+   */
+  private async admitSettledGroups(): Promise<void> {
+    if (!this.deps.listStagingGroups || !this.deps.admitGroup || !this.deps.abandonGroup) return;
+    let groups;
+    try {
+      groups = await this.deps.listStagingGroups();
+    } catch (err) {
+      this.errors++;
+      this.lastError = err instanceof Error ? err.message : String(err);
+      logger.error({ err: this.lastError }, 'failed to list staging groups');
+      return;
+    }
+
+    for (const group of groups) {
+      try {
+        if (group.pending_legs === 0) continue;
+
+        if (group.canary_status !== 'running' || group.canary_last_error) {
+          const reason =
+            group.canary_last_error ??
+            `canary run ${group.canary_run_id} is '${group.canary_status}', not running`;
+          await this.deps.abandonGroup(group.id, `canary failed: ${reason}`);
+          this.groupsAbandoned++;
+          logger.warn({ group_id: group.id, reason }, 'run group abandoned — canary failed');
+          continue;
+        }
+
+        if (!group.canary_last_evaluated_at) continue; // not yet evaluated once
+        const elapsedMs = this.deps.now() - new Date(group.canary_started_at).getTime();
+        if (elapsedMs < group.settle_seconds * 1000) continue;
+
+        const started = await this.deps.admitGroup(group.id);
+        this.groupsAdmitted++;
+        logger.info({ group_id: group.id, legs_started: started }, 'run group admitted');
+      } catch (err) {
+        this.errors++;
+        this.lastError = err instanceof Error ? err.message : String(err);
+        logger.error({ group_id: group.id, err: this.lastError }, 'group admission failed');
+      }
+    }
+  }
+
+  private async evaluateRun(run: ActiveRun, connectionLabelOrNull?: string): Promise<void> {
+    const label =
+      connectionLabelOrNull ??
+      connectionLabel(connectionOf(run).broker, connectionOf(run).brokerAccount);
     try {
       const bars = await this.deps.fetchHistory(run);
       if (!bars || bars.length === 0) {
-        logger.warn({ run_id: run.id, symbol: run.symbol }, 'no bars for strategy run');
+        logger.warn({ run_id: run.id, symbol: runSymbol(run) }, 'no bars for strategy run');
         return;
       }
 
       const position = await this.deps.getPosition(run);
+      this.checkReconciliation(run, position, label);
       const result = await this.deps.evaluate(bars, run.rule_set, position);
+
+      // Trail the stop before considering the signal (E-3). Order matters: a
+      // bar that both tightens the stop and produces an exit should tighten
+      // first, so the position stays protected for the moment between the two
+      // — and if the exit places successfully the trail was harmless anyway.
+      await this.trailStop(run, position, result, bars[bars.length - 1], label);
 
       // Dedupe: one decision per closed bar. Skip if we already recorded this
       // bar for the run (the timer can fire faster than the bar cadence).
@@ -454,10 +915,11 @@ export class StrategyRunner {
         return;
       }
 
+      const intent = normaliseSignal(result.signal);
       const reason =
-        result.signal === 'buy'
+        intent === 'long' || intent === 'short'
           ? result.entry_reason || null
-          : result.signal === 'sell'
+          : intent === 'flat'
             ? result.exit_reason || null
             : null;
 
@@ -473,16 +935,20 @@ export class StrategyRunner {
       });
 
       this.runsEvaluated++;
+      this.recordConnectionSuccess(label);
       await this.deps.markEvaluated(run.id, new Date(this.deps.now()).toISOString());
 
       if (inserted) {
         this.signalsRecorded++;
 
-        // A3 execution: only newly-recorded, actionable (buy/sell) signals are
+        // A3 execution: only newly-recorded, actionable signals are
         // considered. Everything else short-circuits inside the engine, gated
         // and fail-closed; a per-signal failure is isolated like an eval error.
         let execution: ExecutionResult | null = null;
-        const actionable = result.signal === 'buy' || result.signal === 'sell';
+        // `normaliseSignal` owns the vocabulary in one place, so the runner
+        // and the engine cannot disagree about what counts as actionable —
+        // and pre-E1 `buy`/`sell` rows keep working.
+        const actionable = normaliseSignal(result.signal) !== null;
         if (actionable && this.deps.executeSignal) {
           try {
             execution = await this.deps.executeSignal({
@@ -492,6 +958,12 @@ export class StrategyRunner {
               barTime: result.bar_time,
               position,
               lastBar: bars[bars.length - 1],
+              // Carried straight through: the stop is resolved by the same
+              // rule engine, from the same bars, that produced the signal —
+              // recomputing it here would be a second implementation.
+              stopPrice: result.stop_price ?? null,
+              stopError: result.stop_error ?? null,
+              hasStopRule: result.has_stop_rule ?? false,
             });
             if (execution.placed) {
               this.ordersPlaced++;
@@ -544,7 +1016,14 @@ export class StrategyRunner {
     } catch (err) {
       this.errors++;
       this.lastError = err instanceof Error ? err.message : String(err);
-      logger.error({ run_id: run.id, err: this.lastError }, 'strategy run evaluation failed');
+      // A run-level failure counts against its *connection*: the overwhelming
+      // cause is the venue being unreachable, and that is a property of the
+      // connection rather than of this one strategy.
+      this.recordConnectionFailure(label);
+      logger.error(
+        { run_id: run.id, connection: label, err: this.lastError },
+        'strategy run evaluation failed'
+      );
       await this.deps.markError(run.id, this.lastError).catch(() => undefined);
     }
   }
@@ -566,7 +1045,20 @@ export class StrategyRunner {
         signals_recorded: this.signalsRecorded,
         orders_placed: this.ordersPlaced,
         errors: this.errors,
+        skipped: this.skipped,
+        groups_admitted: this.groupsAdmitted,
+        groups_abandoned: this.groupsAbandoned,
+        position_divergences: this.positionDivergences,
+        stops_tightened: this.stopsTightened,
       },
+      divergent_runs: Object.fromEntries(this.divergentRuns),
+      max_connection_concurrency: this.maxConnectionConcurrency,
+      breakers: Object.fromEntries(
+        [...this.breakers.entries()].map(([label, state]) => [
+          label,
+          { failures: state.failures, open: this.breakerIsOpen(label) },
+        ])
+      ),
     };
   }
 }

@@ -1,6 +1,6 @@
 # Multi-Platform, Multi-Account — Systematic Trading Across Many Broker Connections
 
-**Status:** C-0 and C-1 delivered; C-2 onward planned
+**Status:** C-0 through C-4 delivered; C-5 (UI/ops) planned
 **Scope:** run the existing systematic stack against **N simultaneous broker
 connections**, spanning multiple *platforms* (MT5, IB, Alpaca, OANDA) and
 multiple *accounts per platform* — rather than the one-account-per-platform
@@ -515,9 +515,9 @@ Each phase is independently shippable and leaves the system correct.
 |---|---|---|
 | **C-0** ✅ | Bug ① and ② fixes alone: `broker_account` column + widened unique keys/indexes, defaulted to `'default'` | **Delivered.** Correctness fix; no behaviour change on one connection. **Deploy before any second connection exists.** |
 | **C-1** ✅ | C1 remainder + C2 registry + manifest config | **Delivered.** Two MT5 connections addressable manually via `/api/orders`, `/account/*`, charts |
-| **C-2** | C3 symbol mapping + per-connection specs | A definition resolves correctly on each connection |
-| **C-3** | C4 run groups + staged deploy (C4a) + C6 scheduling/isolation | One definition trading on N connections, fault-isolated, canary-staged |
-| **C-4** | C5 per-connection **and** portfolio caps + C7 reconciliation | Fleet-safe; per-account and fleet-wide limits enforced |
+| **C-2** ✅ | C3 symbol mapping + per-connection specs | **Delivered.** A definition resolves correctly on each connection |
+| **C-3** ✅ | C4 run groups + staged deploy (C4a) + C6 scheduling/isolation | **Delivered.** One definition trading on N connections, fault-isolated, canary-staged |
+| **C-4** ✅ | C5 per-connection **and** portfolio caps + C7 reconciliation | **Delivered.** Fleet-safe; per-account and fleet-wide limits enforced |
 | **C-5** | C8 UI/ops | Operable at fleet scale |
 
 Phase C-0 is worth shipping on its own even if the rest is deferred: it is
@@ -572,6 +572,104 @@ apply late.
 >   needs a precedence rule, and the cost of guessing wrong is an order on the
 >   wrong account. `provider_health()` still reports a broken manifest rather
 >   than 500ing, so the operator can see why nothing registered.
+
+> **C-2 delivered.** `broker_service/symbol_resolution.py` resolves a canonical
+> symbol to each connection's native one — manifest override, then exact match,
+> then a *single* suffix match against the connection's own discovered
+> catalogue, then refusal. `GET /instrument/resolve` does one connection;
+> `POST /instrument/resolve/preview` does N and reports each independently, so
+> a deploy shows "these legs resolve, this one does not, here is why" rather
+> than one error hiding the rest. `strategy_runs.native_symbol` records the
+> result, and the runner and execution engine trade *that* symbol via
+> `runSymbol()`.
+>
+> Three decisions, all following from "a wrong instrument is worse than no run":
+>
+> - **Ambiguity refuses.** A connection offering both `EURUSD.a` and
+>   `EURUSD.pro` gets a 422 naming both, not a guess. Only the operator knows
+>   which tier the account trades, and a guess produces a plausible-looking run
+>   on the wrong contract. The fix is a one-line `symbol_map` entry.
+> - **The resolved symbol is stored, not re-derived.** Re-resolving each tick
+>   would let a catalogue change silently move a running strategy onto another
+>   contract mid-position.
+> - **The spec is fetched for the native symbol.** Asking a venue about
+>   `EURUSD` when it trades `EURUSD.a` either errors or describes a different
+>   contract — and lot step, minimum and contract size are exactly what sizing
+>   divides by.
+>
+> Worth recording: the first draft of the suffix rule matched any short
+> continuation, so canonical `EUR` "matched" `EURUSD`, `EURGBP` and `EURJPY` —
+> and three matches read as *ambiguity* rather than as the mistake it was. The
+> rule now requires either a separator (`.a`, `_i`, `-ECN`) or at most two bare
+> characters (`EURUSDm`), so a currency-pair continuation never qualifies.
+
+> **C-3 delivered.** `strategy_run_groups` plus `run_group_id` / `is_canary` on
+> `strategy_runs`, and a new `pending` run status. `POST
+> /api/strategies/definitions/:id/deploy` resolves every leg's symbol first
+> (C-2), refuses the deploy if any leg cannot resolve unless `allow_partial` is
+> passed, then creates all legs in one transaction with only the canary
+> `running`. The runner admits the rest once the canary has both evaluated
+> cleanly *and* been running for `settle_seconds`, and **abandons** the group
+> if the canary failed. Group stop and per-connection panic stop are exposed as
+> routes.
+>
+> Scheduling changed shape: runs are grouped by connection, connections
+> processed concurrently under a bounded pool, runs within a connection kept
+> sequential (one sidecar is one terminal). A per-connection circuit breaker
+> skips a connection after repeated failures and probes it after a cooldown —
+> closing bug ③, where one unresponsive host cost its full timeout per run per
+> tick and starved every healthy account.
+>
+> Decisions worth recording:
+>
+> - **Atomic creation, staged starting.** These pull in opposite directions and
+>   both are right: a half-created group is broken state, but starting every leg
+>   at once means a bad edit reaches every account simultaneously.
+> - **A failed canary abandons the group.** It must never fall through to
+>   admission — stopping the remaining accounts from taking the risk is the
+>   entire purpose of having a canary.
+> - **Admission needs a clean evaluation *and* elapsed time.** Time alone would
+>   admit a leg that started and immediately errored; a clean evaluation alone
+>   would admit before a full bar closed on the slowest timeframe.
+> - **The canary is named, never defaulted.** It is the account that takes the
+>   first real risk from an unproven rule-set. If the nominated canary is the
+>   leg that fails to resolve, the deploy refuses rather than silently promoting
+>   another account into that role.
+> - **E10 is enforced in the schema.** A partial unique index allows only one
+>   active run per `(connection, native_symbol)`: under netting, two runs on one
+>   instrument at one account each size against exposure neither controls.
+
+> **C-4 delivered.** The execution engine gained two guard tiers above the
+> per-run ones: **per-connection** order and loss caps (the level a broker or
+> prop firm actually enforces at, and the level a connection hosting several
+> runs can breach while each run sits inside its own), and a **portfolio**
+> daily-loss cap. Both fail closed — an unreadable cap blocks the order — and
+> both gate entries only, since blocking an exit would strand the position in
+> the trade that caused the loss.
+>
+> The connection loss cap counts fills with no `run_id`: a manual trade is a
+> real loss against an account budget even though it belongs to no strategy.
+>
+> **The currency assumption is enforced, not trusted.** `currency_consistency()`
+> checks every connection's reported currency against `PORTFOLIO_BASE_CURRENCY`
+> and surfaces it on `/providers`; the portfolio cap **refuses to aggregate**
+> on a mismatch rather than summing mixed denominations into a number that adds
+> up and means nothing. An unreadable topology reports *inconsistent*, not
+> consistent — a cap that cannot verify its own units must not wave orders
+> through.
+>
+> Reconciliation: `/api/account/reconciliation/all` reports every connection in
+> one call and never fails as a whole, because "four are fine, this one is
+> unreachable" is the actionable answer. This also fixed a real bug introduced
+> in C-1 — the single-connection route compared one account's venue positions
+> against the **default** account's recorded ones, reporting mismatches that
+> were purely an artefact of the scope mismatch.
+>
+> `schemaGuard.ts` closes C-0's migration hazard: more than one connection on
+> the pre-C-0 schema now refuses to start the systematic services, because
+> colliding fills are dropped silently and widening the constraint afterwards
+> recovers nothing. An unreadable database is reported as *indeterminate*
+> rather than unsafe, so a transient outage is not a refusal to boot.
 
 ---
 

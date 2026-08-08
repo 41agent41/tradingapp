@@ -249,6 +249,48 @@ export class ExecutionRepository {
   }
 
   /**
+   * Realised P&L today for a whole **connection** (C-4).
+   *
+   * Counts every fill on the account, including ones with no `run_id` — a
+   * manual trade is a real loss against an account-level budget even though it
+   * belongs to no strategy. That is the difference from the per-run figure, and
+   * it is why a prop-firm-style daily loss limit has to be measured here.
+   */
+  async realisedPnlTodayForConnection(
+    broker: string,
+    brokerAccount: string
+  ): Promise<RealisedPnlResult> {
+    const result = await this.db.query(
+      `SELECT symbol, side, quantity, price, commission
+         FROM order_executions
+        WHERE broker = $1
+          AND broker_account = $2
+          AND executed_at >= date_trunc('day', NOW())
+        ORDER BY executed_at ASC, id ASC`,
+      [broker, brokerAccount]
+    );
+    return realisedPnl(result.rows as Fill[]);
+  }
+
+  /**
+   * Realised P&L today across **every** connection — the portfolio figure.
+   *
+   * Only meaningful when every connection reports the same currency; the caller
+   * asserts that before using this, because summing mixed denominations
+   * produces a number that adds up and means nothing.
+   */
+  async realisedPnlTodayAllConnections(): Promise<RealisedPnlResult> {
+    const result = await this.db.query(
+      `SELECT symbol, side, quantity, price, commission
+         FROM order_executions
+        WHERE executed_at >= date_trunc('day', NOW())
+        ORDER BY executed_at ASC, id ASC`,
+      []
+    );
+    return realisedPnl(result.rows as Fill[]);
+  }
+
+  /**
    * Fill-authoritative net position for one connection + symbol + mode.
    *
    * Note this is the **account's** position at that venue, not one run's share

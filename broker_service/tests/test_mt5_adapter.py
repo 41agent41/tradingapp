@@ -347,6 +347,8 @@ def test_cancel_and_positions_and_account(mt5):
             "market_value": None,
             "average_cost": 1.1,
             "unrealized_pnl": None,
+            "stop_loss": None,
+            "take_profit": None,
             "currency": "USD",
         }
     ]
@@ -529,6 +531,12 @@ def test_instrument_spec_reads_mt5_symbol_info(mt5):
         "max_size": 100.0,
         # The factor that makes a lot not a share: one lot controls 100k units.
         "contract_size": 100000.0,
+        # Absent from this payload, so they default to 0 — the caller treats
+        # that as "the venue did not say" rather than "no minimum distance".
+        "stops_level": 0.0,
+        "point": 0.0,
+        "tick_value": 0.0,
+        "tick_size": 0.0,
         "currency": "USD",
     }
 

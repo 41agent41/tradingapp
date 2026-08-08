@@ -366,13 +366,19 @@ class BacktestEngine:
                 )
                 buy_signal = decision["buy"]
                 sell_signal = decision["sell"]
+                short_signal = decision.get("short", False)
                 buy_reason = decision["buy_reason"]
                 sell_reason = decision["sell_reason"]
+                short_reason = decision.get("short_reason", "")
             else:
                 buy_signal = data["buy_signal"]
                 sell_signal = data["sell_signal"]
                 buy_reason = data["buy_reason"]
                 sell_reason = data["sell_reason"]
+                # Batch-pass strategies (the built-in long-only ones) never
+                # emit a short side.
+                short_signal = False
+                short_reason = ""
 
             # Check for exit signals first
             if open_trade and sell_signal:
@@ -434,14 +440,22 @@ class BacktestEngine:
                         strategy.position = position
                         break
                     open_trade.quantity = remaining
-                    position = remaining
+                    # `open_trade.quantity` is a magnitude; `position` is
+                    # signed. Dropping the sign here would make a partially
+                    # scaled-out short read as long to every position-aware
+                    # rule on the next bar.
+                    position = -remaining if open_trade.order_type == OrderType.SELL else remaining
                     strategy.position = position
                     logger.debug(
                         f"Scaled out {slice_qty} at {current_price:.2f}, {remaining} remaining"
                     )
 
-            # Check for entry signals
-            if not open_trade and buy_signal:
+            # Check for entry signals. Long and short are mutually exclusive
+            # here because `evaluate` refuses a bar where both fire, and E12
+            # defers direct reversal — a position is always closed before the
+            # opposite side is considered.
+            if not open_trade and (buy_signal or short_signal):
+                going_short = short_signal and not buy_signal
                 # Size the entry from the strategy's `sizing` block; a strategy
                 # without one keeps the original "use all available capital"
                 # behaviour so the built-in strategies backtest unchanged.
@@ -456,7 +470,11 @@ class BacktestEngine:
                         logger.debug(f"Entry skipped: {sizing_reason}")
 
                 if quantity > 0:
-                    # Open position
+                    # Open position. `Trade.pnl` already computes the SELL side
+                    # as (entry - exit) * quantity, so a short needs only the
+                    # right order_type and a **negative** position: every
+                    # position-aware rule (a -2% stop, a pyramiding cap) reads
+                    # `position.size`, and an unsigned short would read as long.
                     trade_value = quantity * current_price
                     commission_cost = trade_value * self.commission
 
@@ -466,13 +484,13 @@ class BacktestEngine:
                         entry_price=current_price,
                         exit_price=None,
                         quantity=quantity,
-                        order_type=OrderType.BUY,
+                        order_type=OrderType.SELL if going_short else OrderType.BUY,
                         status=OrderStatus.FILLED,
-                        entry_reason=buy_reason,
+                        entry_reason=short_reason if going_short else buy_reason,
                     )
 
                     capital -= commission_cost
-                    position = quantity
+                    position = -quantity if going_short else quantity
                     strategy.position = position
                     fired_rungs.clear()
 
@@ -481,7 +499,13 @@ class BacktestEngine:
             # Calculate current equity
             current_equity = capital
             if open_trade:
-                unrealized_pnl = (current_price - open_trade.entry_price) * open_trade.quantity
+                # Direction-aware: a short gains as price falls. Using the long
+                # formula would draw an equity curve that moves the wrong way
+                # for every short trade.
+                direction = -1.0 if open_trade.order_type == OrderType.SELL else 1.0
+                unrealized_pnl = (
+                    (current_price - open_trade.entry_price) * open_trade.quantity * direction
+                )
                 current_equity += unrealized_pnl
 
             equity_curve.append(current_equity)

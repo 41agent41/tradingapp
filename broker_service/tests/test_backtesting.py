@@ -77,3 +77,61 @@ class TestEngineSmoke:
         json.dumps(payload, allow_nan=False)
         assert payload["symbol"] == "TEST"
         assert len(payload["equity_curve"]) == len(df)
+
+
+# --------------------------------------------------------------------------- #
+# Short trades (Component E — E1)
+# --------------------------------------------------------------------------- #
+def _falling_ohlcv(n: int = 60) -> pd.DataFrame:
+    """A steadily falling series — a short should make money on it."""
+    idx = pd.to_datetime([1_700_000_000 + i * 300 for i in range(n)], unit="s")
+    closes = [200.0 - i for i in range(n)]
+    return pd.DataFrame(
+        {
+            "open": closes,
+            "high": [c + 0.5 for c in closes],
+            "low": [c - 0.5 for c in closes],
+            "close": closes,
+            "volume": [1000] * n,
+        },
+        index=idx,
+    )
+
+
+def _short_then_cover_rule_set() -> dict:
+    """Enter short immediately; cover once price has fallen 10%."""
+    return {
+        "name": "short-test",
+        "direction": "short",
+        "entry": {"all": [{"left": "close", "op": ">", "right": 0}]},
+        "exit": {"all": [{"left": "position.unrealized_pct", "op": ">=", "right": 10}]},
+        "sizing": {"type": "fixed", "size": 10},
+    }
+
+
+def test_a_short_profits_from_a_falling_market():
+    from rule_strategy import compile_rule_strategy
+
+    strategy = compile_rule_strategy(_short_then_cover_rule_set())
+    results = BacktestEngine(initial_capital=100_000.0, commission=0.0).run_backtest(
+        _falling_ohlcv(), strategy, symbol="TEST"
+    )
+
+    assert results.total_trades >= 1
+    # The direction test: with the long-only engine this trade lost money by
+    # exactly the amount it should have made.
+    assert results.trades[0].pnl > 0
+    assert results.total_return > 0
+
+
+def test_a_short_position_is_reported_as_negative_to_position_aware_rules():
+    # `position.unrealized_pct` on a short is only correct if the size carries
+    # its sign; an unsigned short reads as long and the stop fires backwards.
+    from rule_strategy import Position, compile_rule_strategy
+
+    strategy = compile_rule_strategy(_short_then_cover_rule_set())
+    result = strategy.evaluate(_falling_ohlcv(), Position(size=-10.0, avg_price=200.0))
+
+    # Price has fallen well below the entry, so the short is up and the
+    # 10%-gain exit should fire.
+    assert result["signal"] == "flat"
