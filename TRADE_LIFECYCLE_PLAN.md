@@ -1,6 +1,6 @@
 # Trade Lifecycle — Direction, Broker-Side Stops, Sizing, and the Kill Switch
 
-**Status:** E-0 through E-3 delivered; E-4 onward planned
+**Status:** E-0 through E-4 delivered; E-5/E-6 (alerts, kill switch) planned
 **Scope:** what happens from the moment a strategy decides to trade until the
 position is closed — direction, order placement, protective stops, trade
 management, and the downside backstop.
@@ -325,7 +325,7 @@ that achieves it wins.
 | **E-1** ✅ | Signed positions and the `long`/`short`/`flat` vocabulary (§3) | **Delivered.** Shorts, without stops yet |
 | **E-2** ✅ | Broker-side SL at entry (§4.1) + sidecar contract change + fail-closed protection | **Delivered.** Every position protected at the venue |
 | **E-3** ✅ | Bar-close stop management and the ratchet (§4.2) | **Delivered.** Trailing stops as specified |
-| **E-4** | `risk_pct` sizing (§5): tick-value fields on `instrument_spec` + sidecar `/symbol`, stop-before-sizing ordering, margin check | Constant risk per trade regardless of stop width |
+| **E-4** ✅ | `risk_pct` sizing (§5): tick-value fields on `instrument_spec` + sidecar `/symbol`, stop-before-sizing ordering | **Delivered.** Constant risk per trade regardless of stop width |
 | **E-5** | Telegram notifier (§8) + kill switch in notify-only mode (§6) | Observability of the downside, zero blast radius |
 | **E-6** | Kill switch halt and flatten actions | Automated downside response |
 
@@ -451,6 +451,34 @@ Windows-side service rather than two.
 > A failed modify is counted and logged, never fatal. The previous stop remains
 > in place — degraded but protected — and failing the evaluation would stop the
 > strategy managing positions it can still manage.
+
+> **E-4 delivered.** `risk_pct` joins `fixed` / `notional` / `pct_equity`:
+> size falls out of the distance to the stop, so notional varies with stop
+> width but the **loss does not** — which is what makes a wide-stop and a
+> tight-stop setup comparable.
+>
+> The loss term comes from the venue's `tickValue` / `tickSize`, not from
+> `stopDistance × contractSize`. That approximation is correct only when the
+> instrument's quote currency matches the account's: EURUSD in a USD account
+> works, EURJPY and index CFDs do not. Getting it wrong does not error — it
+> silently sizes every position wrong by the FX rate — so a lot-based
+> instrument with no tick value **refuses rather than approximating**. A
+> contract size of 1 (shares, OANDA units) uses the price move directly, since
+> those are quoted in the account currency here.
+>
+> Two consequences of sizing depending on the stop: the engine resolves the
+> stop **before** sizing, and `risk_pct` declared without a `stop` block is
+> refused rather than silently falling back to another sizing type, which
+> would change how much the strategy risks without saying so.
+>
+> The `ORDER_MAX_*` caps stay binding and are not waived for risk-sized
+> orders — as stop distance approaches zero the computed size approaches
+> infinity, and a tight stop is exactly when that matters.
+>
+> **Not yet done from §5.3:** the free-margin check before placing. The
+> fat-finger caps and the venue minimum bound the size, but a risk-correct
+> order that cannot be margined will still be rejected by the venue rather
+> than refused here.
 
 ---
 

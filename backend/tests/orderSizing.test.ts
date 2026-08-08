@@ -225,3 +225,142 @@ describe('roundToStep', () => {
     expect(roundToStep(1.234, 0)).toBe(1.234);
   });
 });
+
+// --------------------------------------------------------------------------- //
+// Risk-based sizing (Component E — E-4)
+// --------------------------------------------------------------------------- //
+describe('resolveOrderQuantity — risk_pct', () => {
+  // EURUSD-shaped: 1 lot = 100k units, tick 0.00001 worth $1 per lot.
+  const fxSpec = {
+    unit: 'lots',
+    minSize: 0.01,
+    sizeStep: 0.01,
+    contractSize: 100000,
+    tickValue: 1,
+    tickSize: 0.00001,
+  };
+
+  it('sizes so the loss at the stop equals the risk budget', () => {
+    // $100k at 1% = $1,000 of risk. A 50-pip (0.0050) stop on EURUSD loses
+    // $500 per lot, so the position should be 2 lots.
+    const result = resolveOrderQuantity(
+      { type: 'risk_pct', size: 1 },
+      { price: 1.1, stopPrice: 1.095, broker: 'mt5', equity: 100_000, spec: fxSpec }
+    );
+
+    expect(result).toEqual({ ok: true, quantity: 2 });
+  });
+
+  it('holds the loss constant as the stop widens', () => {
+    // The property that makes wide-stop and tight-stop setups comparable:
+    // notional varies, the loss does not.
+    const tight = resolveOrderQuantity(
+      { type: 'risk_pct', size: 1 },
+      { price: 1.1, stopPrice: 1.0975, broker: 'mt5', equity: 100_000, spec: fxSpec }
+    );
+    const wide = resolveOrderQuantity(
+      { type: 'risk_pct', size: 1 },
+      { price: 1.1, stopPrice: 1.09, broker: 'mt5', equity: 100_000, spec: fxSpec }
+    );
+
+    expect(tight.ok && wide.ok).toBe(true);
+    if (!tight.ok || !wide.ok) return;
+    // Half the stop distance, twice the size — same money at risk.
+    expect(tight.quantity).toBeCloseTo(4, 5);
+    expect(wide.quantity).toBeCloseTo(1, 5);
+  });
+
+  it('sizes a short the same way, from the absolute distance', () => {
+    const result = resolveOrderQuantity(
+      { type: 'risk_pct', size: 1 },
+      { price: 1.1, stopPrice: 1.105, broker: 'mt5', equity: 100_000, spec: fxSpec }
+    );
+    expect(result).toEqual({ ok: true, quantity: 2 });
+  });
+
+  it('refuses without a stop price', () => {
+    // Knowing the stop is the entire basis of the calculation.
+    const result = resolveOrderQuantity(
+      { type: 'risk_pct', size: 1 },
+      { price: 1.1, broker: 'mt5', equity: 100_000, spec: fxSpec }
+    );
+    expect(result).toEqual({ ok: false, reason: expect.stringContaining('needs a stop price') });
+  });
+
+  it('refuses without equity rather than inventing one', () => {
+    const result = resolveOrderQuantity(
+      { type: 'risk_pct', size: 1 },
+      { price: 1.1, stopPrice: 1.095, broker: 'mt5', equity: null, spec: fxSpec }
+    );
+    expect(result).toEqual({ ok: false, reason: expect.stringContaining('needs account equity') });
+  });
+
+  it('refuses a zero-distance stop', () => {
+    const result = resolveOrderQuantity(
+      { type: 'risk_pct', size: 1 },
+      { price: 1.1, stopPrice: 1.1, broker: 'mt5', equity: 100_000, spec: fxSpec }
+    );
+    expect(result).toEqual({ ok: false, reason: expect.stringContaining('non-zero distance') });
+  });
+
+  it('refuses a lot-based instrument with no tick value rather than approximating', () => {
+    // `stopDistance × contractSize` is only correct when the quote and account
+    // currencies match. Guessing does not error — it silently sizes every
+    // position wrong by the FX rate.
+    const result = resolveOrderQuantity(
+      { type: 'risk_pct', size: 1 },
+      {
+        price: 1.1,
+        stopPrice: 1.095,
+        broker: 'mt5',
+        equity: 100_000,
+        spec: { unit: 'lots', minSize: 0.01, sizeStep: 0.01, contractSize: 100000 },
+      }
+    );
+    expect(result).toEqual({
+      ok: false,
+      reason: expect.stringContaining('needs the venue tick value'),
+    });
+  });
+
+  it('uses the price move directly for a contract size of 1', () => {
+    // Shares and OANDA units are quoted in the account currency here, so a
+    // price move *is* the per-unit loss and no tick value is needed.
+    const result = resolveOrderQuantity(
+      { type: 'risk_pct', size: 1 },
+      {
+        price: 100,
+        stopPrice: 98,
+        broker: 'ib',
+        equity: 100_000,
+        spec: { unit: 'shares', minSize: 1, sizeStep: 1, contractSize: 1 },
+      }
+    );
+    // $1,000 of risk over a $2 stop = 500 shares.
+    expect(result).toEqual({ ok: true, quantity: 500 });
+  });
+
+  it('still refuses a size below the venue minimum', () => {
+    // A tiny risk budget must not round up into a larger position than the
+    // budget allows — the one thing this sizing type exists to prevent.
+    const result = resolveOrderQuantity(
+      { type: 'risk_pct', size: 0.001 },
+      { price: 1.1, stopPrice: 1.0, broker: 'mt5', equity: 1_000, spec: fxSpec }
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  it('still respects the venue maximum', () => {
+    const result = resolveOrderQuantity(
+      { type: 'risk_pct', size: 50 },
+      {
+        price: 1.1,
+        stopPrice: 1.0999,
+        broker: 'mt5',
+        equity: 1_000_000,
+        spec: { ...fxSpec, maxSize: 5 },
+      }
+    );
+    expect(result).toEqual({ ok: true, quantity: 5 });
+  });
+});

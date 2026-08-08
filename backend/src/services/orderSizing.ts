@@ -37,7 +37,7 @@
  */
 
 export interface SizingSpec {
-  type?: string; // 'fixed' | 'notional' | 'pct_equity'
+  type?: string; // 'fixed' | 'notional' | 'pct_equity' | 'risk_pct'
   unit?: string; // 'broker_default' | 'shares' | 'lots' | 'units' | 'notional' | 'pct_equity'
   size?: number;
 }
@@ -75,6 +75,9 @@ export const DEFAULT_SPEC: InstrumentSpec = {
 export interface SizingContext {
   /** Latest close for the run's symbol — used to convert notional → quantity. */
   price: number;
+  /** The protective stop for this entry. Required by `risk_pct`, which sizes
+   *  from the distance to it (E-4). */
+  stopPrice?: number | null;
   /** Execution broker for the run (used only for messages now that the spec
    *  carries the venue's actual unit semantics). */
   broker: string;
@@ -105,6 +108,39 @@ export function roundToStep(quantity: number, step: number): number {
   const steps = Math.floor(quantity / step + 1e-9);
   const decimals = step < 1 ? Math.max(0, -Math.floor(Math.log10(step))) + 2 : 0;
   return Number((steps * step).toFixed(decimals));
+}
+
+/**
+ * What one unit of size loses when price moves `stopDistance` against it,
+ * denominated in the **account** currency.
+ *
+ * The naive formula — `stopDistance × contractSize` — is correct only when the
+ * instrument's quote currency matches the account's. EURUSD in a USD account
+ * works; EURJPY, XAUUSD in some configurations, and index CFDs do not, because
+ * the price move is denominated in the quote currency while the risk budget is
+ * in the account's. Getting it wrong does not error: it silently sizes every
+ * position wrong by the FX rate, which stays invisible until it is expensive.
+ *
+ * So the venue's own `tickValue` / `tickSize` are used where available — MT5
+ * reports the tick value already converted to the account currency — and the
+ * contract-size approximation is used **only** when the instrument is quoted
+ * in the account currency. Returns null when neither is safe, so the caller
+ * refuses rather than guessing.
+ */
+export function lossPerUnitOfSize(
+  spec: InstrumentSpec,
+  stopDistance: number,
+  contractSize: number
+): number | null {
+  const tickValue = Number(spec.tickValue) || 0;
+  const tickSize = Number(spec.tickSize) || 0;
+  if (tickValue > 0 && tickSize > 0) {
+    return (stopDistance / tickSize) * tickValue;
+  }
+  // Shares and OANDA units are quoted in the account currency in this stack,
+  // and a contract size of 1 means a price move *is* the per-unit loss.
+  if (contractSize === 1) return stopDistance;
+  return null;
 }
 
 export function resolveOrderQuantity(spec: SizingSpec, ctx: SizingContext): SizeResolution {
@@ -161,6 +197,51 @@ export function resolveOrderQuantity(spec: SizingSpec, ctx: SizingContext): Size
         return { ok: false, reason: 'pct_equity sizing needs a positive bar price' };
       }
       quantity = ((size / 100) * ctx.equity) / (ctx.price * contractSize);
+      break;
+    }
+
+    case 'risk_pct': {
+      // Risk a fixed fraction of equity per trade: position size falls out of
+      // the distance to the stop, so notional varies with stop width but the
+      // **loss does not**. That is the point — it makes a wide-stop setup and
+      // a tight-stop setup comparable, and it is the reason to know the stop
+      // at entry at all.
+      if (ctx.equity == null || !Number.isFinite(ctx.equity) || ctx.equity <= 0) {
+        return {
+          ok: false,
+          reason:
+            'risk_pct sizing needs account equity — the venue reported none ' +
+            "(check /account/summary for this run's connection)",
+        };
+      }
+      if (ctx.stopPrice == null || !Number.isFinite(ctx.stopPrice) || ctx.stopPrice <= 0) {
+        return {
+          ok: false,
+          reason: 'risk_pct sizing needs a stop price — declare a `stop` block on the rule-set',
+        };
+      }
+      if (!Number.isFinite(ctx.price) || ctx.price <= 0) {
+        return { ok: false, reason: 'risk_pct sizing needs a positive bar price' };
+      }
+
+      const stopDistance = Math.abs(ctx.price - ctx.stopPrice);
+      if (!(stopDistance > 0)) {
+        return { ok: false, reason: 'risk_pct sizing needs a non-zero distance to the stop' };
+      }
+
+      const lossPerUnit = lossPerUnitOfSize(instrument, stopDistance, contractSize);
+      if (lossPerUnit == null) {
+        return {
+          ok: false,
+          reason:
+            'risk_pct sizing needs the venue tick value — refusing rather than approximating ' +
+            'from contract size, which is only correct when the quote and account currencies ' +
+            'match',
+        };
+      }
+
+      const riskBudget = (size / 100) * ctx.equity;
+      quantity = riskBudget / lossPerUnit;
       break;
     }
 

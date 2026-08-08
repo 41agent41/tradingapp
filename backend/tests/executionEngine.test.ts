@@ -747,3 +747,102 @@ describe('ExecutionEngine — protective stops', () => {
     expect(result).toEqual(expect.objectContaining({ placed: true, action: 'SELL' }));
   });
 });
+
+describe('ExecutionEngine — risk_pct sizing (E-4)', () => {
+  const fxSpec = {
+    unit: 'lots',
+    minSize: 0.01,
+    sizeStep: 0.01,
+    contractSize: 100000,
+    tickValue: 1,
+    tickSize: 0.00001,
+  };
+
+  it('sizes the entry from the distance to the resolved stop', async () => {
+    const submitOrder = jest.fn().mockResolvedValue(okOutcome);
+    const deps = makeDeps({
+      accountEquity: jest.fn().mockResolvedValue(100_000),
+      instrumentSpec: jest.fn().mockResolvedValue(fxSpec),
+      submitOrder,
+    });
+
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({
+        signal: 'long',
+        hasStopRule: true,
+        stopPrice: 99.5,
+        run: run({ sizing: { type: 'risk_pct', size: 1 } }),
+        lastBar: { timestamp: 1, open: 100, high: 100, low: 100, close: 100, volume: 1 },
+      })
+    );
+
+    // $1,000 of risk; a 0.5 move costs $50,000 per lot at this tick value, so
+    // the position is 0.02 lots.
+    expect(result).toEqual(expect.objectContaining({ placed: true, quantity: 0.02 }));
+    expect(submitOrder.mock.calls[0][0]).toEqual(expect.objectContaining({ stop_loss: 99.5 }));
+  });
+
+  it('refuses risk_pct when the rule-set declares no stop', async () => {
+    // Falling back to another sizing type would silently change how much the
+    // strategy risks.
+    const deps = makeDeps({
+      accountEquity: jest.fn().mockResolvedValue(100_000),
+      instrumentSpec: jest.fn().mockResolvedValue(fxSpec),
+      submitOrder: jest.fn(),
+    });
+
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'long', run: run({ sizing: { type: 'risk_pct', size: 1 } }) })
+    );
+
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('requires a `stop` block'),
+    });
+  });
+
+  it('fetches equity for risk_pct, not only for pct_equity', async () => {
+    const accountEquity = jest.fn().mockResolvedValue(100_000);
+    const deps = makeDeps({
+      accountEquity,
+      instrumentSpec: jest.fn().mockResolvedValue(fxSpec),
+    });
+
+    await new ExecutionEngine(deps).execute(
+      ctx({
+        signal: 'long',
+        hasStopRule: true,
+        stopPrice: 99.5,
+        run: run({ sizing: { type: 'risk_pct', size: 1 } }),
+        lastBar: { timestamp: 1, open: 100, high: 100, low: 100, close: 100, volume: 1 },
+      })
+    );
+
+    expect(accountEquity).toHaveBeenCalled();
+  });
+
+  it('keeps the ORDER_MAX_* caps binding on a tight stop', async () => {
+    // As stop distance approaches zero, risk_pct size approaches infinity.
+    // The fat-finger caps are not waived for risk-sized orders.
+    const deps = makeDeps({
+      accountEquity: jest.fn().mockResolvedValue(100_000_000),
+      instrumentSpec: jest.fn().mockResolvedValue({ ...fxSpec, maxSize: null }),
+      submitOrder: jest.fn(),
+    });
+
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({
+        signal: 'long',
+        hasStopRule: true,
+        stopPrice: 99.99999,
+        run: run({ sizing: { type: 'risk_pct', size: 50 } }),
+        lastBar: { timestamp: 1, open: 100, high: 100, low: 100, close: 100, volume: 1 },
+      })
+    );
+
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('ORDER_MAX_QUANTITY'),
+    });
+  });
+});

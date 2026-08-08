@@ -420,7 +420,8 @@ export class ExecutionEngine {
       // sizing type resolves from the bar price alone, and a venue round-trip
       // per signal would be pure cost.
       let equity: number | null = null;
-      if ((run.sizing ?? {}).type === 'pct_equity' && this.deps.accountEquity) {
+      const sizingType = (run.sizing ?? {}).type;
+      if ((sizingType === 'pct_equity' || sizingType === 'risk_pct') && this.deps.accountEquity) {
         try {
           equity = await this.deps.accountEquity(connectionOf(run));
         } catch {
@@ -441,11 +442,28 @@ export class ExecutionEngine {
           entrySpec = null;
         }
       }
+      // `risk_pct` sizes from the distance to the stop, so the stop has to be
+      // known *before* the size is computed (E-4). Declaring risk_pct without
+      // a stop rule is refused rather than silently falling back to another
+      // sizing type.
+      if (sizingType === 'risk_pct') {
+        if (!ctx.hasStopRule) {
+          return {
+            placed: false,
+            reason: 'risk_pct sizing requires a `stop` block on the rule-set',
+          };
+        }
+        if (ctx.stopError) {
+          return { placed: false, reason: `stop rule failed to resolve: ${ctx.stopError}` };
+        }
+      }
+
       const sized = resolveOrderQuantity(run.sizing ?? {}, {
         price: ctx.lastBar.close,
         broker: run.broker,
         equity,
         spec: entrySpec,
+        stopPrice: ctx.stopPrice ?? null,
       });
       if (!sized.ok) return { placed: false, reason: `sizing: ${sized.reason}` };
       quantity = sized.quantity;
