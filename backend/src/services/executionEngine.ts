@@ -57,6 +57,8 @@ export type ExecutionResult =
       orderAuditId: number;
       action: OrderAction;
       quantity: number;
+      /** The protective stop this order went out with, if any (E-5). */
+      stopLoss: number | null;
       ibBody: Record<string, unknown>;
     }
   | { placed: false; reason: string };
@@ -565,6 +567,7 @@ export class ExecutionEngine {
       orderAuditId: outcome.auditId,
       action,
       quantity,
+      stopLoss,
       ibBody: outcome.ibBody,
     };
   }

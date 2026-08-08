@@ -248,6 +248,24 @@ export class ExecutionRepository {
     return realisedPnl(result.rows as Fill[]);
   }
 
+  /** The most recent fill price for a connection + symbol — what a suspected
+   *  stop-gap is measured against (E-5). */
+  async lastFillPrice(
+    broker: string,
+    brokerAccount: string,
+    symbol: string
+  ): Promise<number | null> {
+    const result = await this.db.query(
+      `SELECT price FROM order_executions
+        WHERE broker = $1 AND broker_account = $2 AND symbol = $3
+        ORDER BY executed_at DESC, id DESC
+        LIMIT 1`,
+      [broker, brokerAccount, symbol.toUpperCase()]
+    );
+    const value = Number(result.rows[0]?.price);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+
   /**
    * Realised P&L today for a whole **connection** (C-4).
    *

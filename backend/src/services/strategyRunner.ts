@@ -32,6 +32,8 @@
 import axios from 'axios';
 import { logger } from './logger.js';
 import { applyTrail } from './stopManager.js';
+import { evaluateKillSwitch, killSwitchConfig, triggerAlert } from './killSwitch.js';
+import { notifier, type Alert } from './notifier.js';
 import { dbService } from './database.js';
 import { StrategyRepository, type ActiveRun, type StagingGroup } from './strategyRepository.js';
 import { ExecutionRepository } from './executionRepository.js';
@@ -172,6 +174,14 @@ export interface StrategyRunnerDeps {
   /** E-3: move an open position's stop at the venue. Optional so a runner
    *  without stop management behaves as before. */
   modifyStop?(connection: Connection, symbol: string, stopPrice: number): Promise<void>;
+  /** E-5: record / read the stop in force for a run's position, and the last
+   *  fill on its symbol — the inputs the gap detector needs. */
+  setCurrentStop?(runId: number, stop: number | null): Promise<void>;
+  getCurrentStop?(runId: number): Promise<number | null>;
+  lastFillPrice?(connection: Connection, symbol: string): Promise<number | null>;
+  connectionEquity?(connection: Connection): Promise<number | null>;
+  /** E-5: deliver an operational alert. */
+  sendAlert?(alert: Alert): Promise<{ sent: boolean; reason?: string }>;
   /** C-3 staged deploy. Optional so a runner without groups behaves as before. */
   listStagingGroups?(): Promise<StagingGroup[]>;
   admitGroup?(groupId: number): Promise<number>;
@@ -537,6 +547,12 @@ function defaultDeps(
     emit,
     now: () => Date.now(),
     executeSignal: (ctx) => engine.execute(ctx),
+    setCurrentStop: (runId, stop) => repo.setCurrentStop(runId, stop),
+    getCurrentStop: (runId) => repo.getCurrentStop(runId),
+    lastFillPrice: (connection, symbol) =>
+      executionRepo.lastFillPrice(connection.broker, connection.brokerAccount, symbol),
+    connectionEquity: (connection) => venueEquity(connection),
+    sendAlert: (alert) => notifier.notify(alert),
     modifyStop: async (connection, symbol, stopPrice) => {
       await axios.post(
         `${BROKER_SERVICE_URL}/positions/${encodeURIComponent(symbol)}/stop`,
@@ -584,6 +600,7 @@ export class StrategyRunner {
   public groupsAbandoned = 0;
   public positionDivergences = 0;
   public stopsTightened = 0;
+  public killSwitchTriggers = 0;
   /** Runs whose venue and fills-derived positions currently disagree. */
   private readonly divergentRuns = new Map<
     number,
@@ -754,8 +771,89 @@ export class StrategyRunner {
         referencePrice: lastBar.close,
       }
     );
-    if (outcome.moved) this.stopsTightened++;
+    if (outcome.moved) {
+      this.stopsTightened++;
+      // Record what is now in force, so a later gap can be measured against it.
+      if (this.deps.setCurrentStop) {
+        await this.deps.setCurrentStop(run.id, desired).catch(() => undefined);
+      }
+    }
     if (outcome.error) this.errors++;
+  }
+
+  /**
+   * Evaluate the kill-switch triggers for one run at bar close (E-5).
+   *
+   * Notify-only by default. Everything here is a *detectable aftermath* rather
+   * than an intervention: with decisions at bar close the switch cannot stop a
+   * gap, only notice one — so the honest job is to tell the operator, and
+   * (from E-6) stop the next thing going wrong.
+   *
+   * Never throws. A failing kill switch must not take down the loop it is
+   * watching over.
+   */
+  private async checkKillSwitch(
+    run: ActiveRun,
+    position: PositionState,
+    label: string
+  ): Promise<void> {
+    if (!this.deps.sendAlert) return;
+    try {
+      const connection = connectionOf(run);
+      const symbol = runSymbol(run);
+      const config = killSwitchConfig();
+
+      const recordedStop = this.deps.getCurrentStop ? await this.deps.getCurrentStop(run.id) : null;
+
+      // Only fetched when a gap is actually possible — flat, with a stop that
+      // was in force. Every other bar this costs nothing.
+      const closedWithStop = position.size === 0 && recordedStop != null;
+      const lastFillPrice =
+        closedWithStop && this.deps.lastFillPrice
+          ? await this.deps.lastFillPrice(connection, symbol)
+          : null;
+
+      const equity =
+        config.equityFloor > 0 && this.deps.connectionEquity
+          ? await this.deps.connectionEquity(connection)
+          : null;
+
+      const triggers = evaluateKillSwitch(
+        {
+          runId: run.id,
+          connection,
+          symbol,
+          positionSize: position.size,
+          venueStop: position.stop_loss ?? null,
+          recordedStop,
+          hasStopRule: recordedStop != null || Boolean(position.stop_loss),
+          derivedSize: position.derived_size ?? null,
+          lastFillPrice,
+          equity,
+        },
+        config
+      );
+
+      for (const trigger of triggers) {
+        this.killSwitchTriggers++;
+        logger.warn(
+          { run_id: run.id, connection: label, kind: trigger.kind, detail: trigger.detail },
+          'kill-switch trigger'
+        );
+        await this.deps.sendAlert(triggerAlert(trigger, config.action));
+      }
+
+      // Clear the recorded stop once the position is closed and its aftermath
+      // has been judged — leaving it set would re-fire the gap check against a
+      // stop that no longer protects anything.
+      if (closedWithStop && this.deps.setCurrentStop) {
+        await this.deps.setCurrentStop(run.id, null);
+      }
+    } catch (err) {
+      this.errors++;
+      this.lastError = err instanceof Error ? err.message : String(err);
+      logger.error({ run_id: run.id, err: this.lastError }, 'kill-switch check failed');
+    }
   }
 
   /**
@@ -905,6 +1003,7 @@ export class StrategyRunner {
       // first, so the position stays protected for the moment between the two
       // — and if the exit places successfully the trail was harmless anyway.
       await this.trailStop(run, position, result, bars[bars.length - 1], label);
+      await this.checkKillSwitch(run, position, label);
 
       // Dedupe: one decision per closed bar. Skip if we already recorded this
       // bar for the run (the timer can fire faster than the bar cadence).
@@ -967,6 +1066,14 @@ export class StrategyRunner {
             });
             if (execution.placed) {
               this.ordersPlaced++;
+              // Record the stop this entry went out with, so the gap detector
+              // has something to compare a later exit fill against (E-5). On
+              // an exit, clear it: the position it protected is gone.
+              if (this.deps.setCurrentStop) {
+                await this.deps
+                  .setCurrentStop(run.id, execution.stopLoss ?? null)
+                  .catch(() => undefined);
+              }
               logger.info(
                 {
                   run_id: run.id,
@@ -1050,7 +1157,10 @@ export class StrategyRunner {
         groups_abandoned: this.groupsAbandoned,
         position_divergences: this.positionDivergences,
         stops_tightened: this.stopsTightened,
+        kill_switch_triggers: this.killSwitchTriggers,
       },
+      kill_switch: killSwitchConfig(),
+      alerts: notifier.status(),
       divergent_runs: Object.fromEntries(this.divergentRuns),
       max_connection_concurrency: this.maxConnectionConcurrency,
       breakers: Object.fromEntries(
