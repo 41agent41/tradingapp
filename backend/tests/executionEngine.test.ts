@@ -31,6 +31,7 @@ function run(overrides: Partial<ActiveRun> = {}): ActiveRun {
     broker: 'ib',
     broker_account: 'default',
     native_symbol: null,
+    run_group_id: null,
     account_mode: 'paper',
     symbol: 'MSFT',
     sec_type: 'STK',

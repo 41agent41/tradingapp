@@ -486,6 +486,40 @@ ALTER TABLE strategy_definitions ADD COLUMN IF NOT EXISTS broker_account VARCHAR
 CREATE INDEX IF NOT EXISTS idx_strategy_definitions_created_desc
     ON strategy_definitions (created_at DESC);
 
+-- ==============================================
+-- RUN GROUPS (Component C — C-3)
+-- ==============================================
+-- One definition deployed to N connections becomes N `strategy_runs` sharing a
+-- group. The group is a **lifecycle and reporting** layer, not a risk layer:
+-- every cap, kill switch and sizing rule stays per run, so a leg that breaches
+-- its own daily loss cap stops on its own account while its siblings continue.
+--
+-- Legs are created **atomically** — a half-created group is broken state — but
+-- **started in stages**. With one strategy on every account the group is a
+-- shared failure domain, so a bad rule-set edit would otherwise reach every
+-- account simultaneously. One nominated canary starts immediately; the rest
+-- sit at status='pending' until the canary has evaluated cleanly for
+-- `settle_seconds`, then they are admitted together.
+
+CREATE TABLE IF NOT EXISTS strategy_run_groups (
+    id BIGSERIAL PRIMARY KEY,
+    definition_id BIGINT NOT NULL REFERENCES strategy_definitions(id) ON DELETE CASCADE,
+    status VARCHAR(16) NOT NULL DEFAULT 'staging',  -- 'staging' | 'running' | 'stopped'
+    -- How long the canary must evaluate without error before the rest start.
+    -- Should span at least one bar of the slowest timeframe in the group, so
+    -- "evaluated cleanly" means it produced a decision rather than merely
+    -- started without throwing.
+    settle_seconds INTEGER NOT NULL DEFAULT 300,
+    admitted_at TIMESTAMPTZ,                        -- when the non-canary legs started
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_run_groups_status
+    ON strategy_run_groups (status);
+CREATE INDEX IF NOT EXISTS idx_strategy_run_groups_definition
+    ON strategy_run_groups (definition_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS strategy_runs (
     id BIGSERIAL PRIMARY KEY,
     definition_id BIGINT NOT NULL REFERENCES strategy_definitions(id) ON DELETE CASCADE,
@@ -502,7 +536,16 @@ CREATE TABLE IF NOT EXISTS strategy_runs (
     -- NULL means "use the definition's symbol" — every pre-C-2 run.
     native_symbol VARCHAR(64),
     account_mode VARCHAR(8) NOT NULL DEFAULT 'paper',   -- 'paper' | 'live'
-    status VARCHAR(16) NOT NULL DEFAULT 'running',       -- 'running' | 'stopped' | 'error'
+    -- The group this leg belongs to (C-3). NULL for a standalone run, which is
+    -- every run created before groups existed.
+    run_group_id BIGINT REFERENCES strategy_run_groups(id) ON DELETE SET NULL,
+    -- The leg that starts first and must evaluate cleanly before the rest are
+    -- admitted. Exactly one per group.
+    is_canary BOOLEAN NOT NULL DEFAULT FALSE,
+    -- 'pending' is new (C-3): created but deliberately not yet evaluating. The
+    -- runner only picks up 'running', so a pending leg is inert without any
+    -- change to the evaluation loop.
+    status VARCHAR(16) NOT NULL DEFAULT 'running',   -- 'pending' | 'running' | 'stopped' | 'error'
     sizing JSONB NOT NULL DEFAULT '{}'::jsonb,           -- carried through for A3
     risk JSONB NOT NULL DEFAULT '{}'::jsonb,             -- carried through for A3
     last_evaluated_at TIMESTAMPTZ,
@@ -514,6 +557,29 @@ CREATE TABLE IF NOT EXISTS strategy_runs (
 -- Existing deployments: add the connection column if it predates C-0.
 ALTER TABLE strategy_runs ADD COLUMN IF NOT EXISTS broker_account VARCHAR(64) NOT NULL DEFAULT 'default';
 ALTER TABLE strategy_runs ADD COLUMN IF NOT EXISTS native_symbol VARCHAR(64);
+ALTER TABLE strategy_runs ADD COLUMN IF NOT EXISTS run_group_id BIGINT REFERENCES strategy_run_groups(id) ON DELETE SET NULL;
+ALTER TABLE strategy_runs ADD COLUMN IF NOT EXISTS is_canary BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_strategy_runs_group
+    ON strategy_runs (run_group_id) WHERE run_group_id IS NOT NULL;
+-- Guard against deploying the same definition to one connection twice — the
+-- second leg would fight the first for the same position.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_strategy_runs_one_per_connection_definition
+    ON strategy_runs (broker, broker_account, definition_id)
+    WHERE status IN ('pending', 'running');
+
+-- One strategy per instrument per account (Component E, E10). Under MT5
+-- netting there is a single net position per symbol, so two runs on one
+-- instrument at one account each size and exit against exposure neither of
+-- them controls — their internal position tracking would be fiction. Keyed on
+-- `native_symbol` because that is what actually trades; NULL (pre-C-2) rows
+-- are excluded rather than colliding with each other.
+--
+-- Lifting this is FUTURE_DECISION_POINTS C-P3, and needs a position-ownership
+-- layer rather than just dropping the index.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_strategy_runs_one_per_connection_symbol
+    ON strategy_runs (broker, broker_account, native_symbol)
+    WHERE native_symbol IS NOT NULL AND status IN ('pending', 'running');
 
 CREATE INDEX IF NOT EXISTS idx_strategy_runs_status
     ON strategy_runs (status);

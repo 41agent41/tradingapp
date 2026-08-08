@@ -5,6 +5,10 @@
  *   GET  /api/strategies/definitions      — list definitions
  *   GET  /api/strategies/definitions/:id  — one definition
  *   POST /api/strategies/runs             — start a signal-only run for a definition
+ *   POST /api/strategies/definitions/:id/deploy — deploy to N connections (C-3)
+ *   GET  /api/strategies/groups/:id       — a group and its legs
+ *   POST /api/strategies/groups/:id/stop  — stop every leg of a group
+ *   POST /api/strategies/connections/:broker/:account/stop — panic-stop a connection
  *   GET  /api/strategies/runs             — list runs (optional ?status=)
  *   GET  /api/strategies/runs/:id         — one run
  *   POST /api/strategies/runs/:id/stop    — stop a run
@@ -145,6 +149,182 @@ router.post('/runs', async (req: Request, res: Response) => {
     res.status(201).json(row);
   } catch (error: any) {
     fail(res, 500, 'Failed to start run', error?.message ?? 'unknown');
+  }
+});
+
+// --- deploy to many connections (Component C — C-3) ------------------------ //
+
+/**
+ * Deploy one definition to N connections as a run group.
+ *
+ * Two things happen before anything is created, and both are refusals rather
+ * than best-effort:
+ *
+ *  1. **Every leg's symbol is resolved** at its own connection (C-2). EURUSD is
+ *     EURUSD.a at one broker and EURUSD_i at the next; a leg whose symbol
+ *     cannot be resolved unambiguously is refused rather than started on a
+ *     guess. By default a single unresolvable leg fails the whole deploy —
+ *     with one strategy across accounts, silently running on a subset is
+ *     usually not what was intended. `allow_partial` opts into starting the
+ *     legs that did resolve.
+ *  2. **Legs are created atomically but started in stages.** One nominated
+ *     canary starts immediately; the rest are created `pending` and admitted
+ *     by the runner once the canary has evaluated cleanly for `settle_seconds`.
+ */
+router.post('/definitions/:id/deploy', async (req: Request, res: Response) => {
+  try {
+    const defId = Number(req.params.id);
+    if (!Number.isInteger(defId) || defId <= 0) return fail(res, 400, 'Invalid definition id');
+
+    const definition = await repo.findDefinition(defId);
+    if (!definition) return fail(res, 404, 'Definition not found', { definition_id: defId });
+
+    const body = req.body || {};
+    const targets = Array.isArray(body.targets) ? body.targets : [];
+    if (targets.length === 0) {
+      return fail(res, 400, 'targets is required', {
+        shape: '[{ broker, account, account_mode?, sizing?, risk?, canary? }]',
+      });
+    }
+
+    for (const t of targets) {
+      if (t?.account_mode && !VALID_ACCOUNT_MODES.has(t.account_mode)) {
+        return fail(res, 400, 'Invalid account_mode on a target', {
+          valid: [...VALID_ACCOUNT_MODES],
+        });
+      }
+    }
+
+    // Exactly one canary. Not defaultable: the canary is the account that takes
+    // the first real risk from an unproven edit, so it is named deliberately.
+    const canaryTargets = targets.filter((t: any) => t?.canary);
+    if (canaryTargets.length !== 1) {
+      return fail(res, 400, 'Exactly one target must be marked canary', {
+        marked: canaryTargets.length,
+        why: 'the canary takes the first risk from an unproven rule-set, so it is chosen, not defaulted',
+      });
+    }
+
+    // Resolve every leg's native symbol at its own connection.
+    let preview: any;
+    try {
+      const response = await axios.post(
+        `${BROKER_SERVICE_URL}/instrument/resolve/preview`,
+        {
+          symbol: definition.symbol,
+          targets: targets.map((t: any) => ({ broker: t.broker, account: t.account })),
+          include_spec: false,
+        },
+        { timeout: 60000, headers: { Connection: 'close' } }
+      );
+      preview = response.data;
+    } catch (err: any) {
+      return fail(res, 502, 'Symbol resolution failed', err?.message ?? 'unknown');
+    }
+
+    const results: any[] = Array.isArray(preview?.results) ? preview.results : [];
+    const refused = results.filter((r) => !r.ok);
+    if (refused.length > 0 && !body.allow_partial) {
+      return fail(res, 422, 'Some connections could not resolve the instrument', {
+        symbol: definition.symbol,
+        refused: refused.map((r) => ({
+          broker: r.broker,
+          account: r.account,
+          error: r.error,
+        })),
+        hint: 'add a symbol_map entry for those connections, or pass allow_partial to start the rest',
+      });
+    }
+
+    const resolvedByKey = new Map<string, any>(
+      results.filter((r) => r.ok).map((r) => [`${r.broker}:${r.account ?? ''}`, r])
+    );
+
+    const legs = targets
+      .map((t: any) => {
+        const resolved = resolvedByKey.get(`${t.broker}:${t.account ?? ''}`);
+        if (!resolved) return null;
+        const ruleSet = (definition.rule_set ?? {}) as Record<string, unknown>;
+        return {
+          broker: resolved.broker,
+          broker_account: resolved.account,
+          native_symbol: resolved.native,
+          account_mode: t.account_mode ?? 'paper',
+          // Per-leg sizing and risk must be able to differ: a $10k challenge
+          // account and a $200k live account cannot share a fixed size.
+          sizing: t.sizing ?? (ruleSet.sizing as Record<string, unknown>) ?? {},
+          risk: t.risk ?? (ruleSet.risk as Record<string, unknown>) ?? {},
+          is_canary: Boolean(t.canary),
+        };
+      })
+      .filter(Boolean);
+
+    if (legs.length === 0) {
+      return fail(res, 422, 'No connection could resolve the instrument', {
+        symbol: definition.symbol,
+      });
+    }
+    if (!legs.some((l: any) => l.is_canary)) {
+      // The nominated canary was itself refused; promoting another silently
+      // would move the first risk to an account the operator did not choose.
+      return fail(res, 422, 'The nominated canary connection could not resolve the instrument', {
+        symbol: definition.symbol,
+      });
+    }
+
+    const settleSeconds = Number.isFinite(Number(body.settle_seconds))
+      ? Number(body.settle_seconds)
+      : undefined;
+
+    const { group, runs } = await repo.createGroup({
+      definition_id: defId,
+      legs: legs as any,
+      settle_seconds: settleSeconds,
+    });
+
+    res.status(201).json({
+      group,
+      runs,
+      refused: refused.map((r) => ({ broker: r.broker, account: r.account, error: r.error })),
+    });
+  } catch (error: any) {
+    fail(res, 500, 'Failed to deploy definition', error?.message ?? 'unknown');
+  }
+});
+
+router.get('/groups/:id', async (req: Request, res: Response) => {
+  try {
+    const groupId = Number(req.params.id);
+    if (!Number.isInteger(groupId) || groupId <= 0) return fail(res, 400, 'Invalid group id');
+    const runs = await repo.listGroupRuns(groupId);
+    if (runs.length === 0) return fail(res, 404, 'Group not found', { group_id: groupId });
+    res.json({ group_id: groupId, runs, count: runs.length });
+  } catch (error: any) {
+    fail(res, 500, 'Failed to read group', error?.message ?? 'unknown');
+  }
+});
+
+router.post('/groups/:id/stop', async (req: Request, res: Response) => {
+  try {
+    const groupId = Number(req.params.id);
+    if (!Number.isInteger(groupId) || groupId <= 0) return fail(res, 400, 'Invalid group id');
+    const stopped = await repo.stopGroup(groupId);
+    res.json({ group_id: groupId, stopped });
+  } catch (error: any) {
+    fail(res, 500, 'Failed to stop group', error?.message ?? 'unknown');
+  }
+});
+
+/** Panic stop: halt every run on one connection, whatever group they belong to. */
+router.post('/connections/:broker/:account/stop', async (req: Request, res: Response) => {
+  try {
+    const broker = String(req.params.broker || '').toLowerCase();
+    const account = String(req.params.account || '').toLowerCase();
+    if (!broker || !account) return fail(res, 400, 'broker and account are required');
+    const stopped = await repo.stopConnection(broker, account);
+    res.json({ connection: `${broker}:${account}`, stopped });
+  } catch (error: any) {
+    fail(res, 500, 'Failed to stop connection', error?.message ?? 'unknown');
   }
 });
 

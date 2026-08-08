@@ -1,6 +1,6 @@
 # Multi-Platform, Multi-Account — Systematic Trading Across Many Broker Connections
 
-**Status:** C-0, C-1 and C-2 delivered; C-3 onward planned
+**Status:** C-0 through C-3 delivered; C-4 onward planned
 **Scope:** run the existing systematic stack against **N simultaneous broker
 connections**, spanning multiple *platforms* (MT5, IB, Alpaca, OANDA) and
 multiple *accounts per platform* — rather than the one-account-per-platform
@@ -516,7 +516,7 @@ Each phase is independently shippable and leaves the system correct.
 | **C-0** ✅ | Bug ① and ② fixes alone: `broker_account` column + widened unique keys/indexes, defaulted to `'default'` | **Delivered.** Correctness fix; no behaviour change on one connection. **Deploy before any second connection exists.** |
 | **C-1** ✅ | C1 remainder + C2 registry + manifest config | **Delivered.** Two MT5 connections addressable manually via `/api/orders`, `/account/*`, charts |
 | **C-2** ✅ | C3 symbol mapping + per-connection specs | **Delivered.** A definition resolves correctly on each connection |
-| **C-3** | C4 run groups + staged deploy (C4a) + C6 scheduling/isolation | One definition trading on N connections, fault-isolated, canary-staged |
+| **C-3** ✅ | C4 run groups + staged deploy (C4a) + C6 scheduling/isolation | **Delivered.** One definition trading on N connections, fault-isolated, canary-staged |
 | **C-4** | C5 per-connection **and** portfolio caps + C7 reconciliation | Fleet-safe; per-account and fleet-wide limits enforced |
 | **C-5** | C8 UI/ops | Operable at fleet scale |
 
@@ -602,6 +602,42 @@ apply late.
 > and three matches read as *ambiguity* rather than as the mistake it was. The
 > rule now requires either a separator (`.a`, `_i`, `-ECN`) or at most two bare
 > characters (`EURUSDm`), so a currency-pair continuation never qualifies.
+
+> **C-3 delivered.** `strategy_run_groups` plus `run_group_id` / `is_canary` on
+> `strategy_runs`, and a new `pending` run status. `POST
+> /api/strategies/definitions/:id/deploy` resolves every leg's symbol first
+> (C-2), refuses the deploy if any leg cannot resolve unless `allow_partial` is
+> passed, then creates all legs in one transaction with only the canary
+> `running`. The runner admits the rest once the canary has both evaluated
+> cleanly *and* been running for `settle_seconds`, and **abandons** the group
+> if the canary failed. Group stop and per-connection panic stop are exposed as
+> routes.
+>
+> Scheduling changed shape: runs are grouped by connection, connections
+> processed concurrently under a bounded pool, runs within a connection kept
+> sequential (one sidecar is one terminal). A per-connection circuit breaker
+> skips a connection after repeated failures and probes it after a cooldown —
+> closing bug ③, where one unresponsive host cost its full timeout per run per
+> tick and starved every healthy account.
+>
+> Decisions worth recording:
+>
+> - **Atomic creation, staged starting.** These pull in opposite directions and
+>   both are right: a half-created group is broken state, but starting every leg
+>   at once means a bad edit reaches every account simultaneously.
+> - **A failed canary abandons the group.** It must never fall through to
+>   admission — stopping the remaining accounts from taking the risk is the
+>   entire purpose of having a canary.
+> - **Admission needs a clean evaluation *and* elapsed time.** Time alone would
+>   admit a leg that started and immediately errored; a clean evaluation alone
+>   would admit before a full bar closed on the slowest timeframe.
+> - **The canary is named, never defaulted.** It is the account that takes the
+>   first real risk from an unproven rule-set. If the nominated canary is the
+>   leg that fails to resolve, the deploy refuses rather than silently promoting
+>   another account into that role.
+> - **E10 is enforced in the schema.** A partial unique index allows only one
+>   active run per `(connection, native_symbol)`: under netting, two runs on one
+>   instrument at one account each size against exposure neither controls.
 
 ---
 

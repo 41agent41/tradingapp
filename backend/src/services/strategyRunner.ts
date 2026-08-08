@@ -32,7 +32,7 @@
 import axios from 'axios';
 import { logger } from './logger.js';
 import { dbService } from './database.js';
-import { StrategyRepository, type ActiveRun } from './strategyRepository.js';
+import { StrategyRepository, type ActiveRun, type StagingGroup } from './strategyRepository.js';
 import { ExecutionRepository } from './executionRepository.js';
 import { submitCreateOrder } from './orderService.js';
 import { isSystematicExecutionEnabled, systematicMaxOrdersPerDay } from './orderTypes.js';
@@ -55,6 +55,20 @@ const SYSTEMATIC_INTERVAL_SECONDS = Math.max(
 const SYSTEMATIC_INITIAL_DELAY_MS = Math.max(
   0,
   parseInt(process.env.SYSTEMATIC_INITIAL_DELAY_MS || '15000', 10) || 15000
+);
+// Connections are processed concurrently, bounded. Under ~10 connections this
+// is ample; materially beyond that the runner wants a work-queue instead.
+const SYSTEMATIC_MAX_CONNECTION_CONCURRENCY = Math.max(
+  1,
+  parseInt(process.env.SYSTEMATIC_MAX_CONNECTION_CONCURRENCY || '4', 10) || 4
+);
+const SYSTEMATIC_BREAKER_THRESHOLD = Math.max(
+  1,
+  parseInt(process.env.SYSTEMATIC_CONNECTION_BREAKER_THRESHOLD || '3', 10) || 3
+);
+const SYSTEMATIC_BREAKER_COOLDOWN_SECONDS = Math.max(
+  10,
+  parseInt(process.env.SYSTEMATIC_CONNECTION_BREAKER_COOLDOWN_SECONDS || '300', 10) || 300
 );
 const POSITION_LOOKBACK_HOURS = Math.max(
   1,
@@ -120,6 +134,10 @@ export interface StrategyRunnerDeps {
   /** A3 execution: map an actionable signal to a gated, audited paper order.
    *  Optional so the signal-only path (and its tests) run without it. */
   executeSignal?(ctx: ExecutionContext): Promise<ExecutionResult>;
+  /** C-3 staged deploy. Optional so a runner without groups behaves as before. */
+  listStagingGroups?(): Promise<StagingGroup[]>;
+  admitGroup?(groupId: number): Promise<number>;
+  abandonGroup?(groupId: number, reason: string): Promise<number>;
 }
 
 export interface StrategyRunnerOptions {
@@ -128,6 +146,9 @@ export interface StrategyRunnerOptions {
   intervalSeconds?: number;
   initialDelayMs?: number;
   emit?: (runId: number, payload: Record<string, unknown>) => void;
+  maxConnectionConcurrency?: number;
+  breakerThreshold?: number;
+  breakerCooldownSeconds?: number;
 }
 
 // Fetch a history window generous enough that the longest indicator (e.g.
@@ -357,6 +378,9 @@ function defaultDeps(
     emit,
     now: () => Date.now(),
     executeSignal: (ctx) => engine.execute(ctx),
+    listStagingGroups: () => repo.listStagingGroups(),
+    admitGroup: (groupId) => repo.admitGroup(groupId),
+    abandonGroup: (groupId, reason) => repo.abandonGroup(groupId, reason),
   };
 }
 
@@ -365,6 +389,12 @@ export class StrategyRunner {
   private readonly enabled: boolean;
   private readonly intervalMs: number;
   private readonly initialDelayMs: number;
+
+  private readonly maxConnectionConcurrency: number;
+  private readonly breakerThreshold: number;
+  private readonly breakerCooldownMs: number;
+  /** Consecutive failures and cooldown deadline, keyed by connection label. */
+  private readonly breakers = new Map<string, { failures: number; openUntil: number }>();
 
   private timer: NodeJS.Timeout | null = null;
   private initialTimer: NodeJS.Timeout | null = null;
@@ -379,6 +409,9 @@ export class StrategyRunner {
   public signalsRecorded = 0;
   public ordersPlaced = 0;
   public errors = 0;
+  public skipped = 0;
+  public groupsAdmitted = 0;
+  public groupsAbandoned = 0;
 
   constructor(opts: StrategyRunnerOptions = {}) {
     const emit = opts.emit ?? (() => undefined);
@@ -386,6 +419,11 @@ export class StrategyRunner {
     this.enabled = opts.enabled ?? SYSTEMATIC_ENABLED;
     this.intervalMs = (opts.intervalSeconds ?? SYSTEMATIC_INTERVAL_SECONDS) * 1000;
     this.initialDelayMs = opts.initialDelayMs ?? SYSTEMATIC_INITIAL_DELAY_MS;
+    this.maxConnectionConcurrency =
+      opts.maxConnectionConcurrency ?? SYSTEMATIC_MAX_CONNECTION_CONCURRENCY;
+    this.breakerThreshold = opts.breakerThreshold ?? SYSTEMATIC_BREAKER_THRESHOLD;
+    this.breakerCooldownMs =
+      (opts.breakerCooldownSeconds ?? SYSTEMATIC_BREAKER_COOLDOWN_SECONDS) * 1000;
   }
 
   // -------------------------------------------------------------------
@@ -438,9 +476,11 @@ export class StrategyRunner {
     this.runs++;
     try {
       const activeRuns = await this.deps.listActiveRuns();
-      for (const run of activeRuns) {
-        await this.evaluateRun(run);
-      }
+      await this.evaluateByConnection(activeRuns);
+      // After evaluation, so a canary that just produced its first clean
+      // decision can admit its siblings on the same tick rather than waiting
+      // a full interval.
+      await this.admitSettledGroups();
     } catch (err) {
       this.errors++;
       this.lastError = err instanceof Error ? err.message : String(err);
@@ -451,7 +491,140 @@ export class StrategyRunner {
     }
   }
 
-  private async evaluateRun(run: ActiveRun): Promise<void> {
+  /**
+   * Evaluate every active run, grouped by connection (C-3 / C6).
+   *
+   * Connections run **concurrently**, bounded; runs within one connection run
+   * **sequentially**. That split is the point: one MT5 sidecar is one terminal,
+   * so hammering it in parallel helps nothing — but a sidecar that is powered
+   * on and not answering (the common failure, since the terminal is a GUI app
+   * that can sit at a login dialog) used to cost its full timeout *per run,
+   * per tick*, with every other account's runs queued behind it. Three stuck
+   * runs on the default 60s interval meant the healthy accounts stopped
+   * evaluating altogether.
+   */
+  private async evaluateByConnection(runs: ActiveRun[]): Promise<void> {
+    const byConnection = new Map<string, ActiveRun[]>();
+    for (const run of runs) {
+      const conn = connectionOf(run);
+      const key = connectionLabel(conn.broker, conn.brokerAccount);
+      const bucket = byConnection.get(key);
+      if (bucket) bucket.push(run);
+      else byConnection.set(key, [run]);
+    }
+
+    const queue = [...byConnection.entries()];
+    const width = Math.max(1, Math.min(this.maxConnectionConcurrency, queue.length));
+
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const next = queue.shift();
+        if (!next) return;
+        const [label, connectionRuns] = next;
+        if (this.breakerIsOpen(label)) {
+          this.skipped += connectionRuns.length;
+          continue;
+        }
+        for (const run of connectionRuns) {
+          await this.evaluateRun(run, label);
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: width }, () => worker()));
+  }
+
+  // -------------------------------------------------------------------
+  // Per-connection circuit breaker
+  // -------------------------------------------------------------------
+  /** Whether this connection is currently being skipped, and for how long. */
+  private breakerIsOpen(label: string): boolean {
+    const state = this.breakers.get(label);
+    if (!state || state.failures < this.breakerThreshold) return false;
+    if (this.deps.now() >= state.openUntil) {
+      // Cooldown elapsed — let one tick through to probe. Failures are not
+      // reset yet: a still-broken connection re-opens immediately rather than
+      // getting a fresh budget of full-timeout attempts every cooldown.
+      return false;
+    }
+    return true;
+  }
+
+  private recordConnectionFailure(label: string): void {
+    const state = this.breakers.get(label) ?? { failures: 0, openUntil: 0 };
+    state.failures += 1;
+    if (state.failures >= this.breakerThreshold) {
+      state.openUntil = this.deps.now() + this.breakerCooldownMs;
+      logger.warn(
+        { connection: label, failures: state.failures },
+        'connection breaker open — skipping its runs until cooldown elapses'
+      );
+    }
+    this.breakers.set(label, state);
+  }
+
+  private recordConnectionSuccess(label: string): void {
+    if (this.breakers.has(label)) this.breakers.delete(label);
+  }
+
+  /**
+   * Start the pending legs of any staging group whose canary has settled.
+   *
+   * The canary must have **evaluated at least once without error** and have
+   * been running for `settle_seconds`. Both conditions matter: elapsed time
+   * alone would admit a leg that started and immediately errored, and a clean
+   * evaluation alone would admit before a full bar has closed on the slowest
+   * timeframe in the group.
+   *
+   * A failed canary **abandons** the group rather than falling through to
+   * admission — catching a bad edit before it reaches every account is the
+   * entire purpose.
+   */
+  private async admitSettledGroups(): Promise<void> {
+    if (!this.deps.listStagingGroups || !this.deps.admitGroup || !this.deps.abandonGroup) return;
+    let groups;
+    try {
+      groups = await this.deps.listStagingGroups();
+    } catch (err) {
+      this.errors++;
+      this.lastError = err instanceof Error ? err.message : String(err);
+      logger.error({ err: this.lastError }, 'failed to list staging groups');
+      return;
+    }
+
+    for (const group of groups) {
+      try {
+        if (group.pending_legs === 0) continue;
+
+        if (group.canary_status !== 'running' || group.canary_last_error) {
+          const reason =
+            group.canary_last_error ??
+            `canary run ${group.canary_run_id} is '${group.canary_status}', not running`;
+          await this.deps.abandonGroup(group.id, `canary failed: ${reason}`);
+          this.groupsAbandoned++;
+          logger.warn({ group_id: group.id, reason }, 'run group abandoned — canary failed');
+          continue;
+        }
+
+        if (!group.canary_last_evaluated_at) continue; // not yet evaluated once
+        const elapsedMs = this.deps.now() - new Date(group.canary_started_at).getTime();
+        if (elapsedMs < group.settle_seconds * 1000) continue;
+
+        const started = await this.deps.admitGroup(group.id);
+        this.groupsAdmitted++;
+        logger.info({ group_id: group.id, legs_started: started }, 'run group admitted');
+      } catch (err) {
+        this.errors++;
+        this.lastError = err instanceof Error ? err.message : String(err);
+        logger.error({ group_id: group.id, err: this.lastError }, 'group admission failed');
+      }
+    }
+  }
+
+  private async evaluateRun(run: ActiveRun, connectionLabelOrNull?: string): Promise<void> {
+    const label =
+      connectionLabelOrNull ??
+      connectionLabel(connectionOf(run).broker, connectionOf(run).brokerAccount);
     try {
       const bars = await this.deps.fetchHistory(run);
       if (!bars || bars.length === 0) {
@@ -490,6 +663,7 @@ export class StrategyRunner {
       });
 
       this.runsEvaluated++;
+      this.recordConnectionSuccess(label);
       await this.deps.markEvaluated(run.id, new Date(this.deps.now()).toISOString());
 
       if (inserted) {
@@ -561,7 +735,14 @@ export class StrategyRunner {
     } catch (err) {
       this.errors++;
       this.lastError = err instanceof Error ? err.message : String(err);
-      logger.error({ run_id: run.id, err: this.lastError }, 'strategy run evaluation failed');
+      // A run-level failure counts against its *connection*: the overwhelming
+      // cause is the venue being unreachable, and that is a property of the
+      // connection rather than of this one strategy.
+      this.recordConnectionFailure(label);
+      logger.error(
+        { run_id: run.id, connection: label, err: this.lastError },
+        'strategy run evaluation failed'
+      );
       await this.deps.markError(run.id, this.lastError).catch(() => undefined);
     }
   }
@@ -583,7 +764,17 @@ export class StrategyRunner {
         signals_recorded: this.signalsRecorded,
         orders_placed: this.ordersPlaced,
         errors: this.errors,
+        skipped: this.skipped,
+        groups_admitted: this.groupsAdmitted,
+        groups_abandoned: this.groupsAbandoned,
       },
+      max_connection_concurrency: this.maxConnectionConcurrency,
+      breakers: Object.fromEntries(
+        [...this.breakers.entries()].map(([label, state]) => [
+          label,
+          { failures: state.failures, open: this.breakerIsOpen(label) },
+        ])
+      ),
     };
   }
 }

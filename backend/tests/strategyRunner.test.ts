@@ -25,6 +25,7 @@ function activeRun(overrides: Partial<ActiveRun> = {}): ActiveRun {
     broker: 'ib',
     broker_account: 'default',
     native_symbol: null,
+    run_group_id: null,
     account_mode: 'paper',
     symbol: 'MSFT',
     sec_type: 'STK',
@@ -64,6 +65,11 @@ function makeDeps(overrides: Partial<StrategyRunnerDeps> = {}): StrategyRunnerDe
     markError: jest.fn().mockResolvedValue(undefined),
     emit: jest.fn(),
     now: () => NOW,
+    // The runner merges injected deps over the real ones, so a fake dep set
+    // must be complete — an omitted dep silently reaches the live DB.
+    listStagingGroups: jest.fn().mockResolvedValue([]),
+    admitGroup: jest.fn().mockResolvedValue(0),
+    abandonGroup: jest.fn().mockResolvedValue(0),
     ...overrides,
   };
 }
@@ -295,5 +301,215 @@ describe('StrategyRunner — native symbol reaches the venue', () => {
     // maps it to a query param, so assert the run it was given carries the
     // resolved symbol.
     expect(runSymbol(fetchHistory.mock.calls[0][0])).toBe('EURUSD.a');
+  });
+});
+
+describe('StrategyRunner — per-connection isolation (C-3)', () => {
+  function runOn(id: number, account: string): ActiveRun {
+    return activeRun({ id, broker: 'mt5', broker_account: account });
+  }
+
+  it('does not let one stalled connection block another', async () => {
+    // The failure this exists for: a sidecar that is powered on but not
+    // answering used to cost its timeout per run per tick, with every other
+    // account queued behind it.
+    let releaseStuck!: () => void;
+    const stuck = new Promise<RawBar[]>((resolve) => {
+      releaseStuck = () => resolve(bars);
+    });
+    const order: string[] = [];
+
+    const deps = makeDeps({
+      listActiveRuns: jest.fn().mockResolvedValue([runOn(1, 'stalled'), runOn(2, 'healthy')]),
+      fetchHistory: jest.fn().mockImplementation((run: ActiveRun) => {
+        if (run.broker_account === 'stalled') return stuck;
+        order.push('healthy');
+        return Promise.resolve(bars);
+      }),
+    });
+
+    const runner = new StrategyRunner({ enabled: true, deps, maxConnectionConcurrency: 4 });
+    const pass = runner.runOnce();
+    // The healthy connection completes while the other is still hanging.
+    await new Promise((r) => setImmediate(r));
+    expect(order).toEqual(['healthy']);
+
+    releaseStuck();
+    await pass;
+  });
+
+  it('processes runs on one connection sequentially', async () => {
+    // One sidecar is one terminal; parallelism against it buys nothing.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const deps = makeDeps({
+      listActiveRuns: jest
+        .fn()
+        .mockResolvedValue([runOn(1, 'same'), runOn(2, 'same'), runOn(3, 'same')]),
+      fetchHistory: jest.fn().mockImplementation(async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setImmediate(r));
+        inFlight -= 1;
+        return bars;
+      }),
+    });
+
+    await new StrategyRunner({ enabled: true, deps }).runOnce();
+    expect(maxInFlight).toBe(1);
+  });
+
+  it('opens a breaker after repeated failures and skips that connection', async () => {
+    const deps = makeDeps({
+      listActiveRuns: jest.fn().mockResolvedValue([runOn(1, 'broken')]),
+      fetchHistory: jest.fn().mockRejectedValue(new Error('bridge unreachable')),
+    });
+    const runner = new StrategyRunner({
+      enabled: true,
+      deps,
+      breakerThreshold: 2,
+      breakerCooldownSeconds: 600,
+    });
+
+    await runner.runOnce();
+    await runner.runOnce(); // threshold reached — breaker opens
+    const callsBeforeSkip = (deps.fetchHistory as jest.Mock).mock.calls.length;
+    await runner.runOnce(); // skipped entirely
+
+    expect(callsBeforeSkip).toBe(2);
+    expect((deps.fetchHistory as jest.Mock).mock.calls.length).toBe(2);
+    expect(runner.status().totals.skipped).toBe(1);
+    expect(runner.status().breakers['mt5:broken'].open).toBe(true);
+  });
+
+  it('closes the breaker once the connection recovers', async () => {
+    const fetchHistory = jest.fn().mockRejectedValueOnce(new Error('down')).mockResolvedValue(bars);
+    const deps = makeDeps({
+      listActiveRuns: jest.fn().mockResolvedValue([runOn(1, 'flaky')]),
+      fetchHistory,
+    });
+    const runner = new StrategyRunner({ enabled: true, deps, breakerThreshold: 2 });
+
+    await runner.runOnce();
+    await runner.runOnce();
+
+    expect(runner.status().breakers['mt5:flaky']).toBeUndefined();
+  });
+});
+
+describe('StrategyRunner — staged group admission (C-3)', () => {
+  const STARTED = new Date(NOW - 600_000).toISOString();
+
+  function stagingGroup(overrides = {}) {
+    return {
+      id: 7,
+      settle_seconds: 300,
+      canary_run_id: 1,
+      canary_status: 'running',
+      canary_started_at: STARTED,
+      canary_last_evaluated_at: new Date(NOW - 60_000).toISOString(),
+      canary_last_error: null,
+      pending_legs: 2,
+      ...overrides,
+    };
+  }
+
+  it('admits the siblings once the canary has settled', async () => {
+    const admitGroup = jest.fn().mockResolvedValue(2);
+    const deps = makeDeps({
+      listActiveRuns: jest.fn().mockResolvedValue([]),
+      listStagingGroups: jest.fn().mockResolvedValue([stagingGroup()]),
+      admitGroup,
+    });
+
+    const runner = new StrategyRunner({ enabled: true, deps });
+    await runner.runOnce();
+
+    expect(admitGroup).toHaveBeenCalledWith(7);
+    expect(runner.status().totals.groups_admitted).toBe(1);
+  });
+
+  it('waits while the settle period has not elapsed', async () => {
+    const admitGroup = jest.fn();
+    const deps = makeDeps({
+      listActiveRuns: jest.fn().mockResolvedValue([]),
+      listStagingGroups: jest
+        .fn()
+        .mockResolvedValue([
+          stagingGroup({ canary_started_at: new Date(NOW - 10_000).toISOString() }),
+        ]),
+      admitGroup,
+    });
+
+    await new StrategyRunner({ enabled: true, deps }).runOnce();
+    expect(admitGroup).not.toHaveBeenCalled();
+  });
+
+  it('waits until the canary has actually evaluated, not merely started', async () => {
+    // Elapsed time alone would admit a leg that started and did nothing.
+    const admitGroup = jest.fn();
+    const deps = makeDeps({
+      listActiveRuns: jest.fn().mockResolvedValue([]),
+      listStagingGroups: jest
+        .fn()
+        .mockResolvedValue([stagingGroup({ canary_last_evaluated_at: null })]),
+      admitGroup,
+    });
+
+    await new StrategyRunner({ enabled: true, deps }).runOnce();
+    expect(admitGroup).not.toHaveBeenCalled();
+  });
+
+  it('abandons the group when the canary errored — never falls through to admit', async () => {
+    // Catching a bad edit before it reaches every account is the whole point.
+    const admitGroup = jest.fn();
+    const abandonGroup = jest.fn().mockResolvedValue(2);
+    const deps = makeDeps({
+      listActiveRuns: jest.fn().mockResolvedValue([]),
+      listStagingGroups: jest
+        .fn()
+        .mockResolvedValue([stagingGroup({ canary_last_error: 'rule-set failed to compile' })]),
+      admitGroup,
+      abandonGroup,
+    });
+
+    const runner = new StrategyRunner({ enabled: true, deps });
+    await runner.runOnce();
+
+    expect(admitGroup).not.toHaveBeenCalled();
+    expect(abandonGroup).toHaveBeenCalledWith(7, expect.stringContaining('canary failed'));
+    expect(runner.status().totals.groups_abandoned).toBe(1);
+  });
+
+  it('abandons the group when the canary is no longer running', async () => {
+    const abandonGroup = jest.fn().mockResolvedValue(2);
+    const deps = makeDeps({
+      listActiveRuns: jest.fn().mockResolvedValue([]),
+      listStagingGroups: jest.fn().mockResolvedValue([stagingGroup({ canary_status: 'stopped' })]),
+      abandonGroup,
+    });
+
+    await new StrategyRunner({ enabled: true, deps }).runOnce();
+    expect(abandonGroup).toHaveBeenCalled();
+  });
+
+  it('a failure admitting one group does not block the next', async () => {
+    const admitGroup = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockResolvedValueOnce(2);
+    const deps = makeDeps({
+      listActiveRuns: jest.fn().mockResolvedValue([]),
+      listStagingGroups: jest
+        .fn()
+        .mockResolvedValue([stagingGroup({ id: 7 }), stagingGroup({ id: 8 })]),
+      admitGroup,
+    });
+
+    const runner = new StrategyRunner({ enabled: true, deps });
+    await runner.runOnce();
+
+    expect(admitGroup).toHaveBeenCalledTimes(2);
+    expect(runner.status().totals.groups_admitted).toBe(1);
   });
 });
