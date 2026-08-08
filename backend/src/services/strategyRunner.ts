@@ -70,6 +70,9 @@ const SYSTEMATIC_BREAKER_COOLDOWN_SECONDS = Math.max(
   10,
   parseInt(process.env.SYSTEMATIC_CONNECTION_BREAKER_COOLDOWN_SECONDS || '300', 10) || 300
 );
+// Fractional lot sizes do not compare exactly, so the reconciliation check
+// needs a tolerance rather than strict equality.
+const RECONCILIATION_TOLERANCE = Number(process.env.POSITION_RECONCILIATION_TOLERANCE || '0.0001');
 const POSITION_LOOKBACK_HOURS = Math.max(
   1,
   parseInt(process.env.ORDER_POSITION_LOOKBACK_HOURS || '168', 10) || 168
@@ -87,6 +90,15 @@ export interface RawBar {
 export interface PositionState {
   size: number;
   avg_price: number;
+  /** What the app's own fills imply it holds, for the reconciliation check.
+   *  Null when unavailable. Never used as the position itself (E-0). */
+  derived_size?: number | null;
+}
+
+/** One position as the venue reports it. */
+interface VenuePosition {
+  size: number;
+  avgPrice: number;
 }
 
 export interface EvaluateResult {
@@ -214,8 +226,8 @@ function defaultDeps(
   // that connection inside a short window instead of one per run per tick.
   // Fail-soft — an unreachable or unconfigured connection just means avg_price
   // stays 0, exactly as this behaved before the endpoint became venue-aware.
-  const avgCostCache = new Map<string, { at: number; bySymbol: Map<string, number> }>();
-  const AVG_COST_TTL_MS = 30_000;
+  const positionCache = new Map<string, { at: number; bySymbol: Map<string, VenuePosition> }>();
+  const POSITION_TTL_MS = 30_000;
   // Equity cache, same shape and rationale: one `/account/summary` round-trip
   // serves every equity-sized run on that connection inside a short window.
   // Fail-soft to null — the sizer then refuses with a reason rather than
@@ -274,31 +286,37 @@ function defaultDeps(
     equityCache.set(key, { at: Date.now(), equity });
     return equity;
   };
-  const venueAvgCost = async (connection: Connection, symbol: string): Promise<number> => {
+  /** Every position the venue reports for a connection, keyed by symbol.
+   *
+   *  Throws rather than returning empty on failure. An unreachable venue is
+   *  **not evidence of a flat account** — see `getPosition` below, where
+   *  treating it as flat is the difference between holding a position and
+   *  opening a second one on top of it. */
+  const venuePositions = async (connection: Connection): Promise<Map<string, VenuePosition>> => {
     const key = connectionLabel(connection.broker, connection.brokerAccount);
-    try {
-      const cached = avgCostCache.get(key);
-      let bySymbol = cached && Date.now() - cached.at <= AVG_COST_TTL_MS ? cached.bySymbol : null;
-      if (!bySymbol) {
-        const response = await axios.get(`${BROKER_SERVICE_URL}/account/positions`, {
-          params: { broker: connection.broker, account: connection.brokerAccount },
-          timeout: 30000,
-          headers: { Connection: 'close' },
-        });
-        bySymbol = new Map<string, number>();
-        for (const pos of Array.isArray(response.data) ? response.data : []) {
-          const cost = Number(pos?.average_cost);
-          if (pos?.symbol && Number.isFinite(cost) && cost > 0) {
-            bySymbol.set(String(pos.symbol).toUpperCase(), cost);
-          }
-        }
-        avgCostCache.set(key, { at: Date.now(), bySymbol });
-      }
-      return bySymbol.get(symbol.toUpperCase()) ?? 0;
-    } catch {
-      return 0;
+    const cached = positionCache.get(key);
+    if (cached && Date.now() - cached.at <= POSITION_TTL_MS) return cached.bySymbol;
+
+    const response = await axios.get(`${BROKER_SERVICE_URL}/account/positions`, {
+      params: { broker: connection.broker, account: connection.brokerAccount },
+      timeout: 30000,
+      headers: { Connection: 'close' },
+    });
+    const bySymbol = new Map<string, VenuePosition>();
+    for (const pos of Array.isArray(response.data) ? response.data : []) {
+      const symbol = String(pos?.symbol ?? '').toUpperCase();
+      if (!symbol) continue;
+      const size = Number(pos?.position);
+      const cost = Number(pos?.average_cost);
+      bySymbol.set(symbol, {
+        size: Number.isFinite(size) ? size : 0,
+        avgPrice: Number.isFinite(cost) && cost > 0 ? cost : 0,
+      });
     }
+    positionCache.set(key, { at: Date.now(), bySymbol });
+    return bySymbol;
   };
+
   return {
     listActiveRuns: () => repo.listActiveRuns(),
     fetchHistory: async (run) => {
@@ -331,34 +349,54 @@ function defaultDeps(
       }));
     },
     getPosition: async (run) => {
-      // Size: this run's own exposure — its recorded fills plus the unfilled
-      // remainder of its still-working orders, scoped by `runId` so a second
-      // run on the same symbol (or a manual trade) can never change what this
-      // run's sizing and pyramiding rules do. See
-      // `ExecutionRepository.netPositionWithOpenOrders` for why both halves are
-      // needed: fills alone lag the poller, submitted orders alone can't see a
-      // partial fill. With the fills feed off this is byte-for-byte the old
-      // order-audit estimate.
+      // **The venue is the source of truth** (Component E — E-0).
       //
-      // Average price: the *venue's* reported average cost for whichever
-      // broker the run targets — so position.unrealized_pct exit rules (e.g. a
-      // -2% stop) evaluate live the same way they do in backtest on MT5 /
-      // Alpaca / OANDA, not just IB.
+      // This used to derive the position from the run's own recorded fills
+      // plus its working orders, deliberately scoped by `runId` so a second
+      // run on the same symbol could not interfere. Two things changed:
+      //
+      //  - E10 makes that isolation unnecessary — one strategy per instrument
+      //    per account means the venue's net position for this connection and
+      //    symbol *is* this run's position, with no attribution to do.
+      //  - E-2 puts stops at the broker, so **the broker closes positions the
+      //    app did not close**. A fills-derived figure counting only orders
+      //    this run placed would never see that exit, and the run would keep
+      //    trading against a position that no longer exists.
+      //
+      // It also means a manual intervention — closing a trade yourself in the
+      // terminal — is picked up correctly on the next bar instead of
+      // desynchronising the run.
+      const connection = connectionOf(run);
+      const symbol = runSymbol(run).toUpperCase();
+
+      // No try/catch. An unreachable venue must **fail the evaluation**, not
+      // report flat: flat is an actionable state that would let the strategy
+      // open a position on top of one it already holds. The caller records the
+      // error on the run and counts it against the connection's breaker.
+      const positions = await venuePositions(connection);
+      const venue = positions.get(symbol) ?? { size: 0, avgPrice: 0 };
+
+      // Reconciliation, not authority. The fills-derived figure is what the
+      // app *believes* it holds; a persistent disagreement means fills are
+      // being missed — exactly the class of bug C-0 addressed — so it is
+      // surfaced rather than silently reconciled away. Fail-soft: losing the
+      // check must not stop trading on a position the venue reported fine.
+      let derived: number | null = null;
       try {
         const size = await executionRepo.netPositionWithOpenOrders({
-          broker: run.broker || 'ib',
-          brokerAccount: run.broker_account || DEFAULT_BROKER_ACCOUNT,
-          symbol: runSymbol(run),
+          broker: connection.broker,
+          brokerAccount: connection.brokerAccount,
+          symbol,
           accountMode: run.account_mode,
           runId: run.id,
           lookbackHours: POSITION_LOOKBACK_HOURS,
         });
-        const netSize = Number.isFinite(size) ? size : 0;
-        const avgPrice = netSize !== 0 ? await venueAvgCost(connectionOf(run), runSymbol(run)) : 0;
-        return { size: netSize, avg_price: avgPrice };
+        derived = Number.isFinite(size) ? size : null;
       } catch {
-        return { size: 0, avg_price: 0 };
+        derived = null;
       }
+
+      return { size: venue.size, avg_price: venue.avgPrice, derived_size: derived };
     },
     evaluate: async (bars, ruleSet, position) => {
       const response = await axios.post(
@@ -412,6 +450,12 @@ export class StrategyRunner {
   public skipped = 0;
   public groupsAdmitted = 0;
   public groupsAbandoned = 0;
+  public positionDivergences = 0;
+  /** Runs whose venue and fills-derived positions currently disagree. */
+  private readonly divergentRuns = new Map<
+    number,
+    { connection: string; symbol: string; venue: number; derived: number }
+  >();
 
   constructor(opts: StrategyRunnerOptions = {}) {
     const emit = opts.emit ?? (() => undefined);
@@ -534,6 +578,46 @@ export class StrategyRunner {
     await Promise.all(Array.from({ length: width }, () => worker()));
   }
 
+  /**
+   * Compare what the venue says this run holds against what its own fills
+   * imply (E-0).
+   *
+   * The venue is authoritative, so a mismatch never changes the position used
+   * for the decision — it is a **signal that the fills feed is wrong**, which
+   * is the class of bug that silently corrupts realised P&L and therefore the
+   * `max_daily_loss` cap. Divergence is expected and benign in two cases: a
+   * broker-side stop or take-profit closed the position (the app placed no
+   * order, so no fill is attributed to the run), and a manual trade. Both are
+   * worth seeing; neither is worth halting for, which is why this reports
+   * rather than refuses.
+   */
+  private checkReconciliation(run: ActiveRun, position: PositionState, label: string): void {
+    const derived = position.derived_size;
+    if (derived == null) return;
+    // A tolerance, because fractional lot sizes do not compare exactly.
+    if (Math.abs(derived - position.size) <= RECONCILIATION_TOLERANCE) {
+      this.divergentRuns.delete(run.id);
+      return;
+    }
+    this.positionDivergences++;
+    this.divergentRuns.set(run.id, {
+      connection: label,
+      symbol: runSymbol(run),
+      venue: position.size,
+      derived,
+    });
+    logger.warn(
+      {
+        run_id: run.id,
+        connection: label,
+        symbol: runSymbol(run),
+        venue_position: position.size,
+        fills_derived_position: derived,
+      },
+      'position reconciliation mismatch — venue is authoritative, fills feed may be incomplete'
+    );
+  }
+
   // -------------------------------------------------------------------
   // Per-connection circuit breaker
   // -------------------------------------------------------------------
@@ -633,6 +717,7 @@ export class StrategyRunner {
       }
 
       const position = await this.deps.getPosition(run);
+      this.checkReconciliation(run, position, label);
       const result = await this.deps.evaluate(bars, run.rule_set, position);
 
       // Dedupe: one decision per closed bar. Skip if we already recorded this
@@ -767,7 +852,9 @@ export class StrategyRunner {
         skipped: this.skipped,
         groups_admitted: this.groupsAdmitted,
         groups_abandoned: this.groupsAbandoned,
+        position_divergences: this.positionDivergences,
       },
+      divergent_runs: Object.fromEntries(this.divergentRuns),
       max_connection_concurrency: this.maxConnectionConcurrency,
       breakers: Object.fromEntries(
         [...this.breakers.entries()].map(([label, state]) => [

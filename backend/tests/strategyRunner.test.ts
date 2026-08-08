@@ -513,3 +513,122 @@ describe('StrategyRunner — staged group admission (C-3)', () => {
     expect(runner.status().totals.groups_admitted).toBe(1);
   });
 });
+
+describe('StrategyRunner — venue position is the source of truth (E-0)', () => {
+  it('evaluates against the position the venue reports', async () => {
+    const evaluate = jest.fn().mockResolvedValue(buyResult);
+    const deps = makeDeps({
+      getPosition: jest.fn().mockResolvedValue({ size: -2, avg_price: 1.085, derived_size: -2 }),
+      evaluate,
+    });
+
+    await makeRunner(deps).runOnce();
+
+    // Signed: shorts are a negative size, not an absent one.
+    expect(evaluate.mock.calls[0][2]).toEqual(
+      expect.objectContaining({ size: -2, avg_price: 1.085 })
+    );
+  });
+
+  it('does NOT treat an unreachable venue as a flat position', async () => {
+    // The whole point of E-0's fail-closed read. Reporting flat when the
+    // position is merely unknown lets a strategy open a second position on
+    // top of one it already holds.
+    const evaluate = jest.fn();
+    const markError = jest.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({
+      getPosition: jest.fn().mockRejectedValue(new Error('bridge unreachable')),
+      evaluate,
+      markError,
+    });
+
+    const runner = makeRunner(deps);
+    await runner.runOnce();
+
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(markError).toHaveBeenCalledWith(1, expect.stringContaining('bridge unreachable'));
+    expect(runner.status().totals.errors).toBe(1);
+  });
+
+  it('counts a position-read failure against the connection breaker', async () => {
+    // An unreadable position is almost always the venue being unreachable,
+    // which is a property of the connection rather than of this strategy.
+    const deps = makeDeps({
+      getPosition: jest.fn().mockRejectedValue(new Error('bridge unreachable')),
+    });
+    const runner = new StrategyRunner({ enabled: true, deps, breakerThreshold: 1 });
+
+    await runner.runOnce();
+
+    expect(runner.status().breakers['ib:default'].open).toBe(true);
+  });
+});
+
+describe('StrategyRunner — position reconciliation (E-0)', () => {
+  it('reports a venue/fills mismatch without changing the position used', async () => {
+    const evaluate = jest.fn().mockResolvedValue(buyResult);
+    const deps = makeDeps({
+      // The venue says flat; the app's fills still think it is long — the
+      // shape a broker-side stop produces, since the app placed no exit.
+      getPosition: jest.fn().mockResolvedValue({ size: 0, avg_price: 0, derived_size: 1 }),
+      evaluate,
+    });
+
+    const runner = makeRunner(deps);
+    await runner.runOnce();
+
+    expect(runner.status().totals.position_divergences).toBe(1);
+    expect(runner.status().divergent_runs[1]).toEqual(
+      expect.objectContaining({ venue: 0, derived: 1 })
+    );
+    // Authoritative: the decision still used the venue's figure.
+    expect(evaluate.mock.calls[0][2]).toEqual(expect.objectContaining({ size: 0 }));
+  });
+
+  it('does not flag agreement', async () => {
+    const deps = makeDeps({
+      getPosition: jest.fn().mockResolvedValue({ size: 1, avg_price: 1.1, derived_size: 1 }),
+    });
+    const runner = makeRunner(deps);
+    await runner.runOnce();
+    expect(runner.status().totals.position_divergences).toBe(0);
+  });
+
+  it('tolerates fractional-lot rounding rather than flagging every bar', async () => {
+    const deps = makeDeps({
+      getPosition: jest
+        .fn()
+        .mockResolvedValue({ size: 0.01, avg_price: 1.1, derived_size: 0.010000001 }),
+    });
+    const runner = makeRunner(deps);
+    await runner.runOnce();
+    expect(runner.status().totals.position_divergences).toBe(0);
+  });
+
+  it('clears a run from the divergent list once it agrees again', async () => {
+    const getPosition = jest
+      .fn()
+      .mockResolvedValueOnce({ size: 0, avg_price: 0, derived_size: 1 })
+      .mockResolvedValue({ size: 1, avg_price: 1.1, derived_size: 1 });
+    const deps = makeDeps({ getPosition, latestSignalBarTime: jest.fn().mockResolvedValue(null) });
+
+    const runner = makeRunner(deps);
+    await runner.runOnce();
+    expect(runner.status().divergent_runs[1]).toBeDefined();
+
+    await runner.runOnce();
+    expect(runner.status().divergent_runs[1]).toBeUndefined();
+  });
+
+  it('skips the check when the fills-derived figure is unavailable', async () => {
+    // Losing the check must not stop trading on a position the venue
+    // reported perfectly well.
+    const deps = makeDeps({
+      getPosition: jest.fn().mockResolvedValue({ size: 1, avg_price: 1.1, derived_size: null }),
+    });
+    const runner = makeRunner(deps);
+    await runner.runOnce();
+    expect(runner.status().totals.position_divergences).toBe(0);
+    expect(runner.status().totals.errors).toBe(0);
+  });
+});

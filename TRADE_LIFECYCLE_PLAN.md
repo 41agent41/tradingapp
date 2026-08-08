@@ -1,6 +1,6 @@
 # Trade Lifecycle — Direction, Broker-Side Stops, Sizing, and the Kill Switch
 
-**Status:** plan / not yet implemented
+**Status:** E-0 delivered; E-1 onward planned
 **Scope:** what happens from the moment a strategy decides to trade until the
 position is closed — direction, order placement, protective stops, trade
 management, and the downside backstop.
@@ -321,7 +321,7 @@ that achieves it wins.
 
 | Phase | Contents | Ships |
 |---|---|---|
-| **E-0** | Broker position as truth (§7) + reconciliation check | Correct position tracking, prerequisite for everything else |
+| **E-0** ✅ | Broker position as truth (§7) + reconciliation check | **Delivered.** Correct position tracking, prerequisite for everything else |
 | **E-1** | Signed positions and the `long`/`short`/`flat` vocabulary (§3) | Shorts, without stops yet |
 | **E-2** | Broker-side SL at entry (§4.1) + sidecar contract change + fail-closed protection | Every position protected at the venue |
 | **E-3** | Bar-close stop management and the ratchet (§4.2) | Trailing stops as specified |
@@ -341,6 +341,27 @@ Until then, strategies size with the existing `pct_equity` type.
 E-4's tick value/size). They are the only work in any of these plans that falls
 outside this repository, so they are worth batching into a single update of the
 Windows-side service rather than two.
+
+> **E-0 delivered.** `getPosition` now reads the venue's reported position for
+> the run's `(connection, native_symbol)` and returns it signed, with the
+> venue's average price. The fills-derived figure is computed alongside as
+> `derived_size` and compared, never used as the position.
+>
+> Two decisions carry the weight:
+>
+> - **An unreachable venue fails the evaluation; it does not report flat.** The
+>   old code caught the error and returned `{size: 0}`, which was defensible
+>   when the figure came from fills ("no fills" really does mean flat) and is
+>   dangerous now: flat is an *actionable* state, and a strategy told it is flat
+>   while holding a position will open a second one on top. The failure is
+>   recorded on the run and counted against the connection's breaker, since an
+>   unreadable position is nearly always the venue being unreachable.
+> - **A reconciliation mismatch reports, it does not refuse.** Divergence is
+>   expected and benign in two cases — a broker-side stop closed the position
+>   (the app placed no order, so no fill is attributed) and a manual trade — but
+>   a *persistent* mismatch means fills are being missed, which is what silently
+>   corrupts realised P&L and therefore `max_daily_loss`. Surfaced in the runner
+>   status and logs; C-4 turns it into a per-connection report.
 
 ---
 
