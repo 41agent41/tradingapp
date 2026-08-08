@@ -106,6 +106,35 @@ export interface PortfolioLimits {
   currencies?: string[];
 }
 
+/** What a signal asks the engine to do, once the vocabulary is normalised. */
+export type SignalIntent = 'long' | 'short' | 'flat';
+
+/**
+ * Map a recorded signal onto an intent, or null when it is not actionable.
+ *
+ * `buy` / `sell` are the pre-E1 spelling of `long` / `flat`. They stay
+ * accepted because `strategy_signals` rows written before E1 use them, and a
+ * stored signal outlives the deploy that produced it.
+ */
+export function normaliseSignal(signal: string): SignalIntent | null {
+  switch (signal) {
+    case 'long':
+    case 'buy':
+      return 'long';
+    case 'short':
+      return 'short';
+    case 'flat':
+    case 'sell':
+      return 'flat';
+    default:
+      return null;
+  }
+}
+
+function isEntry(intent: SignalIntent): boolean {
+  return intent === 'long' || intent === 'short';
+}
+
 export class ExecutionEngine {
   constructor(private readonly deps: ExecutionEngineDeps) {}
 
@@ -121,7 +150,12 @@ export class ExecutionEngine {
       };
     }
 
-    if (ctx.signal !== 'buy' && ctx.signal !== 'sell') {
+    // Normalise the signal vocabulary (E1). The rule engine now emits
+    // `long` / `short` / `flat`; `buy` / `sell` are the pre-E1 spelling of
+    // `long` / `flat` and are still accepted, because `strategy_signals` rows
+    // written before E1 use them and a stored signal outlives a deploy.
+    const intent = normaliseSignal(ctx.signal);
+    if (intent === null) {
       return { placed: false, reason: 'non-actionable signal' };
     }
     if (ctx.signalId == null) {
@@ -211,7 +245,7 @@ export class ExecutionEngine {
       // does: blocking an exit because the day went badly strands the position
       // in the trade that caused the loss.
       const connLossCap = Math.abs(Number(limits?.max_daily_loss) || 0);
-      if (connLossCap > 0 && ctx.signal === 'buy') {
+      if (connLossCap > 0 && isEntry(intent)) {
         if (!this.deps.realisedPnlTodayForConnection) {
           return {
             placed: false,
@@ -244,7 +278,7 @@ export class ExecutionEngine {
     // With one strategy across several accounts there is no diversification:
     // every leg takes the same trade at the same moment, so the fleet's total
     // risk is N times one account's. This is the backstop for that.
-    if (this.deps.portfolioLimits && ctx.signal === 'buy') {
+    if (this.deps.portfolioLimits && isEntry(intent)) {
       let portfolio: PortfolioLimits | null;
       try {
         portfolio = await this.deps.portfolioLimits();
@@ -306,7 +340,7 @@ export class ExecutionEngine {
     // taking on new risk and leaves its exits (and the strategy's own stop
     // rules) free to run.
     const lossCap = Math.abs(Number((run.risk ?? {}).max_daily_loss) || 0);
-    if (lossCap > 0 && ctx.signal === 'buy') {
+    if (lossCap > 0 && isEntry(intent)) {
       if (!this.deps.realisedPnlToday) {
         return {
           placed: false,
@@ -335,12 +369,26 @@ export class ExecutionEngine {
       }
     }
 
-    // Resolve the concrete action + quantity. A `buy` opens (size from the
-    // sizing block); a `sell` exits, closing the current long position.
+    // Resolve the concrete action + quantity.
+    //
+    // An entry opens in the signal's direction, sized from the sizing block;
+    // `flat` closes whatever is held, in whichever direction closes it. Under
+    // MT5 netting a position is one signed number, so "close" means trading
+    // the opposite side of its sign — a short is covered with a BUY.
     let action: OrderAction;
     let quantity: number;
-    if (ctx.signal === 'buy') {
-      action = 'BUY';
+    if (isEntry(intent)) {
+      // E12: no direct reversal. An entry signal while a position is open is
+      // refused rather than flipping — the strategy exits first and re-enters
+      // on a later bar. Silently reversing would double the traded size and
+      // take a position the rules never asked for on this bar.
+      if (ctx.position.size !== 0) {
+        return {
+          placed: false,
+          reason: `${intent} entry while a position of ${ctx.position.size} is open — reversal is not supported`,
+        };
+      }
+      action = intent === 'long' ? 'BUY' : 'SELL';
       // Equity is only fetched when the sizing block asks for it — every other
       // sizing type resolves from the bar price alone, and a venue round-trip
       // per signal would be pure cost.
@@ -376,7 +424,14 @@ export class ExecutionEngine {
       if (!sized.ok) return { placed: false, reason: `sizing: ${sized.reason}` };
       quantity = sized.quantity;
     } else {
-      action = 'SELL';
+      // Close whatever is held: a long is closed with a SELL, a short with a
+      // BUY. Reading the direction from the position's sign rather than
+      // assuming long is the whole of E1 on the exit side.
+      if (ctx.position.size === 0) {
+        return { placed: false, reason: 'exit signal but no open position to close' };
+      }
+      action = ctx.position.size > 0 ? 'SELL' : 'BUY';
+
       // Close exactly what is held, rounded onto the venue's step — flooring
       // to a whole number would strand a fractional lot open forever.
       let spec: InstrumentSpec | null = null;
@@ -390,7 +445,7 @@ export class ExecutionEngine {
       const step = Number(spec?.sizeStep) > 0 ? Number(spec?.sizeStep) : 1;
       quantity = roundToStep(Math.abs(ctx.position.size), step);
       if (quantity <= 0) {
-        return { placed: false, reason: 'exit signal but no open long position to close' };
+        return { placed: false, reason: 'exit signal but no open position to close' };
       }
     }
 

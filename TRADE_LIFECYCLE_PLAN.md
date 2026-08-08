@@ -1,6 +1,6 @@
 # Trade Lifecycle — Direction, Broker-Side Stops, Sizing, and the Kill Switch
 
-**Status:** E-0 delivered; E-1 onward planned
+**Status:** E-0 and E-1 delivered; E-2 onward planned
 **Scope:** what happens from the moment a strategy decides to trade until the
 position is closed — direction, order placement, protective stops, trade
 management, and the downside backstop.
@@ -322,7 +322,7 @@ that achieves it wins.
 | Phase | Contents | Ships |
 |---|---|---|
 | **E-0** ✅ | Broker position as truth (§7) + reconciliation check | **Delivered.** Correct position tracking, prerequisite for everything else |
-| **E-1** | Signed positions and the `long`/`short`/`flat` vocabulary (§3) | Shorts, without stops yet |
+| **E-1** ✅ | Signed positions and the `long`/`short`/`flat` vocabulary (§3) | **Delivered.** Shorts, without stops yet |
 | **E-2** | Broker-side SL at entry (§4.1) + sidecar contract change + fail-closed protection | Every position protected at the venue |
 | **E-3** | Bar-close stop management and the ratchet (§4.2) | Trailing stops as specified |
 | **E-4** | `risk_pct` sizing (§5): tick-value fields on `instrument_spec` + sidecar `/symbol`, stop-before-sizing ordering, margin check | Constant risk per trade regardless of stop width |
@@ -362,6 +362,34 @@ Windows-side service rather than two.
 >   a *persistent* mismatch means fills are being missed, which is what silently
 >   corrupts realised P&L and therefore `max_daily_loss`. Surfaced in the runner
 >   status and logs; C-4 turns it into a per-connection report.
+
+> **E-1 delivered.** Rule-sets gain `direction` (`long` default / `short` /
+> `both`, the last requiring a `short_entry` group). `evaluate()` emits
+> `long` / `short` / `flat` / `none`; `normaliseSignal()` in the engine owns
+> the vocabulary in one place and still accepts pre-E1 `buy` / `sell`, because
+> stored `strategy_signals` rows outlive the deploy that wrote them. Entries
+> open in the signal's direction, and an exit closes whatever is held by
+> reading the position's **sign** — a short is covered with a BUY.
+>
+> **Shorts work in the backtester too.** Shipping live shorts against a
+> long-only engine would have made a short strategy impossible to backtest,
+> which is a worse version of the parity problem Component D exists to protect.
+> `Trade.pnl` already computed the SELL side correctly; the engine simply never
+> created one. Two sign bugs surfaced in paths that were not obviously part of
+> the change and would each have been silent: a partially scaled-out short
+> reverted to a positive `position` (reading as long to every position-aware
+> rule on the next bar), and the equity curve used the long formula (moving the
+> wrong way for every short trade).
+>
+> Two refusals worth recording:
+>
+> - **Reversal is refused, not performed** (E12). An entry signal while a
+>   position is open returns a reason rather than flipping; silently reversing
+>   would double the traded size and take a position the rules never asked for
+>   on that bar.
+> - **Both sides firing on one bar refuses.** Under `direction: both`, a bar
+>   where the long and short entries both fire is a rule-set bug, not a choice
+>   to make on its behalf.
 
 ---
 

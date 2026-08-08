@@ -8,6 +8,7 @@
  */
 import {
   ExecutionEngine,
+  normaliseSignal,
   type ExecutionContext,
   type ExecutionEngineDeps,
 } from '../src/services/executionEngine.js';
@@ -534,5 +535,102 @@ describe('ExecutionEngine — portfolio cap', () => {
     const deps = makeDeps({ portfolioLimits: jest.fn().mockResolvedValue(null) });
     const result = await new ExecutionEngine(deps).execute(ctx());
     expect(result).toEqual(expect.objectContaining({ placed: true }));
+  });
+});
+
+// --------------------------------------------------------------------------- //
+// Direction — long, short and the reversal refusal (E1)
+// --------------------------------------------------------------------------- //
+describe('ExecutionEngine — shorts', () => {
+  it('opens a short with a SELL from flat', async () => {
+    const deps = makeDeps();
+    const result = await new ExecutionEngine(deps).execute(ctx({ signal: 'short' }));
+    expect(result).toEqual(expect.objectContaining({ placed: true, action: 'SELL' }));
+  });
+
+  it('closes a short with a BUY', async () => {
+    // Reading direction from the position's sign rather than assuming long is
+    // the whole of E1 on the exit side.
+    const deps = makeDeps();
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'flat', position: { size: -3, avg_price: 1.1 } })
+    );
+    expect(result).toEqual(expect.objectContaining({ placed: true, action: 'BUY', quantity: 3 }));
+  });
+
+  it('closes a long with a SELL', async () => {
+    const deps = makeDeps();
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'flat', position: { size: 3, avg_price: 1.1 } })
+    );
+    expect(result).toEqual(expect.objectContaining({ placed: true, action: 'SELL', quantity: 3 }));
+  });
+
+  it('refuses to reverse a long into a short (E12)', async () => {
+    // Silently reversing would double the traded size and take a position the
+    // rules never asked for on this bar.
+    const deps = makeDeps();
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'short', position: { size: 5, avg_price: 1.1 } })
+    );
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('reversal is not supported'),
+    });
+  });
+
+  it('refuses to reverse a short into a long', async () => {
+    const deps = makeDeps();
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'long', position: { size: -5, avg_price: 1.1 } })
+    );
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('reversal is not supported'),
+    });
+  });
+
+  it('refuses an exit with nothing open', async () => {
+    const deps = makeDeps();
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'flat', position: { size: 0, avg_price: 0 } })
+    );
+    expect(result).toEqual({
+      placed: false,
+      reason: 'exit signal but no open position to close',
+    });
+  });
+
+  it('gates a short entry on the loss caps, like a long', async () => {
+    // A short is an entry: it takes on new risk, so a breached daily loss cap
+    // must stop it exactly as it stops a long.
+    const deps = makeDeps({
+      realisedPnlToday: jest.fn().mockResolvedValue(-1000),
+    });
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'short', run: run({ risk: { max_daily_loss: 500 } }) })
+    );
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('max_daily_loss'),
+    });
+  });
+});
+
+describe('normaliseSignal', () => {
+  it('accepts the E1 vocabulary', () => {
+    expect(normaliseSignal('long')).toBe('long');
+    expect(normaliseSignal('short')).toBe('short');
+    expect(normaliseSignal('flat')).toBe('flat');
+  });
+
+  it('still accepts pre-E1 buy/sell, because stored signals outlive a deploy', () => {
+    expect(normaliseSignal('buy')).toBe('long');
+    expect(normaliseSignal('sell')).toBe('flat');
+  });
+
+  it('rejects anything else', () => {
+    expect(normaliseSignal('none')).toBeNull();
+    expect(normaliseSignal('')).toBeNull();
   });
 });

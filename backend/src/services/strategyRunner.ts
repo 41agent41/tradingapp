@@ -45,6 +45,7 @@ import {
 } from './orderTypes.js';
 import {
   ExecutionEngine,
+  normaliseSignal,
   type ConnectionLimits,
   type ExecutionContext,
   type ExecutionResult,
@@ -819,10 +820,11 @@ export class StrategyRunner {
         return;
       }
 
+      const intent = normaliseSignal(result.signal);
       const reason =
-        result.signal === 'buy'
+        intent === 'long' || intent === 'short'
           ? result.entry_reason || null
-          : result.signal === 'sell'
+          : intent === 'flat'
             ? result.exit_reason || null
             : null;
 
@@ -844,11 +846,14 @@ export class StrategyRunner {
       if (inserted) {
         this.signalsRecorded++;
 
-        // A3 execution: only newly-recorded, actionable (buy/sell) signals are
+        // A3 execution: only newly-recorded, actionable signals are
         // considered. Everything else short-circuits inside the engine, gated
         // and fail-closed; a per-signal failure is isolated like an eval error.
         let execution: ExecutionResult | null = null;
-        const actionable = result.signal === 'buy' || result.signal === 'sell';
+        // `normaliseSignal` owns the vocabulary in one place, so the runner
+        // and the engine cannot disagree about what counts as actionable —
+        // and pre-E1 `buy`/`sell` rows keep working.
+        const actionable = normaliseSignal(result.signal) !== null;
         if (actionable && this.deps.executeSignal) {
           try {
             execution = await this.deps.executeSignal({
