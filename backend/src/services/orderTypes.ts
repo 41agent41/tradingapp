@@ -19,13 +19,12 @@ export const ACCOUNT_MODES = ['paper', 'live'] as const;
 export type AccountMode = (typeof ACCOUNT_MODES)[number];
 
 /**
- * Execution venues (Systematic Trading roadmap — B1). Instruments are
- * broker-scoped (no cross-broker symbol reconciliation), so `broker` is a
- * first-class dimension on every order and on the net-exposure key. Defaults
- * to `ib`. Each of `mt5` / `alpaca` / `oanda` is accepted here but only
- * served once its adapter is configured on the broker service (see
- * `broker_service/adapters.py`) — otherwise a request for it resolves to a
- * clean 501, not a 400.
+ * Execution **platforms** (Systematic Trading roadmap — B1). Instruments are
+ * platform-scoped (no cross-platform symbol reconciliation), so `broker` is a
+ * first-class dimension on every order. Defaults to `ib`. Each of `mt5` /
+ * `alpaca` / `oanda` is accepted here but only served once its adapter is
+ * configured on the broker service (see `broker_service/adapters.py`) —
+ * otherwise a request for it resolves to a clean 501, not a 400.
  */
 export const BROKERS = ['ib', 'mt5', 'alpaca', 'oanda'] as const;
 export type Broker = (typeof BROKERS)[number];
@@ -34,6 +33,60 @@ export const DEFAULT_BROKER: Broker =
   (BROKERS as readonly string[]).includes(process.env.DEFAULT_BROKER as string)
     ? (process.env.DEFAULT_BROKER as Broker)
     : 'ib';
+
+/**
+ * The **account** within a platform (Component C — C-0). `broker` names the
+ * protocol; this names which account on it. Together they address a
+ * *connection*: `mt5:pepperstone-live`.
+ *
+ * This is a separate field rather than an overload of `broker` deliberately.
+ * Encoding it as `mt5:alias` would break every `isBroker()` call site, and
+ * the column is VARCHAR(16). Keeping the platform enum closed and the account
+ * free-form also means adding an account is configuration, while adding a
+ * platform stays a code change — which is the right asymmetry.
+ *
+ * Free-form but constrained: it appears in log lines, request ids and index
+ * keys, so it is lowercased and restricted to a URL/identifier-safe charset.
+ */
+export const DEFAULT_BROKER_ACCOUNT = 'default';
+const BROKER_ACCOUNT_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
+export const BROKER_ACCOUNT_MAX_LENGTH = 64;
+
+/** Normalise a `broker_account` value, or return null when it is unusable. */
+export function normaliseBrokerAccount(v: unknown): string | null {
+  if (v === undefined || v === null || v === '') return DEFAULT_BROKER_ACCOUNT;
+  if (typeof v !== 'string') return null;
+  const account = v.trim().toLowerCase();
+  if (!account) return DEFAULT_BROKER_ACCOUNT;
+  if (account.length > BROKER_ACCOUNT_MAX_LENGTH) return null;
+  return BROKER_ACCOUNT_PATTERN.test(account) ? account : null;
+}
+
+/** Canonical `platform:account` label for logs, request ids and UI. */
+export function connectionLabel(broker: string, brokerAccount: string): string {
+  return `${broker}:${brokerAccount}`;
+}
+
+/**
+ * One addressable account at one platform — the unit everything venue-facing
+ * is keyed by. Camel-cased because it is an in-code value; the database
+ * columns stay `broker` / `broker_account`, and repositories map between them.
+ */
+export interface Connection {
+  broker: string;
+  brokerAccount: string;
+}
+
+/** The connection a persisted row (order, run, fill) belongs to. */
+export function connectionOf(row: {
+  broker?: string | null;
+  broker_account?: string | null;
+}): Connection {
+  return {
+    broker: row.broker || DEFAULT_BROKER,
+    brokerAccount: row.broker_account || DEFAULT_BROKER_ACCOUNT,
+  };
+}
 
 export const ORDER_OPERATIONS = ['CREATE', 'CANCEL', 'MODIFY'] as const;
 export type OrderOperation = (typeof ORDER_OPERATIONS)[number];
@@ -48,6 +101,7 @@ export interface OrderInput {
   stop_price?: number | null;
   account_mode: AccountMode;
   broker?: Broker;
+  broker_account?: string;
   sec_type?: string;
   exchange?: string;
   currency?: string;
@@ -143,6 +197,7 @@ export interface ValidatedOrder extends Required<
   Pick<OrderInput, 'symbol' | 'action' | 'quantity' | 'order_type' | 'tif' | 'account_mode'>
 > {
   broker: Broker;
+  broker_account: string;
   limit_price: number | null;
   stop_price: number | null;
   sec_type: string;
@@ -190,6 +245,14 @@ export function validateOrder(
     errors.push(`broker must be one of ${BROKERS.join(', ')}`);
   }
 
+  const brokerAccount = normaliseBrokerAccount(r.broker_account);
+  if (brokerAccount === null) {
+    errors.push(
+      `broker_account must be at most ${BROKER_ACCOUNT_MAX_LENGTH} characters ` +
+        'of [a-z0-9_-], starting alphanumeric'
+    );
+  }
+
   const needsLimit = orderType === 'LMT' || orderType === 'STP_LMT';
   const needsStop = orderType === 'STP' || orderType === 'STP_LMT';
 
@@ -233,6 +296,7 @@ export function validateOrder(
       tif: tif as TimeInForce,
       account_mode: accountMode as AccountMode,
       broker: broker as Broker,
+      broker_account: brokerAccount as string,
       limit_price: limitPrice,
       stop_price: stopPrice,
       sec_type: typeof r.sec_type === 'string' && r.sec_type ? r.sec_type : 'STK',

@@ -73,7 +73,7 @@ def test_defaults_to_ib_and_keeps_the_existing_sync_path(monkeypatch):
 
 def test_non_ib_broker_dispatches_to_that_venues_adapter(monkeypatch):
     adapter = FakeBrokerAdapter(MT5_ROWS)
-    monkeypatch.setattr("adapters.get_broker_adapter", lambda broker: adapter)
+    monkeypatch.setattr("adapters.get_broker_adapter", lambda broker, account=None: adapter)
 
     def _fail() -> None:  # pragma: no cover - must never run
         raise AssertionError("the IB path must not be used for broker=mt5")
@@ -97,7 +97,7 @@ def test_unknown_broker_is_a_400(monkeypatch):
 
 
 def test_recognised_but_unconfigured_broker_is_a_501(monkeypatch):
-    def _unavailable(broker: str):
+    def _unavailable(broker: str, account: str | None = None):
         raise HTTPException(status_code=501, detail=f"{broker} is not configured")
 
     monkeypatch.setattr("adapters.get_broker_adapter", _unavailable)

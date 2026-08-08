@@ -43,6 +43,7 @@ async def get_historical_data(
     exchange: str = "SMART",
     currency: str = "USD",
     source: str = "ib",
+    account: str | None = None,
 ):
     """Get historical market data with support for date ranges and technical indicators"""
     try:
@@ -52,7 +53,7 @@ async def get_historical_data(
         # but unconfigured venue → 501.
         from adapters import get_market_data_adapter, resolve_provider
 
-        adapter = get_market_data_adapter(source)
+        adapter = get_market_data_adapter(source, account)
 
         # Parse indicators parameter (comma-separated list)
         indicator_list = []
@@ -410,14 +411,19 @@ def get_realtime_data_sync(symbol: str, account_mode: str = "paper"):
 
 
 @router.get("/market-data/tick")
-async def get_tick_data(symbol: str, account_mode: str = "paper", source: str = "ib"):
+async def get_tick_data(
+    symbol: str,
+    account_mode: str = "paper",
+    source: str = "ib",
+    account: str | None = None,
+):
     """Get high-frequency tick data"""
     try:
         logger.info(f"Tick data endpoint called for symbol: {symbol}")
 
         from adapters import get_market_data_adapter
 
-        adapter = get_market_data_adapter(source)
+        adapter = get_market_data_adapter(source, account)
         # Run the synchronous operation in a separate thread
         tick_data = await run_tws_operation(lambda: adapter.tick(symbol, account_mode))
 
@@ -505,14 +511,19 @@ def get_tick_data_sync(symbol: str, account_mode: str = "paper"):
 
 
 @router.get("/market-data/realtime", response_model=RealTimeQuote)
-async def get_realtime_data(symbol: str, account_mode: str = "paper", source: str = "ib"):
+async def get_realtime_data(
+    symbol: str,
+    account_mode: str = "paper",
+    source: str = "ib",
+    account: str | None = None,
+):
     """Get real-time market data"""
     try:
         logger.info(f"Real-time data endpoint called for symbol: {symbol}")
 
         from adapters import get_market_data_adapter
 
-        adapter = get_market_data_adapter(source)
+        adapter = get_market_data_adapter(source, account)
         # Run the synchronous operation in a separate thread
         quote = await run_tws_operation(lambda: adapter.realtime_quote(symbol, account_mode))
 

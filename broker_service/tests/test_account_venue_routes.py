@@ -92,7 +92,7 @@ def test_defaults_to_ib(monkeypatch):
 
 def test_non_ib_broker_dispatches_to_that_venues_adapter(monkeypatch):
     adapter = FakeBrokerAdapter(ALPACA_ROWS)
-    monkeypatch.setattr("adapters.get_broker_adapter", lambda broker: adapter)
+    monkeypatch.setattr("adapters.get_broker_adapter", lambda broker, account=None: adapter)
 
     def _fail(days: int) -> None:  # pragma: no cover - must never run
         raise AssertionError("the IB path must not be used for broker=alpaca")
@@ -137,7 +137,7 @@ def test_unknown_broker_is_a_400(monkeypatch):
 
 
 def test_recognised_but_unconfigured_broker_is_a_501(monkeypatch):
-    def _unavailable(broker: str):
+    def _unavailable(broker: str, account: str | None = None):
         raise HTTPException(status_code=501, detail=f"{broker} is not configured")
 
     monkeypatch.setattr("adapters.get_broker_adapter", _unavailable)
@@ -194,7 +194,7 @@ def test_summary_dispatches_to_the_named_venue(monkeypatch):
     """A run on another venue reading IB's account is simply the wrong account
     — and this endpoint is where pct_equity sizing gets its equity."""
     adapter = FakeAccountAdapter()
-    monkeypatch.setattr("adapters.get_broker_adapter", lambda broker: adapter)
+    monkeypatch.setattr("adapters.get_broker_adapter", lambda broker, account=None: adapter)
 
     def _fail():  # pragma: no cover - must never run
         raise AssertionError("the IB path must not be used for broker=alpaca")
@@ -227,7 +227,7 @@ def test_summary_defaults_to_ib(monkeypatch):
 
 def test_orders_dispatch_to_the_named_venue(monkeypatch):
     adapter = FakeAccountAdapter()
-    monkeypatch.setattr("adapters.get_broker_adapter", lambda broker: adapter)
+    monkeypatch.setattr("adapters.get_broker_adapter", lambda broker, account=None: adapter)
 
     def _fail():  # pragma: no cover - must never run
         raise AssertionError("the IB path must not be used for broker=alpaca")
@@ -246,7 +246,7 @@ def test_orders_dispatch_to_the_named_venue(monkeypatch):
 
 def test_all_dispatches_every_section_to_the_same_venue(monkeypatch):
     adapter = FakeAccountAdapter()
-    monkeypatch.setattr("adapters.get_broker_adapter", lambda broker: adapter)
+    monkeypatch.setattr("adapters.get_broker_adapter", lambda broker, account=None: adapter)
 
     for name in ("get_account_summary_sync", "get_positions_sync", "get_orders_sync"):
 
@@ -286,7 +286,7 @@ def test_instrument_spec_dispatches_to_the_named_venue(monkeypatch):
             }
 
     adapter = SpecAdapter()
-    monkeypatch.setattr("adapters.get_broker_adapter", lambda broker: adapter)
+    monkeypatch.setattr("adapters.get_broker_adapter", lambda broker, account=None: adapter)
 
     res = _client().get("/instrument/spec", params={"symbol": "eurusd", "broker": "mt5"})
 
@@ -306,3 +306,54 @@ def test_instrument_spec_unknown_broker_is_a_400():
         _client().get("/instrument/spec", params={"symbol": "MSFT", "broker": "nope"}).status_code
         == 400
     )
+
+
+# --------------------------------------------------------------------------- #
+# Connection routing (C-1) — the account reaches the adapter, over HTTP
+# --------------------------------------------------------------------------- #
+def test_account_param_selects_the_connection(monkeypatch):
+    """Two accounts on one platform must reach two different adapters. This is
+    the whole point of C-1: before it, `broker=mt5` had exactly one slot, so
+    both accounts' traffic went to whichever sidecar was configured."""
+    import adapters
+
+    live = FakeBrokerAdapter([{**ALPACA_ROWS[0], "exec_id": "from-live"}])
+    demo = FakeBrokerAdapter([{**ALPACA_ROWS[0], "exec_id": "from-demo"}])
+    by_account = {"icmarkets-live": live, "pepperstone-demo": demo}
+    seen: list[str | None] = []
+
+    def _resolve(broker, account=None, **kwargs):
+        seen.append(account)
+        return by_account[account]
+
+    monkeypatch.setattr(adapters, "get_broker_adapter", _resolve)
+
+    client = _client()
+    a = client.get("/account/executions", params={"broker": "mt5", "account": "icmarkets-live"})
+    b = client.get("/account/executions", params={"broker": "mt5", "account": "pepperstone-demo"})
+
+    assert a.status_code == 200
+    assert b.status_code == 200
+    assert a.json()[0]["exec_id"] == "from-live"
+    assert b.json()[0]["exec_id"] == "from-demo"
+    assert seen == ["icmarkets-live", "pepperstone-demo"]
+
+
+def test_omitted_account_is_passed_as_none_for_the_registry_to_default(monkeypatch):
+    """The route must not invent a default of its own — resolving the platform
+    default is the registry's job, and two places deciding it would drift."""
+    import adapters
+
+    adapter = FakeBrokerAdapter(ALPACA_ROWS)
+    seen: list[str | None] = []
+
+    def _resolve(broker, account=None, **kwargs):
+        seen.append(account)
+        return adapter
+
+    monkeypatch.setattr(adapters, "get_broker_adapter", _resolve)
+
+    res = _client().get("/account/executions", params={"broker": "mt5"})
+
+    assert res.status_code == 200
+    assert seen == [None]

@@ -218,7 +218,9 @@ def test_run_dispatches_a_non_ib_source_through_the_adapter(monkeypatch):
             assert symbol == "EURUSD"
             return SimpleNamespace(bars=adapter_bars)
 
-    monkeypatch.setattr(adapters, "get_market_data_adapter", lambda source: FakeAdapter())
+    monkeypatch.setattr(
+        adapters, "get_market_data_adapter", lambda source, account=None: FakeAdapter()
+    )
 
     # No IB monkeypatching needed — the IB path must not be touched at all.
     app = FastAPI()

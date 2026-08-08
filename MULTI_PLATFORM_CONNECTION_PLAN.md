@@ -1,6 +1,6 @@
 # Multi-Platform, Multi-Account — Systematic Trading Across Many Broker Connections
 
-**Status:** plan / not yet implemented
+**Status:** C-0 and C-1 delivered; C-2 onward planned
 **Scope:** run the existing systematic stack against **N simultaneous broker
 connections**, spanning multiple *platforms* (MT5, IB, Alpaca, OANDA) and
 multiple *accounts per platform* — rather than the one-account-per-platform
@@ -513,8 +513,8 @@ Each phase is independently shippable and leaves the system correct.
 
 | Phase | Contents | Ships |
 |---|---|---|
-| **C-0** | Bug ① and ② fixes alone: `broker_account` column + widened unique keys/indexes, defaulted to `'default'` | Correctness fix; no behaviour change on one connection. **Deploy before any second connection exists.** |
-| **C-1** | C1 remainder + C2 registry + manifest config | Two MT5 connections addressable manually via `/api/orders`, `/account/*`, charts |
+| **C-0** ✅ | Bug ① and ② fixes alone: `broker_account` column + widened unique keys/indexes, defaulted to `'default'` | **Delivered.** Correctness fix; no behaviour change on one connection. **Deploy before any second connection exists.** |
+| **C-1** ✅ | C1 remainder + C2 registry + manifest config | **Delivered.** Two MT5 connections addressable manually via `/api/orders`, `/account/*`, charts |
 | **C-2** | C3 symbol mapping + per-connection specs | A definition resolves correctly on each connection |
 | **C-3** | C4 run groups + staged deploy (C4a) + C6 scheduling/isolation | One definition trading on N connections, fault-isolated, canary-staged |
 | **C-4** | C5 per-connection **and** portfolio caps + C7 reconciliation | Fleet-safe; per-account and fleet-wide limits enforced |
@@ -523,6 +523,55 @@ Each phase is independently shippable and leaves the system correct.
 Phase C-0 is worth shipping on its own even if the rest is deferred: it is
 small, it is a latent-data-loss fix, and it is the migration that is painful to
 apply late.
+
+> **C-0 delivered.** `broker_account VARCHAR(64) NOT NULL DEFAULT 'default'` on
+> `order_audit`, `order_executions`, `strategy_runs`, `strategy_definitions`
+> and `contracts`; `order_executions` re-keyed to
+> `UNIQUE (broker, broker_account, exec_id)`; the net-exposure index and query
+> re-keyed to include the account. `Connection` (`{broker, brokerAccount}`) is
+> the in-code type, with `connectionOf()` mapping persisted rows onto it and
+> `connectionLabel()` producing `platform:account` for logs. The poller
+> iterates connections and stamps each fill with the connection it polled,
+> never a value from the payload. Runner caches (equity, average cost,
+> instrument spec) and the execution engine's sizing deps re-keyed from
+> platform to connection.
+>
+> Two things worth recording from the implementation:
+>
+> - **`data_collection_config` needed no column.** It keys on `contract_id`, so
+>   it inherits connection scoping through `contracts` — the plan listed it, but
+>   adding the column would have been redundant denormalisation.
+> - **Renamed indexes and constraints rather than redefining in place.**
+>   `CREATE INDEX IF NOT EXISTS` against an existing name silently keeps the old
+>   definition, which would have left the bug in place on exactly the
+>   deployments that need the fix. The old names are dropped and the new
+>   definitions created under new names. The `ALTER TABLE … ADD COLUMN`
+>   statements must also precede the indexes that reference them, since
+>   `CREATE TABLE IF NOT EXISTS` is a no-op on an existing table.
+
+> **C-1 delivered.** `broker_service/connections.py` parses one
+> `BROKER_CONNECTIONS` manifest spanning all platforms, with secrets referenced
+> by env-var name and never held in the manifest. `adapters.py` is re-keyed
+> from platform to `(platform, account)`; `resolve_connection()` returns the
+> connection and `get_broker_adapter(broker, account, account_mode=…)` enforces
+> the declared mode. `account=` threads through every account, market-data,
+> backtesting, contract and order route, and through the backend's proxy routes
+> and venue helpers. `/health` and `/providers` report per connection, with
+> `same_funds_groups()` surfacing declared overlaps. Legacy per-platform env
+> vars synthesise `<platform>:default`, so an untouched deployment is unchanged.
+>
+> Three decisions worth recording:
+>
+> - **Mode mismatch is 409, not 400.** The request is well-formed and the
+>   connection exists — they are simply incompatible. Rerouting it to a
+>   "compatible" connection would be the dangerous outcome, so it refuses.
+> - **An unknown account is 400, never a fall-through to the platform default.**
+>   Silently defaulting is precisely how an order reaches the wrong account, so
+>   the error names the accounts that *are* configured instead.
+> - **Manifest plus a legacy variable is a startup error.** Supporting both
+>   needs a precedence rule, and the cost of guessing wrong is an order on the
+>   wrong account. `provider_health()` still reports a broken manifest rather
+>   than 500ing, so the operator can see why nothing registered.
 
 ---
 

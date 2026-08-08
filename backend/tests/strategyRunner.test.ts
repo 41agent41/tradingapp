@@ -22,6 +22,7 @@ function activeRun(overrides: Partial<ActiveRun> = {}): ActiveRun {
     id: 1,
     definition_id: 2,
     broker: 'ib',
+    broker_account: 'default',
     account_mode: 'paper',
     symbol: 'MSFT',
     sec_type: 'STK',

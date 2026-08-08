@@ -37,6 +37,12 @@ import { ExecutionRepository } from './executionRepository.js';
 import { submitCreateOrder } from './orderService.js';
 import { isSystematicExecutionEnabled, systematicMaxOrdersPerDay } from './orderTypes.js';
 import type { InstrumentSpec } from './orderSizing.js';
+import {
+  DEFAULT_BROKER_ACCOUNT,
+  connectionLabel,
+  connectionOf,
+  type Connection,
+} from './orderTypes.js';
 import { ExecutionEngine, type ExecutionContext, type ExecutionResult } from './executionEngine.js';
 
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
@@ -158,41 +164,46 @@ function defaultDeps(
     // Backs the `max_daily_loss` cap. Reads this run's own fills, so a second
     // run on the same symbol or a manual trade never consumes its budget.
     realisedPnlToday: async (runId) => (await executionRepo.realisedPnlTodayForRun(runId)).realised,
-    // Backs `pct_equity` sizing, from the run's own venue.
-    accountEquity: (broker) => venueEquity(broker),
-    // Backs broker-native sizing: what one quantity unit means at this venue
-    // and what sizes it accepts.
-    instrumentSpec: (broker, symbol) => venueInstrumentSpec(broker, symbol),
+    // Backs `pct_equity` sizing, from the run's own connection.
+    accountEquity: (connection) => venueEquity(connection),
+    // Backs broker-native sizing: what one quantity unit means at this
+    // connection and what sizes it accepts.
+    instrumentSpec: (connection, symbol) => venueInstrumentSpec(connection, symbol),
   });
-  // Venue avg-cost cache, keyed per broker. `/account/positions` costs a
-  // round-trip to the venue, so one fetch serves every run on that broker
-  // inside a short window instead of one per run per tick. Fail-soft — an
-  // unreachable or unconfigured venue just means avg_price stays 0, which is
-  // exactly how this behaved before the endpoint became broker-aware.
+  // Venue caches, keyed per **connection** (platform + account), not per
+  // platform. Two accounts on one platform have different equity, different
+  // positions, and — because the same instrument carries a different suffix
+  // and lot step at every broker — different instrument specs. Keying on the
+  // platform alone would serve account A's numbers to account B (C-0).
+  //
+  // `/account/positions` costs a round-trip, so one fetch serves every run on
+  // that connection inside a short window instead of one per run per tick.
+  // Fail-soft — an unreachable or unconfigured connection just means avg_price
+  // stays 0, exactly as this behaved before the endpoint became venue-aware.
   const avgCostCache = new Map<string, { at: number; bySymbol: Map<string, number> }>();
   const AVG_COST_TTL_MS = 30_000;
-  // Venue equity cache, same shape and rationale as the avg-cost one: one
-  // `/account/summary` round-trip serves every `pct_equity`-sized run on that
-  // broker inside a short window. Fail-soft to null — the sizer then refuses
-  // with a reason rather than sizing off an invented equity figure.
+  // Equity cache, same shape and rationale: one `/account/summary` round-trip
+  // serves every equity-sized run on that connection inside a short window.
+  // Fail-soft to null — the sizer then refuses with a reason rather than
+  // sizing off an invented equity figure.
   const equityCache = new Map<string, { at: number; equity: number | null }>();
   const EQUITY_TTL_MS = 60_000;
   // Instrument specs barely change, so they are cached for far longer than
-  // equity or average cost — a venue's lot step is a property of the
-  // instrument, not of the account.
+  // equity or average cost — a lot step is a property of the instrument at
+  // that broker, not of the account balance.
   const specCache = new Map<string, { at: number; spec: InstrumentSpec | null }>();
   const SPEC_TTL_MS = 15 * 60_000;
   const venueInstrumentSpec = async (
-    broker: string,
+    connection: Connection,
     symbol: string
   ): Promise<InstrumentSpec | null> => {
-    const key = `${broker}:${symbol.toUpperCase()}`;
+    const key = `${connectionLabel(connection.broker, connection.brokerAccount)}:${symbol.toUpperCase()}`;
     const cached = specCache.get(key);
     if (cached && Date.now() - cached.at <= SPEC_TTL_MS) return cached.spec;
     let spec: InstrumentSpec | null = null;
     try {
       const response = await axios.get(`${BROKER_SERVICE_URL}/instrument/spec`, {
-        params: { broker, symbol },
+        params: { broker: connection.broker, account: connection.brokerAccount, symbol },
         timeout: 30000,
         headers: { Connection: 'close' },
       });
@@ -210,13 +221,14 @@ function defaultDeps(
     specCache.set(key, { at: Date.now(), spec });
     return spec;
   };
-  const venueEquity = async (broker: string): Promise<number | null> => {
-    const cached = equityCache.get(broker);
+  const venueEquity = async (connection: Connection): Promise<number | null> => {
+    const key = connectionLabel(connection.broker, connection.brokerAccount);
+    const cached = equityCache.get(key);
     if (cached && Date.now() - cached.at <= EQUITY_TTL_MS) return cached.equity;
     let equity: number | null = null;
     try {
       const response = await axios.get(`${BROKER_SERVICE_URL}/account/summary`, {
-        params: { broker },
+        params: { broker: connection.broker, account: connection.brokerAccount },
         timeout: 30000,
         headers: { Connection: 'close' },
       });
@@ -225,16 +237,17 @@ function defaultDeps(
     } catch {
       equity = null;
     }
-    equityCache.set(broker, { at: Date.now(), equity });
+    equityCache.set(key, { at: Date.now(), equity });
     return equity;
   };
-  const venueAvgCost = async (broker: string, symbol: string): Promise<number> => {
+  const venueAvgCost = async (connection: Connection, symbol: string): Promise<number> => {
+    const key = connectionLabel(connection.broker, connection.brokerAccount);
     try {
-      const cached = avgCostCache.get(broker);
+      const cached = avgCostCache.get(key);
       let bySymbol = cached && Date.now() - cached.at <= AVG_COST_TTL_MS ? cached.bySymbol : null;
       if (!bySymbol) {
         const response = await axios.get(`${BROKER_SERVICE_URL}/account/positions`, {
-          params: { broker },
+          params: { broker: connection.broker, account: connection.brokerAccount },
           timeout: 30000,
           headers: { Connection: 'close' },
         });
@@ -245,7 +258,7 @@ function defaultDeps(
             bySymbol.set(String(pos.symbol).toUpperCase(), cost);
           }
         }
-        avgCostCache.set(broker, { at: Date.now(), bySymbol });
+        avgCostCache.set(key, { at: Date.now(), bySymbol });
       }
       return bySymbol.get(symbol.toUpperCase()) ?? 0;
     } catch {
@@ -264,6 +277,7 @@ function defaultDeps(
           exchange: run.exchange || 'SMART',
           currency: run.currency || 'USD',
           source: run.broker || 'ib',
+          account: run.broker_account || DEFAULT_BROKER_ACCOUNT,
         },
         timeout: 60000,
         headers: { Connection: 'close' },
@@ -295,13 +309,14 @@ function defaultDeps(
       try {
         const size = await executionRepo.netPositionWithOpenOrders({
           broker: run.broker || 'ib',
+          brokerAccount: run.broker_account || DEFAULT_BROKER_ACCOUNT,
           symbol: run.symbol,
           accountMode: run.account_mode,
           runId: run.id,
           lookbackHours: POSITION_LOOKBACK_HOURS,
         });
         const netSize = Number.isFinite(size) ? size : 0;
-        const avgPrice = netSize !== 0 ? await venueAvgCost(run.broker || 'ib', run.symbol) : 0;
+        const avgPrice = netSize !== 0 ? await venueAvgCost(connectionOf(run), run.symbol) : 0;
         return { size: netSize, avg_price: avgPrice };
       } catch {
         return { size: 0, avg_price: 0 };

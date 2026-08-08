@@ -11,6 +11,7 @@
  */
 
 import type { Querier } from './backtestRunRepository.js';
+import { DEFAULT_BROKER_ACCOUNT } from './orderTypes.js';
 import type { OrderOperation, ValidatedOrder } from './orderTypes.js';
 
 export interface AuditCreateInput extends ValidatedOrder {
@@ -31,6 +32,7 @@ export interface OrderAuditRow {
   submitted_at: string;
   account_mode: string;
   broker: string;
+  broker_account: string;
   action: string;
   symbol: string;
   sec_type: string;
@@ -59,11 +61,11 @@ export class OrderAuditRepository {
   async create(input: AuditCreateInput): Promise<OrderAuditRow> {
     const sql = `
       INSERT INTO order_audit (
-        account_mode, broker, action, symbol, sec_type, exchange, currency,
+        account_mode, broker, broker_account, action, symbol, sec_type, exchange, currency,
         quantity, order_type, tif, limit_price, stop_price,
         operation, request_id, status
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7,
+        $1, $2, $15, $3, $4, $5, $6, $7,
         $8, $9, $10, $11, $12,
         $13, $14, 'submitted'
       )
@@ -84,6 +86,7 @@ export class OrderAuditRepository {
       input.stop_price,
       input.operation,
       input.request_id ?? null,
+      input.broker_account ?? DEFAULT_BROKER_ACCOUNT,
     ]);
     return result.rows[0] as OrderAuditRow;
   }
@@ -130,15 +133,19 @@ export class OrderAuditRepository {
    *
    * BUY contributes +quantity, SELL −quantity. Returns 0 when nothing matches.
    *
-   * Keyed per (broker, symbol, account_mode) so exposure never nets across
-   * venues (B1) — `MSFT@ib` and a same-named instrument on another broker are
-   * independent positions.
+   * Keyed per **connection** — (broker, broker_account, symbol, account_mode)
+   * — so exposure nets neither across platforms (B1) nor across accounts on
+   * one platform (C-0). Keying on `broker` alone made three accounts each
+   * 1 lot long the same pair read as 3 lots against a per-account limit, and
+   * because the guard fails closed the symptom was entries refused on accounts
+   * nowhere near their cap.
    */
   async netExposure(
     symbol: string,
     accountMode: string,
     lookbackHours: number,
-    broker: string = 'ib'
+    broker: string = 'ib',
+    brokerAccount: string = DEFAULT_BROKER_ACCOUNT
   ): Promise<number> {
     const sql = `
       WITH latest AS (
@@ -147,6 +154,7 @@ export class OrderAuditRepository {
         WHERE symbol = $1
           AND account_mode = $2
           AND broker = $4
+          AND broker_account = $5
           AND ib_order_id IS NOT NULL
           AND submitted_at >= NOW() - ($3 * INTERVAL '1 hour')
         ORDER BY ib_order_id, submitted_at DESC
@@ -164,6 +172,7 @@ export class OrderAuditRepository {
       accountMode,
       lookbackHours,
       broker,
+      brokerAccount,
     ]);
     return Number(result.rows[0]?.net ?? 0);
   }
@@ -173,6 +182,7 @@ export class OrderAuditRepository {
       symbol?: string;
       account_mode?: string;
       broker?: string;
+      broker_account?: string;
       status?: string;
       limit?: number;
       offset?: number;
@@ -191,6 +201,10 @@ export class OrderAuditRepository {
     if (filter.broker) {
       params.push(filter.broker);
       where.push(`broker = $${params.length}`);
+    }
+    if (filter.broker_account) {
+      params.push(filter.broker_account);
+      where.push(`broker_account = $${params.length}`);
     }
     if (filter.status) {
       params.push(filter.status);
