@@ -1,6 +1,6 @@
 # Trade Lifecycle — Direction, Broker-Side Stops, Sizing, and the Kill Switch
 
-**Status:** E-0 and E-1 delivered; E-2 onward planned
+**Status:** E-0, E-1 and E-2 delivered; E-3 onward planned
 **Scope:** what happens from the moment a strategy decides to trade until the
 position is closed — direction, order placement, protective stops, trade
 management, and the downside backstop.
@@ -323,7 +323,7 @@ that achieves it wins.
 |---|---|---|
 | **E-0** ✅ | Broker position as truth (§7) + reconciliation check | **Delivered.** Correct position tracking, prerequisite for everything else |
 | **E-1** ✅ | Signed positions and the `long`/`short`/`flat` vocabulary (§3) | **Delivered.** Shorts, without stops yet |
-| **E-2** | Broker-side SL at entry (§4.1) + sidecar contract change + fail-closed protection | Every position protected at the venue |
+| **E-2** ✅ | Broker-side SL at entry (§4.1) + sidecar contract change + fail-closed protection | **Delivered.** Every position protected at the venue |
 | **E-3** | Bar-close stop management and the ratchet (§4.2) | Trailing stops as specified |
 | **E-4** | `risk_pct` sizing (§5): tick-value fields on `instrument_spec` + sidecar `/symbol`, stop-before-sizing ordering, margin check | Constant risk per trade regardless of stop width |
 | **E-5** | Telegram notifier (§8) + kill switch in notify-only mode (§6) | Observability of the downside, zero blast radius |
@@ -390,6 +390,39 @@ Windows-side service rather than two.
 > - **Both sides firing on one bar refuses.** Under `direction: both`, a bar
 >   where the long and short entries both fire is a rule-set bug, not a choice
 >   to make on its behalf.
+
+> **E-2 delivered.** `broker_service/stops.py` resolves a rule-declared stop to
+> a price: `pct`, `atr`, `bar_extreme` (the structure trail — "stop at the
+> 2-bar low") and `fixed`, each expressed as a distance so the **sign comes
+> from the direction** rather than from whoever wrote the rule. It sits beside
+> the rule engine, not in the execution layer, so the backtester and the live
+> runner compute a stop the same way.
+>
+> `evaluate()` returns `stop_price` with the signal, and the engine attaches it
+> to the entry. `stop_loss` / `take_profit` thread through `ValidatedOrder` and
+> the order path, and the MT5 adapter sends them as `sl`/`tp`.
+>
+> **Three distinct cases, deliberately not collapsed:** no stop rule → place
+> without one (unchanged); stop rule resolved → attach; stop rule *unresolved* →
+> **refuse the entry**. Treating the third as the first is the failure this
+> exists to prevent — it opens a position the operator believes is protected.
+> A stop that resolves on the wrong side of the market is refused for the same
+> reason, since it would trigger the instant it was placed.
+>
+> The venue's minimum stop distance (`stops_level` × `point`) is checked before
+> sending, so a stop inside the band is a refused entry with a reason rather
+> than an order we already knew would bounce. A venue reporting neither field
+> yields no check — refusing against a limit we do not actually know would be
+> worse than letting the venue reject the rare breach.
+>
+> **⚠️ Sidecar work required.** `POST /orders` must accept `sl`/`tp` and attach
+> them **atomically with the entry** — placing the order and setting the stop
+> in a second call leaves a window where the position is open and unprotected.
+> It should echo back what the venue recorded; `orders.py` flags a missing stop
+> so a silently-dropped one is not mistaken for a working one. `GET /positions`
+> should include each position's `sl`/`tp`, and `POST /positions/{symbol}/stop`
+> (MT5's `TRADE_ACTION_SLTP`) backs the E-3 trail. The contract is documented in
+> `mt5_adapter.py`.
 
 ---
 

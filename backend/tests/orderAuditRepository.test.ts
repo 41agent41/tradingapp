@@ -35,6 +35,8 @@ function order(overrides: Partial<ValidatedOrder> = {}): ValidatedOrder {
     broker: 'ib',
     broker_account: 'default',
     limit_price: null,
+    stop_loss: null,
+    take_profit: null,
     stop_price: null,
     sec_type: 'STK',
     exchange: 'SMART',

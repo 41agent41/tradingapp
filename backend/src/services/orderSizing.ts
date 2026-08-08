@@ -49,6 +49,17 @@ export interface InstrumentSpec {
   sizeStep: number;
   maxSize?: number | null;
   contractSize: number;
+  /** Minimum distance a stop must sit from the market, in **points** (MT5's
+   *  `trade_stops_level`). Needs `point` to become a price distance (E-2). */
+  stopsLevel?: number | null;
+  /** Price value of one point. */
+  point?: number | null;
+  /** Value of one tick in the **account** currency, and the tick size it
+   *  applies to. Risk-based sizing (E-4) divides by these rather than by
+   *  `contractSize`, because a price move is denominated in the quote currency
+   *  while the risk budget is in the account's. */
+  tickValue?: number | null;
+  tickSize?: number | null;
 }
 
 /** Whole shares — what every equity venue in the stack uses, and the behaviour

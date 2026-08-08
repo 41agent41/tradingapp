@@ -99,6 +99,10 @@ export interface OrderInput {
   tif: TimeInForce;
   limit_price?: number | null;
   stop_price?: number | null;
+  /** Protective stop attached to the resulting **position** (E-2). Distinct
+   *  from `stop_price`, which is the *trigger* of a STP order. */
+  stop_loss?: number | null;
+  take_profit?: number | null;
   account_mode: AccountMode;
   broker?: Broker;
   broker_account?: string;
@@ -199,6 +203,8 @@ export interface ValidatedOrder extends Required<
   broker: Broker;
   broker_account: string;
   limit_price: number | null;
+  stop_loss: number | null;
+  take_profit: number | null;
   stop_price: number | null;
   sec_type: string;
   exchange: string;
@@ -284,6 +290,26 @@ export function validateOrder(
     errors.push(`stop_price must not be set for order_type=${orderType}`);
   }
 
+  // Protective stop / target on the resulting position. Validated like any
+  // other price so a fat-fingered stop cannot slip through, but optional —
+  // most orders have none.
+  const protective = (field: 'stop_loss' | 'take_profit'): number | null => {
+    const raw = r[field];
+    if (raw === undefined || raw === null || raw === '') return null;
+    const value = typeof raw === 'number' ? raw : Number(raw);
+    if (!Number.isFinite(value) || value <= 0) {
+      errors.push(`${field} must be a positive price when supplied`);
+      return null;
+    }
+    if (value > ORDER_MAX_PRICE) {
+      errors.push(`${field} exceeds ORDER_MAX_PRICE (${ORDER_MAX_PRICE})`);
+      return null;
+    }
+    return value;
+  };
+  const stopLoss = protective('stop_loss');
+  const takeProfit = protective('take_profit');
+
   if (errors.length) return { ok: false, errors };
 
   return {
@@ -299,6 +325,8 @@ export function validateOrder(
       broker_account: brokerAccount as string,
       limit_price: limitPrice,
       stop_price: stopPrice,
+      stop_loss: stopLoss,
+      take_profit: takeProfit,
       sec_type: typeof r.sec_type === 'string' && r.sec_type ? r.sec_type : 'STK',
       exchange: typeof r.exchange === 'string' && r.exchange ? r.exchange : 'SMART',
       currency: typeof r.currency === 'string' && r.currency ? r.currency : 'USD',

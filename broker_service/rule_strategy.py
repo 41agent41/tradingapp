@@ -58,6 +58,7 @@ import pytz
 
 from backtesting import TradingStrategy
 from indicators import calculator as indicator_calculator
+from stops import StopSpecError, resolve_stop, stop_indicator_requests, validate_stop
 
 logger = logging.getLogger(__name__)
 
@@ -518,6 +519,9 @@ class RuleStrategy(TradingStrategy):
         # what the engine drives per bar. `risk` stays live-only: its caps are
         # about order rate and daily loss across a *session*, which a backtest
         # over historical bars has no equivalent of.
+        # Protective stop (E-2). Rule-defined, not engine config: each
+        # strategy carries its own risk model.
+        self.stop = validate_stop(rule_set.get("stop"))
         self.sizing = _validate_sizing(rule_set.get("sizing"))
         self.risk = dict(rule_set.get("risk") or {})
         self.scale_out = _validate_scale_out(rule_set.get("scale_out"))
@@ -547,6 +551,10 @@ class RuleStrategy(TradingStrategy):
             primary_requests |= operand.primary_requests()
             for tf, col in operand.higher_tf_columns():
                 higher_tf.setdefault(tf, set()).add(col)
+
+        # An ATR stop needs its column computed like any operand's, or it
+        # resolves to NaN and the position is placed unprotected.
+        primary_requests |= stop_indicator_requests(self.stop)
 
         # Union in any explicitly-declared indicators (validated as requests).
         declared = rule_set.get("indicators") or []
@@ -829,10 +837,31 @@ class RuleStrategy(TradingStrategy):
         elif short_entry:
             entry_reason = f"{self.name}: short entry rules met"
 
+        # The stop price for an entry, resolved from the same bars the signal
+        # was derived from (E-2). Failure is reported rather than swallowed:
+        # the caller must be able to tell "no stop declared" from "stop
+        # declared but unresolvable", because placing the order anyway would
+        # leave the position unprotected.
+        stop_price: float | None = None
+        stop_error: str | None = None
+        if signal in ("long", "short") and self.stop is not None:
+            try:
+                stop_price = resolve_stop(
+                    self.stop,
+                    signals,
+                    direction=signal,
+                    reference_price=float(row.get("close", float("nan"))),
+                )
+            except StopSpecError as exc:
+                stop_error = str(exc)
+
         bar_time = signals.index[last]
         return {
             "signal": signal,
             "direction": self.direction,
+            "stop_price": stop_price,
+            "stop_error": stop_error,
+            "has_stop_rule": self.stop is not None,
             "conflict": conflict,
             "entry": entry,
             "exit": exit_,

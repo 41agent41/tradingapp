@@ -109,13 +109,20 @@ interface VenuePosition {
 }
 
 export interface EvaluateResult {
-  signal: string; // 'buy' | 'sell' | 'none'
+  /** 'long' | 'short' | 'flat' | 'none' (pre-E1: 'buy' | 'sell'). */
+  signal: string;
   entry: boolean;
   exit: boolean;
   entry_reason?: string;
   exit_reason?: string;
   in_session: boolean;
   bar_time: string;
+  /** Protective stop the rule engine resolved for this entry (E-2). */
+  stop_price?: number | null;
+  /** Set when a stop was declared but could not be resolved — the engine
+   *  refuses the entry rather than opening unprotected. */
+  stop_error?: string | null;
+  has_stop_rule?: boolean;
 }
 
 export interface StrategySignalRecord {
@@ -351,6 +358,10 @@ function defaultDeps(
         sizeStep: Number(data.size_step) || 1,
         maxSize: data.max_size == null ? null : Number(data.max_size),
         contractSize: Number(data.contract_size) || 1,
+        stopsLevel: data.stops_level == null ? null : Number(data.stops_level),
+        point: data.point == null ? null : Number(data.point),
+        tickValue: data.tick_value == null ? null : Number(data.tick_value),
+        tickSize: data.tick_size == null ? null : Number(data.tick_size),
       };
     } catch {
       spec = null;
@@ -863,6 +874,12 @@ export class StrategyRunner {
               barTime: result.bar_time,
               position,
               lastBar: bars[bars.length - 1],
+              // Carried straight through: the stop is resolved by the same
+              // rule engine, from the same bars, that produced the signal —
+              // recomputing it here would be a second implementation.
+              stopPrice: result.stop_price ?? null,
+              stopError: result.stop_error ?? null,
+              hasStopRule: result.has_stop_rule ?? false,
             });
             if (execution.placed) {
               this.ordersPlaced++;

@@ -35,11 +35,20 @@ import type { PositionState, RawBar } from './strategyRunner.js';
 export interface ExecutionContext {
   run: ActiveRun;
   signalId: number | null;
-  signal: string; // 'buy' | 'sell' | 'none'
+  /** 'long' | 'short' | 'flat' | 'none' (pre-E1: 'buy' | 'sell'). */
+  signal: string;
   barTime: string;
   position: PositionState;
   /** The newest closed bar — its close drives notional/pct sizing. */
   lastBar: RawBar;
+  /** Protective stop the rule engine resolved for this entry (E-2), or null
+   *  when the strategy declares none. */
+  stopPrice?: number | null;
+  /** Set when a stop **was** declared but could not be resolved. Distinct from
+   *  a null price: this must refuse the entry, not place it unprotected. */
+  stopError?: string | null;
+  /** Whether the strategy declares a stop rule at all. */
+  hasStopRule?: boolean;
 }
 
 export type ExecutionResult =
@@ -133,6 +142,21 @@ export function normaliseSignal(signal: string): SignalIntent | null {
 
 function isEntry(intent: SignalIntent): boolean {
   return intent === 'long' || intent === 'short';
+}
+
+/**
+ * The venue's minimum distance between the market and a stop, in price terms.
+ *
+ * MT5 reports `stops_level` in **points**, so it needs the instrument's point
+ * size to become a price distance. A venue that reports neither yields 0,
+ * which disables the check rather than inventing a band — refusing entries
+ * against a limit we do not actually know would be worse than letting the
+ * venue reject the rare order that breaches it.
+ */
+function minimumStopDistance(spec: InstrumentSpec | null, _price: number): number {
+  const level = Number(spec?.stopsLevel) || 0;
+  const point = Number(spec?.point) || 0;
+  return level > 0 && point > 0 ? level * point : 0;
 }
 
 export class ExecutionEngine {
@@ -377,6 +401,9 @@ export class ExecutionEngine {
     // the opposite side of its sign — a short is covered with a BUY.
     let action: OrderAction;
     let quantity: number;
+    // Hoisted: the stop check below needs the same spec the sizer used, and
+    // re-fetching it would be a second round trip for the same answer.
+    let entrySpec: InstrumentSpec | null = null;
     if (isEntry(intent)) {
       // E12: no direct reversal. An entry signal while a position is open is
       // refused rather than flipping — the strategy exits first and re-enters
@@ -404,22 +431,21 @@ export class ExecutionEngine {
       }
       // The venue's unit semantics. Fetched for every sizing type, because
       // even a `fixed` size has to conform to the venue's step and minimum.
-      let instrument: InstrumentSpec | null = null;
       if (this.deps.instrumentSpec) {
         try {
-          instrument = await this.deps.instrumentSpec(connectionOf(run), runSymbol(run));
+          entrySpec = await this.deps.instrumentSpec(connectionOf(run), runSymbol(run));
         } catch {
           // Whole shares is the safe fallback: it is what every equity venue
           // uses, and on a lot-based venue a `fixed` size still has to clear
           // the minimum, so a wrong guess errs toward refusing.
-          instrument = null;
+          entrySpec = null;
         }
       }
       const sized = resolveOrderQuantity(run.sizing ?? {}, {
         price: ctx.lastBar.close,
         broker: run.broker,
         equity,
-        spec: instrument,
+        spec: entrySpec,
       });
       if (!sized.ok) return { placed: false, reason: `sizing: ${sized.reason}` };
       quantity = sized.quantity;
@@ -449,6 +475,45 @@ export class ExecutionEngine {
       }
     }
 
+    // ---- Protective stop (E-2) ------------------------------------------- //
+    //
+    // An unprotected position is never an acceptable resting state, so a
+    // strategy that declares a stop must get one or not trade at all. The
+    // three cases are deliberately distinct:
+    //
+    //   - no stop rule           → place without one (unchanged behaviour)
+    //   - stop rule, resolved    → attach it to the entry
+    //   - stop rule, unresolved  → refuse the entry
+    //
+    // Collapsing the third into the first is the failure this guards against:
+    // it places a position the operator believes is protected.
+    let stopLoss: number | null = null;
+    if (isEntry(intent) && ctx.hasStopRule) {
+      if (ctx.stopError) {
+        return { placed: false, reason: `stop rule failed to resolve: ${ctx.stopError}` };
+      }
+      if (ctx.stopPrice == null || !Number.isFinite(ctx.stopPrice) || ctx.stopPrice <= 0) {
+        return {
+          placed: false,
+          reason: 'strategy declares a stop but none was resolved — refusing to open unprotected',
+        };
+      }
+      stopLoss = ctx.stopPrice;
+
+      // Brokers reject a stop sitting inside their minimum distance from the
+      // market. Catching it here means a refused entry with a clear reason
+      // rather than an order we already knew the venue would bounce.
+      const minDistance = minimumStopDistance(entrySpec, ctx.lastBar.close);
+      if (minDistance > 0 && Math.abs(ctx.lastBar.close - stopLoss) < minDistance) {
+        return {
+          placed: false,
+          reason:
+            `stop ${stopLoss} is within the venue's minimum distance (${minDistance}) of ` +
+            `${ctx.lastBar.close}`,
+        };
+      }
+    }
+
     // Build + validate the order (inherits the ORDER_MAX_* fat-finger caps).
     const v = validateOrder({
       // The connection's native symbol (C-2) — the order goes to a venue that
@@ -461,6 +526,7 @@ export class ExecutionEngine {
       account_mode: run.account_mode,
       broker: run.broker,
       broker_account: run.broker_account,
+      stop_loss: stopLoss,
     });
     if (!v.ok) {
       return { placed: false, reason: `order validation failed: ${v.errors.join('; ')}` };

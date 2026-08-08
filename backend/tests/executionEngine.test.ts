@@ -634,3 +634,116 @@ describe('normaliseSignal', () => {
     expect(normaliseSignal('')).toBeNull();
   });
 });
+
+// --------------------------------------------------------------------------- //
+// Protective stops at entry (E-2)
+// --------------------------------------------------------------------------- //
+describe('ExecutionEngine — protective stops', () => {
+  it('attaches a resolved stop to the entry order', async () => {
+    const submitOrder = jest.fn().mockResolvedValue(okOutcome);
+    const deps = makeDeps({ submitOrder });
+
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'long', hasStopRule: true, stopPrice: 95 })
+    );
+
+    expect(result).toEqual(expect.objectContaining({ placed: true }));
+    expect(submitOrder.mock.calls[0][0]).toEqual(expect.objectContaining({ stop_loss: 95 }));
+  });
+
+  it('refuses the entry when a declared stop could not be resolved', async () => {
+    // An unprotected position is never an acceptable resting state, and
+    // placing one the operator believes is protected is the worst version.
+    const submitOrder = jest.fn();
+    const deps = makeDeps({ submitOrder });
+
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'long', hasStopRule: true, stopError: 'no usable ATR' })
+    );
+
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('stop rule failed to resolve'),
+    });
+    expect(submitOrder).not.toHaveBeenCalled();
+  });
+
+  it('refuses the entry when a stop rule yields no price at all', async () => {
+    const deps = makeDeps({ submitOrder: jest.fn() });
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'long', hasStopRule: true, stopPrice: null })
+    );
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('refusing to open unprotected'),
+    });
+  });
+
+  it('places without a stop when the strategy declares none', async () => {
+    // Unchanged behaviour for the strategies that never had one.
+    const submitOrder = jest.fn().mockResolvedValue(okOutcome);
+    const deps = makeDeps({ submitOrder });
+
+    const result = await new ExecutionEngine(deps).execute(ctx({ signal: 'long' }));
+
+    expect(result).toEqual(expect.objectContaining({ placed: true }));
+    expect(submitOrder.mock.calls[0][0]).toEqual(expect.objectContaining({ stop_loss: null }));
+  });
+
+  it("refuses a stop inside the venue's minimum distance", async () => {
+    // The venue would bounce it; a refused entry with a clear reason beats an
+    // order we already knew would fail.
+    const deps = makeDeps({
+      instrumentSpec: jest.fn().mockResolvedValue({
+        unit: 'lots',
+        minSize: 0.01,
+        sizeStep: 0.01,
+        contractSize: 100000,
+        stopsLevel: 50,
+        point: 0.0001,
+      }),
+      submitOrder: jest.fn(),
+    });
+
+    const result = await new ExecutionEngine(deps).execute(
+      // Close is 100; a stop at 99.999 is 0.001 away, well inside the
+      // 50-point (0.005) band.
+      ctx({ signal: 'long', hasStopRule: true, stopPrice: 99.999 })
+    );
+
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('minimum distance'),
+    });
+  });
+
+  it('does not apply a minimum-distance check the venue never reported', async () => {
+    // Refusing entries against a limit we do not actually know would be worse
+    // than letting the venue reject the rare order that breaches it.
+    const submitOrder = jest.fn().mockResolvedValue(okOutcome);
+    const deps = makeDeps({
+      instrumentSpec: jest.fn().mockResolvedValue({
+        unit: 'lots',
+        minSize: 0.01,
+        sizeStep: 0.01,
+        contractSize: 100000,
+      }),
+      submitOrder,
+    });
+
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'long', hasStopRule: true, stopPrice: 99.999 })
+    );
+
+    expect(result).toEqual(expect.objectContaining({ placed: true }));
+  });
+
+  it('does not require a stop on an exit', async () => {
+    // Closing a position needs no protection of its own.
+    const deps = makeDeps();
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'flat', hasStopRule: true, position: { size: 5, avg_price: 10 } })
+    );
+    expect(result).toEqual(expect.objectContaining({ placed: true, action: 'SELL' }));
+  });
+});

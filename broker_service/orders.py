@@ -78,6 +78,11 @@ class PlaceOrderRequest(BaseModel):
     # Account within that platform (C-1). Omitted resolves to the platform's
     # default connection, so pre-C-1 callers are unchanged.
     account: Optional[str] = None
+    # Protective stop / target attached to the position at entry (E-2).
+    # Absolute prices. Distinct from `stop_price`, which is the *trigger* of a
+    # STP order rather than protection on a resulting position.
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
     # Optional — the backend can supply its audit-row id so error logs
     # can be correlated to the persisted attempt.
     audit_id: Optional[int] = None
@@ -271,7 +276,26 @@ async def place_order(req: PlaceOrderRequest) -> Dict[str, Any]:
     # connection declared paper (or the reverse) is refused, not rerouted.
     adapter = get_broker_adapter(req.broker, req.account, account_mode=req.account_mode)
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: adapter.place_order(req))
+    result = await loop.run_in_executor(None, lambda: adapter.place_order(req))
+
+    # Fail closed on protection (E-2). If the caller asked for a stop and the
+    # venue did not record one, the position is open and unprotected — the one
+    # resting state this design refuses to accept. Report it as a distinct
+    # outcome so the backend can close the position rather than assume the
+    # order simply succeeded; a silently-dropped stop is indistinguishable from
+    # a working one until it is needed.
+    if req.stop_loss is not None and isinstance(result, dict):
+        recorded = result.get("sl")
+        if recorded is None:
+            result["stop_loss_missing"] = True
+            logger.error(
+                "order_placed_without_requested_stop",
+                symbol=req.symbol,
+                broker=req.broker,
+                account=req.account,
+                requested_sl=req.stop_loss,
+            )
+    return result
 
 
 @router.delete("/orders/{order_id}")
