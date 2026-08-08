@@ -43,7 +43,13 @@ import {
   connectionOf,
   type Connection,
 } from './orderTypes.js';
-import { ExecutionEngine, type ExecutionContext, type ExecutionResult } from './executionEngine.js';
+import {
+  ExecutionEngine,
+  type ConnectionLimits,
+  type ExecutionContext,
+  type ExecutionResult,
+  type PortfolioLimits,
+} from './executionEngine.js';
 
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
@@ -194,6 +200,76 @@ export function runSymbol(run: Pick<ActiveRun, 'symbol' | 'native_symbol'>): str
   return native || run.symbol;
 }
 
+/**
+ * Fleet-level caps (C-4), read from the connection manifest the broker service
+ * already owns plus environment defaults.
+ *
+ * Kept here rather than in the manifest schema because the manifest describes
+ * *topology* — where an account is and how to reach it — while a cap is a
+ * risk decision that changes far more often than the wiring does.
+ */
+function connectionLimitsFor(connection: Connection): ConnectionLimits | null {
+  const envKey = `${connection.broker}_${connection.brokerAccount}`
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '_');
+  const orders = Number(
+    process.env[`CONNECTION_MAX_ORDERS_PER_DAY__${envKey}`] ??
+      process.env.CONNECTION_MAX_ORDERS_PER_DAY ??
+      ''
+  );
+  const loss = Number(
+    process.env[`CONNECTION_MAX_DAILY_LOSS__${envKey}`] ??
+      process.env.CONNECTION_MAX_DAILY_LOSS ??
+      ''
+  );
+  const limits: ConnectionLimits = {};
+  if (Number.isFinite(orders) && orders > 0) limits.max_orders_per_day = orders;
+  if (Number.isFinite(loss) && loss > 0) limits.max_daily_loss = loss;
+  return Object.keys(limits).length > 0 ? limits : null;
+}
+
+/**
+ * Fleet-wide caps, plus the currency check any aggregate depends on (C-4).
+ *
+ * The fleet is configured as single-currency, which is what makes a portfolio
+ * cap possible without FX conversion. That is an assumption to **enforce, not
+ * trust**: a connection opened later in another denomination would make every
+ * aggregate silently wrong — the numbers still add up, they just stop meaning
+ * anything. So the connections' reported currencies are checked against
+ * `PORTFOLIO_BASE_CURRENCY`, and a mismatch makes the cap refuse rather than
+ * sum mixed units.
+ */
+async function fleetPortfolioLimits(): Promise<PortfolioLimits | null> {
+  const cap = Number(process.env.PORTFOLIO_MAX_DAILY_LOSS ?? '');
+  if (!Number.isFinite(cap) || cap <= 0) return null;
+
+  const expected = (process.env.PORTFOLIO_BASE_CURRENCY || '').trim().toUpperCase();
+  let currencies: string[] = [];
+  try {
+    const response = await axios.get(`${BROKER_SERVICE_URL}/providers`, {
+      timeout: 15000,
+      headers: { Connection: 'close' },
+    });
+    const connections = (response.data?.connections ?? {}) as Record<string, { currency?: string }>;
+    currencies = [
+      ...new Set(
+        Object.values(connections)
+          .map((c) => String(c.currency || '').toUpperCase())
+          .filter(Boolean)
+      ),
+    ];
+  } catch {
+    // Unknown is not the same as consistent. Report inconsistent so the cap
+    // refuses — a portfolio limit that cannot verify its own units must not
+    // quietly wave orders through.
+    return { max_daily_loss: cap, currency_consistent: false, currencies: [] };
+  }
+
+  const consistent =
+    currencies.length <= 1 && (!expected || currencies.every((c) => c === expected));
+  return { max_daily_loss: cap, currency_consistent: consistent, currencies };
+}
+
 function defaultDeps(
   emit: (runId: number, payload: Record<string, unknown>) => void
 ): StrategyRunnerDeps {
@@ -215,6 +291,20 @@ function defaultDeps(
     // Backs broker-native sizing: what one quantity unit means at this
     // connection and what sizes it accepts.
     instrumentSpec: (connection, symbol) => venueInstrumentSpec(connection, symbol),
+    // C-4 account- and fleet-level caps.
+    connectionLimits: async (connection) => connectionLimitsFor(connection),
+    countOrdersTodayForConnection: (connection) =>
+      repo.countActedSignalsTodayForConnection(connection.broker, connection.brokerAccount),
+    realisedPnlTodayForConnection: async (connection) =>
+      (
+        await executionRepo.realisedPnlTodayForConnection(
+          connection.broker,
+          connection.brokerAccount
+        )
+      ).realised,
+    portfolioLimits: () => fleetPortfolioLimits(),
+    realisedPnlTodayPortfolio: async () =>
+      (await executionRepo.realisedPnlTodayAllConnections()).realised,
   });
   // Venue caches, keyed per **connection** (platform + account), not per
   // platform. Two accounts on one platform have different equity, different

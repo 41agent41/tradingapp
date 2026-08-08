@@ -611,6 +611,28 @@ export class StrategyRepository {
     return Number(result.rows[0]?.n ?? 0);
   }
 
+  /** Orders placed today across every run on one **connection** (C-4).
+   *
+   *  The level a broker — and a prop firm — actually enforces limits at is the
+   *  account, not the strategy. A connection hosting several runs can breach
+   *  an account-level cap while every individual run is well inside its own. */
+  async countActedSignalsTodayForConnection(
+    broker: string,
+    brokerAccount: string
+  ): Promise<number> {
+    const result = await this.db.query(
+      `SELECT COUNT(*)::int AS n
+         FROM strategy_signals s
+         JOIN strategy_runs r ON r.id = s.run_id
+        WHERE r.broker = $1
+          AND r.broker_account = $2
+          AND s.acted = TRUE
+          AND s.created_at >= date_trunc('day', NOW())`,
+      [broker, brokerAccount]
+    );
+    return Number(result.rows[0]?.n ?? 0);
+  }
+
   /** Current status of a run — the kill switch re-check the engine makes
    *  immediately before placing, so a run stopped mid-cycle can't fire. */
   async getRunStatus(id: number): Promise<string | null> {

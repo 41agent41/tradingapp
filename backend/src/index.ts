@@ -18,6 +18,7 @@ import { createStreamingBridge } from './services/streamingBridge.js';
 import { createBackfillScheduler } from './services/backfillScheduler.js';
 import { createStrategyRunner } from './services/strategyRunner.js';
 import { createExecutionsPoller } from './services/executionsPoller.js';
+import { checkConnectionSchema, reportSchemaGuard } from './services/schemaGuard.js';
 import { createAuthMiddleware, checkSocketAuth } from './middleware/auth.js';
 import { observabilityMiddleware } from './middleware/observability.js';
 import { logger, currentRequestId } from './services/logger.js';
@@ -413,8 +414,32 @@ server.listen(PORT, '0.0.0.0', () => {
   });
 
   backfillScheduler.start();
-  strategyRunner.start();
-  executionsPoller.start();
+
+  // Multi-connection on a pre-C-0 schema silently drops colliding fills, so
+  // the systematic services do not start until the schema is verified. The
+  // HTTP surface stays up either way — an operator needs /health to see why.
+  void (async () => {
+    let connectionCount = 1;
+    try {
+      const providers = await axios.get(`${BROKER_SERVICE_URL}/providers`, { timeout: 15000 });
+      connectionCount = Object.keys(providers.data?.connections ?? {}).length || 1;
+    } catch (err) {
+      logger.warn(
+        { err: String(err) },
+        'could not read connection topology; assuming a single connection for the schema check'
+      );
+    }
+
+    const guard = await checkConnectionSchema(dbService, connectionCount);
+    if (!reportSchemaGuard(guard)) {
+      logger.error(
+        'systematic runner and executions poller are DISABLED until the migration is applied'
+      );
+      return;
+    }
+    strategyRunner.start();
+    executionsPoller.start();
+  })();
 
   void dbService
     .testConnection()

@@ -5,6 +5,7 @@ import axios from 'axios';
 import { dbService } from '../services/database.js';
 import { ExecutionRepository } from '../services/executionRepository.js';
 import { realisedPnl } from '../services/realisedPnl.js';
+import { DEFAULT_BROKER_ACCOUNT } from '../services/orderTypes.js';
 
 const router = express.Router();
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
@@ -391,7 +392,11 @@ router.get('/reconciliation', async (req: Request, res: Response) => {
 
     const repo = new ExecutionRepository(dbService);
     const [ours, venueResponse] = await Promise.all([
-      repo.netPositionsByBroker(broker, accountMode),
+      // Scoped to the same connection as the venue read below. Comparing one
+      // account's venue positions against another account's recorded ones
+      // reports mismatches that are purely an artefact of the mismatch in
+      // scope (C-4).
+      repo.netPositionsByBroker(broker, accountMode, account ?? DEFAULT_BROKER_ACCOUNT),
       axios.get(`${BROKER_SERVICE_URL}/account/positions`, {
         params: { broker, account },
         timeout: 20000,
@@ -415,6 +420,8 @@ router.get('/reconciliation', async (req: Request, res: Response) => {
 
     res.json({
       broker,
+      account: account ?? DEFAULT_BROKER_ACCOUNT,
+      connection: `${broker}:${account ?? DEFAULT_BROKER_ACCOUNT}`,
       account_mode: accountMode ?? null,
       positions,
       mismatches: positions.filter((p) => !p.matched).length,
@@ -431,6 +438,98 @@ router.get('/reconciliation', async (req: Request, res: Response) => {
 });
 
 // Get all account data in one call
+/**
+ * Reconcile **every configured connection** in one call (C-4).
+ *
+ * The per-connection route above answers "is this account in sync?". Running
+ * a fleet, the question is "is any account out of sync?" — and asking it one
+ * connection at a time means an operator has to already suspect which.
+ *
+ * Never fails as a whole: a connection that cannot be read reports its own
+ * error alongside the ones that reconciled, because "four are fine, this one
+ * is unreachable" is the actionable answer.
+ */
+router.get('/reconciliation/all', async (req: Request, res: Response) => {
+  try {
+    const tolerance = Math.abs(Number(req.query.tolerance)) || 1e-6;
+    const repo = new ExecutionRepository(dbService);
+
+    const providers = await axios.get(`${BROKER_SERVICE_URL}/providers`, {
+      timeout: 15000,
+      headers: { Connection: 'close' },
+    });
+    const connections = Object.values(
+      (providers.data?.connections ?? {}) as Record<
+        string,
+        { platform: string; account: string; broker?: boolean }
+      >
+    ).filter((c) => c.broker !== false);
+
+    const reports = await Promise.all(
+      connections.map(async (conn) => {
+        const label = `${conn.platform}:${conn.account}`;
+        try {
+          const [ours, venueResponse] = await Promise.all([
+            repo.netPositionsByBroker(conn.platform, undefined, conn.account),
+            axios.get(`${BROKER_SERVICE_URL}/account/positions`, {
+              params: { broker: conn.platform, account: conn.account },
+              timeout: 20000,
+              headers: { Connection: 'close' },
+            }),
+          ]);
+
+          const theirs: Record<string, number> = {};
+          for (const row of Array.isArray(venueResponse.data) ? venueResponse.data : []) {
+            const symbol = String(row?.symbol ?? '').toUpperCase();
+            if (symbol) theirs[symbol] = Number(row?.position) || 0;
+          }
+
+          const symbols = [...new Set([...Object.keys(ours), ...Object.keys(theirs)])].sort();
+          const positions = symbols.map((symbol) => {
+            const recorded = ours[symbol] ?? 0;
+            const venue = theirs[symbol] ?? 0;
+            const difference = recorded - venue;
+            return {
+              symbol,
+              recorded,
+              venue,
+              difference,
+              matched: Math.abs(difference) <= tolerance,
+            };
+          });
+
+          return {
+            connection: label,
+            ok: true,
+            positions,
+            mismatches: positions.filter((p) => !p.matched).length,
+          };
+        } catch (err: any) {
+          return {
+            connection: label,
+            ok: false,
+            error: err?.response?.data?.detail || err?.message || 'unknown',
+          };
+        }
+      })
+    );
+
+    res.json({
+      connections: reports,
+      checked: reports.length,
+      unreachable: reports.filter((r) => !r.ok).length,
+      with_mismatches: reports.filter((r) => r.ok && (r.mismatches ?? 0) > 0).length,
+      last_updated: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      error: 'Failed to reconcile connections',
+      detail: error.message || 'Unknown error',
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
 router.get('/all', async (req: Request, res: Response) => {
   try {
     // Check if data querying is enabled

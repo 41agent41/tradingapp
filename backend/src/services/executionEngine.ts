@@ -74,6 +74,36 @@ export interface ExecutionEngineDeps {
    *  and minimum differ per broker for the same pair, so this is per
    *  connection too. `null` falls back to whole shares. */
   instrumentSpec?(connection: Connection, symbol: string): Promise<InstrumentSpec | null>;
+
+  // -- Connection- and portfolio-level caps (C-4) --------------------------- //
+  /** The caps declared for a connection, or null when it has none. */
+  connectionLimits?(connection: Connection): Promise<ConnectionLimits | null>;
+  /** Orders placed today across every run on this connection. */
+  countOrdersTodayForConnection?(connection: Connection): Promise<number>;
+  /** Realised P&L today for the whole connection, including fills that belong
+   *  to no run — a manual trade is a real loss against an account budget. */
+  realisedPnlTodayForConnection?(connection: Connection): Promise<number>;
+  /** Portfolio-wide caps, or null when none are configured. */
+  portfolioLimits?(): Promise<PortfolioLimits | null>;
+  /** Realised P&L today across every connection. Only sound when they share a
+   *  currency — `portfolioLimits` reports whether they do. */
+  realisedPnlTodayPortfolio?(): Promise<number>;
+}
+
+/** Account-level caps. This is the level a broker — and a prop firm — actually
+ *  enforces at, so it is the level a breach has to be detected at. */
+export interface ConnectionLimits {
+  max_orders_per_day?: number;
+  max_daily_loss?: number;
+}
+
+/** Fleet-wide caps. */
+export interface PortfolioLimits {
+  max_daily_loss?: number;
+  /** False when the fleet's connections do not all report one currency, in
+   *  which case any aggregate is meaningless and must not be computed. */
+  currency_consistent: boolean;
+  currencies?: string[];
 }
 
 export class ExecutionEngine {
@@ -128,6 +158,139 @@ export class ExecutionEngine {
           placed: false,
           reason: `global SYSTEMATIC_MAX_ORDERS_PER_DAY (${globalCap}) reached`,
         };
+      }
+    }
+
+    // ---- Connection-level caps (C-4) ------------------------------------ //
+    //
+    // Distinct from the per-run caps above, and not a duplicate of them: a
+    // connection hosting several runs can breach an account-level limit while
+    // every individual run sits comfortably inside its own. It is also the
+    // level a broker or prop firm enforces at, so it is the level a breach has
+    // to be caught at.
+    const connection = connectionOf(run);
+    if (this.deps.connectionLimits) {
+      let limits: ConnectionLimits | null;
+      try {
+        limits = await this.deps.connectionLimits(connection);
+      } catch (err) {
+        // Fail closed, like every other guard here: a cap we cannot read must
+        // block the order, never wave it through.
+        return {
+          placed: false,
+          reason: `connection limits unavailable (${String((err as Error)?.message ?? err)})`,
+        };
+      }
+
+      const connOrderCap = Math.max(0, Number(limits?.max_orders_per_day) || 0);
+      if (connOrderCap > 0) {
+        if (!this.deps.countOrdersTodayForConnection) {
+          return {
+            placed: false,
+            reason: `connection max_orders_per_day (${connOrderCap}) declared but not measurable`,
+          };
+        }
+        let placed: number;
+        try {
+          placed = await this.deps.countOrdersTodayForConnection(connection);
+        } catch (err) {
+          return {
+            placed: false,
+            reason: `connection order-count check failed (${String((err as Error)?.message ?? err)})`,
+          };
+        }
+        if (placed >= connOrderCap) {
+          return {
+            placed: false,
+            reason: `connection max_orders_per_day (${connOrderCap}) reached on ${connection.broker}:${connection.brokerAccount}`,
+          };
+        }
+      }
+
+      // Loss caps gate **entries only**, for the same reason the per-run one
+      // does: blocking an exit because the day went badly strands the position
+      // in the trade that caused the loss.
+      const connLossCap = Math.abs(Number(limits?.max_daily_loss) || 0);
+      if (connLossCap > 0 && ctx.signal === 'buy') {
+        if (!this.deps.realisedPnlTodayForConnection) {
+          return {
+            placed: false,
+            reason: `connection max_daily_loss (${connLossCap}) declared but not measurable`,
+          };
+        }
+        let realised: number;
+        try {
+          realised = await this.deps.realisedPnlTodayForConnection(connection);
+        } catch (err) {
+          return {
+            placed: false,
+            reason: `connection loss check failed (${String((err as Error)?.message ?? err)})`,
+          };
+        }
+        if (!Number.isFinite(realised)) {
+          return { placed: false, reason: 'connection loss check returned a non-finite P&L' };
+        }
+        if (realised <= -connLossCap) {
+          return {
+            placed: false,
+            reason: `connection max_daily_loss (${connLossCap}) reached on ${connection.broker}:${connection.brokerAccount} (realised ${realised.toFixed(2)})`,
+          };
+        }
+      }
+    }
+
+    // ---- Portfolio-level cap (C-4) --------------------------------------- //
+    //
+    // With one strategy across several accounts there is no diversification:
+    // every leg takes the same trade at the same moment, so the fleet's total
+    // risk is N times one account's. This is the backstop for that.
+    if (this.deps.portfolioLimits && ctx.signal === 'buy') {
+      let portfolio: PortfolioLimits | null;
+      try {
+        portfolio = await this.deps.portfolioLimits();
+      } catch (err) {
+        return {
+          placed: false,
+          reason: `portfolio limits unavailable (${String((err as Error)?.message ?? err)})`,
+        };
+      }
+
+      const portfolioLossCap = Math.abs(Number(portfolio?.max_daily_loss) || 0);
+      if (portfolio && portfolioLossCap > 0) {
+        // Summing mixed denominations produces a number that adds up and means
+        // nothing, so a currency mismatch refuses rather than aggregating.
+        if (!portfolio.currency_consistent) {
+          return {
+            placed: false,
+            reason:
+              'portfolio max_daily_loss declared but connections report different currencies ' +
+              `(${(portfolio.currencies ?? []).join(', ')}) — refusing to aggregate`,
+          };
+        }
+        if (!this.deps.realisedPnlTodayPortfolio) {
+          return {
+            placed: false,
+            reason: `portfolio max_daily_loss (${portfolioLossCap}) declared but not measurable`,
+          };
+        }
+        let realised: number;
+        try {
+          realised = await this.deps.realisedPnlTodayPortfolio();
+        } catch (err) {
+          return {
+            placed: false,
+            reason: `portfolio loss check failed (${String((err as Error)?.message ?? err)})`,
+          };
+        }
+        if (!Number.isFinite(realised)) {
+          return { placed: false, reason: 'portfolio loss check returned a non-finite P&L' };
+        }
+        if (realised <= -portfolioLossCap) {
+          return {
+            placed: false,
+            reason: `portfolio max_daily_loss (${portfolioLossCap}) reached (realised ${realised.toFixed(2)})`,
+          };
+        }
       }
     }
 

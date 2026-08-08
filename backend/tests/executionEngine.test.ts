@@ -374,3 +374,165 @@ describe('ExecutionEngine — broker-native sizing', () => {
     );
   });
 });
+
+// --------------------------------------------------------------------------- //
+// Connection- and portfolio-level caps (C-4)
+// --------------------------------------------------------------------------- //
+describe('ExecutionEngine — connection-level caps', () => {
+  it('blocks an entry once the connection order cap is reached', async () => {
+    // Not a duplicate of the per-run cap: a connection hosting several runs can
+    // breach an account-level limit while each run sits inside its own.
+    const deps = makeDeps({
+      connectionLimits: jest.fn().mockResolvedValue({ max_orders_per_day: 3 }),
+      countOrdersTodayForConnection: jest.fn().mockResolvedValue(3),
+    });
+
+    const result = await new ExecutionEngine(deps).execute(ctx());
+
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('connection max_orders_per_day (3) reached'),
+    });
+  });
+
+  it('blocks an entry once the connection loss cap is reached', async () => {
+    const deps = makeDeps({
+      connectionLimits: jest.fn().mockResolvedValue({ max_daily_loss: 500 }),
+      realisedPnlTodayForConnection: jest.fn().mockResolvedValue(-500),
+    });
+
+    const result = await new ExecutionEngine(deps).execute(ctx());
+
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('connection max_daily_loss (500) reached'),
+    });
+  });
+
+  it('still allows an EXIT after the connection loss cap is breached', async () => {
+    // Blocking exits would strand the position in the trade that caused the
+    // loss — the opposite of what a loss limit is for.
+    const deps = makeDeps({
+      connectionLimits: jest.fn().mockResolvedValue({ max_daily_loss: 500 }),
+      realisedPnlTodayForConnection: jest.fn().mockResolvedValue(-900),
+    });
+
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'sell', position: { size: 100, avg_price: 10 } })
+    );
+
+    expect(result).toEqual(expect.objectContaining({ placed: true, action: 'SELL' }));
+  });
+
+  it('fails closed when the connection limits cannot be read', async () => {
+    const deps = makeDeps({
+      connectionLimits: jest.fn().mockRejectedValue(new Error('db down')),
+    });
+
+    const result = await new ExecutionEngine(deps).execute(ctx());
+
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('connection limits unavailable'),
+    });
+  });
+
+  it('fails closed when a declared cap cannot be measured', async () => {
+    // A cap accepted by config and enforced nowhere is the silent no-op this
+    // codebase already had to fix once for max_daily_loss.
+    const deps = makeDeps({
+      connectionLimits: jest.fn().mockResolvedValue({ max_daily_loss: 500 }),
+      realisedPnlTodayForConnection: undefined,
+    });
+
+    const result = await new ExecutionEngine(deps).execute(ctx());
+
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('not measurable'),
+    });
+  });
+
+  it('places normally when the connection is inside its caps', async () => {
+    const deps = makeDeps({
+      connectionLimits: jest.fn().mockResolvedValue({ max_orders_per_day: 5, max_daily_loss: 500 }),
+      countOrdersTodayForConnection: jest.fn().mockResolvedValue(1),
+      realisedPnlTodayForConnection: jest.fn().mockResolvedValue(-100),
+    });
+
+    const result = await new ExecutionEngine(deps).execute(ctx());
+    expect(result).toEqual(expect.objectContaining({ placed: true }));
+  });
+});
+
+describe('ExecutionEngine — portfolio cap', () => {
+  const consistent = { max_daily_loss: 1000, currency_consistent: true, currencies: ['USD'] };
+
+  it('blocks an entry once the fleet-wide loss cap is reached', async () => {
+    // One strategy across accounts means no diversification — every leg takes
+    // the same trade at once, so the fleet's risk is N times one account's.
+    const deps = makeDeps({
+      portfolioLimits: jest.fn().mockResolvedValue(consistent),
+      realisedPnlTodayPortfolio: jest.fn().mockResolvedValue(-1200),
+    });
+
+    const result = await new ExecutionEngine(deps).execute(ctx());
+
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('portfolio max_daily_loss (1000) reached'),
+    });
+  });
+
+  it('refuses to aggregate across mixed currencies rather than summing them', async () => {
+    // Summing USD and AUD gives a number that adds up and means nothing.
+    const deps = makeDeps({
+      portfolioLimits: jest.fn().mockResolvedValue({
+        max_daily_loss: 1000,
+        currency_consistent: false,
+        currencies: ['USD', 'AUD'],
+      }),
+      realisedPnlTodayPortfolio: jest.fn().mockResolvedValue(-10),
+    });
+
+    const result = await new ExecutionEngine(deps).execute(ctx());
+
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('different currencies'),
+    });
+  });
+
+  it('does not gate exits on the portfolio cap', async () => {
+    const deps = makeDeps({
+      portfolioLimits: jest.fn().mockResolvedValue(consistent),
+      realisedPnlTodayPortfolio: jest.fn().mockResolvedValue(-5000),
+    });
+
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'sell', position: { size: 100, avg_price: 10 } })
+    );
+
+    expect(result).toEqual(expect.objectContaining({ placed: true }));
+  });
+
+  it('fails closed when the portfolio figure cannot be read', async () => {
+    const deps = makeDeps({
+      portfolioLimits: jest.fn().mockResolvedValue(consistent),
+      realisedPnlTodayPortfolio: jest.fn().mockRejectedValue(new Error('db down')),
+    });
+
+    const result = await new ExecutionEngine(deps).execute(ctx());
+
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('portfolio loss check failed'),
+    });
+  });
+
+  it('is inert when no portfolio cap is configured', async () => {
+    const deps = makeDeps({ portfolioLimits: jest.fn().mockResolvedValue(null) });
+    const result = await new ExecutionEngine(deps).execute(ctx());
+    expect(result).toEqual(expect.objectContaining({ placed: true }));
+  });
+});

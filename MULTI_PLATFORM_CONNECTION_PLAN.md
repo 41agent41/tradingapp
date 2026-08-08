@@ -1,6 +1,6 @@
 # Multi-Platform, Multi-Account — Systematic Trading Across Many Broker Connections
 
-**Status:** C-0 through C-3 delivered; C-4 onward planned
+**Status:** C-0 through C-4 delivered; C-5 (UI/ops) planned
 **Scope:** run the existing systematic stack against **N simultaneous broker
 connections**, spanning multiple *platforms* (MT5, IB, Alpaca, OANDA) and
 multiple *accounts per platform* — rather than the one-account-per-platform
@@ -517,7 +517,7 @@ Each phase is independently shippable and leaves the system correct.
 | **C-1** ✅ | C1 remainder + C2 registry + manifest config | **Delivered.** Two MT5 connections addressable manually via `/api/orders`, `/account/*`, charts |
 | **C-2** ✅ | C3 symbol mapping + per-connection specs | **Delivered.** A definition resolves correctly on each connection |
 | **C-3** ✅ | C4 run groups + staged deploy (C4a) + C6 scheduling/isolation | **Delivered.** One definition trading on N connections, fault-isolated, canary-staged |
-| **C-4** | C5 per-connection **and** portfolio caps + C7 reconciliation | Fleet-safe; per-account and fleet-wide limits enforced |
+| **C-4** ✅ | C5 per-connection **and** portfolio caps + C7 reconciliation | **Delivered.** Fleet-safe; per-account and fleet-wide limits enforced |
 | **C-5** | C8 UI/ops | Operable at fleet scale |
 
 Phase C-0 is worth shipping on its own even if the rest is deferred: it is
@@ -638,6 +638,38 @@ apply late.
 > - **E10 is enforced in the schema.** A partial unique index allows only one
 >   active run per `(connection, native_symbol)`: under netting, two runs on one
 >   instrument at one account each size against exposure neither controls.
+
+> **C-4 delivered.** The execution engine gained two guard tiers above the
+> per-run ones: **per-connection** order and loss caps (the level a broker or
+> prop firm actually enforces at, and the level a connection hosting several
+> runs can breach while each run sits inside its own), and a **portfolio**
+> daily-loss cap. Both fail closed — an unreadable cap blocks the order — and
+> both gate entries only, since blocking an exit would strand the position in
+> the trade that caused the loss.
+>
+> The connection loss cap counts fills with no `run_id`: a manual trade is a
+> real loss against an account budget even though it belongs to no strategy.
+>
+> **The currency assumption is enforced, not trusted.** `currency_consistency()`
+> checks every connection's reported currency against `PORTFOLIO_BASE_CURRENCY`
+> and surfaces it on `/providers`; the portfolio cap **refuses to aggregate**
+> on a mismatch rather than summing mixed denominations into a number that adds
+> up and means nothing. An unreadable topology reports *inconsistent*, not
+> consistent — a cap that cannot verify its own units must not wave orders
+> through.
+>
+> Reconciliation: `/api/account/reconciliation/all` reports every connection in
+> one call and never fails as a whole, because "four are fine, this one is
+> unreachable" is the actionable answer. This also fixed a real bug introduced
+> in C-1 — the single-connection route compared one account's venue positions
+> against the **default** account's recorded ones, reporting mismatches that
+> were purely an artefact of the scope mismatch.
+>
+> `schemaGuard.ts` closes C-0's migration hazard: more than one connection on
+> the pre-C-0 schema now refuses to start the systematic services, because
+> colliding fills are dropped silently and widening the constraint afterwards
+> recovers nothing. An unreadable database is reported as *indeterminate*
+> rather than unsafe, so a transient outage is not a refusal to boot.
 
 ---
 
