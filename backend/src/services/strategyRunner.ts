@@ -148,6 +148,19 @@ export function historyPeriodFor(timeframe: string): string {
   }
 }
 
+/** The symbol a run actually trades at its connection.
+ *
+ * A definition names a **canonical** instrument; each connection resolves that
+ * to its own native symbol at deploy time (C-2) — EURUSD may be `EURUSD.a`
+ * here and `EURUSD_i` on the next account. Runs created before C-2 have no
+ * resolved symbol and fall back to the definition's, which is exactly the
+ * single-connection behaviour they were created under.
+ */
+export function runSymbol(run: Pick<ActiveRun, 'symbol' | 'native_symbol'>): string {
+  const native = (run.native_symbol ?? '').trim();
+  return native || run.symbol;
+}
+
 function defaultDeps(
   emit: (runId: number, payload: Record<string, unknown>) => void
 ): StrategyRunnerDeps {
@@ -270,7 +283,11 @@ function defaultDeps(
     fetchHistory: async (run) => {
       const response = await axios.get(`${BROKER_SERVICE_URL}/market-data/history`, {
         params: {
-          symbol: run.symbol,
+          // The connection's own name for the instrument (C-2). EURUSD is
+          // EURUSD.a at one broker and EURUSD_i at the next, so fetching the
+          // definition's canonical symbol would 404 — or worse, silently
+          // return a different instrument's bars.
+          symbol: runSymbol(run),
           timeframe: run.timeframe,
           period: historyPeriodFor(run.timeframe),
           secType: run.sec_type || 'STK',
@@ -310,13 +327,13 @@ function defaultDeps(
         const size = await executionRepo.netPositionWithOpenOrders({
           broker: run.broker || 'ib',
           brokerAccount: run.broker_account || DEFAULT_BROKER_ACCOUNT,
-          symbol: run.symbol,
+          symbol: runSymbol(run),
           accountMode: run.account_mode,
           runId: run.id,
           lookbackHours: POSITION_LOOKBACK_HOURS,
         });
         const netSize = Number.isFinite(size) ? size : 0;
-        const avgPrice = netSize !== 0 ? await venueAvgCost(connectionOf(run), run.symbol) : 0;
+        const avgPrice = netSize !== 0 ? await venueAvgCost(connectionOf(run), runSymbol(run)) : 0;
         return { size: netSize, avg_price: avgPrice };
       } catch {
         return { size: 0, avg_price: 0 };
@@ -438,7 +455,7 @@ export class StrategyRunner {
     try {
       const bars = await this.deps.fetchHistory(run);
       if (!bars || bars.length === 0) {
-        logger.warn({ run_id: run.id, symbol: run.symbol }, 'no bars for strategy run');
+        logger.warn({ run_id: run.id, symbol: runSymbol(run) }, 'no bars for strategy run');
         return;
       }
 

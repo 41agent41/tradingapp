@@ -1,6 +1,6 @@
 # Multi-Platform, Multi-Account — Systematic Trading Across Many Broker Connections
 
-**Status:** C-0 and C-1 delivered; C-2 onward planned
+**Status:** C-0, C-1 and C-2 delivered; C-3 onward planned
 **Scope:** run the existing systematic stack against **N simultaneous broker
 connections**, spanning multiple *platforms* (MT5, IB, Alpaca, OANDA) and
 multiple *accounts per platform* — rather than the one-account-per-platform
@@ -515,7 +515,7 @@ Each phase is independently shippable and leaves the system correct.
 |---|---|---|
 | **C-0** ✅ | Bug ① and ② fixes alone: `broker_account` column + widened unique keys/indexes, defaulted to `'default'` | **Delivered.** Correctness fix; no behaviour change on one connection. **Deploy before any second connection exists.** |
 | **C-1** ✅ | C1 remainder + C2 registry + manifest config | **Delivered.** Two MT5 connections addressable manually via `/api/orders`, `/account/*`, charts |
-| **C-2** | C3 symbol mapping + per-connection specs | A definition resolves correctly on each connection |
+| **C-2** ✅ | C3 symbol mapping + per-connection specs | **Delivered.** A definition resolves correctly on each connection |
 | **C-3** | C4 run groups + staged deploy (C4a) + C6 scheduling/isolation | One definition trading on N connections, fault-isolated, canary-staged |
 | **C-4** | C5 per-connection **and** portfolio caps + C7 reconciliation | Fleet-safe; per-account and fleet-wide limits enforced |
 | **C-5** | C8 UI/ops | Operable at fleet scale |
@@ -572,6 +572,36 @@ apply late.
 >   needs a precedence rule, and the cost of guessing wrong is an order on the
 >   wrong account. `provider_health()` still reports a broken manifest rather
 >   than 500ing, so the operator can see why nothing registered.
+
+> **C-2 delivered.** `broker_service/symbol_resolution.py` resolves a canonical
+> symbol to each connection's native one — manifest override, then exact match,
+> then a *single* suffix match against the connection's own discovered
+> catalogue, then refusal. `GET /instrument/resolve` does one connection;
+> `POST /instrument/resolve/preview` does N and reports each independently, so
+> a deploy shows "these legs resolve, this one does not, here is why" rather
+> than one error hiding the rest. `strategy_runs.native_symbol` records the
+> result, and the runner and execution engine trade *that* symbol via
+> `runSymbol()`.
+>
+> Three decisions, all following from "a wrong instrument is worse than no run":
+>
+> - **Ambiguity refuses.** A connection offering both `EURUSD.a` and
+>   `EURUSD.pro` gets a 422 naming both, not a guess. Only the operator knows
+>   which tier the account trades, and a guess produces a plausible-looking run
+>   on the wrong contract. The fix is a one-line `symbol_map` entry.
+> - **The resolved symbol is stored, not re-derived.** Re-resolving each tick
+>   would let a catalogue change silently move a running strategy onto another
+>   contract mid-position.
+> - **The spec is fetched for the native symbol.** Asking a venue about
+>   `EURUSD` when it trades `EURUSD.a` either errors or describes a different
+>   contract — and lot step, minimum and contract size are exactly what sizing
+>   divides by.
+>
+> Worth recording: the first draft of the suffix rule matched any short
+> continuation, so canonical `EUR` "matched" `EURUSD`, `EURGBP` and `EURJPY` —
+> and three matches read as *ambiguity* rather than as the mistake it was. The
+> rule now requires either a separator (`.a`, `_i`, `-ECN`) or at most two bare
+> characters (`EURUSDm`), so a currency-pair continuation never qualifies.
 
 ---
 

@@ -29,6 +29,7 @@ import {
 } from './orderTypes.js';
 import type { SubmitCreateOutcome } from './orderService.js';
 import type { ActiveRun } from './strategyRepository.js';
+import { runSymbol } from './strategyRunner.js';
 import type { PositionState, RawBar } from './strategyRunner.js';
 
 export interface ExecutionContext {
@@ -195,7 +196,7 @@ export class ExecutionEngine {
       let instrument: InstrumentSpec | null = null;
       if (this.deps.instrumentSpec) {
         try {
-          instrument = await this.deps.instrumentSpec(connectionOf(run), run.symbol);
+          instrument = await this.deps.instrumentSpec(connectionOf(run), runSymbol(run));
         } catch {
           // Whole shares is the safe fallback: it is what every equity venue
           // uses, and on a lot-based venue a `fixed` size still has to clear
@@ -218,7 +219,7 @@ export class ExecutionEngine {
       let spec: InstrumentSpec | null = null;
       if (this.deps.instrumentSpec) {
         try {
-          spec = await this.deps.instrumentSpec(connectionOf(run), run.symbol);
+          spec = await this.deps.instrumentSpec(connectionOf(run), runSymbol(run));
         } catch {
           spec = null;
         }
@@ -232,7 +233,9 @@ export class ExecutionEngine {
 
     // Build + validate the order (inherits the ORDER_MAX_* fat-finger caps).
     const v = validateOrder({
-      symbol: run.symbol,
+      // The connection's native symbol (C-2) — the order goes to a venue that
+      // has never heard of the canonical one.
+      symbol: runSymbol(run),
       action,
       quantity,
       order_type: 'MKT',

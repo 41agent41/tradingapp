@@ -9,6 +9,7 @@
 import {
   StrategyRunner,
   historyPeriodFor,
+  runSymbol,
   type StrategyRunnerDeps,
   type RawBar,
   type EvaluateResult,
@@ -23,6 +24,7 @@ function activeRun(overrides: Partial<ActiveRun> = {}): ActiveRun {
     definition_id: 2,
     broker: 'ib',
     broker_account: 'default',
+    native_symbol: null,
     account_mode: 'paper',
     symbol: 'MSFT',
     sec_type: 'STK',
@@ -253,5 +255,45 @@ describe('historyPeriodFor', () => {
     expect(historyPeriodFor('1hour')).toBe('1M');
     expect(historyPeriodFor('5min')).toBe('10D');
     expect(historyPeriodFor('tick')).toBe('1D');
+  });
+});
+
+describe('runSymbol — canonical vs native (C-2)', () => {
+  it('prefers the connection-resolved native symbol', () => {
+    // The same definition on two accounts trades two differently-named
+    // instruments; the run records which, so it is never re-derived.
+    expect(runSymbol({ symbol: 'EURUSD', native_symbol: 'EURUSD.a' })).toBe('EURUSD.a');
+    expect(runSymbol({ symbol: 'EURUSD', native_symbol: 'EURUSD_i' })).toBe('EURUSD_i');
+  });
+
+  it('falls back to the definition symbol for pre-C-2 runs', () => {
+    // Runs created before resolution existed have no native symbol, and the
+    // definition's own is exactly what they were created to trade.
+    expect(runSymbol({ symbol: 'MSFT', native_symbol: null })).toBe('MSFT');
+  });
+
+  it('treats a blank native symbol as absent rather than trading ""', () => {
+    expect(runSymbol({ symbol: 'MSFT', native_symbol: '   ' })).toBe('MSFT');
+  });
+});
+
+describe('StrategyRunner — native symbol reaches the venue', () => {
+  it('fetches history for the native symbol, not the canonical one', async () => {
+    const fetchHistory = jest.fn().mockResolvedValue(bars);
+    const runner = makeRunner(
+      makeDeps({
+        listActiveRuns: jest
+          .fn()
+          .mockResolvedValue([activeRun({ symbol: 'EURUSD', native_symbol: 'EURUSD.a' })]),
+        fetchHistory,
+      })
+    );
+
+    await runner.runOnce();
+
+    // The runner hands the whole run to fetchHistory; the default dep is what
+    // maps it to a query param, so assert the run it was given carries the
+    // resolved symbol.
+    expect(runSymbol(fetchHistory.mock.calls[0][0])).toBe('EURUSD.a');
   });
 });

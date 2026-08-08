@@ -11,7 +11,14 @@ from ibapi.execution import ExecutionFilter
 
 from executions import normalise_ib_execution
 from ib_client import get_ib_connection, verify_connection_health
-from models import AccountData, AccountSummary, Execution, InstrumentSpec, Position
+from models import (
+    AccountData,
+    AccountSummary,
+    Execution,
+    InstrumentSpec,
+    Position,
+    ResolvePreviewRequest,
+)
 from models import Order as OrderModel
 from observability import get_logger
 
@@ -469,3 +476,119 @@ async def get_all_account_data(broker: str = "ib", account: str | None = None):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get all account data: {error_str}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Canonical → native symbol resolution (Component C — C-2)
+# ---------------------------------------------------------------------------
+def _resolve_one(symbol: str, broker: str, account: str | None, include_spec: bool) -> dict:
+    """Resolve one canonical symbol at one connection, returning the mapping
+    plus that connection's own instrument spec.
+
+    The spec belongs with the resolution: lot step, minimum and contract size
+    differ per broker for the *same* pair, so a mapping without them tells only
+    half the story — and sizing that used another connection's step would place
+    orders the broker rejects, or silently rounds.
+    """
+    from adapters import get_broker_adapter, get_market_data_adapter, resolve_connection
+    from symbol_resolution import resolve_symbol
+
+    conn = resolve_connection(broker, account)
+    data_adapter = get_market_data_adapter(broker, account)
+    resolution = resolve_symbol(
+        symbol,
+        data_adapter,
+        connection_label=conn.label,
+        symbol_map=conn.symbol_map,
+    )
+
+    row = resolution.as_dict()
+    row["broker"] = conn.platform
+    row["account"] = conn.account
+    row["account_mode"] = conn.account_mode
+
+    if include_spec:
+        try:
+            broker_adapter = get_broker_adapter(broker, account)
+            row["spec"] = broker_adapter.instrument_spec(resolution.native)
+        except Exception as exc:  # noqa: BLE001 - a missing spec is not fatal here
+            # Report it rather than failing the resolution: the mapping is still
+            # correct and useful, and the sizer refuses later if it has no spec.
+            row["spec"] = None
+            row["spec_error"] = str(exc)
+    return row
+
+
+@router.get("/instrument/resolve")
+async def resolve_instrument(
+    symbol: str = Query(..., min_length=1),
+    broker: str = "ib",
+    account: str | None = None,
+    include_spec: bool = True,
+):
+    """Resolve a canonical symbol to this connection's native symbol."""
+    try:
+        return await run_tws_operation(lambda: _resolve_one(symbol, broker, account, include_spec))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error resolving instrument: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to resolve instrument: {e}",
+        )
+
+
+@router.post("/instrument/resolve/preview")
+async def resolve_instrument_preview(request: ResolvePreviewRequest):
+    """Resolve one canonical symbol across several connections at once.
+
+    **Never fails as a whole.** Each target reports its own outcome, because
+    the useful answer at deploy time is "these four legs resolve, this one does
+    not, here is why" — not a single error that hides the four that worked.
+    A caller decides whether a partial result is acceptable; the deploy path
+    refuses the failing legs and starts the rest.
+    """
+    results = []
+    for target in request.targets:
+        try:
+            results.append(
+                {
+                    "ok": True,
+                    **await run_tws_operation(
+                        lambda t=target: _resolve_one(
+                            request.symbol, t.broker, t.account, request.include_spec
+                        )
+                    ),
+                }
+            )
+        except HTTPException as he:
+            results.append(
+                {
+                    "ok": False,
+                    "broker": target.broker,
+                    "account": target.account,
+                    "canonical": request.symbol.strip().upper(),
+                    "status": he.status_code,
+                    "error": he.detail,
+                }
+            )
+        except Exception as e:  # noqa: BLE001
+            results.append(
+                {
+                    "ok": False,
+                    "broker": target.broker,
+                    "account": target.account,
+                    "canonical": request.symbol.strip().upper(),
+                    "status": 500,
+                    "error": str(e),
+                }
+            )
+
+    resolved = [r for r in results if r["ok"]]
+    return {
+        "symbol": request.symbol.strip().upper(),
+        "results": results,
+        "resolved": len(resolved),
+        "refused": len(results) - len(resolved),
+    }

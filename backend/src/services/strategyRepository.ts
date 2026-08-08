@@ -52,6 +52,9 @@ export interface StrategyRunInput {
   definition_id: number;
   broker?: string;
   broker_account?: string;
+  /** The connection's own name for the definition's canonical symbol (C-2),
+   *  resolved at deploy time. Omitted means "use the definition's symbol". */
+  native_symbol?: string | null;
   account_mode?: string;
   sizing?: Record<string, unknown>;
   risk?: Record<string, unknown>;
@@ -62,6 +65,7 @@ export interface StrategyRunRow {
   definition_id: number;
   broker: string;
   broker_account: string;
+  native_symbol: string | null;
   account_mode: string;
   status: string;
   sizing: Record<string, unknown>;
@@ -84,6 +88,9 @@ export interface ActiveRun {
   /** The account within `broker` this run executes on (C-0). One run is one
    *  instrument on one connection. */
   broker_account: string;
+  /** What this connection calls the definition's symbol (C-2). Null on runs
+   *  created before C-2, which fall back to the definition's own symbol. */
+  native_symbol: string | null;
   account_mode: string;
   symbol: string;
   sec_type: string;
@@ -176,8 +183,8 @@ export class StrategyRepository {
   async createRun(input: StrategyRunInput): Promise<StrategyRunRow> {
     const sql = `
       INSERT INTO strategy_runs
-        (definition_id, broker, broker_account, account_mode, sizing, risk)
-      VALUES ($1, $2, $6, $3, $4::jsonb, $5::jsonb)
+        (definition_id, broker, broker_account, native_symbol, account_mode, sizing, risk)
+      VALUES ($1, $2, $6, $7, $3, $4::jsonb, $5::jsonb)
       RETURNING *
     `;
     const values = [
@@ -187,6 +194,7 @@ export class StrategyRepository {
       JSON.stringify(input.sizing ?? {}),
       JSON.stringify(input.risk ?? {}),
       input.broker_account ?? DEFAULT_BROKER_ACCOUNT,
+      input.native_symbol ?? null,
     ];
     const result = await this.db.query(sql, values);
     return result.rows[0] as StrategyRunRow;
@@ -221,8 +229,8 @@ export class StrategyRepository {
    *  definition fields it needs (symbol, timeframe, rule_set). */
   async listActiveRuns(): Promise<ActiveRun[]> {
     const sql = `
-      SELECT r.id, r.definition_id, r.broker, r.broker_account, r.account_mode,
-             r.sizing, r.risk,
+      SELECT r.id, r.definition_id, r.broker, r.broker_account, r.native_symbol,
+             r.account_mode, r.sizing, r.risk,
              d.symbol, d.sec_type, d.exchange, d.currency, d.timeframe, d.rule_set
       FROM strategy_runs r
       JOIN strategy_definitions d ON d.id = r.definition_id

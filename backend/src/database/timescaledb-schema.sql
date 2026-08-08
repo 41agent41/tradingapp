@@ -494,6 +494,13 @@ CREATE TABLE IF NOT EXISTS strategy_runs (
     -- one connection; deploying a definition to several accounts creates
     -- several runs (C4).
     broker_account VARCHAR(64) NOT NULL DEFAULT 'default',
+    -- The connection's own name for the definition's canonical symbol (C-2),
+    -- resolved once at run creation. Stored rather than re-derived per tick so
+    -- a live run's instrument is a recorded fact: EURUSD may be EURUSD.a here
+    -- and EURUSD_i on the next account, and re-resolving each tick would let a
+    -- catalogue change silently move a running strategy to another contract.
+    -- NULL means "use the definition's symbol" — every pre-C-2 run.
+    native_symbol VARCHAR(64),
     account_mode VARCHAR(8) NOT NULL DEFAULT 'paper',   -- 'paper' | 'live'
     status VARCHAR(16) NOT NULL DEFAULT 'running',       -- 'running' | 'stopped' | 'error'
     sizing JSONB NOT NULL DEFAULT '{}'::jsonb,           -- carried through for A3
@@ -506,6 +513,7 @@ CREATE TABLE IF NOT EXISTS strategy_runs (
 
 -- Existing deployments: add the connection column if it predates C-0.
 ALTER TABLE strategy_runs ADD COLUMN IF NOT EXISTS broker_account VARCHAR(64) NOT NULL DEFAULT 'default';
+ALTER TABLE strategy_runs ADD COLUMN IF NOT EXISTS native_symbol VARCHAR(64);
 
 CREATE INDEX IF NOT EXISTS idx_strategy_runs_status
     ON strategy_runs (status);
