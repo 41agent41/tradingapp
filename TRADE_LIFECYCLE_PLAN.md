@@ -49,7 +49,7 @@ design significantly.
 | E6 | **Trailing stop**, e.g. "2-bar low", rule-defined | Ratchet enforced by the broker (§4.2) |
 | E7 | **SL/TP are rule-defined**, not engine config | Each strategy carries its own risk model |
 | E8 | **Trail only for now**; take-profit is a placeholder | Exits are stop-driven |
-| E9 | **`pct_equity` sizing**, resolved at entry only | No re-sizing of an open position |
+| E9 | **Risk-based sizing** (`risk_pct`), budget as % of equity, resolved at entry only | Sizing depends on the stop; no re-sizing of an open position |
 | E10 | **One strategy per instrument per account** | The broker's net position maps 1:1 to one run |
 | E11 | **Kill switch app-side**, may act as notification only | Bar-close cadence; a response, not a prevention |
 | E12 | **No position reversal** (long → short directly) | Flat is always visited in between |
@@ -170,29 +170,76 @@ operator docs rather than discovered.
 
 ## 5. Sizing
 
-**E9: `pct_equity`, resolved once at entry.** No re-sizing of an open position;
-no pyramiding.
+**E9: risk-based sizing, budgeted as a percentage of equity, resolved once at
+entry.** No re-sizing of an open position; no pyramiding.
 
-> **⚠️ OPEN — needs confirmation before implementation.** Two readings of the
-> sizing answer produce materially different position sizes, and the right one
-> is not derivable:
->
-> - **(a) Existing `pct_equity`** — allocate X% of equity as position notional.
->   $100k equity at 2% → a $2,000 position, regardless of where the stop sits.
-> - **(b) Risk-based, budgeted as % of equity** — risk X% of equity, size =
->   `(equity × risk%) ÷ stop distance`. $100k at 1% with a 50-pip stop → a
->   position where 50 pips of adverse move costs exactly $1,000. Position
->   *notional* varies with stop width; the *loss* is constant.
->
-> These differ by an order of magnitude in typical FX cases. **(b) is the
-> method that pairs with stop-based trading** — it is the reason to know the
-> stop at entry at all — and this plan is written assuming (b), implemented as
-> a new `risk_pct` sizing type alongside the existing three. If (a) was meant,
-> nothing new is needed and this section reduces to "use what exists."
+A new `risk_pct` sizing type alongside the existing `fixed` / `notional` /
+`pct_equity`. Risk a fixed fraction of equity per trade, with position size
+falling out of the stop distance:
 
-Either way, sizing resolves to a magnitude in the venue's native unit via the
-existing `instrument_spec` path (lots on MT5), and the venue's `min_size` /
-`size_step` still bind.
+> **size = (equity × risk%) ÷ loss-per-unit-of-size-at-the-stop**
+
+$100k equity at 1% risk with a 50-pip stop gives a position where 50 pips of
+adverse movement costs exactly $1,000. **Position notional varies with stop
+width; the loss does not.** That is the point — it is what makes a wide-stop
+setup and a tight-stop setup comparable, and it is the reason to know the stop
+at entry at all.
+
+### 5.1 Compute the loss from the venue's tick value, not from contract size
+
+The naive formula — `stop_distance × contract_size` — is correct only when the
+instrument's quote currency matches the account currency. EURUSD in a USD
+account works; EURJPY, XAUUSD in some configurations, and index CFDs do not,
+because the price move is denominated in the quote currency and the risk budget
+is in the account currency. Getting this wrong doesn't error — it silently
+sizes positions wrong by the FX rate, which is exactly the kind of bug that is
+invisible until it is expensive.
+
+MT5 already solves this: `SymbolInfo` exposes **`trade_tick_value`** (the value
+of one tick, *in account currency*) and `trade_tick_size`. So:
+
+```
+loss_per_unit_size = (stop_distance ÷ tick_size) × tick_value
+size               = (equity × risk%) ÷ loss_per_unit_size
+```
+
+This is robust across quote currencies and instrument classes without the app
+doing any FX arithmetic, and it delegates the conversion to the venue that
+actually knows the rate.
+
+**Contract change required.** `instrument_spec` currently returns `min_size`,
+`size_step`, `max_size`, `contract_size` and `currency`
+(`mt5_adapter.py:464-501`) — **not** tick value or tick size. Both must be
+added to the adapter and to the sidecar's `/symbol` response. Absent them,
+`risk_pct` must **refuse to size** rather than fall back to the contract-size
+approximation, since a silently-wrong size is worse than a refused trade.
+
+### 5.2 Sizing now depends on the stop — an ordering change
+
+Today sizing resolves from the bar price alone. Under `risk_pct` the stop rule
+must be **evaluated first**, so the engine's sequence becomes: evaluate entry →
+evaluate stop rule → derive stop distance → size → place order with stop
+attached. A strategy declaring `risk_pct` without a stop rule is a compile-time
+error, not a runtime surprise.
+
+### 5.3 A tight stop produces a large position — the caps stay binding
+
+This is the failure mode of risk-based sizing, and it deserves stating plainly:
+**as stop distance approaches zero, position size approaches infinity.** A 1%
+risk budget with a 2-pip stop is an enormous notional. Three guards, all
+fail-closed:
+
+- The existing `ORDER_MAX_*` fat-finger caps remain binding and are **not**
+  waived for risk-sized orders.
+- Check **free margin** before placing; a risk-correct size that cannot be
+  margined must be refused, not truncated silently.
+- Enforce a minimum stop distance (§4.1) — which also bounds the maximum size
+  this formula can produce.
+
+Sizing still resolves to a magnitude in the venue's native unit (lots on MT5)
+and the venue's `min_size` / `size_step` / `max_size` still bind. A computed
+size below `min_size` is a **refusal**: rounding up would risk more than the
+budget, which is the one thing this sizing type exists to prevent.
 
 ---
 
@@ -278,13 +325,22 @@ that achieves it wins.
 | **E-1** | Signed positions and the `long`/`short`/`flat` vocabulary (§3) | Shorts, without stops yet |
 | **E-2** | Broker-side SL at entry (§4.1) + sidecar contract change + fail-closed protection | Every position protected at the venue |
 | **E-3** | Bar-close stop management and the ratchet (§4.2) | Trailing stops as specified |
-| **E-4** | `risk_pct` sizing (§5), pending the §5 confirmation | Constant risk per trade |
+| **E-4** | `risk_pct` sizing (§5): tick-value fields on `instrument_spec` + sidecar `/symbol`, stop-before-sizing ordering, margin check | Constant risk per trade regardless of stop width |
 | **E-5** | Telegram notifier (§8) + kill switch in notify-only mode (§6) | Observability of the downside, zero blast radius |
 | **E-6** | Kill switch halt and flatten actions | Automated downside response |
 
 E-0 first is deliberate: every later phase depends on the app knowing what
 position it actually holds, and E-2 makes that question urgent by introducing
 closes the app did not perform.
+
+E-4 sits after E-2/E-3 by necessity rather than preference — `risk_pct` cannot
+be computed until the stop rule exists and is evaluated before sizing (§5.2).
+Until then, strategies size with the existing `pct_equity` type.
+
+**Two sidecar contract changes land in this component** (E-2's `sl`/`tp` and
+E-4's tick value/size). They are the only work in any of these plans that falls
+outside this repository, so they are worth batching into a single update of the
+Windows-side service rather than two.
 
 ---
 
