@@ -204,12 +204,13 @@ def _fetch_adapter_bars(
     period: str,
     start_date: str | None,
     end_date: str | None,
+    account: str | None = None,
 ) -> list[dict]:
     """Fetch bars for a non-IB venue through its market-data adapter."""
 
     from adapters import get_market_data_adapter
 
-    adapter = get_market_data_adapter(source)
+    adapter = get_market_data_adapter(source, account)
     result = adapter.historical_bars(
         symbol,
         timeframe,

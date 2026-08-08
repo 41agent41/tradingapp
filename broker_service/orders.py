@@ -75,6 +75,9 @@ class PlaceOrderRequest(BaseModel):
     # Execution venue (B1). Defaults to IB; the registry dispatches to the
     # matching broker adapter. mt5 resolves to a 501 until its adapter lands.
     broker: str = "ib"
+    # Account within that platform (C-1). Omitted resolves to the platform's
+    # default connection, so pre-C-1 callers are unchanged.
+    account: Optional[str] = None
     # Optional — the backend can supply its audit-row id so error logs
     # can be correlated to the persisted attempt.
     audit_id: Optional[int] = None
@@ -96,6 +99,7 @@ class ModifyOrderRequest(BaseModel):
     currency: str = "USD"
     account_mode: str = "paper"
     broker: str = "ib"
+    account: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -262,18 +266,23 @@ async def place_order(req: PlaceOrderRequest) -> Dict[str, Any]:
 
     from adapters import get_broker_adapter
 
-    adapter = get_broker_adapter(req.broker)
+    # `account_mode` is passed so the connection's declared mode is enforced
+    # here, before anything reaches a venue: a live order addressed to a
+    # connection declared paper (or the reverse) is refused, not rerouted.
+    adapter = get_broker_adapter(req.broker, req.account, account_mode=req.account_mode)
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, lambda: adapter.place_order(req))
 
 
 @router.delete("/orders/{order_id}")
-async def cancel_order(order_id: int, broker: str = "ib") -> Dict[str, Any]:
+async def cancel_order(
+    order_id: int, broker: str = "ib", account: str | None = None
+) -> Dict[str, Any]:
     import asyncio
 
     from adapters import get_broker_adapter
 
-    adapter = get_broker_adapter(broker)
+    adapter = get_broker_adapter(broker, account)
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, lambda: adapter.cancel_order(order_id))
 
@@ -284,7 +293,7 @@ async def modify_order(order_id: int, req: ModifyOrderRequest) -> Dict[str, Any]
 
     from adapters import get_broker_adapter
 
-    adapter = get_broker_adapter(req.broker)
+    adapter = get_broker_adapter(req.broker, req.account, account_mode=req.account_mode)
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, lambda: adapter.modify_order(order_id, req))
 

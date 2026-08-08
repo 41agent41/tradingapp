@@ -167,7 +167,7 @@ async def search_contracts(request: SearchRequest):
     try:
         from adapters import get_market_data_adapter
 
-        adapter = get_market_data_adapter(request.source)
+        adapter = get_market_data_adapter(request.source, getattr(request, "account", None))
         return adapter.search_contracts(request)
 
     except HTTPException:

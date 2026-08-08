@@ -86,11 +86,13 @@ router.get('/summary', async (req: Request, res: Response) => {
     // Broker-scoped: the summary comes from the venue named by `?broker=`,
     // defaulting to IB. It is also where `pct_equity` sizing gets its equity.
     const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+    const account =
+      typeof req.query.account === 'string' ? req.query.account.toLowerCase() : undefined;
 
     console.log(`Fetching account summary from broker service (broker=${broker})`);
 
     const response = await axios.get(`${BROKER_SERVICE_URL}/account/summary`, {
-      params: { broker },
+      params: { broker, account },
       timeout: 20000, // 20 second timeout for account data
       headers: {
         Connection: 'close',
@@ -139,11 +141,13 @@ router.get('/positions', async (req: Request, res: Response) => {
     // Broker-scoped (B1): positions come from the venue named by `?broker=`,
     // defaulting to IB. Each adapter normalises its payload to the same shape.
     const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+    const account =
+      typeof req.query.account === 'string' ? req.query.account.toLowerCase() : undefined;
 
     console.log(`Fetching account positions from broker service (broker=${broker})`);
 
     const response = await axios.get(`${BROKER_SERVICE_URL}/account/positions`, {
-      params: { broker },
+      params: { broker, account },
       timeout: 20000, // 20 second timeout
       headers: {
         Connection: 'close',
@@ -194,11 +198,13 @@ router.get('/orders', async (req: Request, res: Response) => {
     }
 
     const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+    const account =
+      typeof req.query.account === 'string' ? req.query.account.toLowerCase() : undefined;
 
     console.log(`Fetching account orders from broker service (broker=${broker})`);
 
     const response = await axios.get(`${BROKER_SERVICE_URL}/account/orders`, {
-      params: { broker },
+      params: { broker, account },
       timeout: 20000, // 20 second timeout
       headers: {
         Connection: 'close',
@@ -257,6 +263,8 @@ router.get('/executions', async (req: Request, res: Response) => {
   try {
     const broker =
       typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : undefined;
+    const account =
+      typeof req.query.account === 'string' ? req.query.account.toLowerCase() : undefined;
     const symbol = typeof req.query.symbol === 'string' ? req.query.symbol : undefined;
     const accountMode =
       typeof req.query.account_mode === 'string' ? req.query.account_mode : undefined;
@@ -264,7 +272,7 @@ router.get('/executions', async (req: Request, res: Response) => {
 
     if (String(req.query.fresh).toLowerCase() === 'true') {
       const response = await axios.get(`${BROKER_SERVICE_URL}/account/executions`, {
-        params: { broker: broker || 'ib', days: Number(req.query.days) || 1 },
+        params: { broker: broker || 'ib', account, days: Number(req.query.days) || 1 },
         timeout: 45000,
         headers: { Connection: 'close' },
       });
@@ -279,6 +287,7 @@ router.get('/executions', async (req: Request, res: Response) => {
     const repo = new ExecutionRepository(dbService);
     const rows = await repo.list({
       broker,
+      broker_account: account,
       symbol,
       account_mode: accountMode,
       run_id: Number.isFinite(runId) ? runId : undefined,
@@ -314,6 +323,8 @@ router.get('/pnl', async (req: Request, res: Response) => {
   try {
     const broker =
       typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : undefined;
+    const account =
+      typeof req.query.account === 'string' ? req.query.account.toLowerCase() : undefined;
     const symbol = typeof req.query.symbol === 'string' ? req.query.symbol : undefined;
     const accountMode =
       typeof req.query.account_mode === 'string' ? req.query.account_mode : undefined;
@@ -327,6 +338,7 @@ router.get('/pnl', async (req: Request, res: Response) => {
     const repo = new ExecutionRepository(dbService);
     const fills = await repo.listForPnl({
       broker,
+      broker_account: account,
       symbol,
       account_mode: accountMode,
       run_id: Number.isFinite(runId) ? runId : undefined,
@@ -370,6 +382,8 @@ router.get('/pnl', async (req: Request, res: Response) => {
 router.get('/reconciliation', async (req: Request, res: Response) => {
   try {
     const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+    const account =
+      typeof req.query.account === 'string' ? req.query.account.toLowerCase() : undefined;
     const accountMode =
       typeof req.query.account_mode === 'string' ? req.query.account_mode : undefined;
     // Fractional venue quantities (FX units, MT5 lots) never compare exactly.
@@ -379,7 +393,7 @@ router.get('/reconciliation', async (req: Request, res: Response) => {
     const [ours, venueResponse] = await Promise.all([
       repo.netPositionsByBroker(broker, accountMode),
       axios.get(`${BROKER_SERVICE_URL}/account/positions`, {
-        params: { broker },
+        params: { broker, account },
         timeout: 20000,
         headers: { Connection: 'close' },
       }),
@@ -425,11 +439,13 @@ router.get('/all', async (req: Request, res: Response) => {
     }
 
     const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+    const account =
+      typeof req.query.account === 'string' ? req.query.account.toLowerCase() : undefined;
 
     console.log(`Fetching all account data from broker service (broker=${broker})`);
 
     const response = await axios.get(`${BROKER_SERVICE_URL}/account/all`, {
-      params: { broker },
+      params: { broker, account },
       timeout: 30000, // 30 second timeout for comprehensive data
       headers: {
         Connection: 'close',

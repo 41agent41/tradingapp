@@ -220,6 +220,7 @@ def get_executions_sync(days: int = 1):
 @router.get("/account/executions", response_model=list[Execution])
 async def get_account_executions(
     broker: str = "ib",
+    account: str | None = None,
     days: int = Query(default=1, ge=1, le=30),
 ):
     """Recent **fills** for a venue — the authoritative record of what traded.
@@ -232,14 +233,17 @@ async def get_account_executions(
     broker a 400 and a recognised-but-unconfigured one a 501.
     """
     try:
-        logger.info(f"Account executions endpoint called (broker={broker}, days={days})")
+        logger.info(
+            f"Account executions endpoint called (broker={broker}, "
+            f"account={account}, days={days})"
+        )
 
         from adapters import get_broker_adapter, resolve_provider
 
         if resolve_provider(broker) == "ib":
             rows = await run_tws_operation(lambda: get_executions_sync(days))
         else:
-            adapter = get_broker_adapter(broker)
+            adapter = get_broker_adapter(broker, account)
             rows = await run_tws_operation(lambda: adapter.executions(days))
         logger.info(f"Successfully retrieved {len(rows)} executions")
         return rows
@@ -258,7 +262,11 @@ async def get_account_executions(
 
 
 @router.get("/instrument/spec", response_model=InstrumentSpec)
-async def get_instrument_spec(symbol: str = Query(..., min_length=1), broker: str = "ib"):
+async def get_instrument_spec(
+    symbol: str = Query(..., min_length=1),
+    broker: str = "ib",
+    account: str | None = None,
+):
     """What one unit of quantity means for an instrument at a venue.
 
     Sizing is abstract until it has to become a number, and "100" means 100
@@ -269,7 +277,7 @@ async def get_instrument_spec(symbol: str = Query(..., min_length=1), broker: st
     try:
         from adapters import get_broker_adapter
 
-        adapter = get_broker_adapter(broker)
+        adapter = get_broker_adapter(broker, account)
         spec = await run_tws_operation(lambda: adapter.instrument_spec(symbol))
         return InstrumentSpec(**spec)
 
@@ -287,7 +295,7 @@ async def get_instrument_spec(symbol: str = Query(..., min_length=1), broker: st
 
 
 @router.get("/account/summary", response_model=AccountSummary)
-async def get_account_summary(broker: str = "ib"):
+async def get_account_summary(broker: str = "ib", account: str | None = None):
     """Account summary for a venue.
 
     Broker-aware for the same reason positions are: a run on MT5 / Alpaca /
@@ -304,7 +312,7 @@ async def get_account_summary(broker: str = "ib"):
         if resolve_provider(broker) == "ib":
             summary = await run_tws_operation(get_account_summary_sync)
         else:
-            adapter = get_broker_adapter(broker)
+            adapter = get_broker_adapter(broker, account)
             summary = AccountSummary(**await run_tws_operation(adapter.account_summary))
         logger.info(f"Successfully retrieved account summary for account: {summary.account_id}")
         return summary
@@ -323,7 +331,7 @@ async def get_account_summary(broker: str = "ib"):
 
 
 @router.get("/account/positions", response_model=list[Position])
-async def get_account_positions(broker: str = "ib"):
+async def get_account_positions(broker: str = "ib", account: str | None = None):
     """Get current account positions for a venue (B1 close-out).
 
     Dispatches through the broker adapter registry, so a run on MT5 / Alpaca /
@@ -340,7 +348,7 @@ async def get_account_positions(broker: str = "ib"):
         if resolve_provider(broker) == "ib":
             positions = await run_tws_operation(get_positions_sync)
         else:
-            adapter = get_broker_adapter(broker)
+            adapter = get_broker_adapter(broker, account)
             positions = await run_tws_operation(adapter.positions)
         logger.info(f"Successfully retrieved {len(positions)} positions")
         return positions
@@ -359,7 +367,7 @@ async def get_account_positions(broker: str = "ib"):
 
 
 @router.get("/account/orders", response_model=list[OrderModel])
-async def get_account_orders(broker: str = "ib"):
+async def get_account_orders(broker: str = "ib", account: str | None = None):
     """Working orders for a venue.
 
     These are orders still *open* at the venue, as opposed to `/account/executions`
@@ -373,7 +381,7 @@ async def get_account_orders(broker: str = "ib"):
         if resolve_provider(broker) == "ib":
             orders = await run_tws_operation(get_orders_sync)
         else:
-            adapter = get_broker_adapter(broker)
+            adapter = get_broker_adapter(broker, account)
             orders = await run_tws_operation(adapter.open_orders)
         logger.info(f"Successfully retrieved {len(orders)} orders")
         return orders
@@ -392,7 +400,7 @@ async def get_account_orders(broker: str = "ib"):
 
 
 @router.get("/account/all", response_model=AccountData)
-async def get_all_account_data(broker: str = "ib"):
+async def get_all_account_data(broker: str = "ib", account: str | None = None):
     """All account data (summary, positions, orders) in one call for a venue.
 
     Sequential rather than concurrent: the IB path shares one synchronous
@@ -400,12 +408,12 @@ async def get_all_account_data(broker: str = "ib"):
     makes failures harder to attribute.
     """
     try:
-        logger.info(f"All account data endpoint called (broker={broker})")
+        logger.info(f"All account data endpoint called (broker={broker}, account={account})")
 
         from adapters import get_broker_adapter, resolve_provider
 
         is_ib = resolve_provider(broker) == "ib"
-        adapter = None if is_ib else get_broker_adapter(broker)
+        adapter = None if is_ib else get_broker_adapter(broker, account)
 
         # Get account summary first (most important)
         try:
