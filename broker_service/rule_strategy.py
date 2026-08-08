@@ -873,6 +873,41 @@ class RuleStrategy(TradingStrategy):
             "strategy": self.name,
         }
 
+    def trail_stop(self, df: pd.DataFrame, position: Position | None = None) -> Dict[str, Any]:
+        """The stop this strategy wants for an **open** position right now.
+
+        Separate from :meth:`evaluate` because trailing is not a signal: it
+        happens on every bar a position is open, including bars where the rules
+        produce nothing at all. Same spec, same bars, same resolver as the
+        entry stop — so a trail can never drift from the stop it is tightening.
+
+        The **ratchet is not applied here**. The caller compares against what
+        the broker currently holds and only issues a modify when this is more
+        protective, which is what lets the broker hold the high-water mark
+        instead of the app carrying it as state.
+        """
+
+        position = position or Position()
+        if self.stop is None or position.size == 0:
+            return {"stop_price": None, "direction": None, "error": None}
+
+        if df is None or len(df) == 0:
+            return {"stop_price": None, "direction": None, "error": "no bars"}
+
+        enriched = indicator_calculator.calculate_indicators(df, self.indicators)
+        signals, _ = self._prepared(enriched)
+        direction = "long" if position.size > 0 else "short"
+        reference = float(signals.iloc[-1].get("close", float("nan")))
+
+        try:
+            price = resolve_stop(self.stop, signals, direction=direction, reference_price=reference)
+        except StopSpecError as exc:
+            # Reported, never swallowed: a trail that silently fails leaves the
+            # position on a stop that is no longer the one the rules describe.
+            return {"stop_price": None, "direction": direction, "error": str(exc)}
+
+        return {"stop_price": price, "direction": direction, "error": None}
+
     def _merge_higher_timeframe(
         self, signals: pd.DataFrame, timeframe: str, columns: set[str]
     ) -> None:

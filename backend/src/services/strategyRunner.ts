@@ -31,6 +31,7 @@
 
 import axios from 'axios';
 import { logger } from './logger.js';
+import { applyTrail } from './stopManager.js';
 import { dbService } from './database.js';
 import { StrategyRepository, type ActiveRun, type StagingGroup } from './strategyRepository.js';
 import { ExecutionRepository } from './executionRepository.js';
@@ -100,12 +101,16 @@ export interface PositionState {
   /** What the app's own fills imply it holds, for the reconciliation check.
    *  Null when unavailable. Never used as the position itself (E-0). */
   derived_size?: number | null;
+  /** The protective stop currently attached at the venue (E-3). The trail
+   *  compares against this rather than against carried state. */
+  stop_loss?: number | null;
 }
 
 /** One position as the venue reports it. */
 interface VenuePosition {
   size: number;
   avgPrice: number;
+  stopLoss: number | null;
 }
 
 export interface EvaluateResult {
@@ -123,6 +128,10 @@ export interface EvaluateResult {
    *  refuses the entry rather than opening unprotected. */
   stop_error?: string | null;
   has_stop_rule?: boolean;
+  /** The stop the rules want for an **open** position on this bar (E-3).
+   *  Independent of the signal: trailing happens on bars the rules say
+   *  nothing about. */
+  trail?: { stop_price: number | null; direction: string | null; error: string | null };
 }
 
 export interface StrategySignalRecord {
@@ -160,6 +169,9 @@ export interface StrategyRunnerDeps {
   /** A3 execution: map an actionable signal to a gated, audited paper order.
    *  Optional so the signal-only path (and its tests) run without it. */
   executeSignal?(ctx: ExecutionContext): Promise<ExecutionResult>;
+  /** E-3: move an open position's stop at the venue. Optional so a runner
+   *  without stop management behaves as before. */
+  modifyStop?(connection: Connection, symbol: string, stopPrice: number): Promise<void>;
   /** C-3 staged deploy. Optional so a runner without groups behaves as before. */
   listStagingGroups?(): Promise<StagingGroup[]>;
   admitGroup?(groupId: number): Promise<number>;
@@ -410,9 +422,11 @@ function defaultDeps(
       if (!symbol) continue;
       const size = Number(pos?.position);
       const cost = Number(pos?.average_cost);
+      const stop = Number(pos?.stop_loss);
       bySymbol.set(symbol, {
         size: Number.isFinite(size) ? size : 0,
         avgPrice: Number.isFinite(cost) && cost > 0 ? cost : 0,
+        stopLoss: Number.isFinite(stop) && stop > 0 ? stop : null,
       });
     }
     positionCache.set(key, { at: Date.now(), bySymbol });
@@ -476,7 +490,7 @@ function defaultDeps(
       // open a position on top of one it already holds. The caller records the
       // error on the run and counts it against the connection's breaker.
       const positions = await venuePositions(connection);
-      const venue = positions.get(symbol) ?? { size: 0, avgPrice: 0 };
+      const venue = positions.get(symbol) ?? { size: 0, avgPrice: 0, stopLoss: null };
 
       // Reconciliation, not authority. The fills-derived figure is what the
       // app *believes* it holds; a persistent disagreement means fills are
@@ -498,7 +512,12 @@ function defaultDeps(
         derived = null;
       }
 
-      return { size: venue.size, avg_price: venue.avgPrice, derived_size: derived };
+      return {
+        size: venue.size,
+        avg_price: venue.avgPrice,
+        stop_loss: venue.stopLoss,
+        derived_size: derived,
+      };
     },
     evaluate: async (bars, ruleSet, position) => {
       const response = await axios.post(
@@ -518,6 +537,17 @@ function defaultDeps(
     emit,
     now: () => Date.now(),
     executeSignal: (ctx) => engine.execute(ctx),
+    modifyStop: async (connection, symbol, stopPrice) => {
+      await axios.post(
+        `${BROKER_SERVICE_URL}/positions/${encodeURIComponent(symbol)}/stop`,
+        { stop_loss: stopPrice },
+        {
+          params: { broker: connection.broker, account: connection.brokerAccount },
+          timeout: 30000,
+          headers: { Connection: 'close' },
+        }
+      );
+    },
     listStagingGroups: () => repo.listStagingGroups(),
     admitGroup: (groupId) => repo.admitGroup(groupId),
     abandonGroup: (groupId, reason) => repo.abandonGroup(groupId, reason),
@@ -553,6 +583,7 @@ export class StrategyRunner {
   public groupsAdmitted = 0;
   public groupsAbandoned = 0;
   public positionDivergences = 0;
+  public stopsTightened = 0;
   /** Runs whose venue and fills-derived positions currently disagree. */
   private readonly divergentRuns = new Map<
     number,
@@ -678,6 +709,53 @@ export class StrategyRunner {
     };
 
     await Promise.all(Array.from({ length: width }, () => worker()));
+  }
+
+  /**
+   * Move an open position's stop to what the rules want on this bar (E-3).
+   *
+   * Only tightens: `decideTrail` compares against the stop the venue already
+   * holds, so the broker keeps the high-water mark and the app carries no
+   * state. Failure is logged and counted, never fatal — a venue that refuses a
+   * modify leaves the previous stop in place, which is degraded but still
+   * protected, and failing the evaluation would stop the strategy managing
+   * positions it can still manage.
+   */
+  private async trailStop(
+    run: ActiveRun,
+    position: PositionState,
+    result: EvaluateResult,
+    lastBar: RawBar,
+    label: string
+  ): Promise<void> {
+    if (!this.deps.modifyStop) return;
+    if (position.size === 0) return;
+    const desired = result.trail?.stop_price ?? null;
+    if (result.trail?.error) {
+      logger.warn(
+        { run_id: run.id, connection: label, err: result.trail.error },
+        'trail stop could not be resolved — the existing stop remains'
+      );
+      return;
+    }
+    if (desired == null) return;
+
+    const outcome = await applyTrail(
+      { modifyStop: this.deps.modifyStop },
+      {
+        connection: connectionOf(run),
+        position: {
+          symbol: runSymbol(run),
+          size: position.size,
+          avgPrice: position.avg_price,
+          stopLoss: position.stop_loss ?? null,
+        },
+        desiredStop: desired,
+        referencePrice: lastBar.close,
+      }
+    );
+    if (outcome.moved) this.stopsTightened++;
+    if (outcome.error) this.errors++;
   }
 
   /**
@@ -822,6 +900,12 @@ export class StrategyRunner {
       this.checkReconciliation(run, position, label);
       const result = await this.deps.evaluate(bars, run.rule_set, position);
 
+      // Trail the stop before considering the signal (E-3). Order matters: a
+      // bar that both tightens the stop and produces an exit should tighten
+      // first, so the position stays protected for the moment between the two
+      // — and if the exit places successfully the trail was harmless anyway.
+      await this.trailStop(run, position, result, bars[bars.length - 1], label);
+
       // Dedupe: one decision per closed bar. Skip if we already recorded this
       // bar for the run (the timer can fire faster than the bar cadence).
       const latest = await this.deps.latestSignalBarTime(run.id);
@@ -965,6 +1049,7 @@ export class StrategyRunner {
         groups_admitted: this.groupsAdmitted,
         groups_abandoned: this.groupsAbandoned,
         position_divergences: this.positionDivergences,
+        stops_tightened: this.stopsTightened,
       },
       divergent_runs: Object.fromEntries(this.divergentRuns),
       max_connection_concurrency: this.maxConnectionConcurrency,

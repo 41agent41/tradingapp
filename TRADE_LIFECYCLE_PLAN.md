@@ -1,6 +1,6 @@
 # Trade Lifecycle — Direction, Broker-Side Stops, Sizing, and the Kill Switch
 
-**Status:** E-0, E-1 and E-2 delivered; E-3 onward planned
+**Status:** E-0 through E-3 delivered; E-4 onward planned
 **Scope:** what happens from the moment a strategy decides to trade until the
 position is closed — direction, order placement, protective stops, trade
 management, and the downside backstop.
@@ -324,7 +324,7 @@ that achieves it wins.
 | **E-0** ✅ | Broker position as truth (§7) + reconciliation check | **Delivered.** Correct position tracking, prerequisite for everything else |
 | **E-1** ✅ | Signed positions and the `long`/`short`/`flat` vocabulary (§3) | **Delivered.** Shorts, without stops yet |
 | **E-2** ✅ | Broker-side SL at entry (§4.1) + sidecar contract change + fail-closed protection | **Delivered.** Every position protected at the venue |
-| **E-3** | Bar-close stop management and the ratchet (§4.2) | Trailing stops as specified |
+| **E-3** ✅ | Bar-close stop management and the ratchet (§4.2) | **Delivered.** Trailing stops as specified |
 | **E-4** | `risk_pct` sizing (§5): tick-value fields on `instrument_spec` + sidecar `/symbol`, stop-before-sizing ordering, margin check | Constant risk per trade regardless of stop width |
 | **E-5** | Telegram notifier (§8) + kill switch in notify-only mode (§6) | Observability of the downside, zero blast radius |
 | **E-6** | Kill switch halt and flatten actions | Automated downside response |
@@ -423,6 +423,34 @@ Windows-side service rather than two.
 > should include each position's `sl`/`tp`, and `POST /positions/{symbol}/stop`
 > (MT5's `TRADE_ACTION_SLTP`) backs the E-3 trail. The contract is documented in
 > `mt5_adapter.py`.
+
+> **E-3 delivered.** `RuleStrategy.trail_stop()` resolves the stop the rules
+> want for an **open** position — same spec, same bars, same resolver as the
+> entry stop, so a trail can never drift from the stop it is tightening. It
+> rides along on `/strategies/evaluate` so a bar costs one round trip.
+>
+> `stopManager.ts` decides and applies. `decideTrail` is pure, which matters
+> because with the stop held at the broker there is no high-water mark in the
+> app to check — **the correctness of "never move backwards" rests entirely on
+> that one comparison**, so it is testable without a venue and tested from both
+> directions.
+>
+> Trailing is deliberately **not a signal**: it runs on every bar a position is
+> open, including bars the rules say nothing about. It runs *before* the signal
+> is acted on, so a bar that both tightens and exits stays protected in the
+> moment between the two.
+>
+> Three refusals beyond the ratchet: a trail that has crossed the market is
+> skipped (a `bar_extreme` on a sharp reversal can resolve past price, and
+> sending it would close the position at market while appearing to protect it);
+> a trail inside the venue's minimum distance is skipped, since a rejected
+> modify leaves the old stop in place anyway; and an unchanged stop is not
+> re-sent, which would otherwise be a pointless modify every bar for the life
+> of the position.
+>
+> A failed modify is counted and logged, never fatal. The previous stop remains
+> in place — degraded but protected — and failing the evaluation would stop the
+> strategy managing positions it can still manage.
 
 ---
 

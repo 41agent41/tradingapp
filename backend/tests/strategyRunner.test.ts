@@ -632,3 +632,84 @@ describe('StrategyRunner — position reconciliation (E-0)', () => {
     expect(runner.status().totals.errors).toBe(0);
   });
 });
+
+describe('StrategyRunner — trailing stops (E-3)', () => {
+  const openLong = { size: 1, avg_price: 1.1, stop_loss: 1.09, derived_size: 1 };
+
+  function resultWithTrail(stopPrice: number | null, error: string | null = null) {
+    return {
+      ...buyResult,
+      signal: 'none',
+      trail: { stop_price: stopPrice, direction: 'long', error },
+    };
+  }
+
+  it('tightens the venue stop on a bar with no signal at all', async () => {
+    // Trailing is not a signal: it happens on every bar a position is open,
+    // including bars the rules say nothing about.
+    const modifyStop = jest.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({
+      getPosition: jest.fn().mockResolvedValue(openLong),
+      evaluate: jest.fn().mockResolvedValue(resultWithTrail(1.095)),
+      modifyStop,
+    });
+
+    const runner = makeRunner(deps);
+    await runner.runOnce();
+
+    expect(modifyStop).toHaveBeenCalledWith(expect.anything(), 'MSFT', 1.095);
+    expect(runner.status().totals.stops_tightened).toBe(1);
+  });
+
+  it('does not move a stop that would loosen', async () => {
+    const modifyStop = jest.fn();
+    const deps = makeDeps({
+      getPosition: jest.fn().mockResolvedValue(openLong),
+      evaluate: jest.fn().mockResolvedValue(resultWithTrail(1.05)),
+      modifyStop,
+    });
+
+    await makeRunner(deps).runOnce();
+    expect(modifyStop).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when flat', async () => {
+    const modifyStop = jest.fn();
+    const deps = makeDeps({
+      getPosition: jest.fn().mockResolvedValue({ size: 0, avg_price: 0, derived_size: 0 }),
+      evaluate: jest.fn().mockResolvedValue(resultWithTrail(1.095)),
+      modifyStop,
+    });
+
+    await makeRunner(deps).runOnce();
+    expect(modifyStop).not.toHaveBeenCalled();
+  });
+
+  it('leaves the existing stop alone when the trail cannot be resolved', async () => {
+    const modifyStop = jest.fn();
+    const deps = makeDeps({
+      getPosition: jest.fn().mockResolvedValue(openLong),
+      evaluate: jest.fn().mockResolvedValue(resultWithTrail(null, 'no usable ATR')),
+      modifyStop,
+    });
+
+    await makeRunner(deps).runOnce();
+    expect(modifyStop).not.toHaveBeenCalled();
+  });
+
+  it('a failed modify is counted but does not stop the evaluation', async () => {
+    // The previous stop remains in place — degraded but protected.
+    const deps = makeDeps({
+      getPosition: jest.fn().mockResolvedValue(openLong),
+      evaluate: jest.fn().mockResolvedValue(resultWithTrail(1.095)),
+      modifyStop: jest.fn().mockRejectedValue(new Error('market closed')),
+    });
+
+    const runner = makeRunner(deps);
+    await runner.runOnce();
+
+    expect(runner.status().totals.errors).toBe(1);
+    // The signal still got recorded: the trail failing must not abort the bar.
+    expect(runner.status().totals.runs_evaluated).toBe(1);
+  });
+});
