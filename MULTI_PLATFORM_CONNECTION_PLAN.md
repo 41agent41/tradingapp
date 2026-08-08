@@ -1,28 +1,45 @@
-# Multi-Connection MT5 — Systematic Trading Across Many MT5 Accounts
+# Multi-Platform, Multi-Account — Systematic Trading Across Many Broker Connections
 
 **Status:** plan / not yet implemented
-**Scope:** run the existing systematic stack against **N simultaneous MT5
-broker connections** (IC Markets, Pepperstone, FTMO, a demo terminal, …)
-rather than the single connection the platform supports today.
+**Scope:** run the existing systematic stack against **N simultaneous broker
+connections**, spanning multiple *platforms* (MT5, IB, Alpaca, OANDA) and
+multiple *accounts per platform* — rather than the one-account-per-platform
+model supported today. **This round of development targets MT5**, but the
+structures are platform-generic by design and MT5 is the first consumer, not
+the special case.
 **Prerequisites:** Component A (systematic engine) and Component B (broker
-seam + `MT5Adapter`) from [SYSTEMATIC_TRADING_ROADMAP.md](SYSTEMATIC_TRADING_ROADMAP.md)
+seam + adapters) from [SYSTEMATIC_TRADING_ROADMAP.md](SYSTEMATIC_TRADING_ROADMAP.md)
 — both delivered.
 
 This document is Component **C** of that roadmap. It assumes B1/B2 vocabulary
-(`adapters.py`, `MT5Adapter`, `source=`/`broker=`) throughout.
+(`adapters.py`, the adapter protocols, `source=`/`broker=`) throughout.
+
+### Terminology
+
+The word "broker" is overloaded in the existing code, which is the root of the
+problem this document solves. Throughout, precisely:
+
+- **Platform** — the protocol and integration: `ib`, `mt5`, `alpaca`, `oanda`.
+  This is what `broker=` means in today's code.
+- **Account** — one set of credentials at one firm on one platform:
+  `pepperstone-live`, `icmarkets-demo`.
+- **Connection** — the addressable pair `(platform, account)`, e.g.
+  `mt5:pepperstone-live`. This is the unit the whole document is about.
 
 ---
 
 ## 1. Why this is net-new
 
-The platform already trades MT5. It cannot trade **more than one MT5 account**,
-and the reason is a single design decision made in B1 that was correct then and
-is the binding constraint now:
+The platform already trades MT5, IB, Alpaca and OANDA. It cannot trade **more
+than one account on any of them**, and the reason is a single design decision
+made in B1 that was correct then and is the binding constraint now:
 
-> **`broker` is both the *protocol* and the *account identity*.**
+> **`broker` is both the *platform* and the *account identity*.**
 
-`broker='mt5'` names a provider *family*, but the code uses it as if it named a
-concrete, singular connection. Every layer inherits that assumption:
+`broker='mt5'` names a platform, but the code uses it as if it named a
+concrete, singular connection. Every layer inherits that assumption — and note
+this is **not an MT5 problem**: `ib`, `alpaca` and `oanda` are each equally
+locked to one account by the same code.
 
 | Layer | File | The singular assumption |
 |---|---|---|
@@ -34,9 +51,35 @@ concrete, singular connection. Every layer inherits that assumption:
 | Runner | `backend/src/services/strategyRunner.ts:172-230` | Caches keyed `broker` → one equity/positions/spec set per *provider* |
 | Poller | `backend/src/services/executionsPoller.ts:197-199` | Iterates `activeBrokers()` — provider strings |
 
-So "add a second MT5 account" has nowhere to go, in the same way "add
-MetaTrader" had nowhere to go before B1. This plan introduces the equivalent
-seam one level down: **connection identity**.
+So "add a second account" has nowhere to go, in the same way "add MetaTrader"
+had nowhere to go before B1. This plan introduces the equivalent seam one level
+down: **connection identity**.
+
+### 1.0 One firm, two platforms — the dual-path trap
+
+Several firms are reachable **both** through their own API and through their
+MT5 offering. OANDA is the sharpest case: this repo already implements
+`oanda_adapter.py` against OANDA's native REST API, *and* OANDA offers MT5
+accounts. IG Markets is the same shape. Pepperstone offers MT4/MT5 and cTrader.
+
+So `oanda:live` and `mt5:oanda-live` may be **two routes to the same money**,
+with different symbol names, different instrument specs, different fills and
+different capabilities. The connection model handles this correctly — they are
+simply two connections — but two hazards follow, and neither is hypothetical:
+
+1. **Aggregate exposure double-counts.** The portfolio caps in C5 would see one
+   account's position twice, or treat one account's equity as two accounts'
+   worth of risk budget.
+2. **Two runs can trade the same money believing they are independent.** Each
+   sees "its" position and sizes accordingly; the firm sees one account being
+   traded by two strategies at twice the intended size.
+
+**Design response:** a connection manifest entry may declare a
+`same_funds_as: <connection-id>` link. Connections so linked are treated as one
+account for aggregate exposure and are **refused as simultaneous targets of the
+same run group**. This is cheap to add now and expensive to retrofit after a
+fleet is live — and it cannot be detected automatically, since nothing in
+either API reveals that the accounts are the same underlying funds.
 
 ### 1.1 Three latent correctness bugs, not just a missing feature
 
@@ -199,63 +242,93 @@ test that ingests the same `exec_id` from two accounts and gets two rows.
 
 ### C2. Connection registry (`broker_service`)
 
-Generalise `adapters.py` from provider-keyed to connection-keyed.
+Generalise `adapters.py` from platform-keyed to connection-keyed.
 
 - `_broker` / `_market_data` become `Dict[tuple[str, str], Adapter]`.
-- `get_broker_adapter(broker, account)` / `get_market_data_adapter(source, account)`;
-  omitted account resolves to that provider's designated default connection,
-  preserving current call sites.
-- Configuration via a manifest that **references secrets by env-var name**
-  rather than containing them:
+- `get_broker_adapter(platform, account)` /
+  `get_market_data_adapter(source, account)`; omitted account resolves to that
+  platform's designated default connection, preserving current call sites.
+- **One manifest for all platforms**, not one env var per platform. Secrets are
+  **referenced by env-var name** rather than contained:
 
   ```jsonc
-  // MT5_CONNECTIONS (JSON, or a path via MT5_CONNECTIONS_FILE)
+  // BROKER_CONNECTIONS (JSON, or a path via BROKER_CONNECTIONS_FILE)
   [
-    { "id": "icmarkets-live",  "url": "http://10.7.3.22:9100",
-      "secret_env": "MT5_SECRET_ICMARKETS", "account_mode": "live",  "default": true },
-    { "id": "ftmo-challenge",  "url": "http://10.7.3.23:9100",
-      "secret_env": "MT5_SECRET_FTMO",      "account_mode": "live"  },
-    { "id": "demo",            "url": "http://10.7.3.24:9100",
-      "secret_env": "MT5_SECRET_DEMO",      "account_mode": "paper" }
+    { "id": "pepperstone-live", "platform": "mt5",
+      "url": "http://10.7.3.22:9100", "secret_env": "MT5_SECRET_PEPPERSTONE",
+      "account_mode": "live", "currency": "USD", "default": true,
+      "server_timezone": "Etc/GMT-2" },
+
+    { "id": "icmarkets-demo",   "platform": "mt5",
+      "url": "http://10.7.3.23:9100", "secret_env": "MT5_SECRET_ICMARKETS",
+      "account_mode": "paper", "currency": "USD" },
+
+    { "id": "oanda-mt5",        "platform": "mt5",
+      "url": "http://10.7.3.24:9100", "secret_env": "MT5_SECRET_OANDA",
+      "account_mode": "live", "currency": "USD",
+      "same_funds_as": "oanda-native" },          // see §1.0
+
+    { "id": "oanda-native",     "platform": "oanda",
+      "token_env": "OANDA_API_TOKEN", "account_env": "OANDA_ACCOUNT_ID",
+      "account_mode": "live", "currency": "USD" }
   ]
   ```
 
-- **Backwards compatibility:** an existing `MT5_BRIDGE_URL` /
-  `MT5_BRIDGE_SECRET` with no manifest synthesises exactly one connection
-  `mt5:default`. Setting both forms is a startup error, not a silent
-  precedence rule.
+  A platform-generic manifest is the point: adding a second IB or Alpaca
+  account later is a manifest entry, not another round of this work.
+  Platform-specific fields (`url` for MT5's sidecar, `token_env` for OANDA)
+  are validated per platform.
+- **Backwards compatibility:** the existing single-account env vars
+  (`MT5_BRIDGE_URL`/`MT5_BRIDGE_SECRET`, `ALPACA_API_KEY`/`_SECRET`,
+  `OANDA_API_TOKEN`/`_ACCOUNT_ID`, and IB's host/port) each synthesise one
+  connection named `<platform>:default` when no manifest is present. Setting
+  both forms is a startup error, not a silent precedence rule.
 - `account_mode` on the connection is a **binding constraint**, not a
   default: a `live` order addressed to a connection declared `paper` is
   refused. This makes "demo account accidentally traded live sizing", and its
   much worse inverse, a config-level impossibility rather than a discipline
   problem.
-- `provider_health()` reports per connection, not per provider.
+- `server_timezone` is recorded per connection. **PLACEHOLDER (C-P1):** the
+  fleet currently accepts each broker's own server clock as authoritative for
+  its session windows, which means legs of one group can open and close at
+  different wall-clock moments when brokers sit on different offsets. Recording
+  the timezone now makes that divergence *visible* and makes normalising it
+  later a behaviour change rather than a schema change. Revisit before running
+  session-sensitive strategies across brokers on differing offsets.
+- `provider_health()` reports per connection, not per platform.
 - The existing missing-secret warning (`adapters.py:174-183`) fires per
   connection, naming the connection.
 
-**DoD:** three MT5 connections registered from a manifest; `/health` lists each
-with its own reachability; `broker=mt5&account=demo` and
-`broker=mt5&account=ftmo-challenge` reach different sidecars, proven against
-two fakes.
+**DoD:** three connections spanning at least two platforms registered from one
+manifest; `/health` lists each with its own reachability;
+`broker=mt5&account=icmarkets-demo` and `broker=mt5&account=pepperstone-live`
+reach different sidecars, proven against two fakes.
 
 ---
 
 ### C3. Symbol mapping and per-connection instrument specs
 
-The problem that makes multi-MT5 qualitatively different from multi-provider:
-**the same instrument has a different symbol and different trading rules at
-every MT5 broker.** EURUSD is `EURUSD` at one, `EURUSD.a` / `EURUSD_i` /
+The problem that makes many accounts qualitatively different from many
+platforms: **the same instrument has a different symbol and different trading
+rules at every broker.** EURUSD is `EURUSD` at one, `EURUSD.a` / `EURUSD_i` /
 `EURUSD.pro` at others; contract size, `volume_min`, `volume_step`, stop level
 and filling mode all vary. A definition written once must resolve correctly on
 each connection or the fleet silently trades different things.
+
+**No static instrument catalogue.** The app must not ship a hardcoded list of
+what each broker offers — that list is stale the day it is written and differs
+per account tier. Availability is **discovered at runtime** from each
+connection's own `/symbols`, cached, and surfaced in the deploy UI. This is
+also why symbol resolution is a deploy-time step with a visible result rather
+than a config file someone maintains.
 
 - `strategy_definitions` carries a **canonical** symbol; each connection
   resolves it to its native symbol at run-creation time.
 - Resolution order: explicit per-connection override (a `symbol_map` on the
   connection manifest) → suffix-rule match against the connection's own
-  `/symbols` catalogue → exact match → **refuse to start the leg**. Never a
-  fuzzy best-effort match; picking the wrong instrument is worse than not
-  running.
+  discovered `/symbols` catalogue → exact match → **refuse to start the leg**.
+  Never a fuzzy best-effort match; picking the wrong instrument is worse than
+  not running.
 - The resolved native symbol is stored on the `strategy_runs` row, so a live
   run's instrument is a recorded fact, not re-derived per tick.
 - `instrument_spec` caching in `strategyRunner.ts:183-212` re-keys from
@@ -292,7 +365,7 @@ legs start.
 
 #### C4a. Blast radius — the cost of one strategy on every account
 
-With the fleet confirmed as **the same strategy on all accounts** (§8.3), the
+With the fleet confirmed as **the same strategy on all accounts** (§8, item 3), the
 group is not just a convenience: it is a shared failure domain, and two
 consequences follow that a per-account fleet would not have.
 
@@ -340,7 +413,7 @@ levels are missing, and multi-connection makes both load-bearing:
   same style as the existing ones — an unavailable input refuses the order
   rather than waiving the check (`executionEngine.ts:144-153` is the pattern).
 
-**Currency: resolved — all accounts share one denomination** (§8.4), so
+**Currency: resolved — all accounts share one denomination** (§8, item 4), so
 aggregate caps need no FX conversion and ship alongside the per-connection
 caps rather than in a later phase.
 
@@ -457,16 +530,19 @@ apply late.
 
 | Variable | Purpose |
 |---|---|
-| `MT5_CONNECTIONS` | JSON array of connection descriptors (id, url, secret_env, account_mode, default, symbol_map) |
-| `MT5_CONNECTIONS_FILE` | Path alternative to the above, for larger manifests |
-| `MT5_SECRET_<ID>` | Per-connection shared secret, referenced by `secret_env` |
+| `BROKER_CONNECTIONS` | JSON array of connection descriptors, all platforms (id, platform, credentials-by-env-name, account_mode, currency, default, symbol_map, server_timezone, same_funds_as) |
+| `BROKER_CONNECTIONS_FILE` | Path alternative to the above, for larger manifests |
+| `MT5_SECRET_<ID>` | Per-connection MT5 sidecar shared secret, referenced by `secret_env` |
 | `SYSTEMATIC_MAX_CONNECTION_CONCURRENCY` | Bounded pool width for the runner |
 | `SYSTEMATIC_CONNECTION_BREAKER_THRESHOLD` / `_COOLDOWN_SECONDS` | Circuit breaker tuning |
 | `PORTFOLIO_BASE_CURRENCY` | The denomination every connection is asserted to report; a mismatch refuses the connection and any aggregate that would span it |
 | `SYSTEMATIC_GROUP_CANARY_SETTLE_SECONDS` | How long a group's canary leg must evaluate cleanly before the remaining legs are admitted |
+| `BAR_DAY_BOUNDARY_TIMEZONE` / `_HOUR` | Where a trading day starts for constructed higher timeframes. Defaults `America/New_York` / `17` — **timezone-aware, never a fixed UTC offset**, since 17:00 New York is 21:00 UTC in summer and 22:00 UTC in winter |
 
-`MT5_BRIDGE_URL` / `MT5_BRIDGE_SECRET` remain supported as the one-connection
-shorthand and are **deprecated, not removed**.
+The existing single-account env vars (`MT5_BRIDGE_URL` / `MT5_BRIDGE_SECRET`,
+`ALPACA_API_KEY` / `_SECRET`, `OANDA_API_TOKEN` / `_ACCOUNT_ID`, IB host/port)
+remain supported as the one-connection shorthand for their platform and are
+**deprecated, not removed**.
 
 ---
 
@@ -478,14 +554,14 @@ shorthand and are **deprecated, not removed**.
 | One run fanning out, or one run per connection? | **One run per connection, grouped** | Reuses the entire tested per-run risk machinery; avoids reimplementing every cap per leg |
 | Connection config in DB or env/manifest? | **Manifest for topology, env for secrets** | Secrets must not reach the DB or the settings endpoint; topology benefits from review in version control |
 | Symbol resolution on mismatch | **Refuse the leg** | A fuzzy match silently trades the wrong instrument |
-| Portfolio-level caps | **In scope at C-4, asserted single-currency** | All accounts share a denomination (§8.4), so no FX is needed — but the assumption is enforced, not trusted |
+| Portfolio-level caps | **In scope at C-4, asserted single-currency** | All accounts share a denomination (§8, item 4), so no FX is needed — but the assumption is enforced, not trusted |
 | Group deploy | **Legs created atomically, started in canary stages** | One strategy on every account means one bad edit hits the whole fleet at once |
 | `account_mode` per connection | **Binding constraint, enforced at the registry** | Makes live/demo misrouting a config impossibility |
 
 ## 8. Resolved scope questions
 
 Answered 2026-08-07; each confirms an assumption the plan had already made,
-except §8.4, which pulled portfolio caps forward a phase.
+except item 4, which pulled portfolio caps forward a phase.
 
 1. **Sidecar per terminal.** One sidecar process per MT5 terminal — the
    officially-supported shape, since each `MetaTrader5` binding attaches to one

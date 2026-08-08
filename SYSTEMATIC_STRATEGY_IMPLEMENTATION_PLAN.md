@@ -8,8 +8,29 @@ they live in, the authoring model, and how **price-action** logic joins the
 — delivered.
 
 This is Component **D** of [SYSTEMATIC_TRADING_ROADMAP.md](SYSTEMATIC_TRADING_ROADMAP.md).
-Component C ([MT5_MULTI_CONNECTION_PLAN.md](MT5_MULTI_CONNECTION_PLAN.md))
-covers *where* strategies execute; this covers *what they can say*.
+Component C ([MULTI_PLATFORM_CONNECTION_PLAN.md](MULTI_PLATFORM_CONNECTION_PLAN.md))
+covers *where* strategies execute and Component E
+([TRADE_LIFECYCLE_PLAN.md](TRADE_LIFECYCLE_PLAN.md)) covers *what the engine
+does with a decision*; this covers *what a strategy can say*.
+
+### Settled parameters
+
+Decided during planning; they constrain several sections below.
+
+- **All evaluation at bar close.** Streamed prices are chart-only, so there is
+  one evaluation loop and backtest parity is preserved. Tick-reactive logic
+  would have broken it — you cannot honestly backtest tick behaviour on 5m bars.
+- **5-minute minimum timeframe**, all strategies in a group sharing one.
+- **Higher timeframes are constructed** from 5m bars rather than taken from the
+  broker, which sidesteps the broker-server-midnight problem for daily bars —
+  but relocates the choice to us. The day boundary is **17:00
+  `America/New_York`**, implemented timezone-aware (it is 21:00 UTC in summer
+  and 22:00 UTC in winter; a fixed offset silently misaligns every constructed
+  bar for several weeks a year).
+- **No static instrument catalogue.** Availability is discovered per connection
+  at runtime.
+- **Forward testing, not walk-forward.** See §9.7 — the existing signal-only
+  mode is already this.
 
 ---
 
@@ -474,7 +495,7 @@ lands in an existing class rather than reopening the engine.
 | **D-0** | *safety + the grammar floor* | Look-ahead harness (§5, mitigation 3), feature registry skeleton, bar-offset operands (§6.3, item 1), `schema_version`, compile-time rejection of unknown vocabulary (§8.4) | Everything after it, safely |
 | **D-1** | classes 1–2 | Candle geometry and fixed multi-bar patterns: `body_pct`, wicks, `pin_bar`, `engulfing`, `inside_bar`, `atr_pct` | All same-bar price action — zero confirmation lag, so no repaint risk at all |
 | **D-2** | class 3 | Causal swing detection, `bars_since_*`, structure state (BOS/CHoCH) | Every confirmed-later structure concept; the harness earns its keep here |
-| **D-3** | class 5–6 | Strategy state channel (§6.4) + sequence operators, with the replay-parity test | Trailing stops, breakeven moves, multi-leg setups — **the largest jump in what a plan can say** |
+| **D-3** | class 5–6 | Strategy state channel (§6.4) + sequence operators, with the replay-parity test | Multi-leg sequenced setups. **Demoted:** trailing stops and breakeven no longer need this — see the note below |
 | **D-4** | class 4 | Feature objects + selectors (§6.5), zones/levels/FVG/order blocks, `in_range` | Object-level rules, not just nearest-distance shorthand |
 | **D-5** | authoring | Capability endpoint (§6.7), builder vocabulary served from the registry (§8.3), backtest-vs-live replay diff | A non-engineer can author and verify |
 | **D-6** | class 7 | Multi-instrument implementation behind the D-0 seam (§6.6) | Index filters, correlation, spreads |
@@ -484,13 +505,20 @@ Two ordering choices worth challenging in review:
 - **D-0 before everything** is non-negotiable: the harness must exist before
   there is a feature to be wrong, or the first repainting feature is found in
   production rather than in CI.
-- **D-3 (state) before D-4 (zones)** is a change from the concept-ordered
-  draft. State unlocks two whole classes and is the prerequisite for sequence
-  logic, whereas zones — though more visible — are one class that already has a
-  usable projection from D-2 onward. If the first real plan turns out to be
-  zone-centric, swapping D-3 and D-4 costs little; if it is sequence-centric,
-  the order is already right. Under an unknown plan, opening more classes
-  earlier is the better bet.
+- **D-3 (state) has been demoted below D-4 (objects).** The earlier draft
+  ranked state first because trailing stops and breakeven moves appeared to
+  require it. With Component E's broker-side stops
+  ([TRADE_LIFECYCLE_PLAN.md](TRADE_LIFECYCLE_PLAN.md) §2.1) **the broker holds
+  the ratchet**: each bar close the app computes the desired stop and modifies
+  only when the new one is more protective, so "never move the stop backwards"
+  is a comparison rather than carried state. That removes the concrete driver.
+  State remains genuinely necessary for **sequenced setups** (class 6), which
+  no external system can hold on our behalf — so it stays in the plan, just no
+  longer ahead of everything else.
+
+  This is worth noting as a general pattern: before adding state to the engine,
+  check whether some component already outside it — the broker, the fills
+  record, the position itself — is a more reliable holder of that fact.
 
 ---
 
@@ -609,7 +637,33 @@ no-op the roadmap already had to fix once.
    deliberately — provided it never acquires a live path (§4, Option 2).
 6. **How much unknown-plan generality is worth paying for up front?** D-3
    (state) and D-4 (objects) are real engineering, justified by classes the
-   current plan cannot express *at all*. D-6 (multi-instrument) is the one
-   where the seam is cheap and the implementation is not — hence building only
-   the seam. If the plan is confidently single-instrument, D-6 can be dropped
-   entirely and the seam left as a compile-time refusal.
+   current plan cannot express *at all*. **D-6 (multi-instrument) is now
+   deferred outright** — cross-instrument trading is out of plan
+   (`FUTURE_DECISION_POINTS.md` C-P2/D-P2), so only the compile-time refusal
+   seam is built.
+
+### 9.7 Forward testing, not walk-forward — a terminology correction
+
+Recorded because the distinction changes what gets built.
+
+**Walk-forward analysis** (Pardo) *is* rolling re-optimisation: optimise on an
+in-sample window, test on the following out-of-sample window, roll, repeat.
+Re-optimisation is intrinsic — walk-forward exists specifically to validate
+that an optimisation procedure generalises. **If you are not optimising, you do
+not need walk-forward.**
+
+What is actually wanted here — running a strategy against newly-arriving live
+data without executing — is **forward testing** (paper trading). Different
+technique, far simpler, and **already implemented**: `SYSTEMATIC_ENABLED=true`
+without `SYSTEMATIC_EXECUTION_ENABLED` runs the evaluator against live bars and
+records signals while placing nothing. The work here is naming it and surfacing
+its results, not building it.
+
+**Caveat worth designing around.** Declining formal parameter optimisation
+(D-P4) removes the dominant overfitting vector but not overfitting itself.
+Hand-iterating — "14 didn't work, try 20" — is optimisation performed manually,
+with no record of how many variants were tried, which is *worse* for
+assessing significance than the automated kind. The defence is holdout
+discipline: reserve a slice of history untouched until the strategy is
+otherwise finished. That is a feature of the backtest UI, not a matter of
+willpower, and it should land alongside forward-test reporting.

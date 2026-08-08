@@ -12,23 +12,27 @@ around two capabilities the platform does **not** have today:
 2. **MetaTrader (MT5) as a first-class broker** — quote **and** trade through
    MT5 alongside Interactive Brokers.
 
-> **Component C — many MT5 connections at once.** Components A and B below
-> deliver systematic trading against *one* MT5 account: `broker='mt5'` names
-> both the protocol and the single connection behind `MT5_BRIDGE_URL`. Running
-> the fleet across several MT5 brokers (IC Markets, Pepperstone, a prop-firm
-> challenge, a demo terminal) needs a connection-identity seam one level below
-> the B1 provider seam. That plan — including three latent correctness bugs
-> that only surface with a second connection — is
-> [`MT5_MULTI_CONNECTION_PLAN.md`](MT5_MULTI_CONNECTION_PLAN.md).
+> **Components C, D and E extend this roadmap.** A and B below deliver
+> systematic trading against *one* account per platform, long-only, on
+> indicator rules. Three further plans cover what that leaves out:
 >
-> **Component D — price action alongside indicators.** Component A's rule
-> engine expresses indicator logic: every operand resolves to one float at one
-> bar, with one bar of lookback. Price action is shaped differently — multi-bar
-> patterns, persistent levels and zones, and structure state carried across
-> arbitrary distance — and its features are the classic source of look-ahead
-> bias in a backtest. How that logic is authored and evaluated, which language
-> it lives in and why, is
-> [`SYSTEMATIC_STRATEGY_IMPLEMENTATION_PLAN.md`](SYSTEMATIC_STRATEGY_IMPLEMENTATION_PLAN.md).
+> - **C — [`MULTI_PLATFORM_CONNECTION_PLAN.md`](MULTI_PLATFORM_CONNECTION_PLAN.md).**
+>   `broker='mt5'` names both a platform and its single connection, so *every*
+>   platform is locked to one account. Adding a second needs a
+>   connection-identity seam one level below the B1 platform seam. Includes
+>   three latent correctness bugs that only surface with a second connection.
+> - **D — [`SYSTEMATIC_STRATEGY_IMPLEMENTATION_PLAN.md`](SYSTEMATIC_STRATEGY_IMPLEMENTATION_PLAN.md).**
+>   The rule engine expresses indicator logic: one float per operand per bar,
+>   one bar of lookback. Price action is shaped differently, and its features
+>   are the classic source of look-ahead bias in a backtest. Covers the
+>   language choice, the authoring model, and the expressiveness classes an
+>   as-yet-unwritten trading plan needs.
+> - **E — [`TRADE_LIFECYCLE_PLAN.md`](TRADE_LIFECYCLE_PLAN.md).** The execution
+>   engine is long-only and places unprotected market orders. Covers signed
+>   positions, broker-side stops, trade management, sizing and the kill switch.
+>
+> Deferred decisions across all of them are registered in
+> [`FUTURE_DECISION_POINTS.md`](FUTURE_DECISION_POINTS.md).
 
 The scope below reflects four decisions taken up front:
 
