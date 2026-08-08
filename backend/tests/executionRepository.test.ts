@@ -61,7 +61,7 @@ describe('ExecutionRepository.upsert', () => {
     const { db, calls } = fakeDb(() => [{ id: 1, inserted: false }]);
     const result = await new ExecutionRepository(db).upsert(execution());
 
-    expect(calls[0].text).toMatch(/ON CONFLICT \(broker, exec_id\) DO UPDATE/);
+    expect(calls[0].text).toMatch(/ON CONFLICT \(broker, broker_account, exec_id\) DO UPDATE/);
     expect(result.inserted).toBe(false);
   });
 
@@ -163,14 +163,31 @@ describe('ExecutionRepository.netPosition', () => {
   });
 });
 
-describe('ExecutionRepository.activeBrokers', () => {
-  it('unions the venues traded at with the venues running strategies', async () => {
-    const { db, calls } = fakeDb(() => [{ broker: 'ib' }, { broker: 'alpaca' }]);
-    const brokers = await new ExecutionRepository(db).activeBrokers();
+describe('ExecutionRepository.activeConnections', () => {
+  it('unions the connections traded at with those running strategies', async () => {
+    const { db, calls } = fakeDb(() => [
+      { broker: 'ib', broker_account: 'default' },
+      { broker: 'mt5', broker_account: 'pepperstone-live' },
+    ]);
+    const connections = await new ExecutionRepository(db).activeConnections();
 
     expect(calls[0].text).toMatch(/FROM order_audit/);
     expect(calls[0].text).toMatch(/FROM strategy_runs WHERE status = 'running'/);
-    expect(brokers).toEqual(['ib', 'alpaca']);
+    expect(connections).toEqual([
+      { broker: 'ib', brokerAccount: 'default' },
+      { broker: 'mt5', brokerAccount: 'pepperstone-live' },
+    ]);
+  });
+
+  // Two accounts on one platform are two connections to poll, not one.
+  it('distinguishes two accounts on the same platform', async () => {
+    const { db } = fakeDb(() => [
+      { broker: 'mt5', broker_account: 'icmarkets-live' },
+      { broker: 'mt5', broker_account: 'pepperstone-live' },
+    ]);
+    const connections = await new ExecutionRepository(db).activeConnections();
+    expect(connections).toHaveLength(2);
+    expect(connections.map((c) => c.brokerAccount)).toEqual(['icmarkets-live', 'pepperstone-live']);
   });
 });
 
@@ -195,7 +212,7 @@ describe('ExecutionRepository.netPositionWithOpenOrders', () => {
     expect(net).toBe(140);
     expect(calls[0].text).toMatch(/WITH filled AS/);
     expect(calls[0].text).toMatch(/GREATEST\(o\.quantity - COALESCE\(f\.filled, 0\), 0\)/);
-    expect(calls[0].params).toEqual(['ib', 'MSFT', 'paper', null, 168]);
+    expect(calls[0].params).toEqual(['ib', 'MSFT', 'paper', null, 168, 'default']);
   });
 
   it('scopes to one run when asked — the attribution ledger', async () => {
@@ -268,13 +285,13 @@ describe('ExecutionRepository.netPositionsByBroker', () => {
     const net = await new ExecutionRepository(db).netPositionsByBroker('ib', 'paper');
 
     expect(net).toEqual({ MSFT: 100, AAPL: -50 });
-    expect(calls[0].params).toEqual(['ib', 'paper']);
+    expect(calls[0].params).toEqual(['ib', 'default', 'paper']);
   });
 
   it('omits the account-mode filter when none is given', async () => {
     const { db, calls } = fakeDb(() => []);
     await new ExecutionRepository(db).netPositionsByBroker('ib');
-    expect(calls[0].params).toEqual(['ib']);
+    expect(calls[0].params).toEqual(['ib', 'default']);
     expect(calls[0].text).not.toMatch(/account_mode/);
   });
 });

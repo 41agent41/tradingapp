@@ -29,6 +29,7 @@ function run(overrides: Partial<ActiveRun> = {}): ActiveRun {
     id: 1,
     definition_id: 2,
     broker: 'ib',
+    broker_account: 'default',
     account_mode: 'paper',
     symbol: 'MSFT',
     sec_type: 'STK',
@@ -276,7 +277,7 @@ describe('ExecutionEngine — pct_equity sizing', () => {
 
     // 10% of 100_000 = 10_000 at a close of 100 -> 100 shares.
     expect(result).toEqual(expect.objectContaining({ placed: true, quantity: 100 }));
-    expect(deps.accountEquity).toHaveBeenCalledWith('ib');
+    expect(deps.accountEquity).toHaveBeenCalledWith({ broker: 'ib', brokerAccount: 'default' });
   });
 
   it('does not spend a venue round-trip on other sizing types', async () => {
@@ -321,7 +322,10 @@ describe('ExecutionEngine — broker-native sizing', () => {
     // 110_000 / (1.1 x 100_000) = 1.0 lots. Sized as shares this would have
     // been 100_000 — five orders of magnitude of extra exposure.
     expect(result).toEqual(expect.objectContaining({ placed: true, quantity: 1 }));
-    expect(deps.instrumentSpec).toHaveBeenCalledWith('mt5', 'EURUSD');
+    expect(deps.instrumentSpec).toHaveBeenCalledWith(
+      { broker: 'mt5', brokerAccount: 'default' },
+      'EURUSD'
+    );
   });
 
   it('refuses a size below the venue minimum instead of rounding it up', async () => {

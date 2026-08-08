@@ -12,6 +12,7 @@ import {
   type ExecutionsPollerDeps,
   type RemoteExecution,
 } from '../src/services/executionsPoller.js';
+import type { Connection } from '../src/services/orderTypes.js';
 
 function remote(overrides: Partial<RemoteExecution> = {}): RemoteExecution {
   return {
@@ -32,7 +33,7 @@ function remote(overrides: Partial<RemoteExecution> = {}): RemoteExecution {
 
 function makeDeps(overrides: Partial<ExecutionsPollerDeps> = {}): ExecutionsPollerDeps {
   return {
-    listBrokers: jest.fn().mockResolvedValue(['ib']),
+    listConnections: jest.fn().mockResolvedValue([{ broker: 'ib', brokerAccount: 'default' }]),
     fetchExecutions: jest.fn().mockResolvedValue([remote()]),
     upsert: jest.fn().mockResolvedValue({ inserted: true }),
     relinkOrphans: jest.fn().mockResolvedValue(0),
@@ -48,18 +49,67 @@ function poller(deps: Partial<ExecutionsPollerDeps>, opts = {}) {
 describe('ExecutionsPoller — ingest', () => {
   it('polls every active venue and upserts its fills', async () => {
     const deps = makeDeps({
-      listBrokers: jest.fn().mockResolvedValue(['ib', 'alpaca']),
+      listConnections: jest.fn().mockResolvedValue([
+        { broker: 'ib', brokerAccount: 'default' },
+        { broker: 'alpaca', brokerAccount: 'default' },
+      ]),
       fetchExecutions: jest.fn().mockResolvedValue([remote(), remote({ exec_id: 'e2' })]),
     });
     const p = new ExecutionsPoller({ deps, enabled: true, lookbackDays: 3 });
 
     await p.runOnce();
 
-    expect(deps.fetchExecutions).toHaveBeenCalledWith('ib', 3);
-    expect(deps.fetchExecutions).toHaveBeenCalledWith('alpaca', 3);
+    expect(deps.fetchExecutions).toHaveBeenCalledWith(
+      { broker: 'ib', brokerAccount: 'default' },
+      3
+    );
+    expect(deps.fetchExecutions).toHaveBeenCalledWith(
+      { broker: 'alpaca', brokerAccount: 'default' },
+      3
+    );
     expect(deps.upsert).toHaveBeenCalledTimes(4);
     expect(p.inserted).toBe(4);
     expect(p.errors).toBe(0);
+  });
+
+  // Bug ① from the multi-platform plan. MT5 allocates deal tickets per
+  // terminal starting low, so two accounts genuinely both report deal
+  // `12345`. The poller must stamp the connection it polled — not anything
+  // from the payload — or the second fill is swallowed as a duplicate by the
+  // unique key and the position, realised P&L and max_daily_loss all go wrong.
+  it('stamps each fill with the connection it was polled from', async () => {
+    const deps = makeDeps({
+      listConnections: jest.fn().mockResolvedValue([
+        { broker: 'mt5', brokerAccount: 'icmarkets-live' },
+        { broker: 'mt5', brokerAccount: 'pepperstone-live' },
+      ]),
+      // The same exec_id from both accounts — the collision this key fixes.
+      fetchExecutions: jest.fn().mockResolvedValue([remote({ exec_id: '12345' })]),
+    });
+
+    await new ExecutionsPoller({ deps, enabled: true }).runOnce();
+
+    expect(deps.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ exec_id: '12345', broker_account: 'icmarkets-live' })
+    );
+    expect(deps.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ exec_id: '12345', broker_account: 'pepperstone-live' })
+    );
+  });
+
+  it('ignores any account the payload claims, trusting only the polled connection', async () => {
+    const deps = makeDeps({
+      listConnections: jest
+        .fn()
+        .mockResolvedValue([{ broker: 'mt5', brokerAccount: 'icmarkets-live' }]),
+      fetchExecutions: jest.fn().mockResolvedValue([remote({ account: 'some-other-account' })]),
+    });
+
+    await new ExecutionsPoller({ deps, enabled: true }).runOnce();
+
+    expect(deps.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ broker_account: 'icmarkets-live' })
+    );
   });
 
   it('maps the venue payload onto the stored shape', async () => {
@@ -117,7 +167,10 @@ describe('ExecutionsPoller — isolation', () => {
       .mockRejectedValueOnce(new Error('mt5 bridge unreachable'))
       .mockResolvedValueOnce([remote()]);
     const deps = makeDeps({
-      listBrokers: jest.fn().mockResolvedValue(['mt5', 'ib']),
+      listConnections: jest.fn().mockResolvedValue([
+        { broker: 'mt5', brokerAccount: 'default' },
+        { broker: 'ib', brokerAccount: 'default' },
+      ]),
       fetchExecutions,
     });
     const p = new ExecutionsPoller({ deps, enabled: true });
@@ -149,7 +202,7 @@ describe('ExecutionsPoller — isolation', () => {
   });
 
   it('never throws out of runOnce', async () => {
-    const p = poller({ listBrokers: jest.fn().mockRejectedValue(new Error('db down')) });
+    const p = poller({ listConnections: jest.fn().mockRejectedValue(new Error('db down')) });
     await expect(p.runOnce()).resolves.toBeUndefined();
     expect(p.errors).toBe(1);
   });
@@ -203,10 +256,10 @@ describe('ExecutionsPoller — lifecycle', () => {
   it('skips a tick while the previous one is still running', async () => {
     let release!: () => void;
     const deps = makeDeps({
-      listBrokers: jest.fn().mockImplementation(
+      listConnections: jest.fn().mockImplementation(
         () =>
-          new Promise<string[]>((resolve) => {
-            release = () => resolve(['ib']);
+          new Promise<Connection[]>((resolve) => {
+            release = () => resolve([{ broker: 'ib', brokerAccount: 'default' }]);
           })
       ),
     });
@@ -217,7 +270,7 @@ describe('ExecutionsPoller — lifecycle', () => {
     release();
     await first;
 
-    expect(deps.listBrokers).toHaveBeenCalledTimes(1);
+    expect(deps.listConnections).toHaveBeenCalledTimes(1);
   });
 
   it('reports its diagnostics', async () => {

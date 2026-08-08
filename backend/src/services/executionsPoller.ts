@@ -39,6 +39,7 @@ import axios from 'axios';
 import { logger } from './logger.js';
 import { dbService } from './database.js';
 import { ExecutionRepository, type ExecutionInput } from './executionRepository.js';
+import { DEFAULT_BROKER_ACCOUNT, connectionLabel, type Connection } from './orderTypes.js';
 
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
@@ -79,10 +80,10 @@ export interface RemoteExecution {
 }
 
 export interface ExecutionsPollerDeps {
-  /** Which venues to poll. */
-  listBrokers(): Promise<string[]>;
-  /** Fetch a venue's recent fills from the broker service. */
-  fetchExecutions(broker: string, days: number): Promise<RemoteExecution[]>;
+  /** Which connections to poll. */
+  listConnections(): Promise<Connection[]>;
+  /** Fetch a connection's recent fills from the broker service. */
+  fetchExecutions(connection: Connection, days: number): Promise<RemoteExecution[]>;
   upsert(input: ExecutionInput): Promise<{ inserted: boolean }>;
   /** Attach late-arriving audit/run links to fills that had none. */
   relinkOrphans(): Promise<number>;
@@ -100,15 +101,18 @@ export interface ExecutionsPollerOptions {
 function defaultDeps(): ExecutionsPollerDeps {
   const repo = new ExecutionRepository(dbService);
   return {
-    listBrokers: async () => {
-      const brokers = await repo.activeBrokers();
-      // A fresh install has traded nowhere yet; IB is the default venue, so
-      // poll it rather than doing nothing until the first order exists.
-      return brokers.length > 0 ? brokers : ['ib'];
+    listConnections: async () => {
+      const connections = await repo.activeConnections();
+      // A fresh install has traded nowhere yet; IB's default account is the
+      // default venue, so poll it rather than doing nothing until the first
+      // order exists.
+      return connections.length > 0
+        ? connections
+        : [{ broker: 'ib', brokerAccount: DEFAULT_BROKER_ACCOUNT }];
     },
-    fetchExecutions: async (broker, days) => {
+    fetchExecutions: async (connection, days) => {
       const response = await axios.get(`${BROKER_SERVICE_URL}/account/executions`, {
-        params: { broker, days },
+        params: { broker: connection.broker, account: connection.brokerAccount, days },
         timeout: 45_000,
         headers: { Connection: 'close' },
       });
@@ -194,9 +198,9 @@ export class ExecutionsPoller {
     this.running = true;
     this.runs++;
     try {
-      const brokers = await this.deps.listBrokers();
-      for (const broker of brokers) {
-        await this.syncBroker(broker);
+      const connections = await this.deps.listConnections();
+      for (const connection of connections) {
+        await this.syncConnection(connection);
       }
       // Runs after ingest so a fill polled in the same tick as its order was
       // acknowledged still gets attributed.
@@ -217,9 +221,11 @@ export class ExecutionsPoller {
     }
   }
 
-  private async syncBroker(broker: string): Promise<void> {
+  private async syncConnection(connection: Connection): Promise<void> {
+    const { broker, brokerAccount } = connection;
+    const label = connectionLabel(broker, brokerAccount);
     try {
-      const rows = await this.deps.fetchExecutions(broker, this.lookbackDays);
+      const rows = await this.deps.fetchExecutions(connection, this.lookbackDays);
       this.fetched += rows.length;
       let newRows = 0;
       for (const row of rows) {
@@ -227,6 +233,11 @@ export class ExecutionsPoller {
         try {
           const { inserted } = await this.deps.upsert({
             broker: row.broker || broker,
+            // Always the connection we polled, never a value from the payload:
+            // the venue reports its own fill ids without knowing which of our
+            // accounts it is, and mis-attributing one would recreate the
+            // collision the connection-scoped key exists to prevent.
+            broker_account: brokerAccount,
             account_mode: EXECUTIONS_DEFAULT_ACCOUNT_MODE,
             exec_id: String(row.exec_id),
             broker_order_id: row.order_id != null ? String(row.order_id) : null,
@@ -246,19 +257,22 @@ export class ExecutionsPoller {
           this.errors++;
           this.lastError = rowErr instanceof Error ? rowErr.message : String(rowErr);
           logger.error(
-            { broker, exec_id: row.exec_id, err: this.lastError },
+            { connection: label, exec_id: row.exec_id, err: this.lastError },
             'execution upsert failed'
           );
         }
       }
       this.inserted += newRows;
       if (newRows > 0) {
-        logger.info({ broker, new_fills: newRows, seen: rows.length }, 'executions synced');
+        logger.info(
+          { connection: label, new_fills: newRows, seen: rows.length },
+          'executions synced'
+        );
       }
     } catch (err) {
       this.errors++;
       this.lastError = err instanceof Error ? err.message : String(err);
-      logger.error({ broker, err: this.lastError }, 'executions sync failed for broker');
+      logger.error({ connection: label, err: this.lastError }, 'executions sync failed');
     }
   }
 

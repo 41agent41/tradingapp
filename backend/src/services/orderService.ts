@@ -76,6 +76,10 @@ function defaultDeps(): SubmitCreateDeps {
     netPosition: (order) =>
       executions.netPositionWithOpenOrders({
         broker: order.broker,
+        // Scoped to the order's own connection: a fat-finger cap is about one
+        // account's exposure, and summing every account on a platform made the
+        // cap refuse orders on accounts nowhere near it (C-0).
+        brokerAccount: order.broker_account,
         symbol: order.symbol,
         accountMode: order.account_mode,
         runId: null,
@@ -165,6 +169,7 @@ export async function submitCreateOrder(
       stop_price: order.stop_price,
       account_mode: order.account_mode,
       broker: order.broker,
+      account: order.broker_account,
       secType: order.sec_type,
       exchange: order.exchange,
       currency: order.currency,

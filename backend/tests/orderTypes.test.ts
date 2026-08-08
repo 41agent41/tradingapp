@@ -9,7 +9,12 @@ import {
   checkPositionLimit,
   positionCap,
   isPositionLimitEnabled,
+  connectionLabel,
+  connectionOf,
 } from '../src/services/orderTypes.js';
+
+/** A minimal valid order the connection-identity cases vary one field of. */
+const base = { symbol: 'MSFT', action: 'BUY', quantity: 10, order_type: 'MKT' };
 
 describe('validateOrder — happy paths', () => {
   it('accepts a minimal MKT order with the default tif / account_mode', () => {
@@ -298,5 +303,70 @@ describe('positionCap / isPositionLimitEnabled', () => {
     expect(positionCap()).toBe(0);
     process.env.ORDER_MAX_POSITION = 'abc';
     expect(positionCap()).toBe(0);
+  });
+});
+
+describe('broker_account (connection identity — C-0)', () => {
+  it('defaults to "default" when absent, empty or null', () => {
+    for (const value of [undefined, null, '', '   ']) {
+      const v = validateOrder({ ...base, broker_account: value });
+      expect(v.ok).toBe(true);
+      if (v.ok) expect(v.value.broker_account).toBe('default');
+    }
+  });
+
+  it('lowercases and trims so a connection has one canonical spelling', () => {
+    const v = validateOrder({ ...base, broker_account: '  Pepperstone-Live  ' });
+    expect(v.ok).toBe(true);
+    if (v.ok) expect(v.value.broker_account).toBe('pepperstone-live');
+  });
+
+  it('accepts the identifier charset', () => {
+    for (const account of ['ib1', 'mt5_demo', 'ftmo-challenge-2']) {
+      const v = validateOrder({ ...base, broker_account: account });
+      expect(v.ok).toBe(true);
+    }
+  });
+
+  it('rejects values that would be unsafe in a label, key or URL', () => {
+    for (const account of ['-leading-dash', 'has space', 'has/slash', 'has:colon', 'é']) {
+      const v = validateOrder({ ...base, broker_account: account });
+      expect(v.ok).toBe(false);
+    }
+  });
+
+  it('rejects an over-long account', () => {
+    const v = validateOrder({ ...base, broker_account: 'a'.repeat(65) });
+    expect(v.ok).toBe(false);
+  });
+
+  it('rejects a non-string account rather than coercing it', () => {
+    const v = validateOrder({ ...base, broker_account: 42 });
+    expect(v.ok).toBe(false);
+  });
+
+  // The platform enum stays closed while the account stays free-form: adding
+  // an account is configuration, adding a platform is a code change.
+  it('does not accept a platform:account string in the broker field', () => {
+    const v = validateOrder({ ...base, broker: 'mt5:pepperstone-live' });
+    expect(v.ok).toBe(false);
+  });
+});
+
+describe('connectionLabel / connectionOf', () => {
+  it('labels a connection as platform:account', () => {
+    expect(connectionLabel('mt5', 'pepperstone-live')).toBe('mt5:pepperstone-live');
+  });
+
+  it('maps a persisted row onto a connection, defaulting both halves', () => {
+    expect(connectionOf({ broker: 'mt5', broker_account: 'demo' })).toEqual({
+      broker: 'mt5',
+      brokerAccount: 'demo',
+    });
+    // A row written before C-0 has no account; it belongs to the default one.
+    expect(connectionOf({ broker: 'mt5' })).toEqual({
+      broker: 'mt5',
+      brokerAccount: 'default',
+    });
   });
 });

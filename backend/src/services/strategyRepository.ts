@@ -10,6 +10,8 @@
  * unit-tested without Postgres (mirrors `backtestRunRepository.ts`).
  */
 
+import { DEFAULT_BROKER_ACCOUNT } from './orderTypes.js';
+
 export interface Querier {
   query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
 }
@@ -23,6 +25,7 @@ export interface StrategyDefinitionInput {
   symbol: string;
   timeframe: string;
   broker?: string;
+  broker_account?: string;
   sec_type?: string;
   exchange?: string;
   currency?: string;
@@ -33,6 +36,7 @@ export interface StrategyDefinitionRow {
   id: number;
   name: string;
   broker: string;
+  broker_account: string;
   symbol: string;
   sec_type: string;
   exchange: string;
@@ -47,6 +51,7 @@ export interface StrategyDefinitionRow {
 export interface StrategyRunInput {
   definition_id: number;
   broker?: string;
+  broker_account?: string;
   account_mode?: string;
   sizing?: Record<string, unknown>;
   risk?: Record<string, unknown>;
@@ -56,6 +61,7 @@ export interface StrategyRunRow {
   id: number;
   definition_id: number;
   broker: string;
+  broker_account: string;
   account_mode: string;
   status: string;
   sizing: Record<string, unknown>;
@@ -75,6 +81,9 @@ export interface ActiveRun {
   id: number;
   definition_id: number;
   broker: string;
+  /** The account within `broker` this run executes on (C-0). One run is one
+   *  instrument on one connection. */
+  broker_account: string;
   account_mode: string;
   symbol: string;
   sec_type: string;
@@ -128,8 +137,8 @@ export class StrategyRepository {
   async createDefinition(input: StrategyDefinitionInput): Promise<StrategyDefinitionRow> {
     const sql = `
       INSERT INTO strategy_definitions
-        (name, broker, symbol, sec_type, exchange, currency, timeframe, rule_set)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+        (name, broker, broker_account, symbol, sec_type, exchange, currency, timeframe, rule_set)
+      VALUES ($1, $2, $9, $3, $4, $5, $6, $7, $8::jsonb)
       RETURNING *
     `;
     const values = [
@@ -141,6 +150,7 @@ export class StrategyRepository {
       (input.currency ?? 'USD').toUpperCase(),
       input.timeframe,
       JSON.stringify(input.rule_set ?? {}),
+      input.broker_account ?? DEFAULT_BROKER_ACCOUNT,
     ];
     const result = await this.db.query(sql, values);
     return result.rows[0] as StrategyDefinitionRow;
@@ -165,8 +175,9 @@ export class StrategyRepository {
 
   async createRun(input: StrategyRunInput): Promise<StrategyRunRow> {
     const sql = `
-      INSERT INTO strategy_runs (definition_id, broker, account_mode, sizing, risk)
-      VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+      INSERT INTO strategy_runs
+        (definition_id, broker, broker_account, account_mode, sizing, risk)
+      VALUES ($1, $2, $6, $3, $4::jsonb, $5::jsonb)
       RETURNING *
     `;
     const values = [
@@ -175,6 +186,7 @@ export class StrategyRepository {
       input.account_mode ?? 'paper',
       JSON.stringify(input.sizing ?? {}),
       JSON.stringify(input.risk ?? {}),
+      input.broker_account ?? DEFAULT_BROKER_ACCOUNT,
     ];
     const result = await this.db.query(sql, values);
     return result.rows[0] as StrategyRunRow;
@@ -209,7 +221,7 @@ export class StrategyRepository {
    *  definition fields it needs (symbol, timeframe, rule_set). */
   async listActiveRuns(): Promise<ActiveRun[]> {
     const sql = `
-      SELECT r.id, r.definition_id, r.broker, r.account_mode,
+      SELECT r.id, r.definition_id, r.broker, r.broker_account, r.account_mode,
              r.sizing, r.risk,
              d.symbol, d.sec_type, d.exchange, d.currency, d.timeframe, d.rule_set
       FROM strategy_runs r

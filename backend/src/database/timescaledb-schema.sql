@@ -13,7 +13,11 @@ CREATE EXTENSION IF NOT EXISTS "timescaledb";
 -- Symbols/Contracts table - stores contract information from IB Gateway
 CREATE TABLE IF NOT EXISTS contracts (
     id SERIAL PRIMARY KEY,
-    broker VARCHAR(16) NOT NULL DEFAULT 'ib', -- venue (B1): 'ib' | 'mt5' | 'alpaca' | 'oanda'
+    broker VARCHAR(16) NOT NULL DEFAULT 'ib', -- platform (B1): 'ib' | 'mt5' | 'alpaca' | 'oanda'
+    -- Account within that platform (C-0). `broker` names the *protocol*;
+    -- this names *which account on it*. Together they are a "connection".
+    -- Defaults to 'default' so a single-account deployment is unchanged.
+    broker_account VARCHAR(64) NOT NULL DEFAULT 'default',
     symbol VARCHAR(20) NOT NULL,
     sec_type VARCHAR(10) NOT NULL, -- STK, OPT, FUT, CASH, etc.
     exchange VARCHAR(20),
@@ -27,10 +31,11 @@ CREATE TABLE IF NOT EXISTS contracts (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
 
-    -- Composite unique constraint. Broker-scoped (B1) so the same symbol on two
-    -- venues (e.g. MSFT@ib and an FX pair @mt5) never collide in the catalogue.
-    CONSTRAINT contracts_broker_key
-        UNIQUE (broker, symbol, sec_type, exchange, currency, expiry, strike, "right")
+    -- Composite unique constraint. Connection-scoped (C-0) so the same symbol
+    -- at two venues — or at two accounts on the same venue, where the same
+    -- instrument can carry a different suffix per broker — never collide.
+    CONSTRAINT contracts_connection_key
+        UNIQUE (broker, broker_account, symbol, sec_type, exchange, currency, expiry, strike, "right")
 );
 
 -- Create index for efficient contract lookups
@@ -38,30 +43,38 @@ CREATE INDEX IF NOT EXISTS idx_contracts_symbol ON contracts(symbol);
 CREATE INDEX IF NOT EXISTS idx_contracts_sec_type ON contracts(sec_type);
 CREATE INDEX IF NOT EXISTS idx_contracts_exchange ON contracts(exchange);
 CREATE INDEX IF NOT EXISTS idx_contracts_contract_id ON contracts(contract_id);
-CREATE INDEX IF NOT EXISTS idx_contracts_broker_symbol ON contracts(broker, symbol);
+CREATE INDEX IF NOT EXISTS idx_contracts_broker_symbol
+    ON contracts(broker, broker_account, symbol);
 
--- Existing deployments: add the broker column and re-key the uniqueness to
--- include it (B1). Idempotent — safe to re-run.
+-- Existing deployments: add the broker + broker_account columns and re-key the
+-- uniqueness to include them (B1, then C-0). Idempotent — safe to re-run.
+--
+-- The pre-B1 constraint keyed on (symbol, …) and the B1 one on (broker, …);
+-- both are superseded by the connection-scoped key, and both are matched by
+-- definition text because their generated names vary across deployments.
 DO $$
 DECLARE cname text;
 BEGIN
     ALTER TABLE contracts ADD COLUMN IF NOT EXISTS broker VARCHAR(16) NOT NULL DEFAULT 'ib';
-    -- Drop the pre-broker unique constraint (its generated name varies) so it
-    -- can be replaced by the broker-scoped one.
-    SELECT conname INTO cname
-      FROM pg_constraint
-     WHERE conrelid = 'contracts'::regclass
-       AND contype = 'u'
-       AND pg_get_constraintdef(oid) LIKE 'UNIQUE (symbol,%';
-    IF cname IS NOT NULL THEN
+    ALTER TABLE contracts ADD COLUMN IF NOT EXISTS broker_account VARCHAR(64) NOT NULL DEFAULT 'default';
+
+    FOR cname IN
+        SELECT conname
+          FROM pg_constraint
+         WHERE conrelid = 'contracts'::regclass
+           AND contype = 'u'
+           AND (pg_get_constraintdef(oid) LIKE 'UNIQUE (symbol,%'
+             OR pg_get_constraintdef(oid) LIKE 'UNIQUE (broker, symbol,%')
+    LOOP
         EXECUTE format('ALTER TABLE contracts DROP CONSTRAINT %I', cname);
-    END IF;
+    END LOOP;
+
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
-         WHERE conrelid = 'contracts'::regclass AND conname = 'contracts_broker_key'
+         WHERE conrelid = 'contracts'::regclass AND conname = 'contracts_connection_key'
     ) THEN
-        ALTER TABLE contracts ADD CONSTRAINT contracts_broker_key
-            UNIQUE (broker, symbol, sec_type, exchange, currency, expiry, strike, "right");
+        ALTER TABLE contracts ADD CONSTRAINT contracts_connection_key
+            UNIQUE (broker, broker_account, symbol, sec_type, exchange, currency, expiry, strike, "right");
     END IF;
 END $$;
 
@@ -375,7 +388,8 @@ CREATE TABLE IF NOT EXISTS order_audit (
     id BIGSERIAL PRIMARY KEY,
     submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     account_mode VARCHAR(8) NOT NULL,           -- 'paper' | 'live'
-    broker VARCHAR(16) NOT NULL DEFAULT 'ib',   -- execution venue: 'ib' | 'mt5' | 'alpaca' | 'oanda' (B1)
+    broker VARCHAR(16) NOT NULL DEFAULT 'ib',   -- execution platform: 'ib' | 'mt5' | 'alpaca' | 'oanda' (B1)
+    broker_account VARCHAR(64) NOT NULL DEFAULT 'default', -- account on that platform (C-0)
     action VARCHAR(8) NOT NULL,                 -- 'BUY' | 'SELL'
     symbol VARCHAR(32) NOT NULL,
     sec_type VARCHAR(8) NOT NULL DEFAULT 'STK',
@@ -403,14 +417,28 @@ CREATE INDEX IF NOT EXISTS idx_order_audit_ib_order_id
     ON order_audit (ib_order_id) WHERE ib_order_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_order_audit_symbol_created
     ON order_audit (symbol, submitted_at DESC);
--- Backs the net-exposure guard, now keyed per (broker, symbol, account_mode)
--- so exposure never nets across venues (B1).
-CREATE INDEX IF NOT EXISTS idx_order_audit_net_key
-    ON order_audit (broker, symbol, account_mode, submitted_at DESC)
-    WHERE ib_order_id IS NOT NULL;
-
--- Existing deployments: add the broker column if it predates B1.
+-- Existing deployments: add the broker column if it predates B1, and the
+-- account column if it predates C-0. **These must run before the indexes
+-- below**, which reference `broker_account` — on an existing table the
+-- CREATE TABLE above is a no-op, so the ALTER is what actually adds it.
 ALTER TABLE order_audit ADD COLUMN IF NOT EXISTS broker VARCHAR(16) NOT NULL DEFAULT 'ib';
+ALTER TABLE order_audit ADD COLUMN IF NOT EXISTS broker_account VARCHAR(64) NOT NULL DEFAULT 'default';
+
+-- Backs the net-exposure guard, keyed per **connection** + symbol + mode
+-- (C-0). Keying on `broker` alone summed every account on a platform into one
+-- number: three MT5 accounts each 1 lot long EURUSD presented as 3 lots
+-- against a limit meant to be per-account. The guard fails closed, so the
+-- symptom was entries refused on accounts nowhere near their limit — which
+-- invites raising the cap, removing the protection from all three.
+--
+-- Deliberately a **new index name**. `CREATE INDEX IF NOT EXISTS` against the
+-- B1 name would find the old index already present and silently keep its old
+-- (broker, symbol, …) definition, leaving the bug in place on exactly the
+-- deployments that need the fix.
+DROP INDEX IF EXISTS idx_order_audit_net_key;
+CREATE INDEX IF NOT EXISTS idx_order_audit_conn_net_key
+    ON order_audit (broker, broker_account, symbol, account_mode, submitted_at DESC)
+    WHERE ib_order_id IS NOT NULL;
 
 -- ==============================================
 -- SYSTEMATIC STRATEGIES (Systematic Trading roadmap — Phase 2 / A2 + Phase 3 / A3)
@@ -432,6 +460,10 @@ CREATE TABLE IF NOT EXISTS strategy_definitions (
     id BIGSERIAL PRIMARY KEY,
     name VARCHAR(128) NOT NULL,
     broker VARCHAR(16) NOT NULL DEFAULT 'ib',
+    -- Default connection for runs created from this definition (C-0). A
+    -- definition is not *bound* to one account — deploying it to several is
+    -- the point of run groups (C4) — this is only the default a run inherits.
+    broker_account VARCHAR(64) NOT NULL DEFAULT 'default',
     symbol VARCHAR(32) NOT NULL,
     sec_type VARCHAR(8) NOT NULL DEFAULT 'STK',
     exchange VARCHAR(32) NOT NULL DEFAULT 'SMART',
@@ -449,6 +481,7 @@ CREATE TABLE IF NOT EXISTS strategy_definitions (
 ALTER TABLE strategy_definitions ADD COLUMN IF NOT EXISTS sec_type VARCHAR(8) NOT NULL DEFAULT 'STK';
 ALTER TABLE strategy_definitions ADD COLUMN IF NOT EXISTS exchange VARCHAR(32) NOT NULL DEFAULT 'SMART';
 ALTER TABLE strategy_definitions ADD COLUMN IF NOT EXISTS currency VARCHAR(8) NOT NULL DEFAULT 'USD';
+ALTER TABLE strategy_definitions ADD COLUMN IF NOT EXISTS broker_account VARCHAR(64) NOT NULL DEFAULT 'default';
 
 CREATE INDEX IF NOT EXISTS idx_strategy_definitions_created_desc
     ON strategy_definitions (created_at DESC);
@@ -457,6 +490,10 @@ CREATE TABLE IF NOT EXISTS strategy_runs (
     id BIGSERIAL PRIMARY KEY,
     definition_id BIGINT NOT NULL REFERENCES strategy_definitions(id) ON DELETE CASCADE,
     broker VARCHAR(16) NOT NULL DEFAULT 'ib',
+    -- The connection this run executes on (C-0). One run = one instrument on
+    -- one connection; deploying a definition to several accounts creates
+    -- several runs (C4).
+    broker_account VARCHAR(64) NOT NULL DEFAULT 'default',
     account_mode VARCHAR(8) NOT NULL DEFAULT 'paper',   -- 'paper' | 'live'
     status VARCHAR(16) NOT NULL DEFAULT 'running',       -- 'running' | 'stopped' | 'error'
     sizing JSONB NOT NULL DEFAULT '{}'::jsonb,           -- carried through for A3
@@ -466,6 +503,9 @@ CREATE TABLE IF NOT EXISTS strategy_runs (
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     stopped_at TIMESTAMPTZ
 );
+
+-- Existing deployments: add the connection column if it predates C-0.
+ALTER TABLE strategy_runs ADD COLUMN IF NOT EXISTS broker_account VARCHAR(64) NOT NULL DEFAULT 'default';
 
 CREATE INDEX IF NOT EXISTS idx_strategy_runs_status
     ON strategy_runs (status);
@@ -509,10 +549,18 @@ CREATE INDEX IF NOT EXISTS idx_strategy_signals_acted
 -- makes them authoritative — and is what lets `risk.max_daily_loss` be
 -- enforced rather than accepted and ignored.
 --
--- `(broker, exec_id)` is unique: the poller deliberately re-fetches an
--- overlapping window every tick (a fill can be reported late, and IB's
--- commission arrives on a separate callback from the fill itself), so
+-- `(broker, broker_account, exec_id)` is unique: the poller deliberately
+-- re-fetches an overlapping window every tick (a fill can be reported late,
+-- and IB's commission arrives on a separate callback from the fill itself), so
 -- re-delivery of a row already seen must be a no-op rather than a duplicate.
+--
+-- The account is part of that key (C-0) because **fill ids are only unique
+-- within an account**. MT5 allocates deal tickets per terminal, starting low,
+-- so two MT5 accounts both produce deal `12345` within days of each other.
+-- Under the old `(broker, exec_id)` key the second one was silently swallowed
+-- as a duplicate: the fill never landed, the position was wrong, realised P&L
+-- was wrong, and `risk.max_daily_loss` — which is measured from this table —
+-- under-counted losses and therefore kept trading.
 --
 -- `order_audit_id` / `run_id` are the attribution links, resolved from the
 -- venue's order id at upsert time and re-resolved for any row that arrived
@@ -523,6 +571,7 @@ CREATE INDEX IF NOT EXISTS idx_strategy_signals_acted
 CREATE TABLE IF NOT EXISTS order_executions (
     id BIGSERIAL PRIMARY KEY,
     broker VARCHAR(16) NOT NULL DEFAULT 'ib',
+    broker_account VARCHAR(64) NOT NULL DEFAULT 'default', -- account on that platform (C-0)
     account_mode VARCHAR(8) NOT NULL DEFAULT 'paper',   -- 'paper' | 'live'
     exec_id VARCHAR(128) NOT NULL,                      -- the venue's own fill id
     broker_order_id VARCHAR(64),                        -- venue order id (IB's is numeric, others aren't)
@@ -538,21 +587,62 @@ CREATE TABLE IF NOT EXISTS order_executions (
     executed_at TIMESTAMPTZ NOT NULL,
     raw JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (broker, exec_id)
+    CONSTRAINT order_executions_connection_exec_key
+        UNIQUE (broker, broker_account, exec_id)
 );
 
--- Backs the position / realised-P&L reducers, which always scope by venue +
--- instrument + account and walk fills in execution order.
-CREATE INDEX IF NOT EXISTS idx_order_executions_position_key
-    ON order_executions (broker, symbol, account_mode, executed_at);
+-- Existing deployments: add the account column, then re-key. Must precede the
+-- constraint and indexes below, which reference it.
+ALTER TABLE order_executions
+    ADD COLUMN IF NOT EXISTS broker_account VARCHAR(64) NOT NULL DEFAULT 'default';
+
+-- Replace the B1-era `(broker, exec_id)` key with the connection-scoped one.
+-- Matched by definition text because its generated name varies by deployment.
+--
+-- ⚠️ **Apply this before configuring a second account on any platform.** Once
+-- two accounts have both reported the same exec_id, the losing row was never
+-- written — the constraint can be widened afterwards, but the swallowed fills
+-- are only recoverable by re-polling a window that still covers them.
+DO $$
+DECLARE cname text;
+BEGIN
+    FOR cname IN
+        SELECT conname
+          FROM pg_constraint
+         WHERE conrelid = 'order_executions'::regclass
+           AND contype = 'u'
+           AND pg_get_constraintdef(oid) = 'UNIQUE (broker, exec_id)'
+    LOOP
+        EXECUTE format('ALTER TABLE order_executions DROP CONSTRAINT %I', cname);
+    END LOOP;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'order_executions'::regclass
+           AND conname = 'order_executions_connection_exec_key'
+    ) THEN
+        ALTER TABLE order_executions ADD CONSTRAINT order_executions_connection_exec_key
+            UNIQUE (broker, broker_account, exec_id);
+    END IF;
+END $$;
+
+-- Backs the position / realised-P&L reducers, which always scope by connection
+-- + instrument + account mode and walk fills in execution order. New index
+-- name for the same reason as the order_audit one: `IF NOT EXISTS` against the
+-- old name would keep the old, account-blind definition.
+DROP INDEX IF EXISTS idx_order_executions_position_key;
+CREATE INDEX IF NOT EXISTS idx_order_executions_conn_position_key
+    ON order_executions (broker, broker_account, symbol, account_mode, executed_at);
 CREATE INDEX IF NOT EXISTS idx_order_executions_executed_desc
     ON order_executions (executed_at DESC);
 -- Backs per-run realised P&L (the `max_daily_loss` cap).
 CREATE INDEX IF NOT EXISTS idx_order_executions_run
     ON order_executions (run_id, executed_at) WHERE run_id IS NOT NULL;
 -- Backs the re-link pass over fills whose audit row had no venue order id yet.
-CREATE INDEX IF NOT EXISTS idx_order_executions_unlinked
-    ON order_executions (broker, broker_order_id)
+-- Venue order ids collide across accounts for the same reason exec ids do.
+DROP INDEX IF EXISTS idx_order_executions_unlinked;
+CREATE INDEX IF NOT EXISTS idx_order_executions_conn_unlinked
+    ON order_executions (broker, broker_account, broker_order_id)
     WHERE order_audit_id IS NULL AND broker_order_id IS NOT NULL;
 
 -- ==============================================

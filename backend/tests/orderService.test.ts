@@ -15,6 +15,7 @@ function order(overrides: Partial<ValidatedOrder> = {}): ValidatedOrder {
     tif: 'DAY',
     account_mode: 'paper',
     broker: 'ib',
+    broker_account: 'default',
     limit_price: null,
     stop_price: null,
     sec_type: 'STK',

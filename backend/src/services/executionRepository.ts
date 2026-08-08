@@ -26,10 +26,13 @@
  */
 
 import type { Querier } from './backtestRunRepository.js';
+import { DEFAULT_BROKER_ACCOUNT, connectionOf, type Connection } from './orderTypes.js';
 import { realisedPnl, netPositions, type Fill, type RealisedPnlResult } from './realisedPnl.js';
 
 export interface ExecutionInput {
   broker: string;
+  /** Account within the platform. Defaults to `'default'` (C-0). */
+  broker_account?: string;
   account_mode: string;
   exec_id: string;
   broker_order_id?: string | null;
@@ -47,6 +50,7 @@ export interface ExecutionInput {
 export interface ExecutionRow {
   id: number;
   broker: string;
+  broker_account: string;
   account_mode: string;
   exec_id: string;
   broker_order_id: string | null;
@@ -92,6 +96,7 @@ export class ExecutionRepository {
       WITH audit AS (
         SELECT id, account_mode FROM order_audit
          WHERE broker = $1
+           AND broker_account = $14
            AND ib_order_id IS NOT NULL
            AND ib_order_id::text = $4
          ORDER BY submitted_at DESC
@@ -105,11 +110,12 @@ export class ExecutionRepository {
           FROM audit a
       )
       INSERT INTO order_executions (
-        broker, account_mode, exec_id, broker_order_id, order_audit_id, run_id,
+        broker, broker_account, account_mode, exec_id, broker_order_id,
+        order_audit_id, run_id,
         symbol, side, quantity, price, commission, realized_pnl, currency,
         executed_at, raw
       )
-      SELECT $1,
+      SELECT $1, $14,
              -- A venue reports fills without saying which account mode they
              -- belong to, so the linked order is the authority when there is
              -- one; otherwise (a manual trade) fall back to the poller's
@@ -119,7 +125,7 @@ export class ExecutionRepository {
              (SELECT audit_id FROM attribution),
              (SELECT run_id FROM attribution),
              $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb
-      ON CONFLICT (broker, exec_id) DO UPDATE SET
+      ON CONFLICT (broker, broker_account, exec_id) DO UPDATE SET
         commission     = COALESCE(EXCLUDED.commission, order_executions.commission),
         realized_pnl   = COALESCE(EXCLUDED.realized_pnl, order_executions.realized_pnl),
         order_audit_id = COALESCE(order_executions.order_audit_id, EXCLUDED.order_audit_id),
@@ -140,6 +146,7 @@ export class ExecutionRepository {
       (input.currency ?? 'USD').toUpperCase(),
       input.executed_at,
       JSON.stringify(input.raw ?? {}),
+      input.broker_account ?? DEFAULT_BROKER_ACCOUNT,
     ]);
     const row = (result.rows[0] as (ExecutionRow & { inserted?: boolean }) | undefined) ?? null;
     return { inserted: row?.inserted === true, row };
@@ -168,6 +175,7 @@ export class ExecutionRepository {
          AND e.broker_order_id IS NOT NULL
          AND e.executed_at >= NOW() - ($1 * INTERVAL '1 hour')
          AND a.broker = e.broker
+         AND a.broker_account = e.broker_account
          AND a.ib_order_id IS NOT NULL
          AND a.ib_order_id::text = e.broker_order_id
     `;
@@ -178,6 +186,7 @@ export class ExecutionRepository {
   /** Fills in **execution order** — the order the P&L reducer requires. */
   async listForPnl(filter: {
     broker?: string;
+    broker_account?: string;
     account_mode?: string;
     symbol?: string;
     run_id?: number;
@@ -188,6 +197,10 @@ export class ExecutionRepository {
     if (filter.broker) {
       params.push(filter.broker);
       where.push(`broker = $${params.length}`);
+    }
+    if (filter.broker_account) {
+      params.push(filter.broker_account);
+      where.push(`broker_account = $${params.length}`);
     }
     if (filter.account_mode) {
       params.push(filter.account_mode);
@@ -236,14 +249,24 @@ export class ExecutionRepository {
   }
 
   /**
-   * Fill-authoritative net position for one (broker, symbol, account_mode).
+   * Fill-authoritative net position for one connection + symbol + mode.
    *
    * Note this is the **account's** position at that venue, not one run's share
    * of it — a fill with no `run_id` (a manual trade) counts, because it really
    * is exposure. Callers that need per-run attribution scope by `run_id`.
    */
-  async netPosition(broker: string, symbol: string, accountMode: string): Promise<number> {
-    const fills = await this.listForPnl({ broker, symbol, account_mode: accountMode });
+  async netPosition(
+    broker: string,
+    symbol: string,
+    accountMode: string,
+    brokerAccount: string = DEFAULT_BROKER_ACCOUNT
+  ): Promise<number> {
+    const fills = await this.listForPnl({
+      broker,
+      broker_account: brokerAccount,
+      symbol,
+      account_mode: accountMode,
+    });
     return netPositions(fills)[symbol.toUpperCase()] ?? 0;
   }
 
@@ -283,6 +306,7 @@ export class ExecutionRepository {
    */
   async netPositionWithOpenOrders(opts: {
     broker: string;
+    brokerAccount?: string;
     symbol: string;
     accountMode: string;
     runId?: number | null;
@@ -295,6 +319,7 @@ export class ExecutionRepository {
                ) AS net
           FROM order_executions
          WHERE broker = $1 AND symbol = $2 AND account_mode = $3
+           AND broker_account = $6
            AND ($4::bigint IS NULL OR run_id = $4::bigint)
       ),
       -- Latest row per venue order id: a MODIFY writes a new row sharing the
@@ -303,6 +328,7 @@ export class ExecutionRepository {
         SELECT DISTINCT ON (a.ib_order_id) a.id, a.action, a.quantity, a.status
           FROM order_audit a
          WHERE a.broker = $1 AND a.symbol = $2 AND a.account_mode = $3
+           AND a.broker_account = $6
            AND a.ib_order_id IS NOT NULL
            AND a.submitted_at >= NOW() - ($5 * INTERVAL '1 hour')
            AND (
@@ -337,6 +363,7 @@ export class ExecutionRepository {
       opts.accountMode,
       opts.runId ?? null,
       opts.lookbackHours,
+      opts.brokerAccount ?? DEFAULT_BROKER_ACCOUNT,
     ]);
     const net = Number(result.rows[0]?.net ?? 0);
     return Number.isFinite(net) ? net : 0;
@@ -355,9 +382,10 @@ export class ExecutionRepository {
    */
   async netPositionsByBroker(
     broker: string,
-    accountMode?: string
+    accountMode?: string,
+    brokerAccount: string = DEFAULT_BROKER_ACCOUNT
   ): Promise<Record<string, number>> {
-    const params: unknown[] = [broker];
+    const params: unknown[] = [broker, brokerAccount];
     let modeClause = '';
     if (accountMode) {
       params.push(accountMode);
@@ -367,7 +395,7 @@ export class ExecutionRepository {
       `SELECT symbol,
               SUM(CASE WHEN side = 'BUY' THEN quantity ELSE -quantity END) AS net
          FROM order_executions
-        WHERE broker = $1 ${modeClause}
+        WHERE broker = $1 AND broker_account = $2 ${modeClause}
         GROUP BY symbol`,
       params
     );
@@ -381,6 +409,7 @@ export class ExecutionRepository {
   async list(
     filter: {
       broker?: string;
+      broker_account?: string;
       account_mode?: string;
       symbol?: string;
       run_id?: number;
@@ -393,6 +422,10 @@ export class ExecutionRepository {
     if (filter.broker) {
       params.push(filter.broker);
       where.push(`broker = $${params.length}`);
+    }
+    if (filter.broker_account) {
+      params.push(filter.broker_account);
+      where.push(`broker_account = $${params.length}`);
     }
     if (filter.account_mode) {
       params.push(filter.account_mode);
@@ -417,16 +450,22 @@ export class ExecutionRepository {
     return result.rows as ExecutionRow[];
   }
 
-  /** Distinct venues the app has actually traded at recently — what the poller
-   *  iterates, so an unconfigured broker is never polled. */
-  async activeBrokers(lookbackHours = 168): Promise<string[]> {
+  /** Distinct **connections** the app has actually traded at recently — what
+   *  the poller iterates, so an unconfigured connection is never polled.
+   *
+   *  Returns `(broker, broker_account)` pairs rather than platform names: fill
+   *  ids are only unique within an account, so the poller must know which
+   *  account a fill came from to store it under the right key (C-0). */
+  async activeConnections(lookbackHours = 168): Promise<Connection[]> {
     const result = await this.db.query(
-      `SELECT DISTINCT broker FROM order_audit
+      `SELECT DISTINCT broker, broker_account FROM order_audit
         WHERE submitted_at >= NOW() - ($1 * INTERVAL '1 hour')
         UNION
-       SELECT DISTINCT broker FROM strategy_runs WHERE status = 'running'`,
+       SELECT DISTINCT broker, broker_account FROM strategy_runs WHERE status = 'running'`,
       [lookbackHours]
     );
-    return (result.rows as { broker: string }[]).map((r) => r.broker).filter(Boolean);
+    return (result.rows as { broker: string; broker_account: string }[])
+      .filter((r) => Boolean(r.broker))
+      .map(connectionOf);
   }
 }

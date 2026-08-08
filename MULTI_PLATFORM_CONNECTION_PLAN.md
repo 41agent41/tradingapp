@@ -513,7 +513,7 @@ Each phase is independently shippable and leaves the system correct.
 
 | Phase | Contents | Ships |
 |---|---|---|
-| **C-0** | Bug ① and ② fixes alone: `broker_account` column + widened unique keys/indexes, defaulted to `'default'` | Correctness fix; no behaviour change on one connection. **Deploy before any second connection exists.** |
+| **C-0** ✅ | Bug ① and ② fixes alone: `broker_account` column + widened unique keys/indexes, defaulted to `'default'` | **Delivered.** Correctness fix; no behaviour change on one connection. **Deploy before any second connection exists.** |
 | **C-1** | C1 remainder + C2 registry + manifest config | Two MT5 connections addressable manually via `/api/orders`, `/account/*`, charts |
 | **C-2** | C3 symbol mapping + per-connection specs | A definition resolves correctly on each connection |
 | **C-3** | C4 run groups + staged deploy (C4a) + C6 scheduling/isolation | One definition trading on N connections, fault-isolated, canary-staged |
@@ -523,6 +523,31 @@ Each phase is independently shippable and leaves the system correct.
 Phase C-0 is worth shipping on its own even if the rest is deferred: it is
 small, it is a latent-data-loss fix, and it is the migration that is painful to
 apply late.
+
+> **C-0 delivered.** `broker_account VARCHAR(64) NOT NULL DEFAULT 'default'` on
+> `order_audit`, `order_executions`, `strategy_runs`, `strategy_definitions`
+> and `contracts`; `order_executions` re-keyed to
+> `UNIQUE (broker, broker_account, exec_id)`; the net-exposure index and query
+> re-keyed to include the account. `Connection` (`{broker, brokerAccount}`) is
+> the in-code type, with `connectionOf()` mapping persisted rows onto it and
+> `connectionLabel()` producing `platform:account` for logs. The poller
+> iterates connections and stamps each fill with the connection it polled,
+> never a value from the payload. Runner caches (equity, average cost,
+> instrument spec) and the execution engine's sizing deps re-keyed from
+> platform to connection.
+>
+> Two things worth recording from the implementation:
+>
+> - **`data_collection_config` needed no column.** It keys on `contract_id`, so
+>   it inherits connection scoping through `contracts` — the plan listed it, but
+>   adding the column would have been redundant denormalisation.
+> - **Renamed indexes and constraints rather than redefining in place.**
+>   `CREATE INDEX IF NOT EXISTS` against an existing name silently keeps the old
+>   definition, which would have left the bug in place on exactly the
+>   deployments that need the fix. The old names are dropped and the new
+>   definitions created under new names. The `ALTER TABLE … ADD COLUMN`
+>   statements must also precede the indexes that reference them, since
+>   `CREATE TABLE IF NOT EXISTS` is a no-op on an existing table.
 
 ---
 

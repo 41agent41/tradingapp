@@ -20,7 +20,13 @@
  */
 
 import { resolveOrderQuantity, roundToStep, type InstrumentSpec } from './orderSizing.js';
-import { validateOrder, type OrderAction, type ValidatedOrder } from './orderTypes.js';
+import {
+  connectionOf,
+  validateOrder,
+  type Connection,
+  type OrderAction,
+  type ValidatedOrder,
+} from './orderTypes.js';
 import type { SubmitCreateOutcome } from './orderService.js';
 import type { ActiveRun } from './strategyRepository.js';
 import type { PositionState, RawBar } from './strategyRunner.js';
@@ -56,14 +62,17 @@ export interface ExecutionEngineDeps {
   /** Realised P&L for this run today, derived from its fills. Only called when
    *  the run declares a `max_daily_loss`; throwing fails the check closed. */
   realisedPnlToday?(runId: number): Promise<number>;
-  /** Net liquidation at the run's venue, for `pct_equity` sizing. Only called
-   *  when the sizing block actually needs it; `null` means the venue reported
-   *  none and the sizer refuses rather than guessing a size. */
-  accountEquity?(broker: string): Promise<number | null>;
-  /** The venue's unit semantics and size constraints for the instrument —
-   *  what makes "100" mean 100 shares on IB but 100 *lots* on MT5. `null`
-   *  falls back to whole shares. */
-  instrumentSpec?(broker: string, symbol: string): Promise<InstrumentSpec | null>;
+  /** Net liquidation at the run's **connection**, for `pct_equity` sizing.
+   *  Only called when the sizing block actually needs it; `null` means the
+   *  venue reported none and the sizer refuses rather than guessing a size.
+   *  Keyed by connection, not platform: two accounts on one platform have
+   *  different equity, and sizing off the wrong one is silent (C-0). */
+  accountEquity?(connection: Connection): Promise<number | null>;
+  /** The connection's unit semantics and size constraints for the instrument —
+   *  what makes "100" mean 100 shares on IB but 100 *lots* on MT5. Lot step
+   *  and minimum differ per broker for the same pair, so this is per
+   *  connection too. `null` falls back to whole shares. */
+  instrumentSpec?(connection: Connection, symbol: string): Promise<InstrumentSpec | null>;
 }
 
 export class ExecutionEngine {
@@ -174,7 +183,7 @@ export class ExecutionEngine {
       let equity: number | null = null;
       if ((run.sizing ?? {}).type === 'pct_equity' && this.deps.accountEquity) {
         try {
-          equity = await this.deps.accountEquity(run.broker);
+          equity = await this.deps.accountEquity(connectionOf(run));
         } catch {
           // Leave it null: the sizer then refuses with a clear reason rather
           // than sizing off a stale or invented equity figure.
@@ -186,7 +195,7 @@ export class ExecutionEngine {
       let instrument: InstrumentSpec | null = null;
       if (this.deps.instrumentSpec) {
         try {
-          instrument = await this.deps.instrumentSpec(run.broker, run.symbol);
+          instrument = await this.deps.instrumentSpec(connectionOf(run), run.symbol);
         } catch {
           // Whole shares is the safe fallback: it is what every equity venue
           // uses, and on a lot-based venue a `fixed` size still has to clear
@@ -209,7 +218,7 @@ export class ExecutionEngine {
       let spec: InstrumentSpec | null = null;
       if (this.deps.instrumentSpec) {
         try {
-          spec = await this.deps.instrumentSpec(run.broker, run.symbol);
+          spec = await this.deps.instrumentSpec(connectionOf(run), run.symbol);
         } catch {
           spec = null;
         }
@@ -230,6 +239,7 @@ export class ExecutionEngine {
       tif: 'DAY',
       account_mode: run.account_mode,
       broker: run.broker,
+      broker_account: run.broker_account,
     });
     if (!v.ok) {
       return { placed: false, reason: `order validation failed: ${v.errors.join('; ')}` };
