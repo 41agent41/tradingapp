@@ -49,7 +49,7 @@ describe('HealthBadge popover interactions', () => {
       <div>
         <HealthBadge intervalMs={60_000} />
         <button type="button">elsewhere</button>
-      </div>,
+      </div>
     );
     await waitFor(() => expect(screen.getByText('All systems healthy')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /System health/ }));

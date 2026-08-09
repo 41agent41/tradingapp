@@ -29,7 +29,7 @@ describe('rowsFromPayload', () => {
           backfill: { enabled: true, last_error: null },
         },
       },
-      null,
+      null
     );
     expect(rows.map((r) => r.state)).toEqual(['ok', 'ok', 'ok', 'ok', 'ok']);
   });
@@ -45,7 +45,7 @@ describe('rowsFromPayload', () => {
           backfill: { enabled: false, last_error: null },
         },
       },
-      null,
+      null
     );
     const byKey = Object.fromEntries(rows.map((r) => [r.key, r.state]));
     expect(byKey.cache).toBe('disabled');
@@ -64,7 +64,7 @@ describe('rowsFromPayload', () => {
           backfill: { enabled: true, last_error: null },
         },
       },
-      null,
+      null
     );
     const ib = rows.find((r) => r.key === 'ib');
     expect(ib?.state).toBe('down');
@@ -82,7 +82,7 @@ describe('rowsFromPayload', () => {
           backfill: { enabled: true, running: true, last_error: 'IB timeout' },
         },
       },
-      null,
+      null
     );
     const backfill = rows.find((r) => r.key === 'backfill');
     expect(backfill?.state).toBe('warn');
