@@ -33,6 +33,14 @@ import axios from 'axios';
 import { logger } from './logger.js';
 import { applyTrail } from './stopManager.js';
 import { evaluateKillSwitch, killSwitchConfig, triggerAlert } from './killSwitch.js';
+import {
+  connectionActiveRuns,
+  connectionBreakerOpen,
+  connectionPositionDivergence,
+  killSwitchTriggers as killSwitchTriggerCount,
+  stopsTightened as stopsTightenedCount,
+  unprotectedPositions,
+} from './metrics.js';
 import { notifier, type Alert } from './notifier.js';
 import { dbService } from './database.js';
 import { StrategyRepository, type ActiveRun, type StagingGroup } from './strategyRepository.js';
@@ -707,6 +715,14 @@ export class StrategyRunner {
       else byConnection.set(key, [run]);
     }
 
+    // Refresh the per-connection gauges every pass. Set explicitly for each
+    // connection rather than incremented, so a connection whose runs all
+    // stopped reads 0 instead of holding its last value forever.
+    for (const [label, connectionRuns] of byConnection) {
+      connectionActiveRuns.set({ connection: label }, connectionRuns.length);
+      connectionBreakerOpen.set({ connection: label }, this.breakerIsOpen(label) ? 1 : 0);
+    }
+
     const queue = [...byConnection.entries()];
     const width = Math.max(1, Math.min(this.maxConnectionConcurrency, queue.length));
 
@@ -773,6 +789,7 @@ export class StrategyRunner {
     );
     if (outcome.moved) {
       this.stopsTightened++;
+      stopsTightenedCount.inc({ connection: label });
       // Record what is now in force, so a later gap can be measured against it.
       if (this.deps.setCurrentStop) {
         await this.deps.setCurrentStop(run.id, desired).catch(() => undefined);
@@ -834,8 +851,16 @@ export class StrategyRunner {
         config
       );
 
+      // Set explicitly both ways: a gauge left at 1 after the condition
+      // cleared alerts forever, which trains an operator to ignore it.
+      unprotectedPositions.set(
+        { connection: label },
+        triggers.some((t) => t.kind === 'unprotected_position') ? 1 : 0
+      );
+
       for (const trigger of triggers) {
         this.killSwitchTriggers++;
+        killSwitchTriggerCount.inc({ connection: label, kind: trigger.kind });
         logger.warn(
           { run_id: run.id, connection: label, kind: trigger.kind, detail: trigger.detail },
           'kill-switch trigger'
@@ -878,6 +903,7 @@ export class StrategyRunner {
       return;
     }
     this.positionDivergences++;
+    connectionPositionDivergence.inc({ connection: label });
     this.divergentRuns.set(run.id, {
       connection: label,
       symbol: runSymbol(run),

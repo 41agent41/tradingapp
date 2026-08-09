@@ -38,7 +38,7 @@ describe('OrderTicket', () => {
   it('renders the PAPER badge by default and submits without a confirmation modal', async () => {
     mockSequence(
       { body: CONFIG_BODY },
-      { status: 201, body: { audit_id: 1, order_id: 42, status: 'submitted' } },
+      { status: 201, body: { audit_id: 1, order_id: 42, status: 'submitted' } }
     );
 
     render(<OrderTicket />);
@@ -48,9 +48,7 @@ describe('OrderTicket', () => {
     fireEvent.change(screen.getByPlaceholderText('MSFT'), { target: { value: 'MSFT' } });
     fireEvent.click(screen.getByRole('button', { name: /Place paper order/i }));
 
-    await waitFor(() =>
-      expect(screen.getByText(/Order submitted/)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/Order submitted/)).toBeInTheDocument());
     // No modal was opened.
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
@@ -58,7 +56,7 @@ describe('OrderTicket', () => {
   it('shows a confirmation modal before sending a LIVE order', async () => {
     mockSequence(
       { body: CONFIG_BODY },
-      { status: 201, body: { audit_id: 2, order_id: 7, status: 'submitted' } },
+      { status: 201, body: { audit_id: 2, order_id: 7, status: 'submitted' } }
     );
 
     render(<OrderTicket />);
@@ -66,9 +64,9 @@ describe('OrderTicket', () => {
 
     fireEvent.change(screen.getByPlaceholderText('MSFT'), { target: { value: 'MSFT' } });
     // Switch to live.
-    const accountSelect = screen.getAllByRole('combobox').find(
-      (el) => (el as HTMLSelectElement).value === 'paper',
-    );
+    const accountSelect = screen
+      .getAllByRole('combobox')
+      .find((el) => (el as HTMLSelectElement).value === 'paper');
     if (accountSelect) fireEvent.change(accountSelect, { target: { value: 'live' } });
 
     await waitFor(() => expect(screen.getByText('LIVE TRADING')).toBeInTheDocument());
@@ -79,9 +77,7 @@ describe('OrderTicket', () => {
     expect(screen.getByText('Confirm LIVE order')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Send LIVE order/i }));
-    await waitFor(() =>
-      expect(screen.getByText(/Order submitted/)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/Order submitted/)).toBeInTheDocument());
   });
 
   it('disables the Live option when the config probe reports the gate off', async () => {
@@ -102,9 +98,9 @@ describe('OrderTicket', () => {
 
     expect(screen.queryByText('Limit price')).not.toBeInTheDocument();
 
-    const orderTypeSelect = screen.getAllByRole('combobox').find(
-      (el) => (el as HTMLSelectElement).value === 'MKT',
-    );
+    const orderTypeSelect = screen
+      .getAllByRole('combobox')
+      .find((el) => (el as HTMLSelectElement).value === 'MKT');
     if (orderTypeSelect) fireEvent.change(orderTypeSelect, { target: { value: 'LMT' } });
     expect(screen.getByText('Limit price')).toBeInTheDocument();
   });
@@ -112,7 +108,7 @@ describe('OrderTicket', () => {
   it('surfaces a backend error inline', async () => {
     mockSequence(
       { body: CONFIG_BODY },
-      { status: 403, body: { error: 'Live trading is disabled', detail: 'gate is off' } },
+      { status: 403, body: { error: 'Live trading is disabled', detail: 'gate is off' } }
     );
     render(<OrderTicket />);
     await waitFor(() => expect(screen.getByText('Place paper order')).toBeInTheDocument());

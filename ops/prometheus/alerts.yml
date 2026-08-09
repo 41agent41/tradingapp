@@ -158,3 +158,102 @@ groups:
             No non-infra requests have hit the IB service in 30 minutes.
             Expected if the platform is idle; investigate if it should be
             actively serving charts or streaming.
+
+  # -----------------------------------------------------------------------
+  # Fleet — per-connection health (Component C — C-5)
+  # -----------------------------------------------------------------------
+  # Every rule here is keyed on `connection` (platform:account), not on
+  # platform. "MT5 is up" is not a useful statement when three MT5 accounts
+  # are trading and one is wedged at a login dialog — which is the common
+  # failure, since the terminal is a GUI app that can sit at a login prompt
+  # indefinitely while the host answers pings perfectly well.
+  - name: tradingapp-fleet
+    rules:
+      - alert: ConnectionBreakerOpen
+        # The runner has given up on a connection after repeated failures and
+        # is skipping its runs. Those strategies are not trading.
+        expr: tradingapp_connection_breaker_open == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Connection {{ $labels.connection }} is being skipped"
+          description: >-
+            The strategy runner has opened its circuit breaker for
+            {{ $labels.connection }} after repeated failures, so every run on
+            that account has stopped evaluating. Other connections are
+            unaffected by design — check the sidecar host and the terminal's
+            login state.
+
+      - alert: UnprotectedPosition
+        # E-2 refuses to *create* this state, so finding one means it arrived
+        # another way: a stop the venue silently dropped, or one removed by
+        # hand. Pages immediately — this is real money with no floor under it.
+        expr: tradingapp_unprotected_positions > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Open position with no stop on {{ $labels.connection }}"
+          description: >-
+            {{ $value }} open position(s) on {{ $labels.connection }} have no
+            protective stop at the venue, though their strategy declares one.
+            An unprotected position is never an acceptable resting state.
+
+      - alert: PositionDivergence
+        # Benign in bursts — a broker-side stop or a manual trade produces a
+        # fill with no order of ours behind it. Sustained divergence means
+        # fills are being missed, which silently corrupts realised P&L and
+        # every loss cap measured from it.
+        expr: tradingapp_connection_position_divergence > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Venue and recorded positions disagree on {{ $labels.connection }}"
+          description: >-
+            Positions on {{ $labels.connection }} have disagreed with the
+            fills feed for 30 minutes. Brief divergence is expected after a
+            broker-side exit; sustained divergence means fills are being
+            missed. Check /api/account/reconciliation/all.
+
+      - alert: KillSwitchStopGap
+        # Price jumped a stop. Notify-only by default, so this alert may be
+        # the *only* response — treat it as one requiring a human.
+        expr: increase(tradingapp_kill_switch_triggers_total{kind="stop_gap"}[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Position closed well past its stop on {{ $labels.connection }}"
+          description: >-
+            A position on {{ $labels.connection }} closed materially beyond
+            the stop that was in force — the market likely gapped through it.
+            With KILL_SWITCH_ACTION=notify nothing was halted automatically.
+
+      - alert: OrdersBlockedByCap
+        # Not a failure on its own: a cap doing its job. Sustained blocking
+        # means a strategy is trying to trade and cannot, which the operator
+        # should know about rather than discover from missing trades.
+        expr: increase(tradingapp_orders_blocked_by_cap_total[1h]) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "Risk caps are repeatedly blocking orders on {{ $labels.connection }}"
+          description: >-
+            {{ $value }} orders were refused by the {{ $labels.level }} cap on
+            {{ $labels.connection }} in the last hour. Either the strategy is
+            over-trading or the cap is set tighter than intended.
+
+      - alert: ConnectionHasNoActiveRuns
+        # A connection configured but evaluating nothing. Info-level: perfectly
+        # normal after a deliberate stop, worth noticing if it was unintended.
+        expr: tradingapp_connection_active_runs == 0
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "No strategies running on {{ $labels.connection }}"
+          description: >-
+            {{ $labels.connection }} has had no active runs for an hour.
+            Expected if you stopped them; investigate if a group was
+            abandoned or its canary failed.

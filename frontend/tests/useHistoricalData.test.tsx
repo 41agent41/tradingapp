@@ -28,7 +28,7 @@ describe('useHistoricalData', () => {
       source: 'ib',
     });
     const { result } = renderHook(() =>
-      useHistoricalData({ symbol: 'MSFT', timeframe: '1day', period: '1Y' }),
+      useHistoricalData({ symbol: 'MSFT', timeframe: '1day', period: '1Y' })
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.bars).toHaveLength(1);
@@ -39,12 +39,10 @@ describe('useHistoricalData', () => {
 
   it('downscales millisecond timestamps to seconds', async () => {
     mockFetchOk({
-      bars: [
-        { timestamp: 1735689600000, open: 1, high: 2, low: 0.5, close: 1.5, volume: 100 },
-      ],
+      bars: [{ timestamp: 1735689600000, open: 1, high: 2, low: 0.5, close: 1.5, volume: 100 }],
     });
     const { result } = renderHook(() =>
-      useHistoricalData({ symbol: 'MSFT', timeframe: '1day', period: '1Y' }),
+      useHistoricalData({ symbol: 'MSFT', timeframe: '1day', period: '1Y' })
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.bars[0].time).toBe(1735689600);
@@ -52,10 +50,10 @@ describe('useHistoricalData', () => {
 
   it('exposes an error when the backend returns a non-OK response', async () => {
     global.fetch = vi.fn(
-      async () => new Response(JSON.stringify({ error: 'boom' }), { status: 503 }),
+      async () => new Response(JSON.stringify({ error: 'boom' }), { status: 503 })
     ) as any;
     const { result } = renderHook(() =>
-      useHistoricalData({ symbol: 'MSFT', timeframe: '1day', period: '1Y' }),
+      useHistoricalData({ symbol: 'MSFT', timeframe: '1day', period: '1Y' })
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toBe('boom');
@@ -65,7 +63,7 @@ describe('useHistoricalData', () => {
   it('stays idle when enabled=false', async () => {
     const fetchMock = mockFetchOk({ bars: [] });
     renderHook(() =>
-      useHistoricalData({ symbol: 'MSFT', timeframe: '1day', period: '1Y', enabled: false }),
+      useHistoricalData({ symbol: 'MSFT', timeframe: '1day', period: '1Y', enabled: false })
     );
     // No network call.
     await new Promise((r) => setTimeout(r, 10));

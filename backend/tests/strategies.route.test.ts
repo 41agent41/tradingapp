@@ -369,3 +369,119 @@ describe('group and connection lifecycle (C-3)', () => {
     expect(res.body.connection).toBe('mt5:pepperstone');
   });
 });
+
+// --------------------------------------------------------------------------- //
+// Fleet view (C-5)
+// --------------------------------------------------------------------------- //
+describe('GET /api/strategies/fleet', () => {
+  const providers = {
+    data: {
+      connections: {
+        'mt5:icmarkets': { platform: 'mt5', account: 'icmarkets', account_mode: 'live' },
+        'mt5:pepperstone': { platform: 'mt5', account: 'pepperstone', account_mode: 'paper' },
+      },
+      currency: { consistent: true, currencies: ['USD'] },
+    },
+  };
+
+  const legs = [
+    {
+      id: 1,
+      definition_id: 10,
+      broker: 'mt5',
+      broker_account: 'icmarkets',
+      native_symbol: 'EURUSD.a',
+      account_mode: 'live',
+      status: 'running',
+      is_canary: true,
+      current_stop: '1.09',
+      run_group_id: 5,
+    },
+    {
+      id: 2,
+      definition_id: 10,
+      broker: 'mt5',
+      broker_account: 'pepperstone',
+      native_symbol: 'EURUSD_i',
+      account_mode: 'paper',
+      status: 'pending',
+      is_canary: false,
+      current_stop: null,
+      run_group_id: 5,
+    },
+  ];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    repoImpl.listRuns.mockResolvedValue(legs);
+    repoImpl.findDefinition.mockResolvedValue({
+      id: 10,
+      name: 'EU trend',
+      symbol: 'EURUSD',
+      timeframe: '5min',
+    });
+  });
+
+  it('groups legs by definition, so one strategy on N accounts reads as one row', async () => {
+    axiosMock.get.mockResolvedValue(providers);
+
+    const res = await request(buildApp()).get('/api/strategies/fleet');
+
+    expect(res.status).toBe(200);
+    expect(res.body.strategies).toHaveLength(1);
+    expect(res.body.strategies[0].name).toBe('EU trend');
+    expect(res.body.strategies[0].legs.map((l: any) => l.connection)).toEqual([
+      'mt5:icmarkets',
+      'mt5:pepperstone',
+    ]);
+    // Each leg carries the symbol it actually trades, not the canonical one.
+    expect(res.body.strategies[0].legs.map((l: any) => l.native_symbol)).toEqual([
+      'EURUSD.a',
+      'EURUSD_i',
+    ]);
+  });
+
+  it('counts active runs per connection', async () => {
+    axiosMock.get.mockResolvedValue(providers);
+    const res = await request(buildApp()).get('/api/strategies/fleet');
+
+    const byLabel = Object.fromEntries(
+      res.body.connections.map((c: any) => [c.connection, c.active_runs])
+    );
+    expect(byLabel['mt5:icmarkets']).toBe(1);
+    expect(byLabel['mt5:pepperstone']).toBe(1);
+  });
+
+  it('surfaces the declared account_mode alongside each connection', async () => {
+    // The live/demo distinction has to be visible where the mistake would be
+    // made, not buried in config.
+    axiosMock.get.mockResolvedValue(providers);
+    const res = await request(buildApp()).get('/api/strategies/fleet');
+
+    const live = res.body.connections.find((c: any) => c.connection === 'mt5:icmarkets');
+    expect(live.account_mode).toBe('live');
+  });
+
+  it('still answers when the broker service is unreachable', async () => {
+    // The DB half is still worth having, and "the broker service is down" is
+    // itself the headline rather than a blank screen.
+    axiosMock.get.mockRejectedValue(new Error('broker service down'));
+
+    const res = await request(buildApp()).get('/api/strategies/fleet');
+
+    expect(res.status).toBe(200);
+    expect(res.body.broker_service_error).toMatch(/broker service down/);
+    expect(res.body.strategies).toHaveLength(1);
+  });
+
+  it('reports pending legs distinctly from running ones', async () => {
+    // A canary-staged deploy is a normal state, not an error, and the UI has
+    // to be able to say so.
+    axiosMock.get.mockResolvedValue(providers);
+    const res = await request(buildApp()).get('/api/strategies/fleet');
+
+    expect(res.body.totals.active_runs).toBe(2);
+    expect(res.body.totals.pending_runs).toBe(1);
+    expect(res.body.strategies[0].legs.find((l: any) => l.is_canary).status).toBe('running');
+  });
+});

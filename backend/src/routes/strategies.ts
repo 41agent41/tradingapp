@@ -9,6 +9,7 @@
  *   GET  /api/strategies/groups/:id       — a group and its legs
  *   POST /api/strategies/groups/:id/stop  — stop every leg of a group
  *   POST /api/strategies/connections/:broker/:account/stop — panic-stop a connection
+ *   GET  /api/strategies/fleet            — every connection + grouped legs (C-5)
  *   GET  /api/strategies/runs             — list runs (optional ?status=)
  *   GET  /api/strategies/runs/:id         — one run
  *   POST /api/strategies/runs/:id/stop    — stop a run
@@ -149,6 +150,107 @@ router.post('/runs', async (req: Request, res: Response) => {
     res.status(201).json(row);
   } catch (error: any) {
     fail(res, 500, 'Failed to start run', error?.message ?? 'unknown');
+  }
+});
+
+
+// --- fleet view (Component C — C-5) ---------------------------------------- //
+
+/**
+ * The whole fleet in one call: every connection, its health and declared mode,
+ * and every active run grouped by the definition it came from.
+ *
+ * One endpoint rather than several because the operational question is a
+ * single one — "is anything wrong?" — and answering it by fanning out across
+ * connections/, runs/ and groups/ in the browser means a half-loaded screen
+ * shows a half-true answer. A connection that cannot be read reports its own
+ * error alongside the ones that responded.
+ */
+router.get('/fleet', async (_req: Request, res: Response) => {
+  try {
+    let connections: Record<string, any> = {};
+    let currency: Record<string, unknown> | null = null;
+    let providerError: string | null = null;
+    try {
+      const providers = await axios.get(`${BROKER_SERVICE_URL}/providers`, {
+        timeout: 15000,
+        headers: { Connection: 'close' },
+      });
+      connections = providers.data?.connections ?? {};
+      currency = providers.data?.currency ?? null;
+    } catch (err: any) {
+      // Reported, not fatal. The DB half of this answer is still worth having,
+      // and "the broker service is unreachable" is itself the headline.
+      providerError = err?.message ?? 'broker service unreachable';
+    }
+
+    const runs = await repo.listRuns({ limit: 200 });
+    const active = runs.filter((r) => r.status === 'running' || r.status === 'pending');
+
+    // Legs grouped by the definition they came from, so one strategy across
+    // several accounts reads as one row with N legs rather than N unrelated
+    // runs — which is how it is actually operated.
+    const byDefinition = new Map<number, any[]>();
+    for (const run of active) {
+      const bucket = byDefinition.get(run.definition_id);
+      if (bucket) bucket.push(run);
+      else byDefinition.set(run.definition_id, [run]);
+    }
+
+    const definitions = await Promise.all(
+      [...byDefinition.keys()].map((id) => repo.findDefinition(id))
+    );
+    const definitionById = new Map(
+      definitions.filter(Boolean).map((d: any) => [d.id, d])
+    );
+
+    const strategies = [...byDefinition.entries()].map(([definitionId, legs]) => {
+      const definition = definitionById.get(definitionId);
+      return {
+        definition_id: definitionId,
+        name: definition?.name ?? `definition ${definitionId}`,
+        symbol: definition?.symbol ?? null,
+        timeframe: definition?.timeframe ?? null,
+        group_ids: [...new Set(legs.map((l) => l.run_group_id).filter((g) => g != null))],
+        legs: legs.map((leg) => ({
+          run_id: leg.id,
+          connection: `${leg.broker}:${leg.broker_account}`,
+          native_symbol: leg.native_symbol,
+          account_mode: leg.account_mode,
+          status: leg.status,
+          is_canary: leg.is_canary,
+          current_stop: leg.current_stop == null ? null : Number(leg.current_stop),
+          last_evaluated_at: leg.last_evaluated_at,
+          last_error: leg.last_error,
+        })),
+      };
+    });
+
+    const runsPerConnection: Record<string, number> = {};
+    for (const run of active) {
+      const label = `${run.broker}:${run.broker_account}`;
+      runsPerConnection[label] = (runsPerConnection[label] ?? 0) + 1;
+    }
+
+    res.json({
+      connections: Object.entries(connections).map(([label, info]: [string, any]) => ({
+        connection: label,
+        ...info,
+        active_runs: runsPerConnection[label] ?? 0,
+      })),
+      currency,
+      strategies,
+      totals: {
+        connections: Object.keys(connections).length,
+        active_runs: active.length,
+        pending_runs: active.filter((r) => r.status === 'pending').length,
+        errored_runs: runs.filter((r) => r.status === 'error').length,
+      },
+      broker_service_error: providerError,
+      last_updated: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    fail(res, 500, 'Failed to read fleet status', error?.message ?? 'unknown');
   }
 });
 
