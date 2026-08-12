@@ -476,6 +476,12 @@ PostgreSQL 15, 16 and 17 are all supported by the schema (the bundled
 container image is pg15; nothing in `timescaledb-schema.sql` is
 version-specific). Pick 17 for a new build.
 
+> If `apt update` reports no candidate for the TimescaleDB packages, the
+> packagecloud repo has not published for your Ubuntu codename yet. Substitute
+> the previous LTS codename (`jammy` for a `noble` container) in
+> `/etc/apt/sources.list.d/timescaledb.list` — the packages are built against
+> the PGDG PostgreSQL you just installed, not against the distro's own.
+
 ```bash
 timescaledb-tune --quiet --yes    # sizes shared_buffers/work_mem, adds the preload
 systemctl restart postgresql
@@ -616,14 +622,15 @@ wget -O /tmp/ibgw.sh \
   https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-stable-standalone-linux-x64.sh
 chmod +x /tmp/ibgw.sh && /tmp/ibgw.sh -q     # installs to ~/Jts
 
-# IBC — automates login and the daily restart
+# IBC — automates login and the daily restart.
+# Check https://github.com/IbcAlpha/IBC/releases for the current version:
+# the asset filename carries it, so there is no version-agnostic URL.
+IBC_VERSION=3.20.0
 mkdir -p /opt/ibc && cd /opt/ibc
-wget -O IBCLinux.zip https://github.com/IbcAlpha/IBC/releases/latest/download/IBCLinux-3.20.0.zip
+wget -O IBCLinux.zip \
+  "https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLinux-${IBC_VERSION}.zip"
 unzip -o IBCLinux.zip && chmod +x *.sh scripts/*.sh
 ```
-
-Check the IBC releases page for the current version — the filename above
-pins one, and a stale link 404s.
 
 ### 6.3 One-time GUI configuration over VNC
 
@@ -669,9 +676,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-Environment=DISPLAY=:1
-ExecStartPre=/usr/bin/Xvfb :1 -screen 0 1280x900x24
-ExecStart=/opt/ibc/gatewaystart.sh
+ExecStart=/usr/bin/xvfb-run -n 1 -s "-screen 0 1280x900x24" /opt/ibc/gatewaystart.sh
 Restart=always
 RestartSec=30
 User=root
@@ -680,9 +685,10 @@ User=root
 WantedBy=multi-user.target
 ```
 
-`ExecStartPre` with a long-running `Xvfb` blocks — use `xvfb-run` in
-`ExecStart` instead if you prefer a single process:
-`ExecStart=/usr/bin/xvfb-run -n 1 -s "-screen 0 1280x900x24" /opt/ibc/gatewaystart.sh`.
+`xvfb-run` owns the framebuffer's lifetime as a single supervised process. Do
+**not** start `Xvfb` from `ExecStartPre` instead: `ExecStartPre` runs to
+completion before `ExecStart` begins, so a long-running `Xvfb` there hangs the
+unit at startup forever.
 
 ```bash
 systemctl daemon-reload && systemctl enable --now ibgateway
@@ -885,6 +891,9 @@ commands (`--no-db` reverses it).
 
 ## 9. Verify the deployment
 
+`deploy` already ran `test_deployment` as its last step, so you have seen one
+pass of this. Re-run it deliberately once the stack has settled:
+
 ```bash
 ./tradingapp.sh status      # container states
 ./tradingapp.sh test        # frontend, backend, broker service, IB reachability
@@ -906,7 +915,9 @@ curl -fs http://10.7.3.20:4000/api/database/health | jq
 # Broker service → IB Gateway
 curl -fs http://10.7.3.20:8000/health | jq
 
-# An authenticated route — proves API_TOKEN matches
+# An authenticated route — proves API_TOKEN matches.
+# .env is not sourced into your shell automatically; pull it in first.
+set -a && . /opt/tradingapp/.env && set +a
 curl -fs -H "Authorization: Bearer $API_TOKEN" \
   http://10.7.3.20:4000/api/orders/config | jq
 ```
@@ -1024,8 +1035,11 @@ Enable the firewall at **Datacenter → Firewall**, then per guest at
 **CT → Firewall → Options → Firewall: Yes**. From the shell:
 
 ```bash
-# /etc/pve/firewall/cluster.fw — datacenter-wide
-cat >> /etc/pve/firewall/cluster.fw <<'EOF'
+# /etc/pve/firewall/cluster.fw — datacenter-wide.
+# This file does not exist on a fresh install, so write it whole. If you
+# already have one, merge these lines by hand: a second [OPTIONS] or
+# [RULES] section in the same file is a parse error, not an append.
+cat > /etc/pve/firewall/cluster.fw <<'EOF'
 [OPTIONS]
 enable: 1
 
@@ -1034,6 +1048,10 @@ IN ACCEPT -source 10.7.3.0/24 -p tcp -dport 8006 -log nolog   # Proxmox UI
 IN ACCEPT -source 10.7.3.0/24 -p tcp -dport 22   -log nolog   # SSH
 EOF
 ```
+
+Enabling the datacenter firewall applies a default-DROP input policy to the
+**host itself**. The two rules above are what keep the web UI and SSH
+reachable — write them in the same edit that sets `enable: 1`, never after.
 
 ```bash
 # /etc/pve/firewall/110.fw — app container: publish only 80/443, keep the rest internal
@@ -1106,10 +1124,21 @@ pct create 150 local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst \
 pct enter 150
 ```
 
-Inside the container:
+Inside the container. Prometheus is in Ubuntu's `universe` repository;
+**Grafana is not packaged by Debian or Ubuntu at all** and needs its own APT
+repository:
 
 ```bash
-apt update && apt install -y prometheus grafana
+apt update && apt install -y prometheus apt-transport-https software-properties-common wget
+
+# Grafana's own repository — `apt install grafana` fails without this
+mkdir -p /etc/apt/keyrings
+wget -q -O - https://apt.grafana.com/gpg.key \
+  | gpg --dearmor > /etc/apt/keyrings/grafana.gpg
+echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" \
+  > /etc/apt/sources.list.d/grafana.list
+
+apt update && apt install -y grafana
 ```
 
 Copy [`ops/prometheus/alerts.yml`](ops/prometheus/alerts.yml) to
@@ -1167,8 +1196,12 @@ mode **Snapshot**, compression `zstd`.
 CLI equivalent:
 
 ```bash
-vzdump 110 120 130 --mode snapshot --compress zstd --storage local --mailnotification failure
+vzdump 110 120 130 --mode snapshot --compress zstd --storage local
 ```
+
+Configure failure notifications through **Datacenter → Notifications** rather
+than the old `--mailnotification` flag, which is deprecated on PVE 8 and gone
+on PVE 9.
 
 Two container-specific notes:
 
