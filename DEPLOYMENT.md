@@ -4,6 +4,12 @@ Complete guide for deploying TradingApp on a remote server. All operations
 flow through the single management script `./tradingapp.sh` — there are no
 other deployment scripts in this repository.
 
+> Building the hosts themselves from scratch on a hypervisor? See
+> [`PROXMOX_DEPLOYMENT.md`](PROXMOX_DEPLOYMENT.md) — it covers Proxmox VE
+> post-install, VM/LXC creation, a dedicated TimescaleDB guest, the IB
+> Gateway and MT5 session hosts, firewalling and backups, then hands off to
+> this document for the application itself.
+
 ## Table of Contents
 
 1. [Upgrading from `ib_service`](#upgrading-from-ib_service)
