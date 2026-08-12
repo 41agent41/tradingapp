@@ -57,7 +57,7 @@ external instance.
 | **Timescale Cloud** | https://cloud.timescale.com/ — managed, extension pre-enabled |
 | **AWS RDS / Azure DB / GCP Cloud SQL for Postgres** | Need to enable the `timescaledb` extension where supported |
 | **Self-hosted Docker** | `docker run -d --name timescaledb -e POSTGRES_PASSWORD=... -e POSTGRES_DB=tradingapp -p 5432:5432 timescale/timescaledb:latest-pg15` |
-| **Apt install on Ubuntu** | https://docs.timescale.com/install/latest/self-hosted/installation-debian/ |
+| **Apt install on Ubuntu** | [https://www.tigerdata.com/docs/get-started/choose-your-path/install-timescaledb] |
 
 For local / self-hosted dev you can skip the external instance entirely:
 `./tradingapp.sh deploy --with-db` layers the `docker-compose.db.yml`
