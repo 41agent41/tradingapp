@@ -23,6 +23,11 @@ chmod +x tradingapp.sh
 ./tradingapp.sh test
 ```
 
+> Deploying onto a bare-metal **Proxmox VE** host? Start with
+> [PROXMOX_DEPLOYMENT.md](PROXMOX_DEPLOYMENT.md) — it builds the VMs,
+> database and broker-session hosts from a fresh hypervisor install, then
+> runs the commands above.
+
 ### **Access Your Application**
 - **Frontend**: `http://your-server-ip:3000` - Market data and charts
 - **Backend**: `http://your-server-ip:4000` - API endpoints  
