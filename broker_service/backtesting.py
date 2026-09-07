@@ -10,7 +10,7 @@ Version: 1.0.0
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Tuple
@@ -104,6 +104,9 @@ class BacktestResults:
     profit_factor: float
     trades: List[Trade]
     equity_curve: pd.Series
+    # Engine-specific extras (the Jesse runner reports its full statistics
+    # block here). Empty for the built-in engine, so its payload is unchanged.
+    metrics: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert results to dictionary for JSON serialization"""
@@ -153,7 +156,22 @@ class BacktestResults:
                 }
                 for trade in self.trades
             ],
+            **({"metrics": _json_safe(self.metrics)} if self.metrics else {}),
         }
+
+
+def _json_safe(value: Any) -> Any:
+    """Recursively coerce numpy scalars and non-finite floats for JSONResponse."""
+
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (np.floating, np.integer)):
+        value = value.item()
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    return value
 
 
 class TradingStrategy:
@@ -298,6 +316,20 @@ class BacktestEngine:
         """
 
         logger.info(f"Starting backtest for {strategy.name} on {symbol}")
+
+        # A strategy that brings its own simulation (the Jesse adapter, whose
+        # order semantics — resting limit/stop entries, bracket exits, partial
+        # take-profits — this bar-close engine cannot express) runs itself and
+        # returns the same ``BacktestResults`` shape.
+        own_runner = getattr(strategy, "run_backtest", None)
+        if callable(own_runner):
+            return own_runner(
+                df,
+                symbol=symbol,
+                initial_capital=self.initial_capital,
+                commission=self.commission,
+                spec=spec,
+            )
 
         # Calculate indicators if not present
         df_with_indicators = indicator_calculator.calculate_indicators(df, strategy.indicators)
@@ -626,5 +658,9 @@ AVAILABLE_STRATEGIES = {"ma_crossover": SimpleMAStrategy, "rsi_mean_reversion": 
 # Rule-driven strategies (Systematic Trading roadmap — Phase 1 / A1) register
 # themselves into ``AVAILABLE_STRATEGIES`` on import. This is deferred to the
 # bottom of the module (module-form import) so ``rule_strategy`` can import
-# ``TradingStrategy`` from here without a circular-import failure.
+# ``TradingStrategy`` from here without a circular-import failure. The Jesse
+# framework's strategies (``jesse_strategies/``) register the same way, as
+# ``jesse_<name>`` keys, through the adapter (``jesse/adapter.py``) that gives
+# them this engine's ``TradingStrategy`` interface.
+import jesse.adapter  # noqa: E402,F401  (imported for its registration side effect)
 import rule_strategy  # noqa: E402,F401  (imported for its registration side effect)

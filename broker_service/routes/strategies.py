@@ -7,17 +7,22 @@ rules, so the backend strategy runner (A2) can poll it once per closed bar.
 
   POST /strategies/evaluate — evaluate a rule-set against the latest bar,
                               plus the trail stop for an open position (E-3)
+
+A ``rule_set`` of the form ``{"engine": "jesse", "strategy": ...}`` selects a
+Jesse-framework strategy (``jesse/live.py``) and returns the same signal shape.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from backtesting import AVAILABLE_STRATEGIES
+from jesse.adapter import JesseStrategyAdapter, compile_jesse_definition, is_jesse_definition
+from jesse.models import StrategyError
 from observability import get_logger
 from rule_strategy import Position, RuleSetError, RuleStrategy, compile_rule_strategy
 
@@ -50,10 +55,22 @@ class EvaluateRequest(BaseModel):
     position: PositionInput | None = Field(
         None, description="Current live position; defaults to flat."
     )
+    symbol: str | None = Field(None, description="Instrument label (informational).")
+    timeframe: str | None = Field(
+        None,
+        description=(
+            "Bar timeframe (e.g. '5min'). Required by Jesse strategies that consult a "
+            "higher timeframe; inferred from bar spacing when omitted."
+        ),
+    )
 
 
-def _resolve_strategy(request: EvaluateRequest) -> RuleStrategy:
-    """Compile the inline rule-set or look up a registered rule strategy."""
+Evaluable = Union[RuleStrategy, JesseStrategyAdapter]
+
+
+def _resolve_strategy(request: EvaluateRequest) -> Evaluable:
+    """Compile the inline rule-set / Jesse definition, or look up a registered
+    strategy that can be evaluated live."""
 
     if bool(request.rule_set) == bool(request.strategy):
         raise HTTPException(
@@ -63,8 +80,10 @@ def _resolve_strategy(request: EvaluateRequest) -> RuleStrategy:
 
     if request.rule_set is not None:
         try:
+            if is_jesse_definition(request.rule_set):
+                return compile_jesse_definition(request.rule_set)
             return compile_rule_strategy(request.rule_set)
-        except RuleSetError as exc:
+        except (RuleSetError, StrategyError) as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     strategy_cls = AVAILABLE_STRATEGIES.get(request.strategy)
@@ -74,10 +93,10 @@ def _resolve_strategy(request: EvaluateRequest) -> RuleStrategy:
             detail=f"Unknown strategy '{request.strategy}'.",
         )
     strat = strategy_cls()
-    if not isinstance(strat, RuleStrategy):
+    if not isinstance(strat, (RuleStrategy, JesseStrategyAdapter)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Strategy '{request.strategy}' is not a rule-driven strategy.",
+            detail=f"Strategy '{request.strategy}' is not a rule-driven or Jesse strategy.",
         )
     return strat
 
@@ -98,9 +117,14 @@ async def evaluate_strategy(request: EvaluateRequest) -> Dict[str, Any]:
         avg_price=request.position.avg_price if request.position else 0.0,
     )
 
+    if isinstance(strat, JesseStrategyAdapter):
+        if request.timeframe and not strat.timeframe:
+            strat.timeframe = request.timeframe
+        strat.symbol = (request.symbol or "UNKNOWN").upper()
+
     try:
         result = strat.evaluate(df, position)
-    except (RuleSetError, ValueError) as exc:
+    except (RuleSetError, StrategyError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     # The trail rides along with the evaluation (E-3). Trailing is not a
@@ -111,7 +135,7 @@ async def evaluate_strategy(request: EvaluateRequest) -> Dict[str, Any]:
     if position.size != 0:
         try:
             trail = strat.trail_stop(df, position)
-        except (RuleSetError, ValueError) as exc:
+        except (RuleSetError, StrategyError, ValueError) as exc:
             trail = {"stop_price": None, "direction": None, "error": str(exc)}
 
     return {"success": True, "bars_evaluated": len(df), "trail": trail, **result}
