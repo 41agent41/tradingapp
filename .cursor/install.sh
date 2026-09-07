@@ -40,13 +40,22 @@ if ! command -v redis-server >/dev/null 2>&1 \
 fi
 
 echo "==> [2/5] Backend dependencies + build"
-( cd backend && npm ci --no-audit --no-fund && npm run build )
+# Lockfiles are intentionally gitignored in this repo (see .gitignore), so a
+# fresh checkout has none — use `npm install` (as CI does), not `npm ci`.
+( cd backend && npm install --no-audit --no-fund && npm run build )
 
 echo "==> [3/5] Frontend dependencies"
-( cd frontend && npm ci --no-audit --no-fund )
+( cd frontend && npm install --no-audit --no-fund )
 
 echo "==> [4/5] Broker service virtualenv + dependencies"
 if [ ! -x broker_service/.venv/bin/python ]; then
+  # Base images sometimes ship python3 without ensurepip/venv — install it.
+  if ! python3 -c "import ensurepip" >/dev/null 2>&1; then
+    PYMINOR="$(python3 -c 'import sys; print(sys.version_info.minor)')"
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq "python3.${PYMINOR}-venv" python3-venv \
+      || sudo apt-get install -y -qq python3-venv
+  fi
   python3 -m venv broker_service/.venv
 fi
 broker_service/.venv/bin/pip install --upgrade pip >/dev/null
