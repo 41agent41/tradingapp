@@ -18,6 +18,10 @@ if ! redis-cli -h 127.0.0.1 -p 6379 ping >/dev/null 2>&1; then
 fi
 
 echo "==> PostgreSQL"
+# /var/run is a fresh tmpfs on each boot, so the default unix-socket/lock
+# directory is absent and pg_ctl start would fail with "could not create lock
+# file". Recreate it (idempotent) before starting the server.
+sudo install -d -o postgres -g postgres -m 2775 /var/run/postgresql
 if ! sudo -u postgres "${PGBIN}/pg_isready" -p 5432 -q; then
   sudo -u postgres "${PGBIN}/pg_ctl" -D "${PGDATA}" -l /tmp/pg.log -w start
 fi
