@@ -177,7 +177,12 @@ router.post('/run', async (req: Request, res: Response) => {
         return res.status(400).json({ error: 'rule_set must be an object' });
       }
       ruleSet = inlineRuleSet as Record<string, unknown>;
-      strategyLabel = 'rules:inline';
+      // A Jesse definition names a strategy class rather than rule groups, so
+      // the persisted label keeps that name instead of a generic 'inline'.
+      strategyLabel =
+        String(ruleSet.engine ?? '').toLowerCase() === 'jesse' && ruleSet.strategy
+          ? `jesse:${String(ruleSet.strategy)}`
+          : 'rules:inline';
       symbol = symbol || (ruleSet.symbol as string | undefined);
       timeframe = timeframe || (ruleSet.timeframe as string | undefined);
     } else {

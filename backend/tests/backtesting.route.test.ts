@@ -240,6 +240,38 @@ describe('POST /api/backtesting/run — validation', () => {
     );
   });
 
+  it('labels an inline Jesse definition by its strategy and forwards hyperparameters', async () => {
+    axiosMock.post.mockResolvedValueOnce({
+      data: {
+        success: true,
+        engine: 'jesse',
+        results: { equity_curve: [], trades_summary: [] },
+        timeframe: '1hour',
+        period: '1Y',
+      },
+    });
+
+    const ruleSet = { engine: 'jesse', strategy: 'SMACrossover', hyperparameters: { fast: 5 } };
+    const res = await request(buildApp())
+      .post('/api/backtesting/run')
+      .send({ symbol: 'MSFT', timeframe: '1hour', rule_set: ruleSet });
+
+    expect(res.status).toBe(200);
+    expect(axiosMock.post).toHaveBeenCalledWith(
+      expect.stringContaining('/backtesting/run'),
+      { rule_set: ruleSet },
+      expect.objectContaining({
+        params: expect.objectContaining({ symbol: 'MSFT', timeframe: '1hour' }),
+      })
+    );
+    expect(repoMock.__insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        strategy: 'jesse:SMACrossover',
+        params: expect.objectContaining({ rule_set: ruleSet }),
+      })
+    );
+  });
+
   it('still returns 200 even if the persistence insert throws', async () => {
     repoMock.__insert.mockRejectedValueOnce(new Error('db down'));
 
