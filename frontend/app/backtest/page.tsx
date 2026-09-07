@@ -508,7 +508,9 @@ export default function BacktestPage() {
                     {jesseStrategies.map(([key, info]) => (
                       <option key={key} value={key}>
                         {info.name}
-                        {info.class_name ? ` — ${info.class_name}` : ''}
+                        {info.class_name && info.class_name !== info.name
+                          ? ` — ${info.class_name}`
+                          : ''}
                       </option>
                     ))}
                   </optgroup>
