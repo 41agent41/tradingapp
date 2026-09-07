@@ -83,6 +83,47 @@ chmod +x tradingapp.sh
 - **Backend proxy** (`/api/backtesting/*`) validates inputs and caches the
   strategy catalogue.
 
+### **Jesse algo framework (embedded)**
+An IB-native port of the [Jesse](https://jesse.trade) strategy model lives in
+`broker_service/jesse/`, so strategies are written the way Jesse users
+expect and run against the app's own data, backtester and live runner —
+no separate Jesse install, database or exchange drivers.
+
+- **Authoring**: subclass `jesse.strategies.Strategy` in
+  `broker_service/jesse_strategies/` and implement `should_long()` /
+  `should_short()` / `go_long()` / `go_short()` /
+  `should_cancel_entry()`, plus the optional `update_position()`,
+  `before()` / `after()`, `on_open_position()` … hooks. Order intent is
+  declared through `self.buy` / `self.sell` / `self.stop_loss` /
+  `self.take_profit`; `self.candles`, `self.get_candles(tf)`,
+  `self.position`, `self.balance`, `self.vars`, `self.hp` and
+  `self.log()` behave as in Jesse. `hyperparameters()` declares tunables.
+- **Indicators & utils**: `jesse.indicators as ta` (`ta.sma`, `ta.ema`,
+  `ta.rsi`, `ta.macd`, `ta.bollinger_bands`, `ta.atr`, `ta.adx`,
+  `ta.supertrend`, `ta.vwap`, …, all with `sequential=` and `source_type=`)
+  and `jesse.utils` (`size_to_qty`, `risk_to_qty`, `crossed`, …).
+  Indicator results are memoised per candle history, so a bar-by-bar
+  backtest stays linear in the number of bars.
+- **Backtest**: `BacktestEngine` delegates to the Jesse simulator for these
+  strategies; results are mapped into the shared `BacktestResults` payload
+  and the full Jesse metric set (`sharpe_ratio`, `sortino_ratio`,
+  `calmar_ratio`, `omega_ratio`, `expectancy`, `kelly_criterion`, …) is
+  returned under `results.metrics`. Higher-timeframe context via
+  `get_candles()` is resampled from the base bars without look-ahead.
+- **Live**: `/strategies/evaluate` accepts
+  `{"engine": "jesse", "strategy": "SMACrossover", "hyperparameters": {…}}`
+  as a rule-set; the evaluator replays the bars to rebuild strategy state,
+  syncs the simulated position to the venue's, and emits the same
+  `signal` / `stop_price` / `trail` contract the `StrategyRunner` already
+  executes — so the exact code that was backtested is what runs live.
+- **Catalogue & UI**: strategies auto-register as `jesse_<snake_case>`
+  (`jesse_sma_crossover`, `jesse_rsi_mean_reversion`,
+  `jesse_bollinger_breakout`, `jesse_msft_trend_follower`) and appear on
+  `/backtest` with an engine badge and an editable hyperparameter panel.
+  `GET /jesse/strategies`, `GET /jesse/indicators` and
+  `POST /jesse/backtest` (caller-supplied bars, no IB) support authoring.
+- **Tests**: `broker_service/tests/test_jesse_*.py`.
+
 ### **Automated data lifecycle**
 - **Manual download** to PostgreSQL via the `/download` page.
 - **Scheduled backfill** (opt-in via `BACKFILL_ENABLED`) driven by
