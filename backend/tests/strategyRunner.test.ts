@@ -94,7 +94,8 @@ describe('StrategyRunner.runOnce', () => {
       {
         size: 0,
         avg_price: 0,
-      }
+      },
+      { symbol: 'MSFT', timeframe: '5min' }
     );
     expect(deps.insertSignal).toHaveBeenCalledWith(
       expect.objectContaining({ run_id: 1, signal: 'buy', bar_time: '2024-06-03T14:00:00Z' })
@@ -168,10 +169,12 @@ describe('StrategyRunner.runOnce', () => {
 
     await runner.runOnce();
 
-    expect(deps.evaluate).toHaveBeenCalledWith(bars, expect.anything(), {
-      size: 100,
-      avg_price: 42,
-    });
+    expect(deps.evaluate).toHaveBeenCalledWith(
+      bars,
+      expect.anything(),
+      { size: 100, avg_price: 42 },
+      expect.objectContaining({ symbol: 'MSFT', timeframe: '5min' })
+    );
     expect(deps.insertSignal).toHaveBeenCalledWith(expect.objectContaining({ position_size: 100 }));
   });
 });

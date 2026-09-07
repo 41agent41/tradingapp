@@ -76,6 +76,27 @@ describe('POST /api/strategies/definitions', () => {
     expect(res.body.error).toMatch(/entry/i);
   });
 
+  it("accepts a jesse definition without an 'entry' group", async () => {
+    const jesseDef = {
+      ...VALID_DEF,
+      rule_set: { engine: 'jesse', strategy: 'SMACrossover', hyperparameters: { fast: 10 } },
+    };
+    repoImpl.createDefinition.mockResolvedValue({ id: 12, ...jesseDef });
+    const res = await request(buildApp()).post('/api/strategies/definitions').send(jesseDef);
+    expect(res.status).toBe(201);
+    expect(repoImpl.createDefinition).toHaveBeenCalledWith(
+      expect.objectContaining({ rule_set: jesseDef.rule_set })
+    );
+  });
+
+  it("400s on a jesse definition without a 'strategy'", async () => {
+    const res = await request(buildApp())
+      .post('/api/strategies/definitions')
+      .send({ ...VALID_DEF, rule_set: { engine: 'jesse' } });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/strategy/i);
+  });
+
   it('201s and returns the created row', async () => {
     repoImpl.createDefinition.mockResolvedValue({ id: 11, ...VALID_DEF });
     const res = await request(buildApp()).post('/api/strategies/definitions').send(VALID_DEF);
