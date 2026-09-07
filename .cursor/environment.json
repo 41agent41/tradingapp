@@ -1,0 +1,27 @@
+{
+  "name": "TradingApp",
+  "install": "bash .cursor/install.sh",
+  "start": "bash .cursor/start.sh",
+  "terminals": [
+    {
+      "name": "broker_service",
+      "description": "Python/FastAPI multi-broker market-data + execution service on :8000. IB Gateway connects on first call; set IB_HOST/IB_PORT for a real gateway.",
+      "command": "cd broker_service && source .venv/bin/activate && IB_HOST=127.0.0.1 IB_PORT=4002 IB_CLIENT_ID=1 IB_CORS_ORIGINS=http://localhost:3000 REDIS_HOST=127.0.0.1 REDIS_PORT=6379 TZ=UTC IB_TIMEZONE=UTC EXPECTED_TIMESTAMP_FORMAT=unix_seconds DATA_TIMEZONE=UTC python main.py"
+    },
+    {
+      "name": "backend",
+      "description": "Node/Express + Socket.IO API on :4000 (built with tsc, run via node dist). Wired to Redis, PostgreSQL/TimescaleDB and the broker service.",
+      "command": "cd backend && npm run build && PORT=4000 HOST=0.0.0.0 NODE_ENV=development BROKER_SERVICE_URL=http://localhost:8000 CORS_ORIGINS=http://localhost:3000 REDIS_HOST=127.0.0.1 REDIS_PORT=6379 REDIS_ENABLED=true STREAMING_ENABLED=true POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5432 POSTGRES_USER=tradingapp POSTGRES_PASSWORD=tradingapp123 POSTGRES_DB=tradingapp POSTGRES_SSL=false npm start"
+    },
+    {
+      "name": "frontend",
+      "description": "Next.js dev server (TradingView lightweight-charts UI) on :3000, pointed at the backend API.",
+      "command": "cd frontend && NEXT_PUBLIC_API_URL=http://localhost:4000 NODE_ENV=development PORT=3000 npm run dev"
+    }
+  ],
+  "ports": [
+    { "name": "frontend", "port": 3000 },
+    { "name": "backend", "port": 4000 },
+    { "name": "broker_service", "port": 8000 }
+  ]
+}

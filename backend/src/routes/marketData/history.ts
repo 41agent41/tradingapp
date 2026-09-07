@@ -17,6 +17,31 @@ import {
 
 const router = express.Router();
 
+// Translate a predefined period label (as sent by the frontend's
+// PeriodDateFilters — 1D/1W/1M/3M/6M/1Y) into a lookback window in
+// milliseconds. Used by the database read path when the caller does not
+// supply an explicit start_date, so the chart shows the full requested range
+// instead of a fixed 30-day slice.
+function periodToLookbackMs(period?: string): number {
+  const DAY = 24 * 60 * 60 * 1000;
+  switch ((period || '').toUpperCase()) {
+    case '1D':
+      return 1 * DAY;
+    case '1W':
+      return 7 * DAY;
+    case '1M':
+      return 30 * DAY;
+    case '3M':
+      return 90 * DAY;
+    case '6M':
+      return 180 * DAY;
+    case '1Y':
+      return 365 * DAY;
+    default:
+      return 30 * DAY;
+  }
+}
+
 // Historical data endpoint - now with database integration
 router.get('/history', async (req: Request, res: Response) => {
   try {
@@ -81,11 +106,13 @@ router.get('/history', async (req: Request, res: Response) => {
 
     if (useDatabase) {
       try {
-        // Try to get data from database first
+        // Try to get data from database first. When an explicit start_date is
+        // not supplied, translate the requested `period` into a lookback
+        // window so the chart shows the full requested range.
+        const endDate = end_date ? new Date(end_date) : new Date();
         const startDate = start_date
           ? new Date(start_date)
-          : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days ago
-        const endDate = end_date ? new Date(end_date) : new Date();
+          : new Date(endDate.getTime() - periodToLookbackMs(period));
 
         const dbData = await marketDataService.getHistoricalData(
           symbol,
@@ -97,12 +124,29 @@ router.get('/history', async (req: Request, res: Response) => {
         if (dbData.length > 0) {
           console.log(`Retrieved ${dbData.length} bars from database for ${symbol} ${timeframe}`);
 
+          // Normalise to the same wire shape the IB path (and the frontend)
+          // consume: a `bars` array whose `timestamp` is unix *seconds*. The
+          // DB layer hands back Date objects, so convert them here — otherwise
+          // the frontend rejects every bar (it only accepts numeric epochs).
+          const bars = dbData.map((bar) => ({
+            timestamp: Math.floor(new Date(bar.timestamp).getTime() / 1000),
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+            volume: bar.volume,
+            wap: bar.wap,
+            count: bar.count,
+          }));
+
           return res.json({
             symbol: symbol,
             timeframe: timeframe,
-            data: dbData,
+            account_mode: account_mode || 'paper',
+            bars,
             source: 'database',
-            count: dbData.length,
+            count: bars.length,
+            last_updated: new Date().toISOString(),
             start_date: startDate.toISOString(),
             end_date: endDate.toISOString(),
             timestamp: new Date().toISOString(),
