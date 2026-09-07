@@ -6,6 +6,7 @@ import {
   buildBacktestSelector,
   collectHyperparameterOverrides,
   engineLabel,
+  formatExtraMetric,
   initialHyperparameterValues,
   isJesseStrategy,
   parseHyperparameter,
@@ -132,6 +133,27 @@ describe('collectHyperparameterOverrides', () => {
     const out = collectHyperparameterOverrides(specs, { fast: '20' });
     expect(out.overrides).toEqual({ fast: 20 });
     expect(out.errors).toEqual({});
+  });
+});
+
+describe('formatExtraMetric', () => {
+  it('converts Jesse holding periods from seconds to hours', () => {
+    expect(formatExtraMetric(66390.7 * 3600, 'hours')).toBe('66390.7 h');
+    expect(formatExtraMetric(5400, 'hours')).toBe('1.5 h');
+  });
+
+  it('formats percentages, currency and plain numbers', () => {
+    expect(formatExtraMetric(54.3123, 'percent')).toBe('54.31%');
+    expect(formatExtraMetric(365.657, 'currency')).toBe('$365.66');
+    expect(formatExtraMetric(2.6139, 'number')).toBe('2.61');
+    expect(formatExtraMetric(50, 'number')).toBe('50');
+  });
+
+  it('returns null for absent or non-numeric values', () => {
+    expect(formatExtraMetric(null, 'number')).toBeNull();
+    expect(formatExtraMetric(undefined, 'hours')).toBeNull();
+    expect(formatExtraMetric('n/a', 'percent')).toBeNull();
+    expect(formatExtraMetric(Infinity, 'number')).toBeNull();
   });
 });
 

@@ -13,6 +13,7 @@ import {
   buildBacktestSelector,
   collectHyperparameterOverrides,
   engineLabel,
+  formatExtraMetric,
   initialHyperparameterValues,
   isJesseStrategy,
   type StrategyCatalogueEntry,
@@ -120,25 +121,6 @@ function formatCurrency(value: number): string {
 function formatNumber(value: number, digits = 2): string {
   if (!Number.isFinite(value)) return '∞';
   return value.toFixed(digits);
-}
-
-function formatExtraMetric(
-  value: unknown,
-  format: 'number' | 'percent' | 'currency' | 'hours'
-): string | null {
-  if (value === null || value === undefined) return null;
-  const num = Number(value);
-  if (!Number.isFinite(num)) return null;
-  switch (format) {
-    case 'percent':
-      return `${formatNumber(num)}%`;
-    case 'currency':
-      return formatCurrency(num);
-    case 'hours':
-      return `${formatNumber(num, 1)} h`;
-    default:
-      return Number.isInteger(num) ? String(num) : formatNumber(num);
-  }
 }
 
 export default function BacktestPage() {

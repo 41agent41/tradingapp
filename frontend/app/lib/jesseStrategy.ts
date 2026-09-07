@@ -160,10 +160,13 @@ export function engineLabel(engine: string | undefined | null): string {
  * Jesse-only metrics worth surfacing beside the shared result grid. Keys are
  * those `jesse.metrics` emits; anything absent is simply not rendered.
  */
+export type ExtraMetricFormat = 'number' | 'percent' | 'currency' | 'hours';
+
 export const JESSE_EXTRA_METRICS: Array<{
   key: string;
   label: string;
-  format: 'number' | 'percent' | 'currency' | 'hours';
+  /** `hours` takes a value in seconds (Jesse's holding-period unit). */
+  format: ExtraMetricFormat;
 }> = [
   { key: 'sortino_ratio', label: 'Sortino', format: 'number' },
   { key: 'calmar_ratio', label: 'Calmar', format: 'number' },
@@ -176,3 +179,27 @@ export const JESSE_EXTRA_METRICS: Array<{
   { key: 'fee', label: 'Fees Paid', format: 'currency' },
   { key: 'warmup_candles', label: 'Warm-up Bars', format: 'number' },
 ];
+
+const usd = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+/** Render one extra metric for display; null when absent or non-numeric. */
+export function formatExtraMetric(value: unknown, format: ExtraMetricFormat): string | null {
+  if (value === null || value === undefined) return null;
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  switch (format) {
+    case 'percent':
+      return `${num.toFixed(2)}%`;
+    case 'currency':
+      return usd.format(num);
+    case 'hours':
+      return `${(num / 3600).toFixed(1)} h`;
+    default:
+      return Number.isInteger(num) ? String(num) : num.toFixed(2);
+  }
+}
