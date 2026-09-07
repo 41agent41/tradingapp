@@ -54,7 +54,9 @@ broker_service/.venv/bin/pip install \
   -r broker_service/requirements.txt -r broker_service/requirements-dev.txt
 
 echo "==> [5/5] PostgreSQL cluster + schema"
-if [ ! -s "${PGDATA}/PG_VERSION" ]; then
+# The data dir is postgres-owned and mode 0700, so probe it via sudo — a plain
+# test as the install user would always fail and re-trigger initdb.
+if ! sudo test -s "${PGDATA}/PG_VERSION"; then
   sudo mkdir -p "${PGDATA}"
   sudo chown -R postgres:postgres "${PGDATA}"
   sudo -u postgres "${PGBIN}/initdb" -D "${PGDATA}" -U postgres --auth=trust -E UTF8
