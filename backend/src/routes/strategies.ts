@@ -78,7 +78,19 @@ router.post('/definitions', async (req: Request, res: Response) => {
     if (!VALID_SEC_TYPES.has(secType)) {
       return fail(res, 400, 'Invalid sec_type', { valid: [...VALID_SEC_TYPES] });
     }
-    if (typeof rule_set !== 'object' || Array.isArray(rule_set) || !('entry' in rule_set)) {
+    if (typeof rule_set !== 'object' || Array.isArray(rule_set)) {
+      return fail(res, 400, "rule_set must be an object with an 'entry' group");
+    }
+    // Two definition shapes share this column: a declarative rule-set (needs
+    // an `entry` group) or a Jesse-framework strategy reference
+    // `{ engine: 'jesse', strategy: '<key|ClassName>', hyperparameters? }`,
+    // which the broker service compiles (broker_service/jesse/adapter.py).
+    const isJesse = String(rule_set.engine ?? '').toLowerCase() === 'jesse';
+    if (isJesse) {
+      if (typeof rule_set.strategy !== 'string' || !rule_set.strategy.trim()) {
+        return fail(res, 400, "a jesse rule_set needs a 'strategy' key or class name");
+      }
+    } else if (!('entry' in rule_set)) {
       return fail(res, 400, "rule_set must be an object with an 'entry' group");
     }
     const row = await repo.createDefinition({

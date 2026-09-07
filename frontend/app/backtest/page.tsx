@@ -1,17 +1,25 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import BackToHome from '../components/BackToHome';
 import ChartSkeleton from '../components/ChartSkeleton';
 import DataframeViewer from '../components/DataframeViewer';
 import EquityCurveChart, { EquityPoint } from '../components/EquityCurveChart';
 import { apiFetch } from '../lib/api';
+import JesseHyperparameterFields from '../components/backtest/JesseHyperparameterFields';
+import {
+  DEF_PREFIX,
+  JESSE_EXTRA_METRICS,
+  buildBacktestSelector,
+  collectHyperparameterOverrides,
+  engineLabel,
+  formatExtraMetric,
+  initialHyperparameterValues,
+  isJesseStrategy,
+  type StrategyCatalogueEntry,
+} from '../lib/jesseStrategy';
 
-interface StrategyInfo {
-  name: string;
-  indicators: string[];
-  description: string;
-}
+type StrategyInfo = StrategyCatalogueEntry;
 
 /** A saved rule-set definition (created on /systematic) offered in the picker
  *  alongside the registered strategies — select one and the backend backtests
@@ -26,9 +34,6 @@ interface DefinitionSummary {
   currency?: string;
   timeframe: string;
 }
-
-/** Picker values: a registered strategy key, or `def:<id>` for a saved rule-set. */
-const DEF_PREFIX = 'def:';
 
 interface TradeSummary {
   entry_time: string;
@@ -63,6 +68,9 @@ interface BacktestResults {
   profit_factor: number;
   equity_curve: EquityPoint[];
   trades_summary: TradeSummary[];
+  /** Engine-specific extras — populated by the Jesse engine (see
+   *  `jesse.metrics`), absent for rule-based strategies. */
+  metrics?: Record<string, unknown>;
 }
 
 interface BacktestResponse {
@@ -71,6 +79,7 @@ interface BacktestResponse {
   data_points: number;
   timeframe: string;
   period: string;
+  engine?: string;
   persisted_id?: number | null;
 }
 
@@ -121,6 +130,12 @@ export default function BacktestPage() {
 
   const [symbol, setSymbol] = useState('MSFT');
   const [strategy, setStrategy] = useState('');
+  // Jesse hyperparameter inputs, keyed by strategy key so switching between
+  // strategies and back keeps each one's edits.
+  const [hyperparameterValues, setHyperparameterValues] = useState<
+    Record<string, Record<string, string>>
+  >({});
+  const [hyperparameterErrors, setHyperparameterErrors] = useState<Record<string, string>>({});
   const [timeframe, setTimeframe] = useState('1day');
   const [period, setPeriod] = useState('1Y');
   const [initialCapital, setInitialCapital] = useState('100000');
@@ -168,10 +183,12 @@ export default function BacktestPage() {
       // Project the persisted row back into the same BacktestResponse shape the
       // form produces, so the existing results UI just works.
       const m = row.metrics as Record<string, number | string>;
+      const extra = (m as Record<string, unknown>).metrics;
       const replayed: BacktestResponse = {
         success: true,
         timeframe: row.timeframe,
         period: row.period ?? 'CUSTOM',
+        engine: row.strategy.startsWith('jesse') ? 'jesse' : undefined,
         data_points: Number((row.params as { data_points?: number })?.data_points) || 0,
         persisted_id: row.id,
         results: {
@@ -193,6 +210,9 @@ export default function BacktestPage() {
           profit_factor: Number(m.profit_factor ?? 0),
           equity_curve: row.equity_curve ?? [],
           trades_summary: row.trades ?? [],
+          ...(extra && typeof extra === 'object'
+            ? { metrics: extra as Record<string, unknown> }
+            : {}),
         },
       };
       setResponse(replayed);
@@ -216,6 +236,7 @@ export default function BacktestPage() {
   const selectStrategy = useCallback(
     (value: string, defs: DefinitionSummary[]) => {
       setStrategy(value);
+      setHyperparameterErrors({});
       if (value.startsWith(DEF_PREFIX)) {
         const def = defs.find((d) => d.id === Number(value.slice(DEF_PREFIX.length)));
         if (def) applyDefinition(def);
@@ -223,6 +244,42 @@ export default function BacktestPage() {
     },
     [applyDefinition]
   );
+
+  const selectedInfo = strategy ? strategies[strategy] : undefined;
+  const selectedIsJesse = isJesseStrategy(selectedInfo);
+  const selectedSpecs = useMemo(() => selectedInfo?.hyperparameters ?? [], [selectedInfo]);
+  const currentHyperparameters = useMemo(
+    () => hyperparameterValues[strategy] ?? initialHyperparameterValues(selectedSpecs),
+    [hyperparameterValues, strategy, selectedSpecs]
+  );
+
+  const setHyperparameter = useCallback(
+    (name: string, value: string) => {
+      setHyperparameterValues((prev) => ({
+        ...prev,
+        [strategy]: {
+          ...(prev[strategy] ?? initialHyperparameterValues(selectedSpecs)),
+          [name]: value,
+        },
+      }));
+      setHyperparameterErrors((prev) => {
+        if (!(name in prev)) return prev;
+        const next = { ...prev };
+        delete next[name];
+        return next;
+      });
+    },
+    [strategy, selectedSpecs]
+  );
+
+  const resetHyperparameters = useCallback(() => {
+    setHyperparameterValues((prev) => {
+      const next = { ...prev };
+      delete next[strategy];
+      return next;
+    });
+    setHyperparameterErrors({});
+  }, [strategy]);
 
   // Load available strategies + saved definitions once. A `?definition=<id>`
   // query param (the "Backtest" link on /systematic) preselects that rule-set.
@@ -279,20 +336,32 @@ export default function BacktestPage() {
       setError('Symbol and strategy are required');
       return;
     }
+
+    // Validate Jesse hyperparameters before anything leaves the browser; the
+    // broker service would reject them too, but a field-level message beats a
+    // 400 after a round-trip.
+    let overrides: Record<string, unknown> = {};
+    if (selectedIsJesse) {
+      const outcome = collectHyperparameterOverrides(selectedSpecs, currentHyperparameters);
+      if (Object.keys(outcome.errors).length > 0) {
+        setHyperparameterErrors(outcome.errors);
+        setError('Fix the highlighted hyperparameters before running');
+        return;
+      }
+      overrides = outcome.overrides;
+    }
+
     setRunning(true);
     setError(null);
     setResponse(null);
 
     try {
-      const isDefinition = strategy.startsWith(DEF_PREFIX);
       const res = await apiFetch('/api/backtesting/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           symbol: symbol.trim().toUpperCase(),
-          ...(isDefinition
-            ? { definition_id: Number(strategy.slice(DEF_PREFIX.length)) }
-            : { strategy }),
+          ...buildBacktestSelector(strategy, selectedInfo, overrides),
           timeframe,
           period,
           initial_capital: Number(initialCapital),
@@ -320,6 +389,10 @@ export default function BacktestPage() {
   }, [
     symbol,
     strategy,
+    selectedInfo,
+    selectedIsJesse,
+    selectedSpecs,
+    currentHyperparameters,
     timeframe,
     period,
     initialCapital,
@@ -332,6 +405,18 @@ export default function BacktestPage() {
 
   const results = response?.results;
   const returnPositive = (results?.total_return_percent ?? 0) >= 0;
+  const resultEngine = response?.engine ?? (results?.metrics?.engine as string | undefined);
+  const extraMetrics = results?.metrics
+    ? JESSE_EXTRA_METRICS.map((m) => ({
+        ...m,
+        text: formatExtraMetric(results.metrics?.[m.key], m.format),
+      })).filter((m) => m.text !== null)
+    : [];
+  const resultHyperparameters = results?.metrics?.hyperparameters as
+    Record<string, unknown> | undefined;
+
+  const rulesStrategies = Object.entries(strategies).filter(([, info]) => !isJesseStrategy(info));
+  const jesseStrategies = Object.entries(strategies).filter(([, info]) => isJesseStrategy(info));
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -391,13 +476,27 @@ export default function BacktestPage() {
                     ))}
                   </optgroup>
                 )}
-                <optgroup label="Built-in strategies">
-                  {Object.entries(strategies).map(([key, info]) => (
-                    <option key={key} value={key}>
-                      {info.name}
-                    </option>
-                  ))}
-                </optgroup>
+                {rulesStrategies.length > 0 && (
+                  <optgroup label="Built-in strategies (rules)">
+                    {rulesStrategies.map(([key, info]) => (
+                      <option key={key} value={key}>
+                        {info.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {jesseStrategies.length > 0 && (
+                  <optgroup label="Jesse strategies (jesse_strategies/)">
+                    {jesseStrategies.map(([key, info]) => (
+                      <option key={key} value={key}>
+                        {info.name}
+                        {info.class_name && info.class_name !== info.name
+                          ? ` — ${info.class_name}`
+                          : ''}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </label>
 
@@ -490,15 +589,25 @@ export default function BacktestPage() {
             </label>
           </div>
 
-          {strategy && strategies[strategy] && (
-            <p className="mt-3 text-sm text-gray-500">
-              {strategies[strategy].description?.trim()}
-              {strategies[strategy].indicators?.length > 0 && (
-                <span className="ml-1">
-                  (indicators: {strategies[strategy].indicators.join(', ')})
-                </span>
+          {selectedInfo && (
+            <p className="mt-3 text-sm text-gray-500 flex flex-wrap items-baseline gap-x-2">
+              <EngineBadge engine={selectedInfo.engine} />
+              <span>{selectedInfo.description?.trim()}</span>
+              {selectedInfo.indicators?.length > 0 && (
+                <span>(indicators: {selectedInfo.indicators.join(', ')})</span>
               )}
             </p>
+          )}
+
+          {selectedIsJesse && (
+            <JesseHyperparameterFields
+              specs={selectedSpecs}
+              values={currentHyperparameters}
+              errors={hyperparameterErrors}
+              onChange={setHyperparameter}
+              onReset={resetHyperparameters}
+              disabled={running}
+            />
           )}
 
           <div className="mt-4 flex items-center gap-4">
@@ -631,12 +740,24 @@ export default function BacktestPage() {
           <>
             <div className="bg-white p-6 rounded-lg shadow">
               <div className="flex items-baseline justify-between mb-4">
-                <h2 className="text-lg font-semibold">Results</h2>
+                <h2 className="text-lg font-semibold flex items-center gap-2">
+                  Results
+                  {resultEngine && <EngineBadge engine={resultEngine} />}
+                </h2>
                 <span className="text-sm text-gray-500">
                   {results.symbol} · {response?.timeframe} · {response?.period} ·{' '}
                   {response?.data_points} bars
                 </span>
               </div>
+
+              {resultHyperparameters && Object.keys(resultHyperparameters).length > 0 && (
+                <p className="mb-4 text-xs text-gray-500" data-testid="result-hyperparameters">
+                  Hyperparameters:{' '}
+                  {Object.entries(resultHyperparameters)
+                    .map(([k, v]) => `${k}=${String(v)}`)
+                    .join(' · ')}
+                </p>
+              )}
 
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
                 <Metric
@@ -659,6 +780,17 @@ export default function BacktestPage() {
                   value={`${results.winning_trades} / ${results.losing_trades}`}
                 />
               </div>
+
+              {extraMetrics.length > 0 && (
+                <div className="mt-4" data-testid="jesse-metrics">
+                  <h3 className="text-sm font-medium text-gray-600 mb-2">Jesse metrics</h3>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                    {extraMetrics.map((m) => (
+                      <Metric key={m.key} label={m.label} value={m.text as string} compact />
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="bg-white p-6 rounded-lg shadow">
@@ -714,17 +846,33 @@ function Metric({
   label,
   value,
   highlight,
+  compact = false,
 }: {
   label: string;
   value: string;
   highlight?: 'pos' | 'neg';
+  compact?: boolean;
 }) {
   const color =
     highlight === 'pos' ? 'text-green-600' : highlight === 'neg' ? 'text-red-600' : 'text-gray-900';
   return (
-    <div className="bg-gray-50 p-4 rounded">
+    <div className={`bg-gray-50 rounded ${compact ? 'p-3' : 'p-4'}`}>
       <span className="text-xs text-gray-500">{label}</span>
-      <div className={`text-lg font-semibold ${color}`}>{value}</div>
+      <div className={`${compact ? 'text-base' : 'text-lg'} font-semibold ${color}`}>{value}</div>
     </div>
+  );
+}
+
+function EngineBadge({ engine }: { engine: string | undefined | null }) {
+  const jesse = String(engine ?? 'rules').toLowerCase() === 'jesse';
+  return (
+    <span
+      data-testid="engine-badge"
+      className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide ${
+        jesse ? 'bg-indigo-100 text-indigo-800' : 'bg-gray-200 text-gray-700'
+      }`}
+    >
+      {engineLabel(engine)}
+    </span>
   );
 }

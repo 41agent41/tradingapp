@@ -113,6 +113,11 @@ interface VenuePosition {
   stopLoss: number | null;
 }
 
+export interface EvaluateContext {
+  symbol: string;
+  timeframe: string;
+}
+
 export interface EvaluateResult {
   /** 'long' | 'short' | 'flat' | 'none' (pre-E1: 'buy' | 'sell'). */
   signal: string;
@@ -155,10 +160,15 @@ export interface StrategyRunnerDeps {
    *  contract beyond default US stocks. */
   fetchHistory(run: ActiveRun): Promise<RawBar[]>;
   getPosition(run: ActiveRun): Promise<PositionState>;
+  /** `context` names the run's instrument and bar size explicitly. The rule
+   *  engine ignores it; a Jesse strategy uses it for `self.symbol` and to
+   *  anchor `get_candles()` on its higher timeframes without inferring the
+   *  base timeframe from bar spacing. */
   evaluate(
     bars: RawBar[],
     ruleSet: Record<string, unknown>,
-    position: PositionState
+    position: PositionState,
+    context?: EvaluateContext
   ): Promise<EvaluateResult>;
   latestSignalBarTime(runId: number): Promise<string | null>;
   insertSignal(record: StrategySignalRecord): Promise<{ inserted: boolean; id?: number | null }>;
@@ -519,10 +529,10 @@ function defaultDeps(
         derived_size: derived,
       };
     },
-    evaluate: async (bars, ruleSet, position) => {
+    evaluate: async (bars, ruleSet, position, context) => {
       const response = await axios.post(
         `${BROKER_SERVICE_URL}/strategies/evaluate`,
-        { bars, rule_set: ruleSet, position },
+        { bars, rule_set: ruleSet, position, ...(context ?? {}) },
         { timeout: 30000, headers: { Connection: 'close' } }
       );
       return response.data as EvaluateResult;
@@ -898,7 +908,10 @@ export class StrategyRunner {
 
       const position = await this.deps.getPosition(run);
       this.checkReconciliation(run, position, label);
-      const result = await this.deps.evaluate(bars, run.rule_set, position);
+      const result = await this.deps.evaluate(bars, run.rule_set, position, {
+        symbol: runSymbol(run),
+        timeframe: run.timeframe,
+      });
 
       // Trail the stop before considering the signal (E-3). Order matters: a
       // bar that both tightens the stop and produces an exit should tighten

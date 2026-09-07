@@ -25,6 +25,8 @@ from pydantic import BaseModel
 from backtesting import AVAILABLE_STRATEGIES, backtest_engine
 from ib_client import get_ib_connection, verify_connection_health
 from ib_helpers import convert_period, create_contract
+from jesse.adapter import compile_jesse_definition, is_jesse_definition
+from jesse.models import StrategyError
 from observability import get_logger
 from rule_strategy import RuleSetError, compile_rule_strategy
 
@@ -50,7 +52,9 @@ class BacktestRunBody(BaseModel):
     """Optional JSON body for ``POST /backtesting/run``.
 
     ``rule_set`` is a declarative rule-set (see ``rule_strategy.py``) compiled
-    on the fly — mutually exclusive with the ``strategy`` query parameter.
+    on the fly — mutually exclusive with the ``strategy`` query parameter. A
+    ``{"engine": "jesse", "strategy": ..., "hyperparameters": {...}}`` object
+    selects a Jesse-framework strategy instead (see ``jesse/adapter.py``).
     """
 
     rule_set: Dict[str, Any] | None = None
@@ -64,11 +68,16 @@ async def get_available_strategies():
         for key, strategy_class in AVAILABLE_STRATEGIES.items():
             # Create temporary instance to get info
             temp_strategy = strategy_class()
-            strategies_info[key] = {
+            info = {
                 "name": temp_strategy.name,
                 "indicators": temp_strategy.indicators,
                 "description": strategy_class.__doc__ or "No description available",
+                "engine": getattr(temp_strategy, "engine", "rules"),
             }
+            if info["engine"] == "jesse":
+                info["hyperparameters"] = temp_strategy.hyperparameter_spec
+                info["class_name"] = temp_strategy.strategy_cls.__name__
+            strategies_info[key] = info
 
         return {
             "strategies": strategies_info,
@@ -92,8 +101,10 @@ def _resolve_strategy_instance(strategy: str | None, rule_set: Dict[str, Any] | 
         )
     if rule_set is not None:
         try:
+            if is_jesse_definition(rule_set):
+                return compile_jesse_definition(rule_set)
             return compile_rule_strategy(rule_set)
-        except RuleSetError as exc:
+        except (RuleSetError, StrategyError) as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     if strategy not in AVAILABLE_STRATEGIES:
         available = list(AVAILABLE_STRATEGIES.keys())
@@ -340,13 +351,26 @@ async def run_backtest(
                 error=str(spec_err),
             )
 
+        # A Jesse strategy resamples its own higher-timeframe context, so it
+        # must know the bars' timeframe rather than infer it from spacing.
+        if getattr(strategy_instance, "engine", None) == "jesse" and not getattr(
+            strategy_instance, "timeframe", None
+        ):
+            strategy_instance.timeframe = timeframe
+
         # Run backtest
-        results = engine.run_backtest(df, strategy_instance, symbol, spec=spec)
+        try:
+            results = engine.run_backtest(df, strategy_instance, symbol, spec=spec)
+        except StrategyError as exc:
+            # A strategy-author error (bad order intent, unknown hyperparameter)
+            # is the caller's to fix, not a service fault.
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
         # Return results
         return {
             "success": True,
             "strategy": strategy or strategy_instance.name,
+            "engine": getattr(strategy_instance, "engine", "rules"),
             "results": results.to_dict(),
             "data_points": len(df),
             "timeframe": timeframe,
