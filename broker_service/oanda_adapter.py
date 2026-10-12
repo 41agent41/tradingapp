@@ -133,6 +133,8 @@ class OANDAAdapter:
     """`MarketDataAdapter` + `BrokerAdapter` backed by the OANDA v20 REST API."""
 
     name = "oanda"
+    # stopLossOnFill attaches the stop in the fill's own transaction (E-2).
+    attaches_stops = True
 
     def __init__(
         self,

@@ -74,6 +74,8 @@ class SplitAccountAdapter:
         self._symbol_map = {str(k).upper(): str(v) for k, v in (symbol_map or {}).items()}
         self._native_to_canonical = {_canonical(v): k for k, v in self._symbol_map.items()}
         self.name = getattr(execution, "name", "mt5")
+        # Orders go to the execution side, so its stop support is what counts.
+        self.attaches_stops = bool(getattr(execution, "attaches_stops", False))
 
     # -- account information: OANDA ------------------------------------------ #
     def account_summary(self) -> Dict[str, Any]:

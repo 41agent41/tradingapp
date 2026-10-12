@@ -846,3 +846,98 @@ describe('ExecutionEngine — risk_pct sizing (E-4)', () => {
     });
   });
 });
+
+describe('ExecutionEngine — entry filled without its stop', () => {
+  const stopped = { hasStopRule: true, stopPrice: 95 };
+  const dropped = (status = 'filled'): SubmitCreateOutcome => ({
+    ok: true,
+    auditId: 900,
+    ibBody: { order_id: 42, status, stop_loss_missing: true },
+  });
+
+  it('closes the position at once and pages the operator', async () => {
+    const submitOrder = jest
+      .fn()
+      .mockResolvedValueOnce(dropped())
+      .mockResolvedValueOnce({ ok: true, auditId: 901, ibBody: {} });
+    const sendAlert = jest.fn().mockResolvedValue({ sent: true });
+    const deps = makeDeps({ submitOrder, sendAlert });
+
+    const result = await new ExecutionEngine(deps).execute(ctx(stopped));
+
+    expect(submitOrder).toHaveBeenLastCalledWith(
+      expect.objectContaining({ action: 'SELL', quantity: 100, order_type: 'MKT' }),
+      'sys:run1:sig55:unprotected-close'
+    );
+    expect(submitOrder.mock.calls[1][0].stop_loss ?? null).toBeNull();
+    expect(result).toEqual(
+      expect.objectContaining({
+        placed: true,
+        stopLoss: null,
+        unprotected: { closeAuditId: 901, error: null },
+      })
+    );
+    expect(sendAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        severity: 'critical',
+        title: 'Entry filled without its stop, position closed',
+      })
+    );
+  });
+
+  it('covers a short with a BUY', async () => {
+    const submitOrder = jest
+      .fn()
+      .mockResolvedValueOnce(dropped())
+      .mockResolvedValueOnce({ ok: true, auditId: 901, ibBody: {} });
+    await new ExecutionEngine(makeDeps({ submitOrder })).execute(
+      ctx({ signal: 'short', hasStopRule: true, stopPrice: 105 })
+    );
+    expect(submitOrder.mock.calls[1][0].action).toBe('BUY');
+  });
+
+  it('does not close an entry that has not filled, and says why', async () => {
+    const submitOrder = jest.fn().mockResolvedValueOnce(dropped('submitted'));
+    const sendAlert = jest.fn().mockResolvedValue({ sent: true });
+    const result = await new ExecutionEngine(makeDeps({ submitOrder, sendAlert })).execute(
+      ctx(stopped)
+    );
+    expect(submitOrder).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(
+      expect.objectContaining({
+        unprotected: { closeAuditId: null, error: 'entry status is submitted, not filled' },
+      })
+    );
+    expect(sendAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Entry filled without its stop, close FAILED' })
+    );
+  });
+
+  it('pages the operator when the close itself fails', async () => {
+    const submitOrder = jest
+      .fn()
+      .mockResolvedValueOnce(dropped())
+      .mockRejectedValueOnce(new Error('broker down'));
+    const sendAlert = jest.fn().mockResolvedValue({ sent: true });
+    const result = await new ExecutionEngine(makeDeps({ submitOrder, sendAlert })).execute(
+      ctx(stopped)
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        placed: true,
+        unprotected: { closeAuditId: null, error: 'close failed: broker down' },
+      })
+    );
+    expect(sendAlert.mock.calls[0][0].detail).toContain('Close it by hand');
+  });
+
+  it('leaves an entry whose stop was recorded alone', async () => {
+    const submitOrder = jest
+      .fn()
+      .mockResolvedValue({ ok: true, auditId: 900, ibBody: { status: 'filled', sl: 95 } });
+    const result = await new ExecutionEngine(makeDeps({ submitOrder })).execute(ctx(stopped));
+    expect(submitOrder).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(expect.objectContaining({ stopLoss: 95 }));
+    expect(result).not.toHaveProperty('unprotected');
+  });
+});

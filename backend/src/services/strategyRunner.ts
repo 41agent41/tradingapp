@@ -382,6 +382,7 @@ function defaultDeps(
     portfolioLimits: () => fleetPortfolioLimits(),
     realisedPnlTodayPortfolio: async () =>
       (await executionRepo.realisedPnlTodayAllConnections()).realised,
+    sendAlert: (alert) => notifier.notify(alert),
   });
   // Venue caches, keyed per **connection** (platform + account), not per
   // platform. Two accounts on one platform have different equity, different

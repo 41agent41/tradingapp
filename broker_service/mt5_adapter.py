@@ -144,6 +144,8 @@ class MT5Adapter:
     """`MarketDataAdapter` + `BrokerAdapter` backed by the MT5 sidecar over HTTP."""
 
     name = "mt5"
+    # The sidecar attaches SL/TP to the entry atomically (E-2).
+    attaches_stops = True
 
     def __init__(
         self,

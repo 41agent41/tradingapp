@@ -275,6 +275,14 @@ async def place_order(req: PlaceOrderRequest) -> Dict[str, Any]:
     # here, before anything reaches a venue: a live order addressed to a
     # connection declared paper (or the reverse) is refused, not rerouted.
     adapter = get_broker_adapter(req.broker, req.account, account_mode=req.account_mode)
+    # An adapter that cannot attach a stop to the entry would place it
+    # unprotected and silently drop the stop. Refuse before anything is sent.
+    if req.stop_loss is not None and not getattr(adapter, "attaches_stops", False):
+        raise HTTPException(
+            400,
+            f"broker '{req.broker}' cannot attach a protective stop to an entry; "
+            "refusing to open unprotected",
+        )
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, lambda: adapter.place_order(req))
 
