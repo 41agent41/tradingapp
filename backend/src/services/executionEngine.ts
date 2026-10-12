@@ -27,6 +27,7 @@ import {
   type OrderAction,
   type ValidatedOrder,
 } from './orderTypes.js';
+import type { Alert } from './notifier.js';
 import type { SubmitCreateOutcome } from './orderService.js';
 import type { ActiveRun } from './strategyRepository.js';
 import { runSymbol } from './strategyRunner.js';
@@ -57,9 +58,14 @@ export type ExecutionResult =
       orderAuditId: number;
       action: OrderAction;
       quantity: number;
-      /** The protective stop this order went out with, if any (E-5). */
+      /** The protective stop this order went out with, if any (E-5). Null
+       *  when the venue did not record the stop it was asked for. */
       stopLoss: number | null;
       ibBody: Record<string, unknown>;
+      /** Set when the venue filled the entry without its stop and the engine
+       *  closed it (E-2). `closeAuditId` is the closing order's audit row, or
+       *  null when the close could not be placed. */
+      unprotected?: { closeAuditId: number | null; error: string | null };
     }
   | { placed: false; reason: string };
 
@@ -99,6 +105,8 @@ export interface ExecutionEngineDeps {
   /** Realised P&L today across every connection. Only sound when they share a
    *  currency — `portfolioLimits` reports whether they do. */
   realisedPnlTodayPortfolio?(): Promise<number>;
+  /** Pages the operator. Used when an entry fills without its stop. */
+  sendAlert?(alert: Alert): Promise<unknown>;
 }
 
 /** Account-level caps. This is the level a broker — and a prop firm — actually
@@ -562,6 +570,24 @@ export class ExecutionEngine {
 
     // Durable dedupe: mark the signal acted and link the audit row.
     await this.deps.markActed(ctx.signalId, outcome.auditId);
+
+    // Fail closed on protection (E-2). The broker service flags an entry the
+    // venue filled without the stop it was asked for. That position is open
+    // and unprotected, the one resting state this design refuses, so close it
+    // now rather than leave it until the next bar's kill-switch check.
+    if (stopLoss != null && outcome.ibBody?.stop_loss_missing === true) {
+      const unprotected = await this.closeUnprotected(ctx, action, quantity, requestId, outcome);
+      return {
+        placed: true,
+        orderAuditId: outcome.auditId,
+        action,
+        quantity,
+        stopLoss: null,
+        ibBody: outcome.ibBody,
+        unprotected,
+      };
+    }
+
     return {
       placed: true,
       orderAuditId: outcome.auditId,
@@ -570,5 +596,75 @@ export class ExecutionEngine {
       stopLoss,
       ibBody: outcome.ibBody,
     };
+  }
+
+  /**
+   * Close an entry the venue filled without its stop, and page the operator.
+   *
+   * Only a filled entry is closed. One still working has no position yet, and
+   * an opposite order would open one the other way; that case is alerted for
+   * the operator instead. Never throws: the entry is already placed.
+   */
+  private async closeUnprotected(
+    ctx: ExecutionContext,
+    entryAction: OrderAction,
+    quantity: number,
+    requestId: string,
+    entry: { auditId: number; ibBody: Record<string, unknown> }
+  ): Promise<{ closeAuditId: number | null; error: string | null }> {
+    const run = ctx.run;
+    const symbol = runSymbol(run);
+    const filled = entry.ibBody?.status === 'filled';
+    let closeAuditId: number | null = null;
+    let error: string | null = null;
+
+    if (!filled) {
+      error = `entry status is ${String(entry.ibBody?.status ?? 'unknown')}, not filled`;
+    } else {
+      const v = validateOrder({
+        symbol,
+        action: entryAction === 'BUY' ? 'SELL' : 'BUY',
+        quantity,
+        order_type: 'MKT',
+        tif: 'DAY',
+        account_mode: run.account_mode,
+        broker: run.broker,
+        broker_account: run.broker_account,
+      });
+      if (!v.ok) {
+        error = `close validation failed: ${v.errors.join('; ')}`;
+      } else {
+        try {
+          const close = await this.deps.submitOrder(v.value, `${requestId}:unprotected-close`);
+          if (close.ok) closeAuditId = close.auditId;
+          else error = `close not placed (${close.kind})`;
+        } catch (err) {
+          error = `close failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+    }
+
+    const closed = closeAuditId != null;
+    await this.deps
+      .sendAlert?.({
+        key: `unprotected-entry:${run.id}:${entry.auditId}`,
+        severity: 'critical',
+        title: closed
+          ? 'Entry filled without its stop, position closed'
+          : 'Entry filled without its stop, close FAILED',
+        detail: closed
+          ? `${symbol} ${entryAction} ${quantity} filled but the venue recorded no stop. ` +
+            'The position was closed at market.'
+          : `${symbol} ${entryAction} ${quantity} filled but the venue recorded no stop, ` +
+            `and it could not be closed (${error}). Close it by hand.`,
+        context: {
+          run_id: run.id,
+          connection: `${run.broker}:${run.broker_account}`,
+          entry_audit_id: entry.auditId,
+          close_audit_id: closeAuditId,
+        },
+      })
+      .catch(() => undefined);
+    return { closeAuditId, error };
   }
 }
