@@ -1,0 +1,25 @@
+# One MT5 terminal + sidecar per account under Wine, headless (Xvfb).
+#   instance name = account label, e.g. mt5-sidecar@broker-a
+#   settings in   /etc/mt5-sidecar/<instance>.env (see sidecar.env.example)
+#   Wine prefix   /var/lib/mt5/<instance> (see README.md, "Linux with Wine")
+[Unit]
+Description=MT5 sidecar (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mt5
+Environment=WINEPREFIX=/var/lib/mt5/%i
+Environment=WINEDEBUG=-all
+Environment=MT5_SIDECAR_ENV_FILE=Z:\\etc\\mt5-sidecar\\%i.env
+WorkingDirectory=/opt/tradingapp/mt5_sidecar
+ExecStart=/usr/bin/xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24" \
+    /usr/bin/wine python server.py
+Restart=always
+RestartSec=10
+# The terminal can take a while to log in after a cold start.
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

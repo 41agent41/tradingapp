@@ -70,7 +70,7 @@ chmod +x tradingapp.sh
 ### **Multi-broker: MetaTrader 5, Alpaca, OANDA**
 - A venue-agnostic adapter seam (`broker_service/adapters.py`) lets other
   brokers plug in behind the same `source=`/`broker=` API surface as IB.
-- **MetaTrader 5**: quote and trade via a Windows sidecar (`MT5_BRIDGE_URL`).
+- **MetaTrader 5**: quote and trade via the MT5 sidecar (`mt5_sidecar/`, on Windows or Linux under Wine), reached at `MT5_BRIDGE_URL`.
 - **Alpaca** (equities/options) and **OANDA** (FX/CFD): cloud REST APIs
   called directly — no sidecar host, just API credentials. See
   [DEPLOYMENT.md](DEPLOYMENT.md#alpaca-and-oanda--optional-cloud-brokers).

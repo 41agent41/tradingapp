@@ -1,0 +1,10 @@
+# MT5 sidecar. Runs on Windows Python, natively or under Wine.
+fastapi==0.104.1
+uvicorn==0.24.0
+pydantic==2.5.2
+# The MetaTrader5 package only ships Windows wheels. Under Wine, use the
+# Windows build of Python, which installs it like any other wheel.
+MetaTrader5>=5.0.45; sys_platform == "win32"
+numpy>=1.24.0
+# zoneinfo has no system time-zone database on Windows.
+tzdata>=2024.1

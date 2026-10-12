@@ -1,0 +1,6 @@
+# Tests run on any OS against tests/fake_mt5.py; no terminal needed.
+pytest>=7.4,<10
+ruff==0.6.9
+black>=24.8,<25
+# <0.28 for Starlette 0.27's TestClient, as in broker_service.
+httpx>=0.27,<0.28

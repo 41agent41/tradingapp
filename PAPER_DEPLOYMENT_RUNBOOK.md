@@ -75,9 +75,10 @@ the systematic services start normally.
 
 ## Phase 2 — Sidecar (the real work)
 
-The full contract is documented at the top of
-`broker_service/mt5_adapter.py`. Build against that; the checks below are the
-acceptance tests.
+The sidecar is in the repo at `mt5_sidecar/`; its README covers installing
+it on Windows or on Linux under Wine. The contract it implements is documented
+at the top of `broker_service/mt5_adapter.py`. The checks below are the
+acceptance tests against a real terminal.
 
 ### 5. Implement the read-side endpoints
 `GET /health`, `/symbols`, `/history`, `/quote`, `/tick`, `/positions`,
