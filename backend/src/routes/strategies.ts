@@ -165,7 +165,6 @@ router.post('/runs', async (req: Request, res: Response) => {
   }
 });
 
-
 // --- fleet view (Component C — C-5) ---------------------------------------- //
 
 /**
@@ -212,9 +211,7 @@ router.get('/fleet', async (_req: Request, res: Response) => {
     const definitions = await Promise.all(
       [...byDefinition.keys()].map((id) => repo.findDefinition(id))
     );
-    const definitionById = new Map(
-      definitions.filter(Boolean).map((d: any) => [d.id, d])
-    );
+    const definitionById = new Map(definitions.filter(Boolean).map((d: any) => [d.id, d]));
 
     const strategies = [...byDefinition.entries()].map(([definitionId, legs]) => {
       const definition = definitionById.get(definitionId);
