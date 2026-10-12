@@ -425,6 +425,8 @@ def test_account_routes_read_oanda_for_the_switched_connection(adapters_mod, mon
                 }
             ]
         },
+        # OANDA's own per-trade stops; the split row takes MT5's instead.
+        "/v3/accounts/101-001-1-001/openTrades": {"trades": []},
     }
     mt5_payloads = {
         "/positions": {"positions": [{"symbol": "EURUSD", "volume": 1.0, "type": 0}]},

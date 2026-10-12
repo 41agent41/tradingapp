@@ -615,3 +615,214 @@ def test_instrument_spec_handles_fractional_units_precision(oanda):
     assert spec["size_step"] == 0.01
     # No minimumTradeSize reported: the step is the floor.
     assert spec["min_size"] == 0.01
+
+
+# --------------------------------------------------------------------------- #
+# protection: stop loss / take profit on fill, per-trade stops
+# --------------------------------------------------------------------------- #
+class _ProtectedReq(_OrderReq):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.stop_loss = kw.get("stop_loss")
+        self.take_profit = kw.get("take_profit")
+
+
+def _order_handler(order_response, precision=5):
+    def handler(method, url, params, json):
+        if url.endswith("/instruments"):
+            return FakeResponse({"instruments": [{"displayPrecision": precision}]})
+        return FakeResponse(order_response)
+
+    return handler
+
+
+def test_place_order_attaches_stop_and_target_on_fill(oanda, monkeypatch):
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+    FakeClient.handler = _order_handler(
+        {
+            "orderCreateTransaction": {
+                "id": "41",
+                "stopLossOnFill": {"price": "1.08000"},
+                "takeProfitOnFill": {"price": "1.12000"},
+            },
+            "orderFillTransaction": {"id": "42", "tradeOpened": {"tradeID": "42"}},
+        }
+    )
+    out = _adapter(oanda).place_order(_ProtectedReq(stop_loss=1.079999999, take_profit=1.12))
+    order = [c for c in FakeClient.calls if c[1].endswith("/orders")][0][4]["order"]
+    # Rounded to the instrument's precision; OANDA rejects excess decimals.
+    assert order["stopLossOnFill"] == {"price": "1.08000", "timeInForce": "GTC"}
+    assert order["takeProfitOnFill"] == {"price": "1.12000", "timeInForce": "GTC"}
+    # Echoed from OANDA's record of the order, so the caller can verify it.
+    assert out["sl"] == 1.08 and out["tp"] == 1.12
+    assert out["status"] == "filled"
+
+
+def test_place_order_without_protection_skips_the_precision_lookup(oanda, monkeypatch):
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+    FakeClient.handler = _order_handler({"orderFillTransaction": {"id": "42"}})
+    out = _adapter(oanda).place_order(_ProtectedReq())
+    assert len(FakeClient.calls) == 1
+    assert "stopLossOnFill" not in FakeClient.calls[0][4]["order"]
+    assert out["sl"] is None
+
+
+def test_place_order_reports_no_stop_when_oanda_did_not_record_one(oanda, monkeypatch):
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+    FakeClient.handler = _order_handler({"orderFillTransaction": {"id": "42"}})
+    out = _adapter(oanda).place_order(_ProtectedReq(stop_loss=1.08))
+    assert out["sl"] is None
+
+
+def test_place_order_cancelled_at_once_is_an_error_not_submitted(oanda, monkeypatch):
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+    FakeClient.handler = _order_handler(
+        {
+            "orderCreateTransaction": {"id": "41"},
+            "orderCancelTransaction": {"id": "42", "reason": "STOP_LOSS_ON_FILL_LOSS"},
+        }
+    )
+    with pytest.raises(HTTPException) as exc:
+        _adapter(oanda).place_order(_ProtectedReq(stop_loss=1.2))
+    assert exc.value.status_code == 422
+    assert "STOP_LOSS_ON_FILL_LOSS" in exc.value.detail
+
+
+def test_place_order_refuses_a_stop_when_precision_is_unknown(oanda, monkeypatch):
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+
+    def handler(method, url, params, json):
+        if url.endswith("/instruments"):
+            return FakeResponse({"instruments": []})
+        raise AssertionError("no order may be sent")
+
+    FakeClient.handler = handler
+    with pytest.raises(HTTPException) as exc:
+        _adapter(oanda).place_order(_ProtectedReq(stop_loss=1.08))
+    assert exc.value.status_code == 502
+
+
+def _trade(trade_id, units, sl=None, tp=None, instrument="EUR_USD"):
+    row = {"id": trade_id, "instrument": instrument, "currentUnits": str(units)}
+    if sl is not None:
+        row["stopLossOrder"] = {"price": str(sl)}
+    if tp is not None:
+        row["takeProfitOrder"] = {"price": str(tp)}
+    return row
+
+
+def _positions_handler(units, trades):
+    def handler(method, url, params, json):
+        if url.endswith("/openPositions"):
+            return FakeResponse(
+                {
+                    "positions": [
+                        {
+                            "instrument": "EUR_USD",
+                            "long": {"units": str(max(units, 0)), "averagePrice": "1.10"},
+                            "short": {"units": str(min(units, 0)), "averagePrice": "1.10"},
+                        }
+                    ]
+                }
+            )
+        if url.endswith("/openTrades"):
+            return FakeResponse({"trades": trades})
+        return FakeResponse({})
+
+    return handler
+
+
+def test_positions_report_the_least_protective_stop_of_the_trades(oanda):
+    FakeClient.handler = _positions_handler(
+        3000,
+        [
+            _trade("1", 1000, sl=1.0900, tp=1.13),
+            _trade("2", 2000, sl=1.0850, tp=1.12),
+            _trade("3", 500, sl=1.2, instrument="GBP_USD"),
+        ],
+    )
+    row = _adapter(oanda).positions()[0]
+    assert row["stop_loss"] == 1.0850
+    assert row["take_profit"] == 1.12
+
+
+def test_positions_short_least_protective_stop_is_the_highest(oanda):
+    FakeClient.handler = _positions_handler(
+        -2000, [_trade("1", -1000, sl=1.12), _trade("2", -1000, sl=1.11)]
+    )
+    assert _adapter(oanda).positions()[0]["stop_loss"] == 1.12
+
+
+def test_positions_one_unprotected_trade_makes_the_position_unprotected(oanda):
+    FakeClient.handler = _positions_handler(2000, [_trade("1", 1000, sl=1.09), _trade("2", 1000)])
+    assert _adapter(oanda).positions()[0]["stop_loss"] is None
+
+
+def test_positions_fail_when_the_trades_cannot_be_read(oanda):
+    def handler(method, url, params, json):
+        if url.endswith("/openTrades"):
+            return FakeResponse({}, status_code=500)
+        return _positions_handler(1000, [])(method, url, params, json)
+
+    FakeClient.handler = handler
+    with pytest.raises(HTTPException) as exc:
+        _adapter(oanda).positions()
+    assert exc.value.status_code == 502
+
+
+def _modify_handler(trades):
+    puts = []
+
+    def handler(method, url, params, json):
+        if url.endswith("/openTrades"):
+            return FakeResponse({"trades": trades})
+        if url.endswith("/instruments"):
+            return FakeResponse({"instruments": [{"displayPrecision": 5}]})
+        if method == "PUT":
+            puts.append((url, json))
+            out = {}
+            if "stopLoss" in json:
+                out["stopLossOrderTransaction"] = {"price": json["stopLoss"]["price"]}
+            if "takeProfit" in json:
+                out["takeProfitOrderTransaction"] = {"price": json["takeProfit"]["price"]}
+            return FakeResponse(out)
+        raise AssertionError(url)
+
+    return handler, puts
+
+
+def test_modify_position_stop_moves_each_trade_and_never_loosens_one(oanda):
+    handler, puts = _modify_handler(
+        [
+            _trade("1", 1000, sl=1.0900),  # looser than the new stop: moved
+            _trade("2", 1000, sl=1.0980),  # tighter than the new stop: kept
+            _trade("3", -500, sl=1.2),  # the hedged opposite leg: untouched
+        ]
+    )
+    FakeClient.handler = handler
+    out = _adapter(oanda).modify_position_stop("EUR.USD", stop_loss=1.095)
+    assert [u.rsplit("/", 2)[-2] for u, _ in puts] == ["1"]
+    assert puts[0][1] == {"stopLoss": {"price": "1.09500", "timeInForce": "GTC"}}
+    assert out["sl"] == 1.095
+    assert out["broker"] == "oanda"
+
+
+def test_modify_position_stop_reports_none_when_oanda_did_not_confirm(oanda):
+    def handler(method, url, params, json):
+        if url.endswith("/openTrades"):
+            return FakeResponse({"trades": [_trade("1", 1000, sl=1.09)]})
+        if url.endswith("/instruments"):
+            return FakeResponse({"instruments": [{"displayPrecision": 5}]})
+        return FakeResponse({})
+
+    FakeClient.handler = handler
+    out = _adapter(oanda).modify_position_stop("EUR.USD", stop_loss=1.095)
+    assert out["sl"] is None
+
+
+def test_modify_position_stop_without_trades_is_404(oanda):
+    handler, _puts = _modify_handler([])
+    FakeClient.handler = handler
+    with pytest.raises(HTTPException) as exc:
+        _adapter(oanda).modify_position_stop("EUR.USD", stop_loss=1.095)
+    assert exc.value.status_code == 404
