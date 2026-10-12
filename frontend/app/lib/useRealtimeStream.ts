@@ -4,7 +4,7 @@
  * Provides a small, opinionated wrapper around `socket.io-client` that
  * matches the backend's contract:
  *
- *   - Connect to `apiBaseUrl` with `socketAuth()` for the bearer token.
+ *   - Connect to `apiBaseUrl` with `socketAuth()` so the session cookie authenticates the handshake.
  *   - Emit `subscribe-market-data` with the symbol/contract details
  *     when the symbol changes.
  *   - Listen for `market-data-update` events (a stream of

@@ -1,30 +1,26 @@
 /**
  * Shared API client for the TradingApp frontend.
  *
- * Two responsibilities:
+ * Responsibilities:
  *
  *   1. Build URLs against `NEXT_PUBLIC_API_URL` (the backend base URL).
- *   2. Attach the bearer token from `NEXT_PUBLIC_API_TOKEN` to every
- *      request so backend routes can authenticate the caller. If the
- *      env var is unset, no token is attached — this preserves backward
- *      compatibility with deployments that haven't enabled API_TOKEN on
- *      the backend yet.
+ *   2. Send the login session cookie with every request
+ *      (`credentials: 'include'`). The cookie is HttpOnly, so no credential
+ *      is ever readable by page scripts or compiled into the bundle.
+ *   3. Send the browser to `/login` when the backend answers 401.
  *
  * Every component should use `apiFetch` instead of calling the global
- * `fetch` directly. The two exported helpers (`apiUrl`, `apiToken`) are
- * also exposed for the small number of call sites (Socket.IO, the IB
- * service direct calls) that can't go through `apiFetch`.
+ * `fetch` directly. `apiUrl` and `socketAuth` are exported for the Socket.IO
+ * clients, which can't go through `apiFetch`.
  */
 
 const RAW_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
-const TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || '';
 
 function trimTrailing(s: string): string {
   return s.endsWith('/') ? s.slice(0, -1) : s;
 }
 
 export const apiBaseUrl: string = trimTrailing(RAW_BASE);
-export const apiToken: string = TOKEN;
 
 /** Returns the configured backend base URL (no trailing slash). */
 export function apiUrl(path: string = ''): string {
@@ -36,10 +32,10 @@ export interface ApiFetchInit extends RequestInit {
   /** When true, treat `path` as an absolute URL and skip prefixing. */
   absolute?: boolean;
   /**
-   * Skip attaching the Authorization header. Use only for endpoints that
-   * are intentionally unauthenticated (e.g. `/api/health`).
+   * Don't redirect to the login page on a 401. Used by the login page and
+   * the session probe, which handle 401 themselves.
    */
-  skipAuth?: boolean;
+  skipAuthRedirect?: boolean;
 }
 
 /**
@@ -69,36 +65,47 @@ export function newRequestId(): string {
  *
  *   - Prefixes relative paths with `NEXT_PUBLIC_API_URL` (so callers can
  *     just pass `/api/market-data/history`).
- *   - Attaches `Authorization: Bearer <NEXT_PUBLIC_API_TOKEN>` when a
- *     token is configured.
+ *   - Sends the session cookie (`credentials: 'include'`).
  *   - Attaches `X-Request-Id` (mints one if the caller didn't) so the
  *     backend can correlate logs and metrics for this call and propagate
- *     the id into the IB service.
+ *     the id into the broker service.
  *   - Preserves any caller-supplied headers (including the existing
  *     `X-Data-Query-Enabled` toggle).
+ *   - Redirects to `/login` on a 401, unless `skipAuthRedirect` is set.
  */
-export function apiFetch(pathOrUrl: string, init: ApiFetchInit = {}): Promise<Response> {
-  const { absolute, skipAuth, headers: callerHeaders, ...rest } = init;
+export async function apiFetch(pathOrUrl: string, init: ApiFetchInit = {}): Promise<Response> {
+  const { absolute, skipAuthRedirect, headers: callerHeaders, ...rest } = init;
 
   const url = absolute || /^https?:\/\//i.test(pathOrUrl) ? pathOrUrl : apiUrl(pathOrUrl);
 
   const merged = new Headers(callerHeaders);
-  if (!skipAuth && TOKEN && !merged.has('Authorization')) {
-    merged.set('Authorization', `Bearer ${TOKEN}`);
-  }
   if (!merged.has('X-Request-Id')) {
     merged.set('X-Request-Id', newRequestId());
   }
 
-  return fetch(url, { ...rest, headers: merged });
+  const res = await fetch(url, { credentials: 'include', ...rest, headers: merged });
+  if (res.status === 401 && !skipAuthRedirect) {
+    redirectToLogin();
+  }
+  return res;
+}
+
+/** Sends the browser to the login page, remembering where it was. */
+export function redirectToLogin(): void {
+  if (typeof window === 'undefined') return;
+  const { pathname, search } = window.location;
+  if (pathname.startsWith('/login')) return;
+  const next = encodeURIComponent(`${pathname}${search}`);
+  window.location.assign(`/login?next=${next}`);
 }
 
 /**
- * Convenience helper for the Socket.IO client.
+ * Socket.IO client options that authenticate the handshake with the
+ * session cookie.
  *
  *   import { io } from 'socket.io-client';
- *   const socket = io(apiBaseUrl, socketAuth());
+ *   const socket = io(apiBaseUrl, { ...socketAuth() });
  */
-export function socketAuth(): { auth?: { token: string } } {
-  return TOKEN ? { auth: { token: TOKEN } } : {};
+export function socketAuth(): { withCredentials: true } {
+  return { withCredentials: true };
 }

@@ -21,13 +21,13 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-tradingapp}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tradingapp123}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-tradingapp}
       # Force UTC so timestamps round-trip cleanly with the broker service.
       PGTZ: UTC
       TZ: UTC
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - tradingapp_pgdata:/var/lib/postgresql/data
       # Schema is applied on first init only. To re-apply, remove the

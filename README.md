@@ -31,7 +31,7 @@ chmod +x tradingapp.sh
 ### **Access Your Application**
 - **Frontend**: `http://your-server-ip:3000` - Market data and charts
 - **Backend**: `http://your-server-ip:4000` - API endpoints  
-- **Broker Service**: `http://your-server-ip:8000` - Interactive Brokers, MetaTrader 5, Alpaca and OANDA integration
+- **Broker Service**: internal only (loopback `127.0.0.1:8000` on the host) - Interactive Brokers, MetaTrader 5, Alpaca and OANDA integration
 
 ## 📋 **Unified Management Commands**
 
@@ -141,8 +141,10 @@ no separate Jesse install, database or exchange drivers.
 - **Easy Troubleshooting**: Built-in diagnostics and auto-fix.
 
 ### **Security & Quality**
-- **Bearer-token auth**: Every backend route (and the Socket.IO handshake)
-  requires `API_TOKEN`; comparisons use `crypto.timingSafeEqual`.
+- **Login**: the browser signs in with `APP_PASSWORD` and gets an HttpOnly
+  session cookie; scripts use `API_TOKEN`. Nothing secret is compiled into
+  the frontend. The broker service is loopback-only and requires
+  `BROKER_SERVICE_TOKEN`. Production refuses to start with default secrets.
 - **Strict CORS**: Bound to `CORS_ORIGINS` rather than a wildcard.
 - **Whitelisted settings**: `GET /api/settings` returns only allow-listed,
   non-credential environment variables.

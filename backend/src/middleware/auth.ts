@@ -1,43 +1,50 @@
 import type { Request, Response, NextFunction } from 'express';
-import crypto from 'crypto';
+
+import {
+  isLoginConfigured,
+  readCookie,
+  safeEqual,
+  SESSION_COOKIE,
+  verifySession,
+} from '../services/session.js';
 
 /**
- * Bearer-token authentication for the backend.
+ * Backend authentication.
  *
- * Behaviour:
+ * A request is authenticated by either credential:
  *
- *   - If `API_TOKEN` is **not** set in the environment, the middleware is
- *     disabled and every request is allowed through. A loud warning is
- *     printed at startup so this configuration is never silent. This
- *     preserves backward compatibility for existing deployments that
- *     haven't rolled out a token yet — see GAP_ANALYSIS.md §3.7.
+ *   - a session cookie issued by `POST /api/auth/login` (the browser; see
+ *     `services/session.ts`), or
+ *   - `API_TOKEN`, sent as `Authorization: Bearer <token>` or `x-api-token`
+ *     (scripts and curl). It is never shipped to the browser.
  *
- *   - If `API_TOKEN` **is** set, every request must carry one of:
+ * Auth is "configured" when `API_TOKEN` is set or login is configured
+ * (`APP_PASSWORD` + `SESSION_SECRET`). When neither is, the middleware lets
+ * everything through with a loud warning; `startupChecks.ts` refuses to
+ * start that way in production, so only local development runs open.
  *
- *         Authorization: Bearer <token>
- *         x-api-token:    <token>
- *
- *     The token is compared with `crypto.timingSafeEqual` so the
- *     comparison is constant-time.
- *
- *   - Paths in `OPEN_PATHS` skip the check so liveness probes and the
- *     unauthenticated health endpoints remain reachable.
+ * Paths in `OPEN_PATHS` skip the check: liveness probes, the scrape endpoint
+ * and the login routes themselves.
  */
 
-const OPEN_PATHS = new Set<string>(['/', '/api/health', '/api/database/health', '/metrics']);
+export const OPEN_PATHS = new Set<string>([
+  '/',
+  '/api/health',
+  '/api/database/health',
+  '/metrics',
+  '/api/auth/login',
+  '/api/auth/logout',
+  '/api/auth/session',
+]);
 
 let warned = false;
 
-function safeEqual(a: string, b: string): boolean {
-  const aBuf = Buffer.from(a, 'utf8');
-  const bBuf = Buffer.from(b, 'utf8');
-  if (aBuf.length !== bBuf.length) {
-    // Still do a constant-time op on something we throw away so we don't
-    // leak length information via early-exit timing.
-    crypto.timingSafeEqual(aBuf, aBuf);
-    return false;
-  }
-  return crypto.timingSafeEqual(aBuf, bBuf);
+function apiToken(): string {
+  return (process.env.API_TOKEN || '').trim();
+}
+
+export function isAuthConfigured(): boolean {
+  return apiToken().length > 0 || isLoginConfigured();
 }
 
 function extractToken(req: Request): string | null {
@@ -45,60 +52,64 @@ function extractToken(req: Request): string | null {
   if (typeof header === 'string' && header.toLowerCase().startsWith('bearer ')) {
     return header.slice(7).trim();
   }
-  const apiToken = req.headers['x-api-token'];
-  if (typeof apiToken === 'string' && apiToken.trim().length > 0) {
-    return apiToken.trim();
+  const token = req.headers['x-api-token'];
+  if (typeof token === 'string' && token.trim().length > 0) {
+    return token.trim();
   }
   return null;
 }
 
-export function createAuthMiddleware() {
-  const expected = (process.env.API_TOKEN || '').trim();
+/** True when the supplied headers carry a valid session cookie or API token. */
+export function isAuthenticated(
+  headers: Record<string, string | string[] | undefined>,
+  bearer: string | null
+): boolean {
+  const expected = apiToken();
+  if (expected && bearer && safeEqual(bearer, expected)) return true;
+  return verifySession(readCookie(headers['cookie'], SESSION_COOKIE));
+}
 
-  if (!expected) {
+export function createAuthMiddleware() {
+  if (!isAuthConfigured()) {
     if (!warned) {
       console.warn(
-        '[auth] API_TOKEN is not set — backend routes are UNAUTHENTICATED. ' +
-          'Set API_TOKEN in your .env to require Bearer-token auth.'
+        '[auth] neither API_TOKEN nor APP_PASSWORD is set: backend routes are ' +
+          'UNAUTHENTICATED. This is refused in production.'
       );
       warned = true;
     }
     return (_req: Request, _res: Response, next: NextFunction) => next();
   }
 
-  console.log('[auth] API_TOKEN enforcement enabled');
+  console.log('[auth] authentication enforced (session cookie or API token)');
 
   return (req: Request, res: Response, next: NextFunction) => {
-    if (OPEN_PATHS.has(req.path)) {
+    if (OPEN_PATHS.has(req.path) || req.method === 'OPTIONS') {
       return next();
     }
-
-    const supplied = extractToken(req);
-    if (!supplied || !safeEqual(supplied, expected)) {
-      return res.status(401).json({
-        error: 'Unauthorized',
-        message: 'A valid Bearer token (Authorization: Bearer <token>) is required.',
-        timestamp: new Date().toISOString(),
-      });
+    if (isAuthenticated(req.headers, extractToken(req))) {
+      return next();
     }
-
-    return next();
+    return res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Log in, or send a valid API token (Authorization: Bearer <token>).',
+      timestamp: new Date().toISOString(),
+    });
   };
 }
 
 /**
- * Socket.IO handshake guard. Reads the token from `auth.token`, the
- * `Authorization` header, or the `token` query parameter. Returns
- * `null` on success, an Error on failure (which Socket.IO surfaces to
- * the client as a `connect_error`).
+ * Socket.IO handshake guard. Accepts the session cookie (browsers connect
+ * with `withCredentials`) or the API token from `auth.token`, the
+ * `Authorization` header, or the `token` query parameter. Returns `null` on
+ * success, an Error on failure (surfaced to the client as `connect_error`).
  */
 export function checkSocketAuth(
   authPayload: unknown,
   headers: Record<string, string | string[] | undefined>,
   query: Record<string, unknown>
 ): Error | null {
-  const expected = (process.env.API_TOKEN || '').trim();
-  if (!expected) return null; // disabled — see warning above
+  if (!isAuthConfigured()) return null; // disabled; see the startup warning
 
   const fromAuth =
     typeof authPayload === 'object' &&
@@ -115,9 +126,6 @@ export function checkSocketAuth(
 
   const fromQuery = typeof query['token'] === 'string' ? (query['token'] as string).trim() : '';
 
-  const supplied = fromAuth || fromHeader || fromQuery;
-  if (!supplied || !safeEqual(supplied, expected)) {
-    return new Error('Unauthorized');
-  }
-  return null;
+  const bearer = fromAuth || fromHeader || fromQuery || null;
+  return isAuthenticated(headers, bearer) ? null : new Error('Unauthorized');
 }

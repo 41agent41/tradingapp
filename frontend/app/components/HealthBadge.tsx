@@ -116,7 +116,7 @@ export default function HealthBadge({ intervalMs = POLL_INTERVAL_MS }: HealthBad
 
     const poll = async () => {
       try {
-        const res = await apiFetch('/api/health', { skipAuth: true });
+        const res = await apiFetch('/api/health');
         const body = (await res.json()) as HealthPayload;
         if (cancelled) return;
         setPayload(body);

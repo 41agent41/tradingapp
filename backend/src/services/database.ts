@@ -9,7 +9,7 @@ const dbConfig = {
   host: process.env.POSTGRES_HOST || 'localhost',
   port: parseInt(process.env.POSTGRES_PORT || '5432'),
   user: process.env.POSTGRES_USER || 'tradingapp',
-  password: process.env.POSTGRES_PASSWORD || 'tradingapp123',
+  password: process.env.POSTGRES_PASSWORD || '',
   database: process.env.POSTGRES_DB || 'tradingapp',
   ssl: process.env.POSTGRES_SSL === 'true' ? { rejectUnauthorized: false } : false,
   max: 20, // Maximum number of clients in the pool

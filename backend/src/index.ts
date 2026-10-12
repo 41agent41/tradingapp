@@ -11,6 +11,7 @@ import ordersRoutes from './routes/orders.js';
 import strategiesRoutes from './routes/strategies.js';
 import watchlistRoutes from './routes/watchlist.js';
 import priceAlertsRoutes from './routes/priceAlerts.js';
+import authRoutes from './routes/auth.js';
 import axios from 'axios';
 import { dbService } from './services/database.js';
 import { cacheService } from './services/cache.js';
@@ -23,9 +24,22 @@ import { createAuthMiddleware, checkSocketAuth } from './middleware/auth.js';
 import { observabilityMiddleware } from './middleware/observability.js';
 import { logger, currentRequestId } from './services/logger.js';
 import { registry } from './services/metrics.js';
+import { checkStartupConfig } from './services/startupChecks.js';
+
+// Refuse to start on an unsafe configuration (open API, default secrets, live
+// trading without MFA, an unimplemented kill-switch action). See the module.
+{
+  const { errors, warnings } = checkStartupConfig();
+  for (const w of warnings) console.warn(`[startup] ${w}`);
+  if (errors.length > 0) {
+    for (const e of errors) console.error(`[startup] refusing to start: ${e}`);
+    process.exit(1);
+  }
+}
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 4000;
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
+const BROKER_SERVICE_TOKEN = (process.env.BROKER_SERVICE_TOKEN || '').trim();
 
 // ---------------------------------------------------------------------------
 // CORS
@@ -97,10 +111,10 @@ app.use(express.json({ limit: '25mb' }));
 // auth — gets a request-id, a log line and a metric observation.
 app.use(observabilityMiddleware());
 
-// Bearer-token auth. The middleware is a no-op (with a startup warning)
-// when API_TOKEN is not set, so existing deployments keep working until
-// they roll out a token.
+// Auth: a login session cookie (browser) or API_TOKEN (scripts). Open only in
+// development; startup checks refuse an unauthenticated production config.
 app.use(createAuthMiddleware());
+app.use('/api/auth', authRoutes);
 
 // Propagate the per-request id into every axios call (mostly: the backend
 // → broker_service hops). The interceptor reads the current AsyncLocalStorage
@@ -111,6 +125,12 @@ axios.interceptors.request.use((config) => {
   if (id && !config.headers?.['X-Request-Id']) {
     config.headers = config.headers ?? {};
     (config.headers as Record<string, string>)['X-Request-Id'] = id;
+  }
+  // The broker service only accepts calls carrying the shared secret. Attach
+  // it to broker-service URLs only, so it never leaks to a third party.
+  if (BROKER_SERVICE_TOKEN && (config.url || '').startsWith(BROKER_SERVICE_URL)) {
+    config.headers = config.headers ?? {};
+    (config.headers as Record<string, string>)['X-Broker-Service-Token'] = BROKER_SERVICE_TOKEN;
   }
   return config;
 });
