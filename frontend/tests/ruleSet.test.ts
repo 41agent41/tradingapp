@@ -112,4 +112,14 @@ describe('buildDefinitionPayload', () => {
     expect(res.ok).toBe(false);
     expect(res.errors.some((e) => /size/i.test(e))).toBe(true);
   });
+
+  it('carries the holdout start when given, and checks its format', () => {
+    expect(buildDefinitionPayload(form({ holdoutStart: '2025-01-01' })).payload).toMatchObject({
+      holdout_start: '2025-01-01',
+    });
+    expect(buildDefinitionPayload(form()).payload).not.toHaveProperty('holdout_start');
+    const bad = buildDefinitionPayload(form({ holdoutStart: '1/1/2025' }));
+    expect(bad.ok).toBe(false);
+    expect(bad.errors.some((e) => /holdout/i.test(e))).toBe(true);
+  });
 });

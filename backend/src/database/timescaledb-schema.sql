@@ -495,6 +495,40 @@ ALTER TABLE strategy_definitions ADD COLUMN IF NOT EXISTS broker_account VARCHAR
 CREATE INDEX IF NOT EXISTS idx_strategy_definitions_created_desc
     ON strategy_definitions (created_at DESC);
 
+-- Promotion gate (Phase 1: backtest, then paper, then live). A backtest only
+-- counts towards promotion when it ran on data the strategy was not designed
+-- on: everything from `holdout_start` onwards. Set once, at creation or later,
+-- and never moved: moving it after seeing results would turn the holdout into
+-- more design data.
+ALTER TABLE strategy_definitions ADD COLUMN IF NOT EXISTS holdout_start DATE;
+
+-- A definition is the version that gets backtested, paper traded and promoted,
+-- so what it trades and how it decides are frozen once written. A changed
+-- strategy is a new definition with its own evidence. Name and holdout (set
+-- once) are the only fields that may change.
+CREATE OR REPLACE FUNCTION strategy_definitions_frozen()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.rule_set IS DISTINCT FROM OLD.rule_set
+       OR NEW.symbol IS DISTINCT FROM OLD.symbol
+       OR NEW.timeframe IS DISTINCT FROM OLD.timeframe
+       OR NEW.broker IS DISTINCT FROM OLD.broker
+       OR NEW.sec_type IS DISTINCT FROM OLD.sec_type
+       OR NEW.exchange IS DISTINCT FROM OLD.exchange
+       OR NEW.currency IS DISTINCT FROM OLD.currency THEN
+        RAISE EXCEPTION 'strategy definition % is frozen; create a new definition instead', OLD.id;
+    END IF;
+    IF OLD.holdout_start IS NOT NULL AND NEW.holdout_start IS DISTINCT FROM OLD.holdout_start THEN
+        RAISE EXCEPTION 'holdout_start of strategy definition % is already set', OLD.id;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS strategy_definitions_frozen ON strategy_definitions;
+CREATE TRIGGER strategy_definitions_frozen BEFORE UPDATE ON strategy_definitions
+    FOR EACH ROW EXECUTE FUNCTION strategy_definitions_frozen();
+
 -- ==============================================
 -- RUN GROUPS (Component C — C-3)
 -- ==============================================

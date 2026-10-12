@@ -203,3 +203,23 @@ describe('StrategyRepository.getRunStatus', () => {
     expect(await new StrategyRepository(empty.db).getRunStatus(1)).toBeNull();
   });
 });
+
+describe('StrategyRepository holdout start', () => {
+  it('is stored at creation, null when absent', async () => {
+    const { db, calls } = fakeDb(() => [{ id: 1 }]);
+    const repo = new StrategyRepository(db);
+    const base = { name: 'A', symbol: 'X', timeframe: '1hour', rule_set: { entry: {} } };
+    await repo.createDefinition({ ...base, holdout_start: '2025-01-01' });
+    await repo.createDefinition(base);
+    expect(calls[0].params[9]).toBe('2025-01-01');
+    expect(calls[1].params[9]).toBeNull();
+  });
+
+  it('is only set when the definition has none', async () => {
+    const { db, calls } = fakeDb(() => []);
+    const repo = new StrategyRepository(db);
+    expect(await repo.setHoldoutStart(4, '2025-01-01')).toBeNull();
+    expect(calls[0].text).toMatch(/holdout_start IS NULL/);
+    expect(calls[0].params).toEqual([4, '2025-01-01']);
+  });
+});

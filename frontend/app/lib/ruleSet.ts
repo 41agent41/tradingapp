@@ -62,6 +62,9 @@ export interface StrategyForm {
   sizingSize: string;
   maxOrdersPerDay: string;
   stopLossPct: string;
+  /** First day of data the strategy was not designed on (YYYY-MM-DD). Only
+   *  backtests from this day count towards promotion to paper and live. */
+  holdoutStart?: string;
 }
 
 export interface RuleCondition {
@@ -112,6 +115,11 @@ export function buildDefinitionPayload(form: StrategyForm): BuildResult {
   const size = Number(form.sizingSize);
   if (!Number.isFinite(size) || size <= 0) errors.push('Sizing size must be a positive number');
 
+  const holdout = (form.holdoutStart ?? '').trim();
+  if (holdout && !/^\d{4}-\d{2}-\d{2}$/.test(holdout)) {
+    errors.push('Holdout start must be a date (YYYY-MM-DD)');
+  }
+
   if (errors.length > 0) return { ok: false, errors };
 
   const indicators = form.indicators
@@ -152,6 +160,7 @@ export function buildDefinitionPayload(form: StrategyForm): BuildResult {
     exchange: (form.exchange ?? 'SMART').trim().toUpperCase() || 'SMART',
     currency: (form.currency ?? 'USD').trim().toUpperCase() || 'USD',
     rule_set: ruleSet,
+    ...(holdout ? { holdout_start: holdout } : {}),
   };
 
   return { ok: true, errors: [], ruleSet, payload };

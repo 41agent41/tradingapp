@@ -26,10 +26,22 @@ const repoImpl = {
   listGroupRuns: jest.fn(),
   stopGroup: jest.fn(),
   stopConnection: jest.fn(),
+  setHoldoutStart: jest.fn(),
 };
 jest.mock('../src/services/strategyRepository.js', () => ({
   __esModule: true,
   StrategyRepository: jest.fn().mockImplementation(() => repoImpl),
+}));
+
+// The gate's own rules are tested in promotionGate.test.ts; here it is a
+// stub that allows by default, and individual tests make it refuse.
+const promotionImpl = {
+  check: jest.fn(),
+  paperStatus: jest.fn(),
+};
+jest.mock('../src/services/promotionService.js', () => ({
+  __esModule: true,
+  PromotionService: jest.fn().mockImplementation(() => promotionImpl),
 }));
 
 import axios from 'axios';
@@ -51,7 +63,15 @@ const VALID_DEF = {
   rule_set: { entry: { all: [] } },
 };
 
-beforeEach(() => jest.clearAllMocks());
+function allow(stage = 'paper') {
+  return { definition_id: 1, stage, allowed: true, reasons: [] };
+}
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  promotionImpl.check.mockImplementation(async (_def: unknown, stage: string) => allow(stage));
+  promotionImpl.paperStatus.mockResolvedValue(new Map());
+});
 
 describe('POST /api/strategies/definitions', () => {
   it('400s when required fields are missing', async () => {
@@ -504,5 +524,111 @@ describe('GET /api/strategies/fleet', () => {
     expect(res.body.totals.active_runs).toBe(2);
     expect(res.body.totals.pending_runs).toBe(1);
     expect(res.body.strategies[0].legs.find((l: any) => l.is_canary).status).toBe('running');
+  });
+});
+
+describe('promotion gate', () => {
+  const DEF = { id: 7, symbol: 'EURUSD', timeframe: '1hour', rule_set: {}, broker: 'mt5' };
+
+  it('refuses a paper run without a passing backtest, with the reasons', async () => {
+    repoImpl.findDefinition.mockResolvedValue(DEF);
+    promotionImpl.check.mockResolvedValue({
+      ...allow(),
+      allowed: false,
+      reasons: ['no backtest of definition 7 yet'],
+    });
+    const res = await request(buildApp())
+      .post('/api/strategies/runs')
+      .send({ definition_id: 7, account_mode: 'paper' });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/paper gate/);
+    expect(res.body.detail).toEqual(['no backtest of definition 7 yet']);
+    expect(repoImpl.createRun).not.toHaveBeenCalled();
+  });
+
+  it('checks the live gate for a live run', async () => {
+    repoImpl.findDefinition.mockResolvedValue(DEF);
+    repoImpl.createRun.mockResolvedValue({ id: 1 });
+    await request(buildApp())
+      .post('/api/strategies/runs')
+      .send({ definition_id: 7, account_mode: 'live' });
+    expect(promotionImpl.check).toHaveBeenCalledWith(DEF, 'live');
+  });
+
+  it('refuses a deploy when any leg is live and the live gate fails', async () => {
+    repoImpl.findDefinition.mockResolvedValue(DEF);
+    promotionImpl.check.mockImplementation(async (_d: unknown, stage: string) =>
+      stage === 'live' ? { ...allow('live'), allowed: false, reasons: ['too short'] } : allow()
+    );
+    const res = await request(buildApp())
+      .post('/api/strategies/definitions/7/deploy')
+      .send({
+        targets: [
+          { broker: 'mt5', account: 'a', canary: true },
+          { broker: 'mt5', account: 'b', account_mode: 'live' },
+        ],
+      });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/live gate/);
+    expect(promotionImpl.check.mock.calls.map((c: unknown[]) => c[1])).toEqual(['paper', 'live']);
+    expect(axiosMock.post).not.toHaveBeenCalled();
+    expect(repoImpl.createGroup).not.toHaveBeenCalled();
+  });
+
+  it('reports paper status on the definitions list', async () => {
+    repoImpl.listDefinitions.mockResolvedValue([DEF]);
+    promotionImpl.paperStatus.mockResolvedValue(
+      new Map([[7, { ...allow(), allowed: false, reasons: ['no holdout'] }]])
+    );
+    const res = await request(buildApp()).get('/api/strategies/definitions');
+    expect(res.body.definitions[0].promotion).toEqual({
+      paper: { allowed: false, reasons: ['no holdout'] },
+    });
+  });
+
+  it('returns both stages from the promotion route', async () => {
+    repoImpl.findDefinition.mockResolvedValue(DEF);
+    const res = await request(buildApp()).get('/api/strategies/definitions/7/promotion');
+    expect(res.status).toBe(200);
+    expect(res.body.paper.stage).toBe('paper');
+    expect(res.body.live.stage).toBe('live');
+  });
+});
+
+describe('holdout start', () => {
+  it('is accepted at creation', async () => {
+    repoImpl.createDefinition.mockResolvedValue({ id: 1 });
+    const res = await request(buildApp())
+      .post('/api/strategies/definitions')
+      .send({ ...VALID_DEF, holdout_start: '2025-01-01' });
+    expect(res.status).toBe(201);
+    expect(repoImpl.createDefinition.mock.calls[0][0].holdout_start).toBe('2025-01-01');
+  });
+
+  it('rejects a future or malformed date', async () => {
+    for (const bad of ['2999-01-01', '01/02/2025']) {
+      const res = await request(buildApp())
+        .post('/api/strategies/definitions')
+        .send({ ...VALID_DEF, holdout_start: bad });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('can be set once later', async () => {
+    repoImpl.setHoldoutStart.mockResolvedValue({ id: 3, holdout_start: '2025-01-01' });
+    const res = await request(buildApp())
+      .patch('/api/strategies/definitions/3/holdout')
+      .send({ holdout_start: '2025-01-01' });
+    expect(res.status).toBe(200);
+    expect(repoImpl.setHoldoutStart).toHaveBeenCalledWith(3, '2025-01-01');
+  });
+
+  it('cannot be moved once set', async () => {
+    repoImpl.setHoldoutStart.mockResolvedValue(null);
+    repoImpl.findDefinition.mockResolvedValue({ id: 3, holdout_start: '2024-06-01' });
+    const res = await request(buildApp())
+      .patch('/api/strategies/definitions/3/holdout')
+      .send({ holdout_start: '2025-01-01' });
+    expect(res.status).toBe(409);
   });
 });

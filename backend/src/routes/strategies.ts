@@ -4,6 +4,8 @@
  *   POST /api/strategies/definitions      — create a rule-set definition
  *   GET  /api/strategies/definitions      — list definitions
  *   GET  /api/strategies/definitions/:id  — one definition
+ *   PATCH /api/strategies/definitions/:id/holdout — set the holdout start (once)
+ *   GET  /api/strategies/definitions/:id/promotion — paper and live gate status
  *   POST /api/strategies/runs             — start a signal-only run for a definition
  *   POST /api/strategies/definitions/:id/deploy — deploy to N connections (C-3)
  *   GET  /api/strategies/groups/:id       — a group and its legs
@@ -18,17 +20,24 @@
  *
  * The runner itself lives in services/strategyRunner.ts; these routes only
  * manage definitions/runs and read back signals. No orders are placed.
+ *
+ * Starting a run or deploying goes through the promotion gate
+ * (services/promotionGate.ts): paper needs a passing backtest of the
+ * definition, live also needs a long enough paper run that behaved like it.
  */
 import express from 'express';
 import type { Request, Response } from 'express';
 import axios from 'axios';
 import { dbService } from '../services/database.js';
-import { StrategyRepository } from '../services/strategyRepository.js';
+import { StrategyRepository, type StrategyDefinitionRow } from '../services/strategyRepository.js';
+import { PromotionService } from '../services/promotionService.js';
+import type { PromotionStage } from '../services/promotionGate.js';
 
 const router = express.Router();
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
 const repo = new StrategyRepository(dbService);
+const promotion = new PromotionService(dbService);
 
 const VALID_TIMEFRAMES = new Set([
   'tick',
@@ -61,12 +70,54 @@ function fail(res: Response, status: number, error: string, detail?: unknown) {
   res.status(status).json({ error, detail, timestamp: new Date().toISOString() });
 }
 
+/** A YYYY-MM-DD date no later than today, or null. */
+function validHoldout(value: unknown): string | null {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = Date.parse(`${value}T00:00:00Z`);
+  if (!Number.isFinite(parsed) || parsed > Date.now()) return null;
+  return value;
+}
+
+/**
+ * Check every stage the request deploys at. Answers 409 and returns false at
+ * the first stage the definition has not earned.
+ */
+async function passesGate(
+  res: Response,
+  definition: StrategyDefinitionRow,
+  stages: PromotionStage[]
+): Promise<boolean> {
+  const ordered = (['paper', 'live'] as const).filter((stage) => stages.includes(stage));
+  for (const stage of ordered) {
+    const decision = await promotion.check(definition, stage);
+    if (!decision.allowed) {
+      res.status(409).json({
+        error: `Definition ${definition.id} has not passed the ${stage} gate`,
+        detail: decision.reasons,
+        promotion: decision,
+        timestamp: new Date().toISOString(),
+      });
+      return false;
+    }
+  }
+  return true;
+}
+
 // --- definitions ----------------------------------------------------------- //
 
 router.post('/definitions', async (req: Request, res: Response) => {
   try {
-    const { name, symbol, timeframe, broker, sec_type, exchange, currency, rule_set } =
-      req.body || {};
+    const {
+      name,
+      symbol,
+      timeframe,
+      broker,
+      sec_type,
+      exchange,
+      currency,
+      rule_set,
+      holdout_start,
+    } = req.body || {};
     if (!name || !symbol || !timeframe || !rule_set) {
       return fail(res, 400, 'Missing required fields', {
         required: ['name', 'symbol', 'timeframe', 'rule_set'],
@@ -94,6 +145,13 @@ router.post('/definitions', async (req: Request, res: Response) => {
     } else if (!('entry' in rule_set)) {
       return fail(res, 400, "rule_set must be an object with an 'entry' group");
     }
+    const holdout =
+      holdout_start === undefined || holdout_start === null || holdout_start === ''
+        ? null
+        : validHoldout(holdout_start);
+    if (holdout_start && !holdout) {
+      return fail(res, 400, 'holdout_start must be a YYYY-MM-DD date no later than today');
+    }
     const row = await repo.createDefinition({
       name,
       symbol,
@@ -103,6 +161,7 @@ router.post('/definitions', async (req: Request, res: Response) => {
       exchange: exchange ? String(exchange) : undefined,
       currency: currency ? String(currency) : undefined,
       rule_set,
+      holdout_start: holdout,
     });
     res.status(201).json(row);
   } catch (error: any) {
@@ -116,7 +175,23 @@ router.get('/definitions', async (req: Request, res: Response) => {
       typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined,
       typeof req.query.offset === 'string' ? Number(req.query.offset) : undefined
     );
-    res.json({ definitions: rows, count: rows.length });
+    // Each row carries whether it can be deployed to paper. Live status needs
+    // a broker call per paper run, so it is only on the per-definition route.
+    let status = new Map<number, { allowed: boolean; reasons: string[] }>();
+    try {
+      status = await promotion.paperStatus(rows);
+    } catch {
+      // The list is still useful without it.
+    }
+    res.json({
+      definitions: rows.map((row) => {
+        const paper = status.get(row.id);
+        return paper
+          ? { ...row, promotion: { paper: { allowed: paper.allowed, reasons: paper.reasons } } }
+          : row;
+      }),
+      count: rows.length,
+    });
   } catch (error: any) {
     fail(res, 500, 'Failed to list definitions', error?.message ?? 'unknown');
   }
@@ -131,6 +206,42 @@ router.get('/definitions/:id', async (req: Request, res: Response) => {
     res.json(row);
   } catch (error: any) {
     fail(res, 500, 'Failed to fetch definition', error?.message ?? 'unknown');
+  }
+});
+
+router.patch('/definitions/:id/holdout', async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return fail(res, 400, 'Invalid definition id');
+  const holdout = validHoldout(req.body?.holdout_start);
+  if (!holdout) {
+    return fail(res, 400, 'holdout_start must be a YYYY-MM-DD date no later than today');
+  }
+  try {
+    const row = await repo.setHoldoutStart(id, holdout);
+    if (row) return res.json(row);
+    const existing = await repo.findDefinition(id);
+    if (!existing) return fail(res, 404, 'Definition not found', { id });
+    return fail(res, 409, 'holdout_start is already set and cannot be moved', {
+      holdout_start: existing.holdout_start,
+    });
+  } catch (error: any) {
+    fail(res, 500, 'Failed to set holdout_start', error?.message ?? 'unknown');
+  }
+});
+
+router.get('/definitions/:id/promotion', async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return fail(res, 400, 'Invalid definition id');
+  try {
+    const definition = await repo.findDefinition(id);
+    if (!definition) return fail(res, 404, 'Definition not found', { id });
+    const [paper, live] = await Promise.all([
+      promotion.check(definition, 'paper'),
+      promotion.check(definition, 'live'),
+    ]);
+    res.json({ definition_id: id, paper, live });
+  } catch (error: any) {
+    fail(res, 500, 'Failed to evaluate promotion', error?.message ?? 'unknown');
   }
 });
 
@@ -149,6 +260,7 @@ router.post('/runs', async (req: Request, res: Response) => {
     }
     const definition = await repo.findDefinition(defId);
     if (!definition) return fail(res, 404, 'Definition not found', { definition_id: defId });
+    if (!(await passesGate(res, definition, [mode]))) return;
 
     // Carry the definition's sizing/risk onto the run for the A3 layer.
     const ruleSet = (definition.rule_set ?? {}) as Record<string, unknown>;
@@ -315,6 +427,9 @@ router.post('/definitions/:id/deploy', async (req: Request, res: Response) => {
         why: 'the canary takes the first risk from an unproven rule-set, so it is chosen, not defaulted',
       });
     }
+
+    const stages = targets.map((t: any) => (t?.account_mode ?? 'paper') as PromotionStage);
+    if (!(await passesGate(res, definition, stages))) return;
 
     // Resolve every leg's native symbol at its own connection.
     let preview: any;
