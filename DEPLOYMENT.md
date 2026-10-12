@@ -820,8 +820,8 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/tradingapp
-ExecStart=/usr/bin/docker compose up -d
-ExecStop=/usr/bin/docker compose down
+ExecStart=/opt/tradingapp/tradingapp.sh start
+ExecStop=/opt/tradingapp/tradingapp.sh stop
 User=tradingapp
 
 [Install]
@@ -832,6 +832,9 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload
 sudo systemctl enable --now tradingapp
 ```
+
+The unit goes through `tradingapp.sh` so a `--with-db` deployment comes back
+with its bundled database; a bare `docker compose up -d` ignores that choice.
 
 ## Monitoring & Maintenance
 
