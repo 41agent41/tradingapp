@@ -310,6 +310,10 @@ async def get_account_summary(broker: str = "ib", account: str | None = None):
     the **equity** that `pct_equity` sizing needs, which is why each adapter
     normalises to this shape rather than returning its raw venue payload —
     the sizer can't be asked to learn four vocabularies for "net liquidation".
+
+    An mt5 connection declaring ``account_info_from`` resolves to a
+    `SplitAccountAdapter`, so this (and ``/account/positions``) reads OANDA's
+    REST API for it while orders still go through the MT5 sidecar.
     """
     try:
         logger.info(f"Account summary endpoint called (broker={broker})")

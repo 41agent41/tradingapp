@@ -47,6 +47,21 @@ money* (a firm offering both its own API and an MT5 bridge — OANDA and IG both
 do). Nothing in either API reveals the overlap, so it has to be asserted by
 hand; without it, aggregate exposure double-counts and two runs can trade one
 account believing they are independent.
+
+``account_info_from`` (mt5 only) names an oanda connection whose REST API
+supplies this connection's account information — balance, positions, margin —
+while orders keep going through the MT5 sidecar. It implies ``same_funds_as``
+(reading another account's balance is only meaningful if it is the same money),
+and the two connections must declare the same currency, because the equity it
+returns is what `pct_equity` sizing divides by::
+
+    { "id": "oanda-mt5", "platform": "mt5", "url": "http://10.7.3.24:9100",
+      "secret_env": "MT5_SECRET_OANDA", "account_mode": "live",
+      "account_info_from": "oanda-native" }
+
+The legacy single-account shorthand for the same thing is
+``MT5_ACCOUNT_INFO_SOURCE=oanda`` alongside ``MT5_BRIDGE_URL`` and the OANDA
+variables.
 """
 
 from __future__ import annotations
@@ -106,6 +121,10 @@ class Connection:
     # Operational metadata.
     server_timezone: Optional[str] = None
     same_funds_as: Optional[str] = None
+    # An mt5 connection may name an oanda connection whose REST API is the
+    # source of its account information (balance, positions, margin) while
+    # orders keep going through the MT5 sidecar. See `split_account_adapter`.
+    account_info_from: Optional[str] = None
     symbol_map: Dict[str, str] = field(default_factory=dict)
 
     @property
@@ -180,6 +199,11 @@ def _parse_entry(raw: Any, index: int) -> Connection:
         ),
         same_funds_as=(
             str(raw.get("same_funds_as")).strip().lower() if raw.get("same_funds_as") else None
+        ),
+        account_info_from=(
+            str(raw.get("account_info_from")).strip().lower()
+            if raw.get("account_info_from")
+            else None
         ),
         symbol_map=symbol_map,
     )
@@ -293,6 +317,7 @@ def _legacy_connections() -> List[Connection]:
 
     oanda_token = _env("OANDA_API_TOKEN")
     oanda_account = _env("OANDA_ACCOUNT_ID")
+    _apply_legacy_account_info_source(conns, bool(oanda_token and oanda_account))
     if oanda_token and oanda_account:
         environment = os.getenv("OANDA_ENVIRONMENT", "practice")
         conns.append(
@@ -308,6 +333,26 @@ def _legacy_connections() -> List[Connection]:
         )
 
     return conns
+
+
+def _apply_legacy_account_info_source(conns: List[Connection], oanda_configured: bool) -> None:
+    """``MT5_ACCOUNT_INFO_SOURCE=oanda`` points ``mt5:default``'s account
+    information at ``oanda:default``. Fails closed: a switch that cannot be
+    honoured must not quietly fall back to reading the sidecar's account."""
+    source = (os.getenv("MT5_ACCOUNT_INFO_SOURCE") or "").strip().lower()
+    if not source:
+        return
+    if source != "oanda":
+        raise ManifestError(
+            f"MT5_ACCOUNT_INFO_SOURCE={source!r} is not supported; the only source is 'oanda'"
+        )
+    mt5 = next((c for c in conns if c.platform == "mt5"), None)
+    if mt5 is None or not oanda_configured:
+        raise ManifestError(
+            "MT5_ACCOUNT_INFO_SOURCE=oanda needs MT5_BRIDGE_URL, OANDA_API_TOKEN and "
+            "OANDA_ACCOUNT_ID all set"
+        )
+    conns[conns.index(mt5)] = Connection(**{**mt5.__dict__, "account_info_from": DEFAULT_ACCOUNT})
 
 
 def _legacy_account_mode() -> str:
@@ -334,7 +379,12 @@ def load_connections() -> List[Connection]:
     # wins, and the cost of guessing wrong is an order on the wrong account.
     legacy_set = [
         name
-        for name in ("MT5_BRIDGE_URL", "ALPACA_API_KEY", "OANDA_API_TOKEN")
+        for name in (
+            "MT5_BRIDGE_URL",
+            "ALPACA_API_KEY",
+            "OANDA_API_TOKEN",
+            "MT5_ACCOUNT_INFO_SOURCE",
+        )
         if (os.getenv(name) or "").strip()
     ]
     if legacy_set:
@@ -362,6 +412,7 @@ def load_connections() -> List[Connection]:
         seen[conn.key] = conn
 
     _validate_cross_references(connections)
+    _apply_account_info_sources(connections)
     _apply_defaults(connections)
     return connections
 
@@ -378,6 +429,45 @@ def _validate_cross_references(connections: List[Connection]) -> None:
                 f"connection '{conn.label}': same_funds_as references unknown "
                 f"connection id '{conn.same_funds_as}'"
             )
+
+
+def _apply_account_info_sources(connections: List[Connection]) -> None:
+    """Validate ``account_info_from`` and record the overlap it implies.
+
+    Reading account information from another connection is only correct when
+    both reach the same money, so the link doubles as ``same_funds_as`` — set
+    here if absent, refused if it names something else. Currencies must match
+    because the summary's equity feeds sizing on *this* connection.
+    """
+    oanda = {c.account: c for c in connections if c.platform == "oanda"}
+    for i, conn in enumerate(connections):
+        source_id = conn.account_info_from
+        if source_id is None:
+            continue
+        if conn.platform != "mt5":
+            raise ManifestError(
+                f"connection '{conn.label}': account_info_from is only supported on mt5 "
+                "connections"
+            )
+        source = oanda.get(source_id)
+        if source is None:
+            raise ManifestError(
+                f"connection '{conn.label}': account_info_from must name an oanda "
+                f"connection id; '{source_id}' is not one"
+            )
+        if conn.same_funds_as not in (None, source_id):
+            raise ManifestError(
+                f"connection '{conn.label}': account_info_from '{source_id}' conflicts with "
+                f"same_funds_as '{conn.same_funds_as}' — account information can only come "
+                "from the same funds"
+            )
+        if source.currency != conn.currency:
+            raise ManifestError(
+                f"connection '{conn.label}' ({conn.currency}) cannot read account information "
+                f"from '{source.label}' ({source.currency}): equity would be in the wrong "
+                "currency for sizing"
+            )
+        connections[i] = Connection(**{**conn.__dict__, "same_funds_as": source_id})
 
 
 def _apply_defaults(connections: List[Connection]) -> None:

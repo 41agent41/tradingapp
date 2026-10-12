@@ -191,12 +191,44 @@ def _bootstrap() -> None:
         if conn.is_default:
             _defaults[conn.platform] = conn.account
 
+    # Second pass: every adapter now exists, so a connection reading its
+    # account information from another can be wired to it.
+    for conn in connections:
+        if conn.account_info_from is not None:
+            _wrap_account_info(conn)
+
     logger.info(
         "connections_registered",
         count=len(_connections),
         connections=[c.label for c in _connections.values()],
     )
     _bootstrapped = True
+
+
+def _wrap_account_info(conn: Connection) -> None:
+    """Route ``conn``'s account information to its ``account_info_from``
+    connection's adapter, keeping execution on its own (see
+    :mod:`split_account_adapter`)."""
+    from split_account_adapter import SplitAccountAdapter
+
+    source = _broker.get(("oanda", conn.account_info_from))
+    execution = _broker.get(conn.key)
+    if source is None or execution is None:
+        # The manifest validated the link, so this is a construction failure —
+        # refuse rather than silently reading the sidecar's own account.
+        raise HTTPException(
+            500,
+            f"Connection '{conn.label}' reads account information from "
+            f"'oanda:{conn.account_info_from}', which has no broker adapter",
+        )
+    _broker[conn.key] = SplitAccountAdapter(
+        execution=execution, account_info=source, symbol_map=conn.symbol_map
+    )
+    logger.info(
+        "connection_account_info_split",
+        connection=conn.label,
+        account_info_from=f"oanda:{conn.account_info_from}",
+    )
 
 
 def reset_registry() -> None:
@@ -425,6 +457,9 @@ def provider_health() -> Dict[str, Any]:
             "broker": conn.key in _broker,
             "server_timezone": conn.server_timezone,
             "same_funds_as": conn.same_funds_as,
+            "account_info_from": (
+                f"oanda:{conn.account_info_from}" if conn.account_info_from else None
+            ),
         }
         for conn in _connections.values()
     }
