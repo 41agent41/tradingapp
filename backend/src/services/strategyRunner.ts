@@ -197,6 +197,10 @@ export interface StrategyRunnerDeps {
   /** E-3: move an open position's stop at the venue. Optional so a runner
    *  without stop management behaves as before. */
   modifyStop?(connection: Connection, symbol: string, stopPrice: number): Promise<void>;
+  /** The venue's price increment for a symbol, so a trail is compared at the
+   *  precision the venue stores a stop. Optional: without it the raw price is
+   *  used. */
+  priceIncrement?(connection: Connection, symbol: string): Promise<number | null>;
   /** E-5: record / read the stop in force for a run's position, and the last
    *  fill on its symbol — the inputs the gap detector needs. */
   setCurrentStop?(runId: number, stop: number | null): Promise<void>;
@@ -226,6 +230,23 @@ export interface StrategyRunnerOptions {
   maxConnectionConcurrency?: number;
   breakerThreshold?: number;
   breakerCooldownSeconds?: number;
+}
+
+/**
+ * A price rounded to the venue's increment, without float noise
+ * (`1.0797726` with an increment of `0.00001` is `1.07977`). Unchanged when
+ * the increment is unknown.
+ */
+export function roundToIncrement(price: number, increment: number | null | undefined): number {
+  if (!increment || !(increment > 0) || !Number.isFinite(price)) return price;
+  return Number((Math.round(price / increment) * increment).toFixed(decimalsOf(increment)));
+}
+
+/** Decimal places in a number as written: 0.25 → 2, 1e-7 → 7. */
+function decimalsOf(value: number): number {
+  const [mantissa, exponent] = String(value).toLowerCase().split('e');
+  const fraction = (mantissa.split('.')[1] ?? '').length;
+  return Math.min(20, Math.max(0, fraction - Number(exponent ?? 0)));
 }
 
 /**
@@ -395,6 +416,8 @@ function defaultDeps(
   // Fail-soft — an unreachable or unconfigured connection just means avg_price
   // stays 0, exactly as this behaved before the endpoint became venue-aware.
   const positionCache = new Map<string, { at: number; bySymbol: Map<string, VenuePosition> }>();
+  const connectionKey = (connection: Connection) =>
+    connectionLabel(connection.broker, connection.brokerAccount);
   const POSITION_TTL_MS = 30_000;
   // Equity cache, same shape and rationale: one `/account/summary` round-trip
   // serves every equity-sized run on that connection inside a short window.
@@ -465,7 +488,7 @@ function defaultDeps(
    *  treating it as flat is the difference between holding a position and
    *  opening a second one on top of it. */
   const venuePositions = async (connection: Connection): Promise<Map<string, VenuePosition>> => {
-    const key = connectionLabel(connection.broker, connection.brokerAccount);
+    const key = connectionKey(connection);
     const cached = positionCache.get(key);
     if (cached && Date.now() - cached.at <= POSITION_TTL_MS) return cached.bySymbol;
 
@@ -594,7 +617,12 @@ function defaultDeps(
     markError: (runId, error) => repo.markRunError(runId, error),
     emit,
     now: () => Date.now(),
-    executeSignal: (ctx) => engine.execute(ctx),
+    executeSignal: async (ctx) => {
+      const result = await engine.execute(ctx);
+      // The cached position predates this order; the next read must see it.
+      if (result.placed) positionCache.delete(connectionKey(connectionOf(ctx.run)));
+      return result;
+    },
     setCurrentStop: (runId, stop) => repo.setCurrentStop(runId, stop),
     getCurrentStop: (runId) => repo.getCurrentStop(runId),
     lastFillPrice: (connection, symbol) =>
@@ -602,7 +630,15 @@ function defaultDeps(
     connectionEquity: (connection) => venueEquity(connection),
     sendAlert: (alert) => notifier.notify(alert),
     resolveAlert: (key, message) => notifier.resolve(key, message),
+    priceIncrement: async (connection, symbol) => {
+      const spec = await venueInstrumentSpec(connection, symbol);
+      const increment = Number(spec?.tickSize) || Number(spec?.point) || 0;
+      return increment > 0 ? increment : null;
+    },
     modifyStop: async (connection, symbol, stopPrice) => {
+      // The cached stop is about to be stale; without this the next tick
+      // re-sends the same modify until the cache expires.
+      positionCache.delete(connectionKey(connection));
       await axios.post(
         `${BROKER_SERVICE_URL}/positions/${encodeURIComponent(symbol)}/stop`,
         { stop_loss: stopPrice },
@@ -834,6 +870,14 @@ export class StrategyRunner {
       return;
     }
     if (desired == null) return;
+    // The venue stores a stop at its own price precision. Comparing the raw
+    // resolved price against that rounded stop reads as "tighter" by a
+    // fraction of a point forever, so the same modify would go out on every
+    // tick. Round first, so a stop already in force is recognised.
+    const increment = this.deps.priceIncrement
+      ? await this.deps.priceIncrement(connectionOf(run), runSymbol(run)).catch(() => null)
+      : null;
+    const stop = roundToIncrement(desired, increment);
 
     const outcome = await applyTrail(
       { modifyStop: this.deps.modifyStop },
@@ -845,7 +889,7 @@ export class StrategyRunner {
           avgPrice: position.avg_price,
           stopLoss: position.stop_loss ?? null,
         },
-        desiredStop: desired,
+        desiredStop: stop,
         referencePrice: lastBar.close,
       }
     );
@@ -854,7 +898,7 @@ export class StrategyRunner {
       stopsTightenedCount.inc({ connection: label });
       // Record what is now in force, so a later gap can be measured against it.
       if (this.deps.setCurrentStop) {
-        await this.deps.setCurrentStop(run.id, desired).catch(() => undefined);
+        await this.deps.setCurrentStop(run.id, stop).catch(() => undefined);
       }
     }
     if (outcome.error) this.errors++;
