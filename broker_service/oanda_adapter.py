@@ -53,6 +53,7 @@ import httpx
 import pandas as pd
 from fastapi import HTTPException
 
+from client_ids import audit_id_from, client_order_id
 from indicators import calculator as indicator_calculator
 from models import CandlestickBar, HistoricalDataResponse, RealTimeQuote
 from observability import get_logger
@@ -350,6 +351,11 @@ class OANDAAdapter:
             if price is None:
                 raise HTTPException(400, f"a price is required for order_type={request.order_type}")
             order_body["price"] = str(price)
+        client_id = client_order_id(getattr(request, "audit_id", None))
+        if client_id:
+            # Lets the fill be linked back to its audit row even if this call
+            # times out before OANDA's order id is recorded.
+            order_body["clientExtensions"] = {"id": client_id, "tag": "tradingapp"}
 
         resp = self._request("POST", self._account_path("/orders"), json={"order": order_body})
         fill = resp.get("orderFillTransaction") or {}
@@ -564,6 +570,7 @@ class OANDAAdapter:
                     {
                         "exec_id": exec_id,
                         "order_id": str(row.get("orderID")) if row.get("orderID") else None,
+                        "audit_id": audit_id_from(row.get("clientOrderID")),
                         "symbol": _from_instrument(str(row.get("instrument") or "")),
                         "side": "BUY" if units > 0 else "SELL",
                         "quantity": abs(units),

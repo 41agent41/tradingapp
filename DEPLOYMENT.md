@@ -445,6 +445,11 @@ the login password once.
 - **Broker service**: only the backend may call it. It is published on the
   host's loopback only and rejects calls without `X-Broker-Service-Token`.
 
+The browser only sends the session cookie to the backend when both are on
+the same site, so `NEXT_PUBLIC_API_URL` must use the same host name (or IP) as
+the address you open the frontend on. Behind the nginx proxy they are the same
+origin and this is automatic.
+
 With `NODE_ENV=production` the backend refuses to start without
 authentication, or with template or default secrets. Development with an
 empty `.env` still runs open, with a warning.

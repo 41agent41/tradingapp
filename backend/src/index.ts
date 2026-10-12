@@ -95,7 +95,9 @@ const app = express();
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
   cors: {
-    origin: allowAnyOrigin ? '*' : ALLOWED_ORIGINS,
+    // Reflect the origin rather than '*': browsers refuse a credentialed
+    // (cookie-carrying) request answered with a wildcard.
+    origin: allowAnyOrigin ? true : ALLOWED_ORIGINS,
     methods: ['GET', 'POST'],
     credentials: true,
   },

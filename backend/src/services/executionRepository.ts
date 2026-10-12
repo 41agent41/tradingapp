@@ -36,6 +36,10 @@ export interface ExecutionInput {
   account_mode: string;
   exec_id: string;
   broker_order_id?: string | null;
+  /** The app's order_audit id when the venue echoed our client order id
+   *  (`audit-<id>`) on the fill. Links fills whose order timed out before the
+   *  venue's order id was recorded (B9). */
+  order_audit_id_hint?: number | null;
   symbol: string;
   side: string; // 'BUY' | 'SELL'
   quantity: number;
@@ -97,9 +101,12 @@ export class ExecutionRepository {
         SELECT id, account_mode FROM order_audit
          WHERE broker = $1
            AND broker_account = $14
-           AND ib_order_id IS NOT NULL
-           AND ib_order_id::text = $4
-         ORDER BY submitted_at DESC
+           AND (
+             (ib_order_id IS NOT NULL AND ib_order_id::text = $4)
+             OR id = $15::bigint
+           )
+         -- The echoed client id names the row exactly; prefer it.
+         ORDER BY (id = $15::bigint) DESC NULLS LAST, submitted_at DESC
          LIMIT 1
       ), attribution AS (
         SELECT a.id AS audit_id,
@@ -147,6 +154,7 @@ export class ExecutionRepository {
       input.executed_at,
       JSON.stringify(input.raw ?? {}),
       input.broker_account ?? DEFAULT_BROKER_ACCOUNT,
+      input.order_audit_id_hint ?? null,
     ]);
     const row = (result.rows[0] as (ExecutionRow & { inserted?: boolean }) | undefined) ?? null;
     return { inserted: row?.inserted === true, row };

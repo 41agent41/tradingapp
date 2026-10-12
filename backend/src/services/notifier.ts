@@ -60,7 +60,12 @@ export class TelegramChannel implements NotificationChannel {
 
   constructor(
     private readonly token: string,
-    private readonly chatId: string
+    private readonly chatId: string,
+    private readonly post: (url: string, body: unknown, config: object) => Promise<unknown> = (
+      url,
+      body,
+      config
+    ) => axios.post(url, body, config)
   ) {}
 
   static fromEnv(): TelegramChannel | null {
@@ -76,19 +81,21 @@ export class TelegramChannel implements NotificationChannel {
     for (const [key, value] of Object.entries(alert.context ?? {})) {
       lines.push(`• ${escapeMarkdown(key)}: ${escapeMarkdown(String(value))}`);
     }
-    await axios.post(
+    await this.post(
       `https://api.telegram.org/bot${this.token}/sendMessage`,
-      { chat_id: this.chatId, text: lines.join('\n'), parse_mode: 'Markdown' },
+      { chat_id: this.chatId, text: lines.join('\n'), parse_mode: 'MarkdownV2' },
       { timeout: 15_000 }
     );
   }
 }
 
-/** Telegram's Markdown parser rejects unbalanced control characters, and an
- *  alert that fails to send because a symbol contained an underscore is the
- *  worst possible time to discover it. */
-function escapeMarkdown(text: string): string {
-  return text.replace(/([_*[\]()~`>#+\-=|{}.!])/g, '\\$1');
+/** Escapes text for Telegram's MarkdownV2, which rejects any unescaped
+ *  reserved character, and an alert that fails to send because a symbol
+ *  contained an underscore is the worst possible time to discover it. The
+ *  message must be sent with `parse_mode: 'MarkdownV2'`: under legacy
+ *  `Markdown` these backslashes show up literally (`EURUSD\.a`). */
+export function escapeMarkdown(text: string): string {
+  return text.replace(/([\\_*[\]()~`>#+\-=|{}.!])/g, '\\$1');
 }
 
 export interface NotifierOptions {
@@ -178,10 +185,36 @@ export class Notifier {
     return { sent: delivered, reason: delivered ? undefined : 'all channels failed' };
   }
 
-  /** Clear a key's suppression, so a condition that recurs after resolving
-   *  alerts again rather than waiting out the dedupe window. */
-  resolve(key: string): void {
-    this.lastSent.delete(key);
+  /**
+   * Mark a condition as cleared. Its key stops being suppressed, so a
+   * recurrence alerts at once instead of waiting out the dedupe window.
+   *
+   * When `message` is given and an alert for this key was actually delivered,
+   * a "resolved" message goes out too, so the operator sees the all-clear and
+   * not only the alarm. Never throws, like `notify`.
+   */
+  async resolve(
+    key: string,
+    message?: { title: string; detail?: string; context?: Record<string, unknown> }
+  ): Promise<{ sent: boolean }> {
+    const wasActive = this.lastSent.delete(key);
+    if (!wasActive || !message || !this.enabled) return { sent: false };
+
+    let delivered = false;
+    for (const channel of this.channels) {
+      try {
+        await channel.send({ key: `${key}:resolved`, severity: 'info', ...message });
+        delivered = true;
+      } catch (err) {
+        this.failures++;
+        logger.error(
+          { channel: channel.name, key, err: String(err) },
+          'resolved-alert delivery failed'
+        );
+      }
+    }
+    if (delivered) this.sent++;
+    return { sent: delivered };
   }
 
   status() {

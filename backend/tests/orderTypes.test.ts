@@ -26,7 +26,7 @@ describe('validateOrder — happy paths', () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.symbol).toBe('MSFT'); // uppercased
+    expect(result.value.symbol).toBe('MSFT'); // uppercased (not an MT5 order)
     expect(result.value.tif).toBe('DAY');
     expect(result.value.account_mode).toBe('paper');
     expect(result.value.broker).toBe('ib'); // default venue (B1)
@@ -368,5 +368,19 @@ describe('connectionLabel / connectionOf', () => {
       broker: 'mt5',
       brokerAccount: 'default',
     });
+  });
+});
+
+describe('validateOrder — venue symbol case', () => {
+  it('keeps an MT5 symbol exactly as the venue spells it', () => {
+    const result = validateOrder({
+      symbol: ' EURUSDm ',
+      action: 'BUY',
+      quantity: 0.01,
+      order_type: 'MKT',
+      broker: 'mt5',
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.symbol).toBe('EURUSDm');
   });
 });

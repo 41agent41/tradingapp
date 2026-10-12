@@ -89,6 +89,22 @@ describe('ExecutionRepository.upsert', () => {
     expect(calls[0].params[3]).toBe('42');
   });
 
+  it('links a fill by its echoed client order id when the venue order id is unknown', async () => {
+    // B9: the place call timed out, so the audit row never got the venue's
+    // order id; the fill still names the audit row through `audit-<id>`.
+    const { db, calls } = fakeDb(() => [{ id: 1, inserted: true }]);
+    await new ExecutionRepository(db).upsert(execution({ order_audit_id_hint: 17 }));
+
+    expect(calls[0].text).toMatch(/OR id = \$15::bigint/);
+    expect(calls[0].params[14]).toBe(17);
+  });
+
+  it('passes a null hint when the venue echoed no client id', async () => {
+    const { db, calls } = fakeDb(() => [{ id: 1, inserted: true }]);
+    await new ExecutionRepository(db).upsert(execution());
+    expect(calls[0].params[14]).toBeNull();
+  });
+
   it('takes account_mode from the linked order, falling back to the default', async () => {
     // A venue reports fills without saying which account mode they belong to.
     const { db, calls } = fakeDb(() => [{ id: 1, inserted: true }]);

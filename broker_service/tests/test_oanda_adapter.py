@@ -303,6 +303,18 @@ def test_place_order_buy_sends_positive_units(oanda, monkeypatch):
     assert out["order_id"] == "42"
     assert out["status"] == "filled"
     assert out["broker"] == "oanda"
+    # No audit id, no client extensions.
+    assert "clientExtensions" not in body["order"]
+
+
+def test_place_order_tags_the_order_with_its_audit_id(oanda, monkeypatch):
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        {"orderFillTransaction": {"id": "42"}}
+    )
+    _adapter(oanda).place_order(_OrderReq(audit_id=17))
+    _method, _url, _headers, _params, body = FakeClient.calls[0]
+    assert body["order"]["clientExtensions"] == {"id": "audit-17", "tag": "tradingapp"}
 
 
 def test_place_order_sell_sends_negative_units(oanda, monkeypatch):
@@ -475,6 +487,7 @@ def test_executions_walk_the_transaction_pages(oanda):
                 "pl": "-2.40",
                 "time": "2026-08-07T13:30:00.123456789Z",
                 "accountID": "101-001-999999-001",
+                "clientOrderID": "audit-17",
             }
         ],
     )
@@ -497,6 +510,8 @@ def test_executions_walk_the_transaction_pages(oanda):
     assert row["realized_pnl"] == -2.40
     assert row["executed_at"].startswith("2026-08-07T13:30:00")
     assert row["broker"] == "oanda"
+    # The client order id links the fill to the order the app sent (B9).
+    assert row["audit_id"] == 17
 
 
 def test_executions_ignore_non_fill_transactions(oanda):

@@ -43,9 +43,6 @@ CREATE INDEX IF NOT EXISTS idx_contracts_symbol ON contracts(symbol);
 CREATE INDEX IF NOT EXISTS idx_contracts_sec_type ON contracts(sec_type);
 CREATE INDEX IF NOT EXISTS idx_contracts_exchange ON contracts(exchange);
 CREATE INDEX IF NOT EXISTS idx_contracts_contract_id ON contracts(contract_id);
-CREATE INDEX IF NOT EXISTS idx_contracts_broker_symbol
-    ON contracts(broker, broker_account, symbol);
-
 -- Existing deployments: add the broker + broker_account columns and re-key the
 -- uniqueness to include them (B1, then C-0). Idempotent — safe to re-run.
 --
@@ -77,6 +74,12 @@ BEGIN
             UNIQUE (broker, broker_account, symbol, sec_type, exchange, currency, expiry, strike, "right");
     END IF;
 END $$;
+
+-- Created after the block above, which adds the columns it indexes on an older
+-- database. Before, it came first and failed there, so a single pass of this
+-- file left it missing.
+CREATE INDEX IF NOT EXISTS idx_contracts_broker_symbol
+    ON contracts(broker, broker_account, symbol);
 
 -- ==============================================
 -- RAW DATA TABLES (HYPERTABLES)
@@ -318,21 +321,20 @@ END;
 $$ language 'plpgsql';
 
 -- Triggers
-CREATE TRIGGER update_contracts_updated_at 
-    BEFORE UPDATE ON contracts 
+-- Each trigger is dropped first so a re-run of this file does not error.
+DROP TRIGGER IF EXISTS update_contracts_updated_at ON contracts;
+CREATE TRIGGER update_contracts_updated_at
+    BEFORE UPDATE ON contracts
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-CREATE TRIGGER update_sessions_updated_at 
-    BEFORE UPDATE ON data_collection_sessions 
+DROP TRIGGER IF EXISTS update_sessions_updated_at ON data_collection_sessions;
+CREATE TRIGGER update_sessions_updated_at
+    BEFORE UPDATE ON data_collection_sessions
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_config_updated_at ON data_collection_config;
 CREATE TRIGGER update_config_updated_at
     BEFORE UPDATE ON data_collection_config
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-DROP TRIGGER IF EXISTS update_order_audit_updated_at ON order_audit;
-CREATE TRIGGER update_order_audit_updated_at
-    BEFORE UPDATE ON order_audit
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ==============================================
@@ -439,6 +441,13 @@ DROP INDEX IF EXISTS idx_order_audit_net_key;
 CREATE INDEX IF NOT EXISTS idx_order_audit_conn_net_key
     ON order_audit (broker, broker_account, symbol, account_mode, submitted_at DESC)
     WHERE ib_order_id IS NOT NULL;
+
+-- Here, after the table exists. It used to sit with the other triggers above,
+-- before CREATE TABLE order_audit, and failed on a fresh database.
+DROP TRIGGER IF EXISTS update_order_audit_updated_at ON order_audit;
+CREATE TRIGGER update_order_audit_updated_at
+    BEFORE UPDATE ON order_audit
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ==============================================
 -- SYSTEMATIC STRATEGIES (Systematic Trading roadmap — Phase 2 / A2 + Phase 3 / A3)
@@ -786,14 +795,27 @@ CREATE INDEX IF NOT EXISTS idx_price_alerts_status
 -- INITIAL DATA
 -- ==============================================
 
--- Insert some common contracts for testing
-INSERT INTO contracts (symbol, sec_type, exchange, currency) VALUES
+-- Insert some common contracts for testing. NOT EXISTS rather than
+-- ON CONFLICT: the old conflict target no longer exists (it errored on every
+-- run, and aborts a fresh docker init, which runs with ON_ERROR_STOP), and the
+-- current key has nullable columns, so ON CONFLICT would never match these
+-- rows and they would be duplicated on each re-run.
+INSERT INTO contracts (symbol, sec_type, exchange, currency)
+SELECT v.symbol, v.sec_type, v.exchange, v.currency
+  FROM (VALUES
     ('MSFT', 'STK', 'NASDAQ', 'USD'),
     ('AAPL', 'STK', 'NASDAQ', 'USD'),
     ('GOOGL', 'STK', 'NASDAQ', 'USD'),
     ('SPY', 'STK', 'ARCA', 'USD'),
     ('QQQ', 'STK', 'NASDAQ', 'USD')
-ON CONFLICT (symbol, sec_type, exchange, currency, expiry, strike, "right") DO NOTHING;
+  ) AS v(symbol, sec_type, exchange, currency)
+ WHERE NOT EXISTS (
+    SELECT 1 FROM contracts c
+     WHERE c.broker = 'ib' AND c.broker_account = 'default'
+       AND c.symbol = v.symbol AND c.sec_type = v.sec_type
+       AND c.exchange = v.exchange AND c.currency = v.currency
+       AND c.expiry IS NULL AND c.strike IS NULL AND c."right" IS NULL
+ );
 
 -- ==============================================
 -- VERIFICATION QUERIES
