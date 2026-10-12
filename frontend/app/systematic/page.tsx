@@ -5,6 +5,7 @@ import BackToHome from '../components/BackToHome';
 import StrategyBuilder from '../components/systematic/StrategyBuilder';
 import DefinitionsPanel from '../components/systematic/DefinitionsPanel';
 import RunsPanel from '../components/systematic/RunsPanel';
+import FleetPanel from '../components/systematic/FleetPanel';
 import RunDetail from '../components/systematic/RunDetail';
 
 /**
@@ -48,6 +49,13 @@ export default function SystematicPage() {
           (paper unless <code className="px-1 bg-white rounded">LIVE_TRADING_ENABLED=true</code>).
           Both default off.
         </div>
+
+        {/* Fleet first: the operational question — "is anything wrong?" —
+            should be answerable before scrolling past the authoring tools. */}
+        <section className="rounded-lg border border-gray-200 bg-white p-4">
+          <h2 className="mb-3 text-lg font-semibold text-gray-900">Fleet</h2>
+          <FleetPanel />
+        </section>
 
         <StrategyBuilder onCreated={() => setDefNonce((n) => n + 1)} />
 

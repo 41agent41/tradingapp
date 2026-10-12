@@ -1,6 +1,6 @@
 # Trade Lifecycle — Direction, Broker-Side Stops, Sizing, and the Kill Switch
 
-**Status:** E-0 through E-4 delivered; E-5/E-6 (alerts, kill switch) planned
+**Status:** E-0 through E-5 delivered; E-6 (halt / flatten) planned
 **Scope:** what happens from the moment a strategy decides to trade until the
 position is closed — direction, order placement, protective stops, trade
 management, and the downside backstop.
@@ -326,7 +326,7 @@ that achieves it wins.
 | **E-2** ✅ | Broker-side SL at entry (§4.1) + sidecar contract change + fail-closed protection | **Delivered.** Every position protected at the venue |
 | **E-3** ✅ | Bar-close stop management and the ratchet (§4.2) | **Delivered.** Trailing stops as specified |
 | **E-4** ✅ | `risk_pct` sizing (§5): tick-value fields on `instrument_spec` + sidecar `/symbol`, stop-before-sizing ordering | **Delivered.** Constant risk per trade regardless of stop width |
-| **E-5** | Telegram notifier (§8) + kill switch in notify-only mode (§6) | Observability of the downside, zero blast radius |
+| **E-5** ✅ | Telegram notifier (§8) + kill switch in notify-only mode (§6) | **Delivered.** Observability of the downside, zero blast radius |
 | **E-6** | Kill switch halt and flatten actions | Automated downside response |
 
 E-0 first is deliberate: every later phase depends on the app knowing what
@@ -479,6 +479,39 @@ Windows-side service rather than two.
 > fat-finger caps and the venue minimum bound the size, but a risk-correct
 > order that cannot be margined will still be rejected by the venue rather
 > than refused here.
+
+> **E-5 delivered.** `notifier.ts` (channel interface + Telegram) and
+> `killSwitch.ts` (pure trigger evaluation), wired into the runner's bar-close
+> pass. Action defaults to **notify**.
+>
+> Four triggers, each a *detectable aftermath* rather than an intervention:
+> a position closed materially past the stop that was in force (the gap), an
+> open position with no stop at the venue, venue/fills divergence, and an
+> equity floor.
+>
+> **The gap trigger needed state that did not exist.** A venue reports a fill,
+> not what the fill hit, so "closed past its stop" cannot be reconstructed
+> afterwards — the stop has to have been recorded while it was in force.
+> `strategy_runs.current_stop` does that, set at entry and on every trail move
+> and cleared once the position closes and its aftermath is judged. E10 (one
+> strategy per instrument per account) is what makes the run row the right home
+> for it: there is only ever one position to describe.
+>
+> Two properties worth stating:
+>
+> - **Deduplication is substance, not polish.** These fire from a loop that
+>   runs every bar; an ongoing condition is true again 60 seconds later. The
+>   alert key deliberately excludes anything that changes per bar, so a
+>   condition is one alert rather than one per bar — and a rate ceiling backs
+>   it against a novel failure minting a new key each time. A channel that
+>   repeats itself gets muted, and a muted channel looks like coverage.
+> - **Everything fails soft.** A broken notifier or a failing kill-switch check
+>   is logged and counted, never fatal. An operator with a broken notifier and
+>   a working trading system is far better off than the reverse.
+>
+> Notify-only is the answer to "hard to UAT": it runs in production against
+> real conditions with zero blast radius, so E-6's automated actions can be
+> enabled against evidence rather than hope.
 
 ---
 

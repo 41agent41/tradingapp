@@ -71,6 +71,7 @@ export interface StrategyRunRow {
   native_symbol: string | null;
   run_group_id: number | null;
   is_canary: boolean;
+  current_stop: string | null;
   account_mode: string;
   status: string;
   sizing: Record<string, unknown>;
@@ -631,6 +632,23 @@ export class StrategyRepository {
       [broker, brokerAccount]
     );
     return Number(result.rows[0]?.n ?? 0);
+  }
+
+  /** Record the protective stop currently in force for a run's position (E-5).
+   *
+   *  Kept so a *closed* position can be compared against the stop that was
+   *  protecting it — evidence of a gap cannot be reconstructed after the fact
+   *  from anything else, since the venue simply reports a fill. */
+  async setCurrentStop(runId: number, stop: number | null): Promise<void> {
+    await this.db.query('UPDATE strategy_runs SET current_stop = $2 WHERE id = $1', [runId, stop]);
+  }
+
+  async getCurrentStop(runId: number): Promise<number | null> {
+    const result = await this.db.query('SELECT current_stop FROM strategy_runs WHERE id = $1', [
+      runId,
+    ]);
+    const value = Number(result.rows[0]?.current_stop);
+    return Number.isFinite(value) && value > 0 ? value : null;
   }
 
   /** Current status of a run — the kill switch re-check the engine makes

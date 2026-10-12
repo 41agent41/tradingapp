@@ -18,10 +18,7 @@ describe('toCsv', () => {
   });
 
   it('quotes values that contain commas, quotes or line breaks', () => {
-    const out = toCsv(
-      [{ symbol: 'A,B', note: 'has "quote"\nnew line' }],
-      cols,
-    );
+    const out = toCsv([{ symbol: 'A,B', note: 'has "quote"\nnew line' }], cols);
     expect(out).toContain('"A,B"');
     expect(out).toContain('"has ""quote""\nnew line"');
   });

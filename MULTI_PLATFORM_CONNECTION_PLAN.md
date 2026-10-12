@@ -1,6 +1,6 @@
 # Multi-Platform, Multi-Account — Systematic Trading Across Many Broker Connections
 
-**Status:** C-0 through C-4 delivered; C-5 (UI/ops) planned
+**Status:** C-0 through C-5 delivered — Component C complete
 **Scope:** run the existing systematic stack against **N simultaneous broker
 connections**, spanning multiple *platforms* (MT5, IB, Alpaca, OANDA) and
 multiple *accounts per platform* — rather than the one-account-per-platform
@@ -518,7 +518,7 @@ Each phase is independently shippable and leaves the system correct.
 | **C-2** ✅ | C3 symbol mapping + per-connection specs | **Delivered.** A definition resolves correctly on each connection |
 | **C-3** ✅ | C4 run groups + staged deploy (C4a) + C6 scheduling/isolation | **Delivered.** One definition trading on N connections, fault-isolated, canary-staged |
 | **C-4** ✅ | C5 per-connection **and** portfolio caps + C7 reconciliation | **Delivered.** Fleet-safe; per-account and fleet-wide limits enforced |
-| **C-5** | C8 UI/ops | Operable at fleet scale |
+| **C-5** ✅ | C8 UI/ops | **Delivered.** Operable at fleet scale |
 
 Phase C-0 is worth shipping on its own even if the rest is deferred: it is
 small, it is a latent-data-loss fix, and it is the migration that is painful to
@@ -670,6 +670,37 @@ apply late.
 > colliding fills are dropped silently and widening the constraint afterwards
 > recovers nothing. An unreadable database is reported as *indeterminate*
 > rather than unsafe, so a transient outage is not a refusal to boot.
+
+> **C-5 delivered — Component C is complete.**
+>
+> `GET /api/strategies/fleet` answers the operational question in one call:
+> every connection with its health and declared mode, and every active run
+> **grouped by the definition it came from**. One request rather than a
+> fan-out, because a screen that answers "is anything wrong?" from four
+> requests shows a half-true answer while three are still in flight. A
+> connection that cannot be read reports its own error alongside the ones that
+> responded.
+>
+> `FleetPanel` renders it. Two choices are load-bearing rather than cosmetic:
+> one strategy across N accounts is **one row with N legs** (a flat run table
+> makes "is leg 3 broken?" a manual join), and each leg shows the symbol it
+> *actually trades* — EURUSD.a here, EURUSD_i next door — since the canonical
+> symbol would hide the thing most worth seeing. Live connections are the loud
+> badge, because the live/demo distinction has to be visible where the mistake
+> would be made. A staged leg reads as "staged", not as a stuck run.
+>
+> The hook keeps the last good snapshot when a refresh fails. A blank panel
+> reads as "nothing is running", which is the opposite of the truth during a
+> transient blip and exactly the wrong thing to show someone deciding whether
+> to intervene.
+>
+> Metrics are labelled by **connection**, never by platform — "MT5 is up" says
+> nothing useful when three MT5 accounts trade and one is wedged at a login
+> dialog. Six alerts in `ops/prometheus/alerts.yml`: breaker open,
+> unprotected position, sustained position divergence, stop-gap, repeated
+> cap blocking, and a connection with no active runs. Gauges are set both
+> ways each pass — one left at 1 after its condition cleared alerts forever,
+> which trains an operator to ignore it.
 
 ---
 
