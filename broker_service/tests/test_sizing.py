@@ -41,6 +41,15 @@ class TestFallsBackToTheEngineDefault:
         assert quantity is None
         assert "kelly" in reason
 
+    def test_risk_pct_defers_with_a_reason(self) -> None:
+        """risk_pct needs the stop distance at each entry, which the backtester
+        does not have; it defers rather than inventing a size."""
+        quantity, reason = resolve_backtest_quantity(
+            {"type": "risk_pct", "size": 0.5}, price=100.0, equity=100_000.0
+        )
+        assert quantity is None
+        assert "risk_pct" in reason
+
 
 class TestFixed:
     def test_size_is_taken_outright(self) -> None:

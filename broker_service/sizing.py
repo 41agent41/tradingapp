@@ -129,6 +129,11 @@ def resolve_backtest_quantity(
         if not math.isfinite(equity) or equity <= 0:
             return None, "pct_equity sizing needs positive equity"
         quantity = (size / 100.0) * equity / (price * contract_size)
+    elif sizing_type == "risk_pct":
+        # Live, the size falls out of the distance to the stop and the venue's
+        # tick value (orderSizing.ts). The backtester has neither per entry, so
+        # it says so and takes the default rather than inventing a size.
+        return None, "risk_pct sizing is not simulated in backtest"
     else:
         return None, f"unknown sizing type '{sizing_type}'"
 

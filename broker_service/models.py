@@ -121,6 +121,12 @@ class Position(BaseModel):
     market_value: Optional[float] = None
     average_cost: Optional[float] = None
     unrealized_pnl: Optional[float] = None
+    # The protection the venue currently holds on the position (E-2/E-3).
+    # Declared on the response model so it reaches the backend: without it
+    # every protected position reads as unprotected, which trips the
+    # kill switch and leaves the trail nothing to compare against.
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
     currency: str = "USD"
 
 
@@ -201,6 +207,15 @@ class InstrumentSpec(BaseModel):
     size_step: float = 1.0
     max_size: Optional[float] = None
     contract_size: float = 1.0
+    # Protective-stop and risk-sizing inputs (E-2/E-4). Declared here because
+    # this is the route's response model: a field missing from it is silently
+    # dropped from the response, and the backend then refuses risk_pct sizing
+    # for want of a tick value the venue did report. ``None`` (or 0) where the
+    # venue has no such concept.
+    stops_level: Optional[float] = None
+    point: Optional[float] = None
+    tick_value: Optional[float] = None
+    tick_size: Optional[float] = None
     currency: str = "USD"
 
 

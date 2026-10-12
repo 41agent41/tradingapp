@@ -247,6 +247,19 @@ class TestCompiler:
         with pytest.raises(RuleSetError):
             compile_rule_strategy({**base, "scale_out": [{"reduce_pct": 50}]})  # no 'when'
 
+    def test_risk_pct_sizing_compiles_with_a_stop(self) -> None:
+        """E-4's risk_pct is resolved by the live sizer; the compiler must accept
+        it, or every evaluation of such a definition fails with a 400."""
+        base = {"name": "t", "entry": {"all": [{"left": "close", "op": ">", "right": 1}]}}
+        strat = compile_rule_strategy(
+            {
+                **base,
+                "stop": {"type": "bar_extreme", "lookback": 2},
+                "sizing": {"type": "risk_pct", "size": 0.5},
+            }
+        )
+        assert strat.sizing["type"] == "risk_pct"
+
     def test_empty_group_is_vacuously_false(self) -> None:
         strat = compile_rule_strategy({"name": "t", "entry": {"all": []}})
         assert strat.entry.evaluate(_ctx({"close": 1})) is False

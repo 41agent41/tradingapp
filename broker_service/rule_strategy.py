@@ -957,7 +957,11 @@ class RuleStrategy(TradingStrategy):
 # Light validation for A3-only fields (carried through, not simulated in P1)
 # --------------------------------------------------------------------------- #
 
-_VALID_SIZING_TYPES = {"fixed", "notional", "pct_equity"}
+# `risk_pct` (E-4) sizes from the distance to the stop, so it is resolved by the
+# live sizer (backend orderSizing.ts) against the venue's tick value; here it is
+# only validated. A definition without a `stop` block is refused per signal by
+# the execution engine, with a reason, rather than failing every evaluation.
+_VALID_SIZING_TYPES = {"fixed", "notional", "pct_equity", "risk_pct"}
 _VALID_SIZING_UNITS = {"broker_default", "shares", "lots", "notional", "pct_equity"}
 
 
