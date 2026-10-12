@@ -794,7 +794,9 @@ chmod +x tradingapp.sh
 ./tradingapp.sh setup
 ```
 
-When prompted for the IB Gateway IP, answer `10.7.3.22`. `setup` detects the
+When prompted for the IB Gateway IP, answer `10.7.3.22`. **Don't accept the
+default** the prompt offers: the script's built-in default is `10.7.3.21`,
+which in this plan is the *database* container. `setup` detects the
 existing Docker install and skips it — which is why §4.2 installed Docker by
 hand: the script's installer assumes a normal host, and doing it manually let
 us make the ZFS storage-driver decision before Docker's first start.
@@ -803,8 +805,11 @@ us make the ZFS storage-driver decision before Docker's first start.
 
 `./tradingapp.sh setup` writes a *baseline* `.env` — correct IPs and ports,
 but placeholder database credentials and **no** API token. Fill in the rest by
-hand. `config` and `env` re-runs preserve hand-edited keys, so this survives
-future reconfiguration.
+hand. `config` and `env` re-runs preserve hand-edited keys, with one exception
+that matters after §10: they **force-reset** `SERVER_IP`, `IB_HOST`,
+`NEXT_PUBLIC_API_URL` and `CORS_ORIGINS` (the last two to
+`http://<SERVER_IP>:4000` / `:3000`). If you re-run either once TLS is in
+place, put the §10.1 values back before the next `redeploy`.
 
 Generate the secrets first:
 
@@ -821,7 +826,7 @@ Then `nano .env` so the important keys read:
 NODE_ENV=production
 TZ=UTC
 SERVER_IP=10.7.3.20
-NEXT_PUBLIC_API_URL=http://10.7.3.20:4000     # https://trading.example.com/api once §10 is done
+NEXT_PUBLIC_API_URL=http://10.7.3.20:4000     # https://trading.example.com once §10 is done
 CORS_ORIGINS=http://10.7.3.20:3000            # exact browser origin(s), never *
 
 # --- Auth (both must be identical) ----------------------------------
@@ -998,9 +1003,15 @@ Then update `.env` to the public origin and **rebuild** (the frontend bundle
 embeds the API URL):
 
 ```bash
-NEXT_PUBLIC_API_URL=https://trading.example.com/api
+NEXT_PUBLIC_API_URL=https://trading.example.com
 CORS_ORIGINS=https://trading.example.com
 ```
+
+Use the bare origin, **without** `/api`. The frontend already prefixes every
+request path with `/api/...` and connects Socket.IO to the base URL itself, so
+`https://trading.example.com/api` would produce `/api/api/...` requests and
+point Socket.IO at a namespace that doesn't exist. nginx then routes `/api/`
+and `/socket.io/` to the backend and everything else to the frontend.
 
 ```bash
 ./tradingapp.sh redeploy
@@ -1290,8 +1301,11 @@ qm  set 140 --onboot 1 --startup order=1           # MT5 VM, if present
 
 Inside CT 110 the Compose stack has `restart: unless-stopped` on every
 service, so Docker restarts it once the container is up. If you want an
-explicit systemd unit (useful when the compose invocation needs flags such as
-`--with-db`):
+explicit systemd unit, have it call `tradingapp.sh` rather than
+`docker compose` directly. The script remembers a `--with-db` deploy (via
+`.tradingapp.with-db`) and layers `docker-compose.db.yml` accordingly; a bare
+`docker compose up -d` would silently start the stack without the bundled
+database:
 
 ```ini
 # /etc/systemd/system/tradingapp.service
@@ -1304,8 +1318,8 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/tradingapp
-ExecStart=/usr/bin/docker compose up -d
-ExecStop=/usr/bin/docker compose down
+ExecStart=/opt/tradingapp/tradingapp.sh start
+ExecStop=/opt/tradingapp/tradingapp.sh stop
 User=tradingapp
 
 [Install]
