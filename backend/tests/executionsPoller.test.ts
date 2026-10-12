@@ -9,6 +9,7 @@
  */
 import {
   ExecutionsPoller,
+  connectionsToPoll,
   type ExecutionsPollerDeps,
   type RemoteExecution,
 } from '../src/services/executionsPoller.js';
@@ -284,5 +285,24 @@ describe('ExecutionsPoller — lifecycle', () => {
         totals: expect.objectContaining({ runs: 1, fetched: 1, inserted: 1 }),
       })
     );
+  });
+});
+
+describe('connectionsToPoll — venue discovery', () => {
+  const a = { broker: 'mt5', brokerAccount: 'broker-a-demo' };
+  const b = { broker: 'mt5', brokerAccount: 'broker-b-demo' };
+
+  it('includes declared connections that have no activity yet', () => {
+    // A manual trade in the terminal, before any run is deployed, must still
+    // reach the fills feed.
+    expect(connectionsToPoll([a], [a, b])).toEqual([a, b]);
+  });
+
+  it('keeps an active connection the manifest no longer lists', () => {
+    expect(connectionsToPoll([a], [])).toEqual([a]);
+  });
+
+  it('falls back to the IB default only when nothing is known', () => {
+    expect(connectionsToPoll([], [])).toEqual([{ broker: 'ib', brokerAccount: 'default' }]);
   });
 });

@@ -297,6 +297,37 @@ def test_instrument_spec_dispatches_to_the_named_venue(monkeypatch):
     assert body["contract_size"] == 100000.0
 
 
+def test_instrument_spec_carries_the_stop_and_tick_fields(monkeypatch):
+    """risk_pct sizing divides by tick_value / tick_size and the stop-distance
+    check reads stops_level / point. The response model must pass them through,
+    or the backend refuses to size for want of a tick value the venue reported."""
+
+    class SpecAdapter:
+        def instrument_spec(self, symbol: str) -> Dict[str, Any]:
+            return {
+                "symbol": symbol.upper(),
+                "broker": "mt5",
+                "unit": "lots",
+                "min_size": 0.01,
+                "size_step": 0.01,
+                "contract_size": 100000.0,
+                "stops_level": 10.0,
+                "point": 0.00001,
+                "tick_value": 1.0,
+                "tick_size": 0.00001,
+                "currency": "USD",
+            }
+
+    monkeypatch.setattr("adapters.get_broker_adapter", lambda broker, account=None: SpecAdapter())
+
+    body = _client().get("/instrument/spec", params={"symbol": "EURUSD", "broker": "mt5"}).json()
+
+    assert body["stops_level"] == 10.0
+    assert body["point"] == 0.00001
+    assert body["tick_value"] == 1.0
+    assert body["tick_size"] == 0.00001
+
+
 def test_instrument_spec_requires_a_symbol():
     assert _client().get("/instrument/spec").status_code == 422
 

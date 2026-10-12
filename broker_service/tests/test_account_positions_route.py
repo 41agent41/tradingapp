@@ -90,6 +90,20 @@ def test_non_ib_broker_dispatches_to_that_venues_adapter(monkeypatch):
     assert body[0]["average_cost"] == 1.2
 
 
+def test_the_venue_stop_reaches_the_caller(monkeypatch):
+    """The trail and the unprotected-position check both read ``stop_loss``
+    from this route; the response model must not strip it."""
+    rows = [{**MT5_ROWS[0], "stop_loss": 1.16, "take_profit": 1.10}]
+    monkeypatch.setattr(
+        "adapters.get_broker_adapter", lambda broker, account=None: FakeBrokerAdapter(rows)
+    )
+
+    body = _client().get("/account/positions", params={"broker": "mt5"}).json()
+
+    assert body[0]["stop_loss"] == 1.16
+    assert body[0]["take_profit"] == 1.10
+
+
 def test_unknown_broker_is_a_400(monkeypatch):
     monkeypatch.setattr(account, "get_positions_sync", lambda: IB_ROWS)
     res = _client().get("/account/positions", params={"broker": "nope"})

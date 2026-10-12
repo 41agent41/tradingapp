@@ -454,6 +454,8 @@ def test_account_routes_read_oanda_for_the_switched_connection(adapters_mod, mon
             "market_value": None,
             "average_cost": 1.085,
             "unrealized_pnl": 25.0,
+            "stop_loss": None,
+            "take_profit": None,
             "currency": "USD",
         }
     ]

@@ -322,6 +322,37 @@ async def modify_order(order_id: int, req: ModifyOrderRequest) -> Dict[str, Any]
     return await loop.run_in_executor(None, lambda: adapter.modify_order(order_id, req))
 
 
+class ModifyStopRequest(BaseModel):
+    stop_loss: float = Field(..., gt=0)
+    take_profit: Optional[float] = Field(default=None, gt=0)
+
+
+@router.post("/positions/{symbol}/stop")
+async def modify_position_stop(
+    symbol: str, req: ModifyStopRequest, broker: str = "ib", account: str | None = None
+) -> Dict[str, Any]:
+    """Move an open position's protective stop at the venue (E-3's trail).
+
+    The backend only calls this when the new stop is more protective than the
+    one in force, so the ratchet is held by the broker. Venues without a
+    position-level stop (no ``modify_position_stop`` on the adapter) answer
+    501 rather than pretending the stop moved.
+    """
+    import asyncio
+
+    from adapters import get_broker_adapter
+
+    adapter = get_broker_adapter(broker, account)
+    modify = getattr(adapter, "modify_position_stop", None)
+    if modify is None:
+        raise HTTPException(501, f"broker '{broker}' cannot modify a position's stop")
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: modify(symbol, stop_loss=req.stop_loss, take_profit=req.take_profit),
+    )
+
+
 @router.get("/orders/config")
 async def order_routes_config() -> Dict[str, Any]:
     """Report which writes are currently enabled. Useful for the UI to

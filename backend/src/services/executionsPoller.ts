@@ -98,18 +98,57 @@ export interface ExecutionsPollerOptions {
   initialDelayMs?: number;
 }
 
+/**
+ * Which connections to poll: every one the app has recently traded on or is
+ * running a strategy on, **plus** every broker connection the manifest
+ * declares.
+ *
+ * Activity alone is not enough. A fill the app never asked for — a trade
+ * placed by hand in the terminal, or one made before the first run was
+ * deployed — belongs to a connection with no order_audit row and no running
+ * run, so it would never be ingested and reconciliation would disagree with
+ * the venue with nothing in the fills feed to explain why.
+ *
+ * Falls back to IB's default account only when neither source names anything,
+ * which is a fresh single-venue install.
+ */
+export function connectionsToPoll(active: Connection[], declared: Connection[]): Connection[] {
+  const seen = new Set<string>();
+  const out: Connection[] = [];
+  for (const c of [...active, ...declared]) {
+    const key = connectionLabel(c.broker, c.brokerAccount);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out.length > 0 ? out : [{ broker: 'ib', brokerAccount: DEFAULT_BROKER_ACCOUNT }];
+}
+
+/** Broker connections declared in the manifest, as `/providers` reports them.
+ *  Fail-soft: an unreachable broker service leaves the activity-derived set. */
+async function declaredConnections(): Promise<Connection[]> {
+  try {
+    const response = await axios.get(`${BROKER_SERVICE_URL}/providers`, {
+      timeout: 15000,
+      headers: { Connection: 'close' },
+    });
+    const connections = (response.data?.connections ?? {}) as Record<
+      string,
+      { platform?: string; account?: string; broker?: boolean }
+    >;
+    return Object.values(connections)
+      .filter((c) => c.broker !== false && c.platform && c.account)
+      .map((c) => ({ broker: String(c.platform), brokerAccount: String(c.account) }));
+  } catch {
+    return [];
+  }
+}
+
 function defaultDeps(): ExecutionsPollerDeps {
   const repo = new ExecutionRepository(dbService);
   return {
-    listConnections: async () => {
-      const connections = await repo.activeConnections();
-      // A fresh install has traded nowhere yet; IB's default account is the
-      // default venue, so poll it rather than doing nothing until the first
-      // order exists.
-      return connections.length > 0
-        ? connections
-        : [{ broker: 'ib', brokerAccount: DEFAULT_BROKER_ACCOUNT }];
-    },
+    listConnections: async () =>
+      connectionsToPoll(await repo.activeConnections(), await declaredConnections()),
     fetchExecutions: async (connection, days) => {
       const response = await axios.get(`${BROKER_SERVICE_URL}/account/executions`, {
         params: { broker: connection.broker, account: connection.brokerAccount, days },
