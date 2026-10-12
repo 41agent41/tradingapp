@@ -814,9 +814,10 @@ place, put the §10.1 values back before the next `redeploy`.
 Generate the secrets first:
 
 ```bash
-openssl rand -hex 32   # API_TOKEN (and NEXT_PUBLIC_API_TOKEN — same value)
-openssl rand -hex 32   # JWT_SECRET
-openssl rand -hex 32   # SESSION_SECRET
+openssl rand -hex 32   # API_TOKEN (scripts and curl)
+openssl rand -hex 32   # SESSION_SECRET (signs browser login sessions)
+openssl rand -hex 32   # BROKER_SERVICE_TOKEN (backend → broker service)
+openssl rand -hex 32   # REDIS_PASSWORD
 ```
 
 Then `nano .env` so the important keys read:
@@ -829,11 +830,12 @@ SERVER_IP=10.7.3.20
 NEXT_PUBLIC_API_URL=http://10.7.3.20:4000     # https://trading.example.com once §10 is done
 CORS_ORIGINS=http://10.7.3.20:3000            # exact browser origin(s), never *
 
-# --- Auth (both must be identical) ----------------------------------
-API_TOKEN=<the 64-char hex you generated>
-NEXT_PUBLIC_API_TOKEN=<same value>
-JWT_SECRET=<a different 64-char hex>
-SESSION_SECRET=<a third 64-char hex>
+# --- Auth -----------------------------------------------------------
+APP_PASSWORD=<your browser login password, 12+ characters>
+SESSION_SECRET=<a 64-char hex>
+API_TOKEN=<a different 64-char hex>
+BROKER_SERVICE_TOKEN=<a third 64-char hex>
+REDIS_PASSWORD=<a fourth 64-char hex>
 
 # --- Database (CT 120) ----------------------------------------------
 POSTGRES_HOST=10.7.3.21
@@ -863,11 +865,13 @@ commentary — read it once before you go to production.
 Two things that catch people out:
 
 - **`NEXT_PUBLIC_*` values are baked into the frontend bundle at build time.**
-  Changing `NEXT_PUBLIC_API_URL` or `NEXT_PUBLIC_API_TOKEN` requires
-  `./tradingapp.sh redeploy`, not `restart`.
-- **An empty `API_TOKEN` disables auth entirely** (the backend prints a loud
-  startup warning). On a container reachable from your LAN, that is an open
-  trading API. Set it before the first deploy, not after.
+  Changing `NEXT_PUBLIC_API_URL` requires `./tradingapp.sh redeploy`, not
+  `restart`. No secret is ever a `NEXT_PUBLIC_*` value.
+- **With `NODE_ENV=production` the backend refuses to start** when login,
+  `BROKER_SERVICE_TOKEN` or the database password is missing or still a
+  template value, and when `LIVE_TRADING_ENABLED=true` lacks
+  `TRADING_TOKENS` and `ORDER_MFA_SECRET`. The log line names the key.
+  `./tradingapp.sh config` generates any missing secret for you.
 
 Lock the file down — it holds your database password, API token and, later,
 broker credentials:
@@ -917,8 +921,8 @@ curl -fs http://10.7.3.20:4000/api/health | jq
 # Database health — proves CT 110 → CT 120 works
 curl -fs http://10.7.3.20:4000/api/database/health | jq
 
-# Broker service → IB Gateway
-curl -fs http://10.7.3.20:8000/health | jq
+# Broker service → IB Gateway (loopback only: run this inside CT 110)
+curl -fs http://127.0.0.1:8000/health | jq
 
 # An authenticated route — proves API_TOKEN matches.
 # .env is not sourced into your shell automatically; pull it in first.
@@ -1020,11 +1024,12 @@ and `/socket.io/` to the backend and everything else to the frontend.
 ### 10.2 Why in-guest firewalling isn't enough here
 
 Docker publishes ports by writing its own `iptables` rules, which are
-evaluated before ufw's `INPUT` chain. Ports 3000, 4000, 8000 and **6379**
-stay reachable from the LAN even with ufw enabled inside CT 110. Redis in the
-base compose file has **no password** — an open 6379 is a full read/write
-handle on your cache and streaming bus, and 8000 is the broker service, which
-talks to your broker.
+evaluated before ufw's `INPUT` chain. Ports 3000 and 4000 stay reachable from
+the LAN even with ufw enabled inside CT 110. (The compose file no longer
+publishes Redis at all, and publishes the broker service on loopback only,
+with a shared secret. Older deployments published 6379 with no password and
+8000 on every interface; 8000 is the broker service, which
+talks to your broker.)
 
 In an unprivileged container this is worse than on a VM: ufw's own operation
 depends on host netfilter and the container's AppArmor profile, so it is not
@@ -1171,9 +1176,9 @@ scrape_configs:
 
 > These targets only work if CT 110's firewall admits this container — that is
 > what the two `-source 10.7.3.24` rules in the `110.fw` example (§10.3) are
-> for. If you additionally bound the Docker ports to `127.0.0.1`, scrape
-> through nginx instead, with a `/metrics` location allow-listed to
-> `10.7.3.24`.
+> for. The broker service is bound to `127.0.0.1`, so the
+> `tradingapp-broker_service` job must scrape through nginx instead, with a
+> `/metrics` location allow-listed to `10.7.3.24`.
 
 ```bash
 promtool check rules /etc/prometheus/alerts.yml
@@ -1461,7 +1466,7 @@ su - tradingapp
 git clone https://github.com/41agent41/tradingapp.git /opt/tradingapp
 cd /opt/tradingapp && chmod +x tradingapp.sh
 ./tradingapp.sh setup            # answer with your IB Gateway IP
-nano .env                        # API_TOKEN + NEXT_PUBLIC_API_TOKEN, CORS_ORIGINS, secrets
+nano .env                        # APP_PASSWORD, CORS_ORIGINS, secrets
 chmod 600 .env
 ./tradingapp.sh deploy --with-db # bundled TimescaleDB, schema applied automatically
 ./tradingapp.sh test
@@ -1494,7 +1499,7 @@ keeping.
 - [ ] Non-root `tradingapp` user created with sudo + docker group
 - [ ] Repo cloned to `/opt/tradingapp`, `tradingapp.sh` executable
 - [ ] `.env` complete — no placeholders, `chmod 600`, copy stored offline
-- [ ] `API_TOKEN` == `NEXT_PUBLIC_API_TOKEN`, freshly generated
+- [ ] `APP_PASSWORD`, `SESSION_SECRET`, `API_TOKEN`, `BROKER_SERVICE_TOKEN` freshly generated
 - [ ] `CORS_ORIGINS` is the real browser origin, not `*`
 - [ ] `LIVE_TRADING_ENABLED=false` for the first deploy
 - [ ] `./tradingapp.sh deploy` completed, `test` all green

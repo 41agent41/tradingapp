@@ -46,10 +46,21 @@ attach them to the position **atomically with the entry**. Placing the order and
 then setting the stop in a second call leaves a window where the position is
 open and unprotected, which is the one state this design refuses to accept.
 
+The body also carries ``comment`` (``audit-<id>``). The sidecar should set it
+as the MT5 order comment and return each deal's ``comment`` from ``/deals``:
+it is how a fill is linked to the order the app sent when the place call timed
+out before the ticket came back.
+
 The response should echo the ``sl``/``tp`` the venue actually recorded. The app
 compares them against what it asked for and treats a missing stop as a failed
 entry (see ``orders.py``), because a silently-dropped stop is indistinguishable
 from a working one until it is needed.
+
+``POST /positions/{symbol}/stop`` takes ``{"sl": <price>}`` and, only when the
+take-profit should change too, ``"tp"``. An absent ``tp`` means "leave the
+take-profit unchanged"; the sidecar must not clear it. Symbols arrive in the
+venue's own case (``EURUSDm``); the sidecar should still match them
+case-insensitively.
 
 ``POST /positions/{symbol}/stop`` modifies an open position's stop — MT5's
 ``TRADE_ACTION_SLTP``. Used by the bar-close trail, which only calls it when the
@@ -74,6 +85,7 @@ import httpx
 import pandas as pd
 from fastapi import HTTPException
 
+from client_ids import audit_id_from, client_order_id
 from indicators import calculator as indicator_calculator
 from models import CandlestickBar, HistoricalDataResponse, RealTimeQuote
 from observability import get_logger
@@ -189,7 +201,7 @@ class MT5Adapter:
     def search_contracts(self, request: Any) -> Dict[str, Any]:
         symbol = getattr(request, "symbol", "") or ""
         limit = getattr(request, "max_results", None)
-        payload = self._get("/symbols", {"query": symbol.upper(), "limit": limit})
+        payload = self._get("/symbols", {"query": symbol.strip(), "limit": limit})
         results = payload.get("results", []) if isinstance(payload, dict) else []
         # Normalise to the same result shape the contract-search UI consumes,
         # tagging each with broker=mt5 (broker-scoped catalogues, no collision).
@@ -222,7 +234,7 @@ class MT5Adapter:
         account_mode: str = "paper",
     ) -> HistoricalDataResponse:
         mt5_tf = self._map_timeframe(timeframe)
-        params: Dict[str, Any] = {"symbol": symbol.upper(), "timeframe": mt5_tf}
+        params: Dict[str, Any] = {"symbol": _venue_symbol(symbol), "timeframe": mt5_tf}
         if start_date and end_date:
             params["start"] = start_date
             params["end"] = end_date
@@ -281,7 +293,7 @@ class MT5Adapter:
         return bars
 
     def realtime_quote(self, symbol: str, account_mode: str = "paper") -> RealTimeQuote:
-        q = self._get("/quote", {"symbol": symbol.upper()})
+        q = self._get("/quote", {"symbol": _venue_symbol(symbol)})
         return RealTimeQuote(
             symbol=symbol.upper(),
             bid=_opt_float(q.get("bid")),
@@ -292,7 +304,7 @@ class MT5Adapter:
         )
 
     def tick(self, symbol: str, account_mode: str = "paper") -> Dict[str, Any]:
-        t = self._get("/tick", {"symbol": symbol.upper()})
+        t = self._get("/tick", {"symbol": _venue_symbol(symbol)})
         return {
             "symbol": symbol.upper(),
             "timestamp": _iso_from(t.get("time")),
@@ -313,7 +325,7 @@ class MT5Adapter:
 
         _validate_common(request.action, request.order_type, request.tif, request.account_mode)
         body = {
-            "symbol": request.symbol.upper(),
+            "symbol": _venue_symbol(request.symbol),
             "action": request.action,
             "quantity": request.quantity,
             "order_type": request.order_type,
@@ -326,6 +338,9 @@ class MT5Adapter:
             "tp": getattr(request, "take_profit", None),
             "account_mode": request.account_mode,
             "audit_id": getattr(request, "audit_id", None),
+            # Becomes the MT5 order comment, which every deal of the order
+            # carries, so fills link back even if this call times out.
+            "comment": client_order_id(getattr(request, "audit_id", None)),
         }
         resp = self._request("POST", "/orders", json=body)
         # Shape the result like the IB path so order_audit reconciles uniformly.
@@ -361,8 +376,10 @@ class MT5Adapter:
         """
         resp = self._request(
             "POST",
-            f"/positions/{symbol.upper()}/stop",
-            json={"sl": stop_loss, "tp": take_profit},
+            f"/positions/{_venue_symbol(symbol)}/stop",
+            # Only the fields being changed: an absent "tp" leaves the venue's
+            # take-profit alone, where "tp": null could clear it.
+            json=_stop_body(stop_loss, take_profit),
         )
         return {
             "symbol": symbol.upper(),
@@ -387,7 +404,7 @@ class MT5Adapter:
             request.action, request.order_type, request.tif or "DAY", request.account_mode
         )
         body = {
-            "symbol": request.symbol.upper(),
+            "symbol": _venue_symbol(request.symbol),
             "action": request.action,
             "quantity": request.quantity,
             "order_type": request.order_type,
@@ -540,7 +557,7 @@ class MT5Adapter:
         error.
         """
 
-        payload = self._get("/symbol", {"symbol": symbol.upper()})
+        payload = self._get("/symbol", {"symbol": _venue_symbol(symbol)})
         row = payload.get("symbol", payload) if isinstance(payload, dict) else {}
         if not isinstance(row, dict):
             row = {}
@@ -618,6 +635,7 @@ class MT5Adapter:
                 {
                     "exec_id": exec_id,
                     "order_id": str(row.get("order")) if row.get("order") else None,
+                    "audit_id": _opt_int(row.get("audit_id")) or audit_id_from(row.get("comment")),
                     "symbol": symbol,
                     "side": side,
                     "quantity": abs(quantity),
@@ -635,6 +653,25 @@ class MT5Adapter:
                 }
             )
         return fills
+
+
+def _venue_symbol(symbol: str) -> str:
+    """The symbol exactly as the venue spells it.
+
+    MT5 symbols are case-sensitive and brokers use lowercase suffixes
+    (``EURUSDm``, ``EURUSD.a``). Upper-casing them sends the terminal a symbol
+    it does not have, so outgoing requests keep the caller's case. Responses
+    are still normalised to upper case for matching inside the app.
+    """
+    return (symbol or "").strip()
+
+
+def _stop_body(stop_loss: Optional[float], take_profit: Optional[float]) -> Dict[str, Any]:
+    """Body for ``POST /positions/{symbol}/stop``: only the fields to change."""
+    body: Dict[str, Any] = {"sl": stop_loss}
+    if take_profit is not None:
+        body["tp"] = take_profit
+    return body
 
 
 def _opt_float(v: Any) -> Optional[float]:

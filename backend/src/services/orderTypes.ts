@@ -221,7 +221,12 @@ export function validateOrder(
   const errors: string[] = [];
   const r = (raw ?? {}) as Record<string, unknown>;
 
-  const symbol = typeof r.symbol === 'string' ? r.symbol.trim().toUpperCase() : '';
+  // MT5 symbols are case-sensitive and brokers use lowercase suffixes
+  // (`EURUSDm`, `EURUSD.a`), so an MT5 order keeps the venue's spelling.
+  // Every other venue gets upper case, as before. Storage and matching inside
+  // the app normalise to upper case at the repository layer.
+  const rawSymbol = typeof r.symbol === 'string' ? r.symbol.trim() : '';
+  const symbol = r.broker === 'mt5' ? rawSymbol : rawSymbol.toUpperCase();
   if (!symbol) errors.push('symbol is required');
   if (symbol.length > 32) errors.push('symbol too long');
 

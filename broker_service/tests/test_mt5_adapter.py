@@ -102,15 +102,17 @@ def test_historical_bars_maps_timeframe_and_normalises(mt5):
             ]
         }
     )
-    resp = _adapter(mt5).historical_bars("eurusd", "5min", "1M")
+    resp = _adapter(mt5).historical_bars("EURUSDm", "5min", "1M")
 
     # Sent MT5-native timeframe + a bounded count.
     _, _url, params, _body, _headers = FakeClient.calls[0]
     assert params["timeframe"] == "M5"
-    assert params["symbol"] == "EURUSD"
+    # The venue's own case goes out (MT5 symbols are case-sensitive) ...
+    assert params["symbol"] == "EURUSDm"
     assert "count" in params
 
-    assert resp.symbol == "EURUSD"
+    # ... and the response is normalised for matching inside the app.
+    assert resp.symbol == "EURUSDM"
     assert resp.timeframe == "5min"
     assert resp.count == 2
     # Sorted ascending, millis coerced to seconds.
@@ -299,11 +301,13 @@ def test_place_order_paper_posts_to_bridge_and_shapes_result(mt5, monkeypatch):
     FakeClient.handler = lambda method, url, params, json: FakeResponse(
         {"ticket": 555, "status": "submitted"}
     )
-    out = _adapter(mt5).place_order(_OrderReq(symbol="eurusd", quantity=2, audit_id=9))
+    out = _adapter(mt5).place_order(_OrderReq(symbol="EURUSD.a", quantity=2, audit_id=9))
 
     method, url, _params, body, _headers = FakeClient.calls[0]
     assert method == "POST" and url.endswith("/orders")
-    assert body["symbol"] == "EURUSD" and body["quantity"] == 2 and body["audit_id"] == 9
+    assert body["symbol"] == "EURUSD.a" and body["quantity"] == 2 and body["audit_id"] == 9
+    # The MT5 order comment carries the audit id back on every deal (B9).
+    assert body["comment"] == "audit-9"
     # IB-shaped result so order_audit reconciles uniformly.
     assert out["order_id"] == 555
     assert out["status"] == "submitted"
@@ -552,3 +556,22 @@ def test_instrument_spec_falls_back_to_mt5_conventional_defaults(mt5):
     assert spec["size_step"] == 0.01
     assert spec["contract_size"] == 100000.0
     assert spec["max_size"] is None
+
+
+def test_stop_move_keeps_case_and_omits_an_unset_take_profit(monkeypatch):
+    """A trail sends only the stop: "tp": null could clear the venue's TP."""
+    import mt5_adapter as mt5
+
+    calls = []
+
+    def fake_request(self, method, path, **kwargs):
+        calls.append((method, path, kwargs.get("json")))
+        return {"status": "modified", "sl": 1.08}
+
+    monkeypatch.setattr(mt5.MT5Adapter, "_request", fake_request)
+    adapter = mt5.MT5Adapter("http://mt5-host:9100")
+    adapter.modify_position_stop("EURUSDm", stop_loss=1.08)
+    adapter.modify_position_stop("EURUSDm", stop_loss=1.08, take_profit=1.12)
+
+    assert calls[0] == ("POST", "/positions/EURUSDm/stop", {"sl": 1.08})
+    assert calls[1][2] == {"sl": 1.08, "tp": 1.12}

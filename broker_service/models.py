@@ -167,6 +167,9 @@ class Execution(BaseModel):
 
     exec_id: str
     order_id: Optional[str] = None
+    # The app's order_audit id, when the venue echoed the client order id
+    # (``audit-<id>``) back on the fill. See ``client_ids.py``.
+    audit_id: Optional[int] = None
     symbol: str
     side: str  # BUY/SELL
     quantity: float

@@ -21,7 +21,6 @@ function mockFetch() {
 beforeEach(() => {
   vi.resetModules();
   delete process.env.NEXT_PUBLIC_API_URL;
-  delete process.env.NEXT_PUBLIC_API_TOKEN;
 });
 
 afterEach(() => {
@@ -71,20 +70,7 @@ describe('apiFetch', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('https://example.org/health');
   });
 
-  it('attaches Bearer token from NEXT_PUBLIC_API_TOKEN when set', async () => {
-    process.env.NEXT_PUBLIC_API_URL = 'https://api.test';
-    process.env.NEXT_PUBLIC_API_TOKEN = 'tok-abc-123';
-    const fetchMock = mockFetch();
-
-    const mod = await import('../app/lib/api');
-    await mod.apiFetch('/x');
-
-    const init = fetchMock.mock.calls[0][1] as RequestInit;
-    const headers = new Headers(init.headers);
-    expect(headers.get('Authorization')).toBe('Bearer tok-abc-123');
-  });
-
-  it('does not attach Authorization when the token is empty', async () => {
+  it('sends the session cookie with every request', async () => {
     process.env.NEXT_PUBLIC_API_URL = 'https://api.test';
     const fetchMock = mockFetch();
 
@@ -92,26 +78,22 @@ describe('apiFetch', () => {
     await mod.apiFetch('/x');
 
     const init = fetchMock.mock.calls[0][1] as RequestInit;
-    const headers = new Headers(init.headers);
-    expect(headers.get('Authorization')).toBeNull();
+    expect(init.credentials).toBe('include');
   });
 
-  it('honours skipAuth=true and omits the Authorization header', async () => {
+  it('never attaches an Authorization header of its own', async () => {
     process.env.NEXT_PUBLIC_API_URL = 'https://api.test';
-    process.env.NEXT_PUBLIC_API_TOKEN = 'tok-skip';
     const fetchMock = mockFetch();
 
     const mod = await import('../app/lib/api');
-    await mod.apiFetch('/api/health', { skipAuth: true });
+    await mod.apiFetch('/x');
 
     const init = fetchMock.mock.calls[0][1] as RequestInit;
-    const headers = new Headers(init.headers);
-    expect(headers.get('Authorization')).toBeNull();
+    expect(new Headers(init.headers).get('Authorization')).toBeNull();
   });
 
-  it('preserves caller-supplied headers when attaching the token', async () => {
+  it('preserves caller-supplied headers', async () => {
     process.env.NEXT_PUBLIC_API_URL = 'https://api.test';
-    process.env.NEXT_PUBLIC_API_TOKEN = 'tok-merge';
     const fetchMock = mockFetch();
 
     const mod = await import('../app/lib/api');
@@ -121,22 +103,39 @@ describe('apiFetch', () => {
 
     const init = fetchMock.mock.calls[0][1] as RequestInit;
     const headers = new Headers(init.headers);
-    expect(headers.get('Authorization')).toBe('Bearer tok-merge');
     expect(headers.get('x-data-query-enabled')).toBe('true');
     expect(headers.get('content-type')).toBe('application/json');
   });
 
-  it('does not overwrite a caller-supplied Authorization header', async () => {
+  it('redirects to /login on a 401', async () => {
     process.env.NEXT_PUBLIC_API_URL = 'https://api.test';
-    process.env.NEXT_PUBLIC_API_TOKEN = 'env-token';
-    const fetchMock = mockFetch();
+    global.fetch = vi.fn(
+      async () => new Response('{}', { status: 401 })
+    ) as unknown as typeof fetch;
+    const assign = vi.fn();
+    vi.stubGlobal('window', { location: { pathname: '/trade', search: '?x=1', assign } });
 
     const mod = await import('../app/lib/api');
-    await mod.apiFetch('/x', { headers: { Authorization: 'Bearer caller-supplied' } });
+    const res = await mod.apiFetch('/x');
 
-    const init = fetchMock.mock.calls[0][1] as RequestInit;
-    const headers = new Headers(init.headers);
-    expect(headers.get('Authorization')).toBe('Bearer caller-supplied');
+    expect(res.status).toBe(401);
+    expect(assign).toHaveBeenCalledWith('/login?next=%2Ftrade%3Fx%3D1');
+    vi.unstubAllGlobals();
+  });
+
+  it('does not redirect when skipAuthRedirect is set', async () => {
+    process.env.NEXT_PUBLIC_API_URL = 'https://api.test';
+    global.fetch = vi.fn(
+      async () => new Response('{}', { status: 401 })
+    ) as unknown as typeof fetch;
+    const assign = vi.fn();
+    vi.stubGlobal('window', { location: { pathname: '/trade', search: '', assign } });
+
+    const mod = await import('../app/lib/api');
+    await mod.apiFetch('/api/auth/login', { skipAuthRedirect: true });
+
+    expect(assign).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 
   it('attaches a generated X-Request-Id when the caller did not supply one', async () => {
@@ -182,14 +181,8 @@ describe('newRequestId', () => {
 });
 
 describe('socketAuth', () => {
-  it('returns an empty object when no token is configured', async () => {
+  it('authenticates the handshake with the session cookie', async () => {
     const mod = await import('../app/lib/api');
-    expect(mod.socketAuth()).toEqual({});
-  });
-
-  it('returns { auth: { token } } when NEXT_PUBLIC_API_TOKEN is set', async () => {
-    process.env.NEXT_PUBLIC_API_TOKEN = 'socket-tok';
-    const mod = await import('../app/lib/api');
-    expect(mod.socketAuth()).toEqual({ auth: { token: 'socket-tok' } });
+    expect(mod.socketAuth()).toEqual({ withCredentials: true });
   });
 });

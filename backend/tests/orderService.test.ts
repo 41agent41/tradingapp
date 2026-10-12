@@ -123,6 +123,21 @@ describe('submitCreateOrder', () => {
     expect(d.ibPost).not.toHaveBeenCalled();
   });
 
+  it('marks the audit row unknown, not rejected, when no response came back', async () => {
+    // B9: a timeout says nothing about whether the venue took the order.
+    const d = makeDeps();
+    d.ibPost.mockRejectedValueOnce(new Error('timeout of 30000ms exceeded'));
+    const outcome = await submitCreateOrder(order(), null, d.overrides);
+    expect(outcome).toMatchObject({ ok: false, kind: 'ib_error', auditId: 7 });
+    expect(d.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 7,
+        status: 'unknown',
+        last_error: expect.stringContaining('outcome unknown'),
+      })
+    );
+  });
+
   it('marks the audit row rejected and reports ib_error when IB errors out', async () => {
     const d = makeDeps();
     d.ibPost.mockRejectedValueOnce({ response: { data: { detail: 'no connection' } } });

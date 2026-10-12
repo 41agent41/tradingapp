@@ -75,7 +75,9 @@ export class OrderAuditRepository {
       input.account_mode,
       input.broker ?? 'ib',
       input.action,
-      input.symbol,
+      // Stored upper-case so the lookups below (which upper-case their
+      // argument) match; the venue still received the symbol in its own case.
+      input.symbol.toUpperCase(),
       input.sec_type,
       input.exchange,
       input.currency,

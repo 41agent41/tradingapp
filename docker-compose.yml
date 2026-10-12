@@ -11,18 +11,21 @@ services:
       - POSTGRES_HOST=${POSTGRES_HOST:-localhost}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - POSTGRES_USER=${POSTGRES_USER:-tradingapp}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-tradingapp123}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
       - POSTGRES_DB=${POSTGRES_DB:-tradingapp}
       - POSTGRES_SSL=${POSTGRES_SSL:-false}
       - REDIS_HOST=172.20.0.30
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-      - JWT_SECRET=${JWT_SECRET:-changeme_jwt_secret}
-      - SESSION_SECRET=${SESSION_SECRET:-changeme_session_secret}
-      # Bearer token enforced by the backend auth middleware. Leave
-      # empty (the default) to disable auth — the backend prints a
-      # warning at startup so the unauthenticated state is loud.
+      # Browser login: APP_PASSWORD, with sessions signed by SESSION_SECRET.
+      # API_TOKEN is for scripts (Authorization: Bearer). With NODE_ENV=
+      # production the backend refuses to start without them, or with
+      # template values. No defaults here on purpose.
+      - SESSION_SECRET=${SESSION_SECRET:-}
+      - APP_PASSWORD=${APP_PASSWORD:-}
       - API_TOKEN=${API_TOKEN:-}
+      # Shared secret the backend sends to the broker service.
+      - BROKER_SERVICE_TOKEN=${BROKER_SERVICE_TOKEN:-}
       # Redis cache controls
       - REDIS_ENABLED=${REDIS_ENABLED:-true}
       - CACHE_TTL_REALTIME=${CACHE_TTL_REALTIME:-2}
@@ -57,9 +60,6 @@ services:
       context: ./frontend
       args:
         - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:4000}
-        # Baked into the client bundle at build time; must match API_TOKEN.
-        # env_file below only reaches the running container, not the build.
-        - NEXT_PUBLIC_API_TOKEN=${NEXT_PUBLIC_API_TOKEN:-}
         - NODE_ENV=${NODE_ENV:-production}
     env_file: .env
     environment:
@@ -93,8 +93,12 @@ services:
       - IB_DATE_FORMAT=${IB_DATE_FORMAT:-YYYYMMDD}
       - IB_TIME_FORMAT=${IB_TIME_FORMAT:-HHMMSS}
       - IB_FORMAT_DATE=${IB_FORMAT_DATE:-2}
+      - BROKER_SERVICE_TOKEN=${BROKER_SERVICE_TOKEN:-}
+    # The broker service can place orders, and only the backend should call
+    # it. It is published on the host's loopback only (for `tradingapp.sh
+    # test`), never on the LAN, and every call needs BROKER_SERVICE_TOKEN.
     ports:
-      - "${BROKER_SERVICE_PORT:-8000}:8000"
+      - "127.0.0.1:${BROKER_SERVICE_PORT:-8000}:8000"
     networks:
       tradingapp-network:
         ipv4_address: 172.20.0.10
@@ -107,8 +111,9 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    # Not published on the host: only containers on this network use it.
+    # An empty REDIS_PASSWORD disables auth (development only).
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-}"]
     networks:
       tradingapp-network:
         ipv4_address: 172.20.0.30

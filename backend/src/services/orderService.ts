@@ -188,14 +188,27 @@ export async function submitCreateOrder(
       .catch((e) => deps.warn({ err: String(e) }, 'audit update after place failed'));
     return { ok: true, auditId, ibBody };
   } catch (error) {
+    // No HTTP response (a timeout, a reset connection) means we do not know
+    // whether the venue took the order. Recording it as rejected would drop
+    // it from the position guard while it may be live; `unknown` keeps it
+    // counted as working until its fill arrives and links back through the
+    // client order id (B9).
+    const answered = (error as { response?: unknown })?.response != null;
+    const message =
+      (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
+      (error as Error)?.message ??
+      'unknown';
+    if (!answered) {
+      deps.error(
+        { audit_id: auditId, symbol: order.symbol, err: message },
+        'order outcome unknown: no response from the broker service; the order may be live'
+      );
+    }
     await deps.audit
       .update({
         id: auditId,
-        status: 'rejected',
-        last_error:
-          (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
-          (error as Error)?.message ??
-          'unknown',
+        status: answered ? 'rejected' : 'unknown',
+        last_error: answered ? message : `no response, outcome unknown: ${message}`,
       })
       .catch((e) => deps.warn({ err: String(e) }, 'audit update after reject failed'));
     return { ok: false, kind: 'ib_error', error, auditId };

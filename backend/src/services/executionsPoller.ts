@@ -67,6 +67,8 @@ const EXECUTIONS_DEFAULT_ACCOUNT_MODE = (
 export interface RemoteExecution {
   exec_id: string;
   order_id?: string | null;
+  /** Our order_audit id, when the venue echoed the client order id. */
+  audit_id?: number | null;
   symbol: string;
   side: string;
   quantity: number;
@@ -280,6 +282,8 @@ export class ExecutionsPoller {
             account_mode: EXECUTIONS_DEFAULT_ACCOUNT_MODE,
             exec_id: String(row.exec_id),
             broker_order_id: row.order_id != null ? String(row.order_id) : null,
+            order_audit_id_hint:
+              typeof row.audit_id === 'number' && row.audit_id > 0 ? row.audit_id : null,
             symbol: row.symbol,
             side: row.side,
             quantity: Number(row.quantity),

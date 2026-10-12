@@ -98,6 +98,23 @@ env_set_default() {
     fi
 }
 
+# Random hex secret (64 chars). openssl when present, else /dev/urandom.
+gen_secret() {
+    openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
+}
+
+# Fill a secret with a random value when it is missing, empty, or still the
+# CHANGE_ME placeholder from .env.example. A real value is never touched.
+# Prints the key name when it generated one.
+env_set_secret() {
+    local file="$1" key="$2" current
+    current=$(grep -E "^${key}=" "$file" 2>/dev/null | tail -n1 | cut -d'=' -f2-)
+    if [[ -z "$current" || "$current" == "CHANGE_ME" ]]; then
+        env_set "$file" "$key" "$(gen_secret)"
+        echo "$key"
+    fi
+}
+
 
 show_usage() {
     echo "🚀 TradingApp Unified Management Script"
@@ -241,10 +258,27 @@ HEADER
     env_set_default .env IB_CLIENT_ID "$DEFAULT_CLIENT_ID"
     env_set_default .env IB_TIMEOUT "30"
     env_set_default .env POSTGRES_USER "tradingapp"
-    env_set_default .env POSTGRES_PASSWORD "tradingapp123"
     env_set_default .env POSTGRES_DB "tradingapp"
     env_set_default .env REDIS_HOST "redis"
     env_set_default .env REDIS_PORT "6379"
+
+    # Secrets. Generated once and then left alone. The backend refuses to
+    # start in production with any of these missing or left as defaults.
+    local generated
+    generated=$(
+        env_set_secret .env POSTGRES_PASSWORD
+        env_set_secret .env REDIS_PASSWORD
+        env_set_secret .env SESSION_SECRET
+        env_set_secret .env API_TOKEN
+        env_set_secret .env BROKER_SERVICE_TOKEN
+        env_set_secret .env APP_PASSWORD
+    )
+    if [[ -n "$generated" ]]; then
+        print_info "Generated new secrets in .env: $(echo $generated | tr '\n' ' ')"
+    fi
+    if echo "$generated" | grep -q '^APP_PASSWORD$'; then
+        print_warning "Your login password (APP_PASSWORD in .env) is: $(grep -E '^APP_PASSWORD=' .env | cut -d'=' -f2-)"
+    fi
 
     print_status "Environment configured:"
     print_info "  Server IP: $SERVER_IP"
@@ -353,7 +387,7 @@ test_deployment() {
     fi
     
     # Test IB service
-    if curl -s -f http://${SERVER_IP:-localhost}:8000/health > /dev/null; then
+    if curl -s -f http://127.0.0.1:${BROKER_SERVICE_PORT:-8000}/health > /dev/null; then
         print_status "IB Service is responding"
     else
         print_error "IB Service is not responding"
@@ -385,7 +419,7 @@ show_access_info() {
     echo "Access URLs:"
     echo "  Frontend:   http://$server_ip:3000"
     echo "  Backend:    http://$server_ip:4000"
-    echo "  IB Service: http://$server_ip:8000"
+    echo "  Broker service: loopback only (http://127.0.0.1:8000 on this host)"
     echo ""
     echo "Management:"
     echo "  Check status: $0 status"

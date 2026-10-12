@@ -393,10 +393,11 @@ POSTGRES_DB=tradingapp
 POSTGRES_SSL=true
 
 # Secrets (generate each with: openssl rand -hex 32)
-API_TOKEN=<rotate-me>
-NEXT_PUBLIC_API_TOKEN=<same value as API_TOKEN>
-JWT_SECRET=<rotate-me>
+APP_PASSWORD=<your login password>
 SESSION_SECRET=<rotate-me>
+API_TOKEN=<rotate-me>
+BROKER_SERVICE_TOKEN=<rotate-me>
+REDIS_PASSWORD=<rotate-me>
 ```
 
 ### Configuring IB Gateway
@@ -414,49 +415,44 @@ substituted from your current `.env`.
 
 ## Authentication & CORS
 
-Phase 2 added bearer-token authentication and tightened CORS handling.
-Set up the two values together — they must match — and the frontend
-build picks the token up automatically.
+The browser logs in with a password; scripts use a bearer token. No
+credential is ever compiled into the frontend.
 
-### Generate a token
-
-```bash
-# 32-byte hex string, plenty of entropy for a single-tenant app
-openssl rand -hex 32
-```
-
-Put the value into `.env` **twice**: once on the server side
-(`API_TOKEN`) and once on the frontend side (`NEXT_PUBLIC_API_TOKEN`).
-They must be identical.
+### Configure
 
 ```bash
-API_TOKEN=<the-token-you-generated>
-NEXT_PUBLIC_API_TOKEN=<same-value>
+APP_PASSWORD=<12+ characters>          # the one user's login
+SESSION_SECRET=$(openssl rand -hex 32) # signs session cookies
+API_TOKEN=$(openssl rand -hex 32)      # scripts and curl only
+BROKER_SERVICE_TOKEN=$(openssl rand -hex 32)
 ```
 
-Because Next.js bakes `NEXT_PUBLIC_*` variables into the static bundle
-at build time, you must rebuild the frontend whenever either value
-changes:
+`./tradingapp.sh config` generates any of these that are missing and prints
+the login password once.
 
-```bash
-./tradingapp.sh redeploy
-```
+### How it works
 
-### How the token is used
+- **Browser**: `/login` posts the password to `POST /api/auth/login`, which
+  sets an HttpOnly, SameSite=Lax session cookie (Secure over HTTPS) signed
+  with `SESSION_SECRET`. Sessions last `SESSION_TTL_HOURS` (default 12).
+  Rotating `SESSION_SECRET` signs every browser out. Five wrong passwords
+  from one address lock it out for 15 minutes.
+- **Scripts**: every backend route except the health checks, `/metrics` and
+  `/api/auth/*` accepts `Authorization: Bearer <API_TOKEN>` (or
+  `X-API-Token`).
+- **Socket.IO**: the handshake accepts the session cookie (the frontend
+  connects with `withCredentials`) or the API token in `auth.token`.
+- **Broker service**: only the backend may call it. It is published on the
+  host's loopback only and rejects calls without `X-Broker-Service-Token`.
 
-- **REST**: every backend route except `/api/health` and
-  `/api/database/health` requires `Authorization: Bearer <token>` (or
-  `X-API-Token: <token>`). The frontend's `apiFetch` helper attaches the
-  header automatically.
-- **Socket.IO**: the handshake reads the token from `auth.token`, the
-  `Authorization` header, or a `?token=` query parameter. The frontend's
-  Socket.IO calls use `socketAuth()` which sets `auth.token`.
-- **Validation**: comparisons run through `crypto.timingSafeEqual` so
-  timing attacks cannot probe the token byte-by-byte.
+The browser only sends the session cookie to the backend when both are on
+the same site, so `NEXT_PUBLIC_API_URL` must use the same host name (or IP) as
+the address you open the frontend on. Behind the nginx proxy they are the same
+origin and this is automatic.
 
-If `API_TOKEN` is left empty, the backend prints a loud warning at
-startup and accepts unauthenticated requests. This is convenient for
-local development but should never ship to production.
+With `NODE_ENV=production` the backend refuses to start without
+authentication, or with template or default secrets. Development with an
+empty `.env` still runs open, with a warning.
 
 ### CORS
 
@@ -781,7 +777,6 @@ server {
 
     location /        { proxy_pass http://localhost:3000; }
     location /api/    { proxy_pass http://localhost:4000; }
-    location /ib/     { proxy_pass http://localhost:8000; }
 
     proxy_set_header Host              $host;
     proxy_set_header X-Real-IP         $remote_addr;
@@ -804,8 +799,9 @@ sudo ufw allow 'Nginx Full'
 sudo ufw enable
 ```
 
-If you expose the raw ports (no reverse proxy) also allow `3000`, `4000`,
-`8000`.
+If you expose the raw ports (no reverse proxy) also allow `3000` and `4000`.
+Never expose the broker service (`8000`): it can place orders, so the stack
+publishes it on the host's loopback only.
 
 ### Systemd auto-start
 
@@ -949,7 +945,7 @@ find "$BACKUP_DIR" -name 'tradingapp_*.sql' -mtime +7 -delete
 - [ ] Docker / Docker Compose installed (`./tradingapp.sh setup` handles this)
 - [ ] Repository cloned and `tradingapp.sh` executable
 - [ ] `.env` created from `.env.example` and reviewed (no placeholders left)
-- [ ] `API_TOKEN` and `NEXT_PUBLIC_API_TOKEN` set to the same fresh random value
+- [ ] `APP_PASSWORD`, `SESSION_SECRET`, `API_TOKEN` and `BROKER_SERVICE_TOKEN` set to fresh random values
 - [ ] `CORS_ORIGINS` set to the actual browser origin(s) — not `*`
 - [ ] External Postgres reachable from the backend container; schema applied
       (or `--with-db` used to bring up the bundled TimescaleDB)

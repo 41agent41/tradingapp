@@ -57,8 +57,8 @@ export function useContractSearch(accountMode: 'paper' | 'live'): ContractSearch
 
   const checkConnection = useCallback(async () => {
     try {
-      // /api/health is on the auth allow-list; skipAuth keeps the request lean.
-      const response = await apiFetch(`/api/health`, { skipAuth: true });
+      // /api/health is on the auth allow-list, so this works before login.
+      const response = await apiFetch(`/api/health`);
       setConnectionStatus(response.ok ? 'Connected' : 'Error');
     } catch {
       setConnectionStatus('Disconnected');

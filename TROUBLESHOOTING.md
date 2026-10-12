@@ -332,7 +332,7 @@ Likely causes:
 |---|---|---|
 | `services.streaming.connected: false` | Backend can't reach Redis | `docker compose logs backend` for the error; confirm `REDIS_HOST` / `REDIS_PORT`; restart Redis |
 | Stream status `connected: true` but `subscriptions: []` | No client has called `subscribe-market-data` | Reload the chart page; check the browser console for Socket.IO errors |
-| Bridge connected, IB shows tick counts > 0, browser sees nothing | Auth header dropped at the Socket.IO handshake | Verify `NEXT_PUBLIC_API_TOKEN` matches `API_TOKEN`; rebuild frontend |
+| Bridge connected, IB shows tick counts > 0, browser sees nothing | Auth header dropped at the Socket.IO handshake | Log in again (the session may have expired); check `CORS_ORIGINS` lists the exact browser origin |
 | Browser sees ticks but the chart's "current price" is zero | Symbol mismatch (frontend asks for `MSFT`, IB service is publishing `aapl`) | The hook upper-cases symbols automatically; check that the page passes the symbol you expect |
 | Want to skip the streaming pipeline | Set `STREAMING_ENABLED=false` on the backend and redeploy. The chart will fall back to REST seeding (no live updates). |
 

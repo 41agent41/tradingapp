@@ -26,6 +26,7 @@ from ib_client import IB_CLIENT_ID, IB_HOST, IB_PORT, disconnect_ib
 from observability import attach_observability, get_logger
 from orders import router as orders_router
 from routes import register_routes
+from service_auth import attach_service_auth
 
 logger = get_logger(__name__)
 
@@ -55,6 +56,9 @@ app = FastAPI(
 # Observability wiring (X-Request-Id middleware, /metrics, structlog).
 # Attach BEFORE CORS so X-Request-Id is set even on preflight responses.
 attach_observability(app)
+
+# Shared-secret check: only the backend may call this service (it can trade).
+attach_service_auth(app)
 
 # CORS middleware
 app.add_middleware(

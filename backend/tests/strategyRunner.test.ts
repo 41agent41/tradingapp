@@ -9,6 +9,7 @@
 import {
   StrategyRunner,
   closedBars,
+  isConnectionFailure,
   historyPeriodFor,
   runSymbol,
   type StrategyRunnerDeps,
@@ -73,6 +74,7 @@ function makeDeps(overrides: Partial<StrategyRunnerDeps> = {}): StrategyRunnerDe
     lastFillPrice: jest.fn().mockResolvedValue(null),
     connectionEquity: jest.fn().mockResolvedValue(null),
     sendAlert: jest.fn().mockResolvedValue({ sent: true }),
+    resolveAlert: jest.fn().mockResolvedValue({ sent: false }),
     modifyStop: jest.fn().mockResolvedValue(undefined),
     listStagingGroups: jest.fn().mockResolvedValue([]),
     admitGroup: jest.fn().mockResolvedValue(0),
@@ -404,6 +406,66 @@ describe('StrategyRunner — per-connection isolation (C-3)', () => {
     await runner.runOnce();
 
     expect(runner.status().breakers['mt5:flaky']).toBeUndefined();
+  });
+});
+
+describe('StrategyRunner — what counts against the breaker (B5)', () => {
+  it('does not open the connection breaker on a deterministic 400', async () => {
+    // One bad definition must not pause every run on its account.
+    const deps = makeDeps({
+      listActiveRuns: jest
+        .fn()
+        .mockResolvedValue([activeRun({ broker: 'mt5', broker_account: 'acct' })]),
+      evaluate: jest.fn().mockRejectedValue({ response: { status: 400 } }),
+    });
+    const runner = new StrategyRunner({ enabled: true, deps, breakerThreshold: 1 });
+
+    await runner.runOnce();
+    await runner.runOnce();
+
+    expect(runner.status().breakers['mt5:acct']).toBeUndefined();
+    expect(deps.evaluate).toHaveBeenCalledTimes(2);
+  });
+
+  it('classifies failures', () => {
+    expect(isConnectionFailure(new Error('ECONNREFUSED'))).toBe(true);
+    expect(isConnectionFailure({ response: { status: 502 } })).toBe(true);
+    expect(isConnectionFailure({ response: { status: 429 } })).toBe(true);
+    expect(isConnectionFailure({ response: { status: 408 } })).toBe(true);
+    expect(isConnectionFailure({ response: { status: 400 } })).toBe(false);
+    expect(isConnectionFailure({ response: { status: 404 } })).toBe(false);
+  });
+});
+
+describe('StrategyRunner — kill-switch all-clear (B1)', () => {
+  it('resolves an alerted condition once it stops firing', async () => {
+    const getPosition = jest
+      .fn()
+      .mockResolvedValueOnce({ size: 1, avg_price: 1.1, stop_loss: null })
+      .mockResolvedValue({ size: 1, avg_price: 1.1, stop_loss: 1.05 });
+    const resolveAlert = jest.fn().mockResolvedValue({ sent: true });
+    const deps = makeDeps({
+      getPosition,
+      getCurrentStop: jest.fn().mockResolvedValue(1.05),
+      evaluate: jest.fn().mockResolvedValue({ ...buyResult, signal: 'hold', entry: false }),
+      resolveAlert,
+    });
+    const runner = makeRunner(deps);
+
+    await runner.runOnce(); // stop missing at the venue: alert
+    expect(deps.sendAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ key: expect.stringContaining('unprotected_position') })
+    );
+    expect(resolveAlert).not.toHaveBeenCalled();
+
+    await runner.runOnce(); // stop back: all-clear
+    expect(resolveAlert).toHaveBeenCalledWith(
+      expect.stringContaining('unprotected_position'),
+      expect.objectContaining({ title: expect.stringMatching(/^Resolved: /) })
+    );
+
+    await runner.runOnce(); // still fine: nothing more
+    expect(resolveAlert).toHaveBeenCalledTimes(1);
   });
 });
 

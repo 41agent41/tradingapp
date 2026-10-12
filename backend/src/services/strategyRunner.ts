@@ -47,7 +47,11 @@ import { MarketDataService } from './marketDataService.js';
 import { StrategyRepository, type ActiveRun, type StagingGroup } from './strategyRepository.js';
 import { ExecutionRepository } from './executionRepository.js';
 import { submitCreateOrder } from './orderService.js';
-import { isSystematicExecutionEnabled, systematicMaxOrdersPerDay } from './orderTypes.js';
+import {
+  isLiveTradingEnabled,
+  isSystematicExecutionEnabled,
+  systematicMaxOrdersPerDay,
+} from './orderTypes.js';
 import type { InstrumentSpec } from './orderSizing.js';
 import {
   DEFAULT_BROKER_ACCOUNT,
@@ -201,6 +205,12 @@ export interface StrategyRunnerDeps {
   connectionEquity?(connection: Connection): Promise<number | null>;
   /** E-5: deliver an operational alert. */
   sendAlert?(alert: Alert): Promise<{ sent: boolean; reason?: string }>;
+  /** E-5: an alerted condition cleared. Lifts its suppression and, when a
+   *  message is given, tells the operator it is resolved. */
+  resolveAlert?(
+    key: string,
+    message?: { title: string; detail?: string; context?: Record<string, unknown> }
+  ): Promise<unknown>;
   /** C-3 staged deploy. Optional so a runner without groups behaves as before. */
   listStagingGroups?(): Promise<StagingGroup[]>;
   admitGroup?(groupId: number): Promise<number>;
@@ -590,6 +600,7 @@ function defaultDeps(
       executionRepo.lastFillPrice(connection.broker, connection.brokerAccount, symbol),
     connectionEquity: (connection) => venueEquity(connection),
     sendAlert: (alert) => notifier.notify(alert),
+    resolveAlert: (key, message) => notifier.resolve(key, message),
     modifyStop: async (connection, symbol, stopPrice) => {
       await axios.post(
         `${BROKER_SERVICE_URL}/positions/${encodeURIComponent(symbol)}/stop`,
@@ -605,6 +616,18 @@ function defaultDeps(
     admitGroup: (groupId) => repo.admitGroup(groupId),
     abandonGroup: (groupId, reason) => repo.abandonGroup(groupId, reason),
   };
+}
+
+/**
+ * Whether an evaluation error says the connection is unhealthy. No HTTP
+ * response (refused, reset, timed out) or a 5xx is the venue or the broker
+ * service; 408 and 429 are transient. Any other 4xx is a deterministic
+ * refusal of this request, so retrying on another run would succeed.
+ */
+export function isConnectionFailure(err: unknown): boolean {
+  const status = (err as { response?: { status?: unknown } } | null)?.response?.status;
+  if (typeof status !== 'number') return true;
+  return status >= 500 || status === 408 || status === 429;
 }
 
 export class StrategyRunner {
@@ -638,6 +661,10 @@ export class StrategyRunner {
   public positionDivergences = 0;
   public stopsTightened = 0;
   public killSwitchTriggers = 0;
+  /** Kill-switch alerts currently raised, per run: alert key → its alert. A
+   *  key that stops firing is resolved, so the operator hears the all-clear
+   *  and a recurrence alerts at once rather than being deduplicated. */
+  private readonly activeKillSwitchAlerts = new Map<number, Map<string, Alert>>();
   /** Runs whose venue and fills-derived positions currently disagree. */
   private readonly divergentRuns = new Map<
     number,
@@ -669,12 +696,17 @@ export class StrategyRunner {
     }
     if (this.started) return;
     this.started = true;
+    const executing = isSystematicExecutionEnabled();
     logger.info(
       {
         interval_seconds: this.intervalMs / 1000,
         first_run_seconds: Math.round(this.initialDelayMs / 1000),
+        execution_enabled: executing,
+        live_trading_enabled: isLiveTradingEnabled(),
       },
-      'systematic strategy runner enabled (signal-only)'
+      executing
+        ? 'systematic strategy runner enabled (placing orders)'
+        : 'systematic strategy runner enabled (signal-only)'
     );
 
     this.initialTimer = setTimeout(() => {
@@ -887,6 +919,8 @@ export class StrategyRunner {
         triggers.some((t) => t.kind === 'unprotected_position') ? 1 : 0
       );
 
+      const previous = this.activeKillSwitchAlerts.get(run.id) ?? new Map<string, Alert>();
+      const current = new Map<string, Alert>();
       for (const trigger of triggers) {
         this.killSwitchTriggers++;
         killSwitchTriggerCount.inc({ connection: label, kind: trigger.kind });
@@ -894,8 +928,22 @@ export class StrategyRunner {
           { run_id: run.id, connection: label, kind: trigger.kind, detail: trigger.detail },
           'kill-switch trigger'
         );
-        await this.deps.sendAlert(triggerAlert(trigger, config.action));
+        const alert = triggerAlert(trigger, config.action);
+        await this.deps.sendAlert(alert);
+        // A stop gap is a one-off aftermath, not an ongoing condition: it
+        // never "resolves", so it is not tracked for an all-clear.
+        if (trigger.kind !== 'stop_gap') current.set(alert.key, alert);
       }
+      for (const [key, alert] of previous) {
+        if (current.has(key)) continue;
+        logger.info({ run_id: run.id, connection: label, key }, 'kill-switch condition cleared');
+        await this.deps.resolveAlert?.(key, {
+          title: `Resolved: ${alert.title}`,
+          context: alert.context,
+        });
+      }
+      if (current.size > 0) this.activeKillSwitchAlerts.set(run.id, current);
+      else this.activeKillSwitchAlerts.delete(run.id);
 
       // Clear the recorded stop once the position is closed and its aftermath
       // has been judged — leaving it set would re-fire the gap check against a
@@ -1185,10 +1233,11 @@ export class StrategyRunner {
     } catch (err) {
       this.errors++;
       this.lastError = err instanceof Error ? err.message : String(err);
-      // A run-level failure counts against its *connection*: the overwhelming
-      // cause is the venue being unreachable, and that is a property of the
-      // connection rather than of this one strategy.
-      this.recordConnectionFailure(label);
+      // A transport failure counts against the run's *connection*: the venue
+      // being unreachable is a property of the connection, not of this one
+      // strategy. A deterministic 4xx (a bad definition, an unknown symbol)
+      // is this run's own problem and must not pause its siblings.
+      if (isConnectionFailure(err)) this.recordConnectionFailure(label);
       logger.error(
         { run_id: run.id, connection: label, err: this.lastError },
         'strategy run evaluation failed'
