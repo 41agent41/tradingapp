@@ -10,7 +10,7 @@ and normalises its responses into the app's shapes (UTC unix-second timestamps,
 `CandlestickBar` / `RealTimeQuote`), so `source=mt5` charts and streams exactly
 like `source=ib` from the frontend's point of view.
 
-### Sidecar HTTP contract (documented here; implemented on the Windows host)
+### Sidecar HTTP contract (documented here; implemented in ``mt5_sidecar/``)
 
 When `MT5_BRIDGE_SECRET` is set, every request below carries an
 `X-MT5-Bridge-Secret: <secret>` header; the sidecar should reject any request

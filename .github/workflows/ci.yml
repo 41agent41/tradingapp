@@ -128,3 +128,38 @@ jobs:
 
       - name: Pytest
         run: pytest -q
+
+  # --------------------------------------------------------------------
+  # MT5 sidecar (Python / FastAPI, tested against a fake terminal)
+  # --------------------------------------------------------------------
+  mt5_sidecar:
+    name: mt5_sidecar (ruff / black / pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mt5_sidecar
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            mt5_sidecar/requirements.txt
+            mt5_sidecar/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Black (format check)
+        run: black --check .
+
+      - name: Pytest
+        run: pytest -q
