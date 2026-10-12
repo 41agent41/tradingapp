@@ -21,6 +21,8 @@ of view.
       PUT  /v3/accounts/{id}/orders/{id}/cancel                           -> cancel (OANDA's verb)
       PUT  /v3/accounts/{id}/orders/{id}                                  -> replace (modify)
       GET  /v3/accounts/{id}/openPositions
+      GET  /v3/accounts/{id}/openTrades                                   -> per-trade stops
+      PUT  /v3/accounts/{id}/trades/{id}/orders                           -> move a trade's stop
       GET  /v3/accounts/{id}/summary
 
 Auth is a single header on every request: `Authorization: Bearer {token}`.
@@ -38,6 +40,13 @@ know about:
 `STP_LMT` has no clean OANDA equivalent (OANDA's STOP order takes a single
 trigger price, not an independent stop + limit pair) — placing one raises a
 400, the same pattern MT5's adapter uses for an unmapped timeframe.
+
+**Protection.** A stop loss and take profit ride on the entry order itself
+(`stopLossOnFill` / `takeProfitOnFill`), so OANDA creates them in the same
+transaction as the fill, or cancels the order. There is never a moment with an
+open, unprotected trade. OANDA holds stops per *trade*, not per position, so
+`positions()` reads `/openTrades` and reports the least protective stop of the
+trades that make up the net position, or none if any of them lacks one.
 
 Order placement runs the same `_validate_common` gate the IB path applies
 (defence in depth, identical to MT5/Alpaca) before anything reaches OANDA.
@@ -57,6 +66,7 @@ from client_ids import audit_id_from, client_order_id
 from indicators import calculator as indicator_calculator
 from models import CandlestickBar, HistoricalDataResponse, RealTimeQuote
 from observability import get_logger
+from stops import is_more_protective
 
 logger = get_logger(__name__)
 
@@ -136,6 +146,7 @@ class OANDAAdapter:
         self._account_id = account_id
         self._headers = {"Authorization": f"Bearer {api_token}"}
         self._timeout = timeout
+        self._precision: Dict[str, int] = {}
 
     # -- HTTP plumbing ----------------------------------------------------- #
     def _request(
@@ -356,10 +367,36 @@ class OANDAAdapter:
             # Lets the fill be linked back to its audit row even if this call
             # times out before OANDA's order id is recorded.
             order_body["clientExtensions"] = {"id": client_id, "tag": "tradingapp"}
+        # Protective stop / target attached to the trade at entry (E-2).
+        # Distinct from `stop_price`, which is the *trigger* of a STOP order.
+        # OANDA creates them atomically with the fill, or cancels the order.
+        stop_loss = getattr(request, "stop_loss", None)
+        take_profit = getattr(request, "take_profit", None)
+        if stop_loss is not None or take_profit is not None:
+            digits = self._price_precision(order_body["instrument"])
+            if stop_loss is not None:
+                order_body["stopLossOnFill"] = {
+                    "price": _price(stop_loss, digits),
+                    "timeInForce": "GTC",
+                }
+            if take_profit is not None:
+                order_body["takeProfitOnFill"] = {
+                    "price": _price(take_profit, digits),
+                    "timeInForce": "GTC",
+                }
 
         resp = self._request("POST", self._account_path("/orders"), json={"order": order_body})
         fill = resp.get("orderFillTransaction") or {}
         create = resp.get("orderCreateTransaction") or {}
+        cancel = resp.get("orderCancelTransaction") or {}
+        if cancel and not fill:
+            # OANDA answers 201 for an order it created and then cancelled at
+            # once: a FOK that could not fill, or a stop on the wrong side of
+            # the fill price. Nothing is working, so it must not read as
+            # submitted.
+            raise HTTPException(
+                422, f"OANDA cancelled the order: {cancel.get('reason') or 'no reason given'}"
+            )
         order_id = fill.get("id") or create.get("id") or resp.get("lastTransactionID")
         status = "filled" if fill else "submitted"
         return {
@@ -372,7 +409,111 @@ class OANDAAdapter:
             "account_mode": request.account_mode,
             "broker": "oanda",
             "status": status,
+            # Echoed back so the caller can verify the venue recorded the
+            # protection it asked for. Read from OANDA's own record of the
+            # order, not from the request.
+            "sl": _opt_float((create.get("stopLossOnFill") or {}).get("price")),
+            "tp": _opt_float((create.get("takeProfitOnFill") or {}).get("price")),
         }
+
+    def modify_position_stop(
+        self,
+        symbol: str,
+        *,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Move an open position's protective stop (E-3's trail).
+
+        OANDA holds a stop per trade, so this replaces the stop on every open
+        trade that makes up the net position. A trade whose stop is already
+        tighter keeps it: the ratchet never moves a stop backwards. The echoed
+        ``sl`` is the least protective stop now in force, the same figure
+        ``positions()`` reports.
+        """
+        instrument = _to_instrument(symbol)
+        trades = self._open_trades(instrument)
+        if not trades:
+            raise HTTPException(404, f"no open OANDA trades for {symbol}")
+        long_side = sum(t["units"] for t in trades) > 0
+        direction = "long" if long_side else "short"
+        trades = [t for t in trades if (t["units"] > 0) == long_side]
+        digits = self._price_precision(instrument)
+
+        stops: List[Optional[float]] = []
+        targets: List[Optional[float]] = []
+        for trade in trades:
+            body: Dict[str, Any] = {}
+            if stop_loss is not None and is_more_protective(
+                stop_loss, trade["stop_loss"], direction
+            ):
+                body["stopLoss"] = {"price": _price(stop_loss, digits), "timeInForce": "GTC"}
+            if take_profit is not None:
+                body["takeProfit"] = {"price": _price(take_profit, digits), "timeInForce": "GTC"}
+            if not body:
+                stops.append(trade["stop_loss"])
+                targets.append(trade["take_profit"])
+                continue
+            resp = self._request(
+                "PUT", self._account_path(f"/trades/{trade['id']}/orders"), json=body
+            )
+            sl_tx = resp.get("stopLossOrderTransaction") or {}
+            tp_tx = resp.get("takeProfitOrderTransaction") or {}
+            stops.append(
+                _opt_float(sl_tx.get("price")) if "stopLoss" in body else trade["stop_loss"]
+            )
+            targets.append(
+                _opt_float(tp_tx.get("price")) if "takeProfit" in body else trade["take_profit"]
+            )
+        return {
+            "symbol": symbol.upper(),
+            "broker": "oanda",
+            "status": "modified",
+            "sl": _least_protective(stops, long_side),
+            "tp": _first_to_hit(targets, long_side),
+        }
+
+    def _open_trades(self, instrument: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Open trades with the stop and target attached to each. A failed read
+        raises: an empty list would read as "no trades, nothing unprotected"."""
+        payload = self._get(self._account_path("/openTrades"))
+        rows = payload.get("trades", []) if isinstance(payload, dict) else []
+        trades: List[Dict[str, Any]] = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            if instrument is not None and row.get("instrument") != instrument:
+                continue
+            units = _opt_float(row.get("currentUnits"))
+            if not units:
+                continue
+            sl = row.get("stopLossOrder") if isinstance(row.get("stopLossOrder"), dict) else {}
+            tp = row.get("takeProfitOrder") if isinstance(row.get("takeProfitOrder"), dict) else {}
+            trades.append(
+                {
+                    "id": str(row.get("id")),
+                    "instrument": str(row.get("instrument") or ""),
+                    "units": units,
+                    "stop_loss": _opt_float(sl.get("price")),
+                    "take_profit": _opt_float(tp.get("price")),
+                }
+            )
+        return trades
+
+    def _price_precision(self, instrument: str) -> int:
+        """Decimals OANDA accepts on a price for this instrument. A price with
+        more is rejected outright, so stops are rounded to this first."""
+        cached = self._precision.get(instrument)
+        if cached is not None:
+            return cached
+        payload = self._get(self._account_path("/instruments"), {"instruments": instrument})
+        rows = payload.get("instruments", []) if isinstance(payload, dict) else []
+        row = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else {}
+        digits = row.get("displayPrecision")
+        if digits is None:
+            raise HTTPException(502, f"OANDA did not report the price precision of {instrument}")
+        self._precision[instrument] = int(digits)
+        return int(digits)
 
     def cancel_order(self, order_id: int) -> Dict[str, Any]:
         self._request("PUT", self._account_path(f"/orders/{order_id}/cancel"))
@@ -423,6 +564,7 @@ class OANDAAdapter:
 
         payload = self._get(self._account_path("/openPositions"))
         rows = payload.get("positions", []) if isinstance(payload, dict) else []
+        trades = self._open_trades() if rows else []
         positions: List[Dict[str, Any]] = []
         for row in rows if isinstance(rows, list) else []:
             if not isinstance(row, dict):
@@ -435,14 +577,27 @@ class OANDAAdapter:
             if size == 0:
                 continue
             open_leg = long_leg if size > 0 else short_leg
+            instrument = str(row.get("instrument") or "")
+            # The trades on the net side carry the protection; a hedged
+            # opposite leg is not what the stop guards.
+            legs = [
+                t
+                for t in trades
+                if t["instrument"] == instrument and (t["units"] > 0) == (size > 0)
+            ]
             positions.append(
                 {
-                    "symbol": _from_instrument(str(row.get("instrument") or "")),
+                    "symbol": _from_instrument(instrument),
                     "position": size,
                     "market_price": None,  # not carried on openPositions
                     "market_value": None,
                     "average_cost": _opt_float(open_leg.get("averagePrice")),
                     "unrealized_pnl": _opt_float(row.get("unrealizedPL")),
+                    # The protection currently attached at the venue (E-2/E-3).
+                    # The trail compares against this, and its absence on a
+                    # position that should have one is a kill-switch trigger.
+                    "stop_loss": _least_protective([t["stop_loss"] for t in legs], size > 0),
+                    "take_profit": _first_to_hit([t["take_profit"] for t in legs], size > 0),
                     "currency": str(row.get("currency") or "USD"),
                 }
             )
@@ -584,6 +739,29 @@ class OANDAAdapter:
                     }
                 )
         return fills
+
+
+def _price(value: float, digits: int) -> str:
+    """A price as OANDA wants it: a string with at most ``digits`` decimals."""
+    return f"{float(value):.{digits}f}"
+
+
+def _least_protective(stops: List[Optional[float]], long_side: bool) -> Optional[float]:
+    """The stop that leaves the most at risk, or None when any trade has none
+    (or there are no trades): one unprotected trade makes the position
+    unprotected."""
+    if not stops or any(s is None for s in stops):
+        return None
+    values = [s for s in stops if s is not None]
+    return min(values) if long_side else max(values)
+
+
+def _first_to_hit(targets: List[Optional[float]], long_side: bool) -> Optional[float]:
+    """The nearest take profit, or None when any trade has none."""
+    if not targets or any(t is None for t in targets):
+        return None
+    values = [t for t in targets if t is not None]
+    return min(values) if long_side else max(values)
 
 
 def _opt_float(v: Any) -> Optional[float]:
