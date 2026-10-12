@@ -43,6 +43,7 @@ import {
 } from './metrics.js';
 import { notifier, type Alert } from './notifier.js';
 import { dbService } from './database.js';
+import { MarketDataService } from './marketDataService.js';
 import { StrategyRepository, type ActiveRun, type StagingGroup } from './strategyRepository.js';
 import { ExecutionRepository } from './executionRepository.js';
 import { submitCreateOrder } from './orderService.js';
@@ -215,6 +216,24 @@ export interface StrategyRunnerOptions {
   maxConnectionConcurrency?: number;
   breakerThreshold?: number;
   breakerCooldownSeconds?: number;
+}
+
+/**
+ * Drop the bar that is still forming.
+ *
+ * Venues return the current, unfinished bar along with the history (MT5's
+ * `copy_rates_from_pos` and IB's historical data both do). Evaluating it would
+ * decide on a bar that is seconds old — and because signals dedupe on
+ * `bar_time`, that decision is never revisited once the bar actually closes.
+ * It also skews `bar_extreme` stops: the forming bar's low is roughly the
+ * current price. A bar is closed once its start plus one bar length has
+ * passed; timeframes without a fixed length (tick) are left untouched.
+ */
+export function closedBars(bars: RawBar[], timeframe: string, nowMs: number): RawBar[] {
+  const seconds = MarketDataService.timeframeSeconds(timeframe);
+  if (seconds <= 0) return bars;
+  const nowSeconds = nowMs / 1000;
+  return bars.filter((b) => Number(b.timestamp) + seconds <= nowSeconds);
 }
 
 // Fetch a history window generous enough that the longest indicator (e.g.
@@ -1024,8 +1043,12 @@ export class StrategyRunner {
       connectionLabelOrNull ??
       connectionLabel(connectionOf(run).broker, connectionOf(run).brokerAccount);
     try {
-      const bars = await this.deps.fetchHistory(run);
-      if (!bars || bars.length === 0) {
+      const bars = closedBars(
+        (await this.deps.fetchHistory(run)) ?? [],
+        run.timeframe,
+        this.deps.now()
+      );
+      if (bars.length === 0) {
         logger.warn({ run_id: run.id, symbol: runSymbol(run) }, 'no bars for strategy run');
         return;
       }

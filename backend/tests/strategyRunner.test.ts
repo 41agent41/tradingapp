@@ -8,6 +8,7 @@
  */
 import {
   StrategyRunner,
+  closedBars,
   historyPeriodFor,
   runSymbol,
   type StrategyRunnerDeps,
@@ -720,5 +721,38 @@ describe('StrategyRunner — trailing stops (E-3)', () => {
     expect(runner.status().totals.errors).toBe(1);
     // The signal still got recorded: the trail failing must not abort the bar.
     expect(runner.status().totals.runs_evaluated).toBe(1);
+  });
+});
+
+describe('closedBars — the forming bar is never evaluated', () => {
+  const t0 = NOW / 1000 - 600; // two 5-minute bars ago
+  const series: RawBar[] = [
+    { timestamp: t0, open: 1, high: 1, low: 1, close: 1, volume: 1 },
+    { timestamp: t0 + 300, open: 1, high: 1, low: 1, close: 1, volume: 1 },
+    { timestamp: t0 + 600, open: 1, high: 1, low: 1, close: 1, volume: 1 }, // opened at NOW
+  ];
+
+  it('drops a bar whose period has not elapsed', () => {
+    expect(closedBars(series, '5min', NOW + 1000).map((b) => b.timestamp)).toEqual([t0, t0 + 300]);
+  });
+
+  it('keeps a bar from the moment its period ends', () => {
+    expect(closedBars(series, '5min', NOW + 300_000)).toHaveLength(3);
+  });
+
+  it('leaves timeframes without a fixed length alone', () => {
+    expect(closedBars(series, 'tick', NOW)).toHaveLength(3);
+  });
+
+  it('the runner evaluates only closed bars', async () => {
+    const deps = makeDeps({ fetchHistory: jest.fn().mockResolvedValue(series) });
+    await makeRunner(deps).runOnce();
+    expect((deps.evaluate as jest.Mock).mock.calls[0][0]).toEqual(series.slice(0, 2));
+  });
+
+  it('skips the run when only a forming bar came back', async () => {
+    const deps = makeDeps({ fetchHistory: jest.fn().mockResolvedValue(series.slice(2)) });
+    await makeRunner(deps).runOnce();
+    expect(deps.evaluate).not.toHaveBeenCalled();
   });
 });
