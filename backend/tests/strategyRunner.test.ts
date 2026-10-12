@@ -9,6 +9,7 @@
 import {
   StrategyRunner,
   closedBars,
+  roundToIncrement,
   isConnectionFailure,
   historyPeriodFor,
   runSymbol,
@@ -769,6 +770,37 @@ describe('StrategyRunner — trailing stops (E-3)', () => {
     expect(modifyStop).not.toHaveBeenCalled();
   });
 
+  it('compares the trail at the venue precision, so a stop in force is not re-sent', async () => {
+    // The venue holds 1.09 to five decimals; the rules resolve 1.0900027. Read
+    // raw, that is "tighter" on every tick and the same modify goes out forever.
+    const modifyStop = jest.fn();
+    const deps = makeDeps({
+      getPosition: jest.fn().mockResolvedValue(openLong),
+      evaluate: jest.fn().mockResolvedValue(resultWithTrail(1.0900027)),
+      priceIncrement: jest.fn().mockResolvedValue(0.00001),
+      modifyStop,
+    });
+
+    await makeRunner(deps).runOnce();
+    expect(modifyStop).not.toHaveBeenCalled();
+  });
+
+  it('sends the trail rounded to the venue precision', async () => {
+    const modifyStop = jest.fn().mockResolvedValue(undefined);
+    const setCurrentStop = jest.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({
+      getPosition: jest.fn().mockResolvedValue(openLong),
+      evaluate: jest.fn().mockResolvedValue(resultWithTrail(1.0950027)),
+      priceIncrement: jest.fn().mockResolvedValue(0.00001),
+      modifyStop,
+      setCurrentStop,
+    });
+
+    await makeRunner(deps).runOnce();
+    expect(modifyStop).toHaveBeenCalledWith(expect.anything(), 'MSFT', 1.095);
+    expect(setCurrentStop).toHaveBeenCalledWith(expect.anything(), 1.095);
+  });
+
   it('a failed modify is counted but does not stop the evaluation', async () => {
     // The previous stop remains in place — degraded but protected.
     const deps = makeDeps({
@@ -816,5 +848,20 @@ describe('closedBars — the forming bar is never evaluated', () => {
     const deps = makeDeps({ fetchHistory: jest.fn().mockResolvedValue(series.slice(2)) });
     await makeRunner(deps).runOnce();
     expect(deps.evaluate).not.toHaveBeenCalled();
+  });
+});
+
+describe('roundToIncrement', () => {
+  it('rounds to the increment without float noise', () => {
+    expect(roundToIncrement(1.0797726864, 0.00001)).toBe(1.07977);
+    expect(roundToIncrement(1.0797756, 0.00001)).toBe(1.07978);
+    expect(roundToIncrement(151.2346, 0.001)).toBe(151.235);
+    expect(roundToIncrement(2034.37, 0.25)).toBe(2034.25);
+  });
+
+  it('leaves the price alone when the increment is unknown', () => {
+    expect(roundToIncrement(1.0797726, null)).toBe(1.0797726);
+    expect(roundToIncrement(1.0797726, 0)).toBe(1.0797726);
+    expect(roundToIncrement(1.23456789, 1e-7)).toBe(1.2345679);
   });
 });
