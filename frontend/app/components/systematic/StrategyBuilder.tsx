@@ -40,6 +40,7 @@ const initialForm: StrategyForm = {
   sizingSize: '100',
   maxOrdersPerDay: '4',
   stopLossPct: '',
+  holdoutStart: '',
 };
 
 export interface StrategyBuilderProps {
@@ -131,6 +132,16 @@ export default function StrategyBuilder({ onCreated }: StrategyBuilderProps) {
               </option>
             ))}
           </select>
+        </label>
+        <label className="block">
+          <span className="text-sm font-medium text-gray-700">Holdout start</span>
+          <input
+            type="date"
+            value={form.holdoutStart ?? ''}
+            onChange={(e) => set('holdoutStart', e.target.value)}
+            title="First day of data you did not use to design this strategy. Only backtests from this day count towards paper and live."
+            className="mt-1 w-full border border-gray-300 rounded px-3 py-2"
+          />
         </label>
         <label className="block">
           <span className="text-sm font-medium text-gray-700">Indicators (CSV)</span>

@@ -234,7 +234,10 @@ with the same ticket number, both should now be present as separate rows.
 
 ### 16. Deploy one strategy to both connections, signal-only
 Create a simple 5-minute definition on canonical `EURUSD` (an MA cross is
-fine), then:
+fine), with a holdout start date. Deploying needs a passing backtest of that
+definition from the holdout date (the promotion gate; see `.env.example`).
+For this plumbing test only, `PROMOTION_PAPER_GATE=off` on the backend skips
+that check for paper; turn it back on afterwards. Then:
 ```bash
 curl -X POST -H 'Content-Type: application/json' \
   -d '{"targets":[

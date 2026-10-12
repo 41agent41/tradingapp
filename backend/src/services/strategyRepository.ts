@@ -33,6 +33,8 @@ export interface StrategyDefinitionInput {
   exchange?: string;
   currency?: string;
   rule_set: Record<string, unknown>;
+  /** First day of data the strategy was not designed on (YYYY-MM-DD). */
+  holdout_start?: string | null;
 }
 
 export interface StrategyDefinitionRow {
@@ -46,6 +48,7 @@ export interface StrategyDefinitionRow {
   currency: string;
   timeframe: string;
   rule_set: Record<string, unknown>;
+  holdout_start: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -206,8 +209,9 @@ export class StrategyRepository {
   async createDefinition(input: StrategyDefinitionInput): Promise<StrategyDefinitionRow> {
     const sql = `
       INSERT INTO strategy_definitions
-        (name, broker, broker_account, symbol, sec_type, exchange, currency, timeframe, rule_set)
-      VALUES ($1, $2, $9, $3, $4, $5, $6, $7, $8::jsonb)
+        (name, broker, broker_account, symbol, sec_type, exchange, currency, timeframe, rule_set,
+         holdout_start)
+      VALUES ($1, $2, $9, $3, $4, $5, $6, $7, $8::jsonb, $10::date)
       RETURNING *
     `;
     const values = [
@@ -220,9 +224,26 @@ export class StrategyRepository {
       input.timeframe,
       JSON.stringify(input.rule_set ?? {}),
       input.broker_account ?? DEFAULT_BROKER_ACCOUNT,
+      input.holdout_start ?? null,
     ];
     const result = await this.db.query(sql, values);
     return result.rows[0] as StrategyDefinitionRow;
+  }
+
+  /**
+   * Set a definition's holdout start, once. Returns null when the definition
+   * does not exist or already has one: a holdout moved after seeing results
+   * is no longer a holdout.
+   */
+  async setHoldoutStart(id: number, holdoutStart: string): Promise<StrategyDefinitionRow | null> {
+    const result = await this.db.query(
+      `UPDATE strategy_definitions
+          SET holdout_start = $2::date
+        WHERE id = $1 AND holdout_start IS NULL
+        RETURNING *`,
+      [id, holdoutStart]
+    );
+    return (result.rows[0] as StrategyDefinitionRow | undefined) ?? null;
   }
 
   async listDefinitions(limit?: number, offset?: number): Promise<StrategyDefinitionRow[]> {
