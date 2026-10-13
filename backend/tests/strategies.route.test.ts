@@ -30,6 +30,7 @@ const repoImpl = {
   listActiveHalts: jest.fn(),
   clearHalt: jest.fn(),
   listEquityMarks: jest.fn(),
+  haltConnection: jest.fn(),
   countTradingDays: jest.fn(),
   resetHighWaterMark: jest.fn(),
 };
@@ -38,7 +39,18 @@ jest.mock('../src/services/strategyRepository.js', () => ({
   StrategyRepository: jest.fn().mockImplementation(() => repoImpl),
 }));
 
-const notifierImpl = { resolve: jest.fn() };
+const notifierImpl = { resolve: jest.fn(), notify: jest.fn() };
+
+const flattenImpl = { flattenConnection: jest.fn() };
+jest.mock('../src/services/flatten.js', () => {
+  const actual = jest.requireActual('../src/services/flatten.js');
+  return {
+    __esModule: true,
+    ...actual,
+    defaultFlattenDeps: () => ({}),
+    flattenConnection: (...args: unknown[]) => flattenImpl.flattenConnection(...args),
+  };
+});
 jest.mock('../src/services/notifier.js', () => ({
   __esModule: true,
   notifier: notifierImpl,
@@ -454,6 +466,91 @@ describe('group and connection lifecycle (C-3)', () => {
     expect(res.status).toBe(200);
     expect(res.body.high_water_mark).toBe(9000);
     expect(repoImpl.resetHighWaterMark).toHaveBeenCalledWith('mt5', 'pepperstone');
+  });
+
+  describe('flatten', () => {
+    const providers = {
+      data: {
+        connections: {
+          'mt5:pepperstone': { platform: 'mt5', account: 'pepperstone', account_mode: 'live' },
+        },
+      },
+    };
+
+    it('halts the connection, closes its positions and reports what it did', async () => {
+      axiosMock.get.mockResolvedValue(providers);
+      repoImpl.haltConnection.mockResolvedValue({ created: true });
+      notifierImpl.notify.mockResolvedValue(undefined);
+      flattenImpl.flattenConnection.mockResolvedValue({
+        closed: [{ symbol: 'EURUSD.a', action: 'SELL', quantity: 1, audit_id: 5 }],
+        failed: [],
+        error: null,
+      });
+      const res = await request(buildApp())
+        .post('/api/strategies/connections/mt5/pepperstone/flatten')
+        .send({});
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(
+        expect.objectContaining({ halted: true, complete: true, connection: 'mt5:pepperstone' })
+      );
+      expect(repoImpl.haltConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          broker: 'mt5',
+          brokerAccount: 'pepperstone',
+          triggerKind: 'operator_flatten',
+        })
+      );
+      expect(flattenImpl.flattenConnection).toHaveBeenCalledWith(
+        expect.anything(),
+        { broker: 'mt5', brokerAccount: 'pepperstone' },
+        'live',
+        'operator'
+      );
+      expect(notifierImpl.notify).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Positions closed on mt5:pepperstone by the operator' })
+      );
+    });
+
+    it('says what is still open when a close fails', async () => {
+      axiosMock.get.mockResolvedValue(providers);
+      repoImpl.haltConnection.mockResolvedValue({ created: false });
+      notifierImpl.notify.mockResolvedValue(undefined);
+      flattenImpl.flattenConnection.mockResolvedValue({
+        closed: [],
+        failed: [{ symbol: 'EURUSD.a', error: 'not placed (live_disabled)' }],
+        error: null,
+      });
+      const res = await request(buildApp())
+        .post('/api/strategies/connections/mt5/pepperstone/flatten')
+        .send({});
+      expect(res.status).toBe(200);
+      expect(res.body.complete).toBe(false);
+      expect(res.body.failed).toHaveLength(1);
+      expect(notifierImpl.notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          severity: 'critical',
+          title: expect.stringMatching(/INCOMPLETE/),
+        })
+      );
+    });
+
+    it('refuses an unknown connection without halting anything', async () => {
+      axiosMock.get.mockResolvedValue(providers);
+      repoImpl.haltConnection.mockClear();
+      const res = await request(buildApp())
+        .post('/api/strategies/connections/mt5/nowhere/flatten')
+        .send({});
+      expect(res.status).toBe(404);
+      expect(repoImpl.haltConnection).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the broker service cannot say the account mode', async () => {
+      axiosMock.get.mockRejectedValue(new Error('ECONNREFUSED'));
+      const res = await request(buildApp())
+        .post('/api/strategies/connections/mt5/pepperstone/flatten')
+        .send({});
+      expect(res.status).toBe(502);
+    });
   });
 
   it('answers 404 when resuming a connection that is not halted', async () => {

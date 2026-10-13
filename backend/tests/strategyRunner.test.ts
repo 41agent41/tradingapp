@@ -83,6 +83,7 @@ function makeDeps(overrides: Partial<StrategyRunnerDeps> = {}): StrategyRunnerDe
     trackEquity: jest.fn().mockResolvedValue(null),
     connectionLimits: jest.fn().mockResolvedValue(null),
     haltConnection: jest.fn().mockResolvedValue({ created: false }),
+    flattenConnection: jest.fn().mockResolvedValue({ closed: [], failed: [], error: null }),
     ...overrides,
   };
 }
@@ -532,6 +533,69 @@ describe('StrategyRunner — kill-switch halt (E-6)', () => {
     });
     await makeRunner(deps).runOnce();
     expect(haltConnection).not.toHaveBeenCalled();
+  });
+
+  it('flattens the connection once, when the halt is first recorded', async () => {
+    process.env.KILL_SWITCH_ACTION = 'flatten';
+    const haltConnection = jest
+      .fn()
+      .mockResolvedValueOnce({ created: true })
+      .mockResolvedValue({ created: false });
+    const flattenConnection = jest.fn().mockResolvedValue({
+      closed: [{ symbol: 'MSFT', action: 'SELL', quantity: 1, audit_id: 9 }],
+      failed: [],
+      error: null,
+    });
+    const deps = unprotectedDeps({ haltConnection, flattenConnection });
+    const runner = makeRunner(deps);
+
+    await runner.runOnce();
+    await runner.runOnce();
+
+    expect(flattenConnection).toHaveBeenCalledTimes(1);
+    expect(flattenConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ broker: 'ib', brokerAccount: 'default' }),
+      'paper'
+    );
+    const haltAlert = (deps.sendAlert as jest.Mock).mock.calls.find(([a]) =>
+      String(a.key).startsWith('killswitch:halt:')
+    )![0];
+    expect(haltAlert.title).toBe('Entries halted and positions closed on ib:default');
+    expect(haltAlert.detail).toMatch(/Closed at market: MSFT SELL 1\./);
+    const trigger = (deps.sendAlert as jest.Mock).mock.calls.find(([a]) =>
+      String(a.key).startsWith('killswitch:unprotected_position:')
+    )![0];
+    expect(trigger.detail).toMatch(/open positions closed/);
+  });
+
+  it('says loudly when the flatten did not close everything', async () => {
+    process.env.KILL_SWITCH_ACTION = 'flatten';
+    const deps = unprotectedDeps({
+      haltConnection: jest.fn().mockResolvedValue({ created: true }),
+      flattenConnection: jest.fn().mockResolvedValue({
+        closed: [],
+        failed: [],
+        error: 'positions could not be read (venue down)',
+      }),
+    });
+    await makeRunner(deps).runOnce();
+    expect(deps.sendAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Entries halted on ib:default, FLATTEN INCOMPLETE',
+        detail: expect.stringMatching(/Nothing was closed.*by hand/),
+      })
+    );
+  });
+
+  it('halts without closing anything when the action is halt', async () => {
+    process.env.KILL_SWITCH_ACTION = 'halt';
+    const flattenConnection = jest.fn();
+    const deps = unprotectedDeps({
+      haltConnection: jest.fn().mockResolvedValue({ created: true }),
+      flattenConnection,
+    });
+    await makeRunner(deps).runOnce();
+    expect(flattenConnection).not.toHaveBeenCalled();
   });
 
   it('pages that entries are NOT blocked when the halt cannot be recorded', async () => {

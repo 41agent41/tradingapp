@@ -16,9 +16,10 @@
  *   - account equity below a floor
  *
  * Actions escalate: **notify** (E-5), then **halt**, then **flatten** (E-6).
- * Halt is implemented: a critical trigger stops new entries on its connection
- * until the operator resumes it (exits and the trail keep running). Flatten
- * is not, and the backend refuses to start with it.
+ * Halt: a critical trigger stops new entries on its connection until the
+ * operator resumes it (exits and the trail keep running). Flatten: the same
+ * halt, and then every open position on the connection is closed at market
+ * (flatten.ts).
  * Starting at notify-only is not timidity — it lets the whole thing run in
  * production against real conditions with zero blast radius, so its trigger
  * accuracy can be judged from the alerts it *would* have acted on. That
@@ -201,6 +202,9 @@ export function triggerAlert(trigger: KillSwitchTrigger, action: KillSwitchActio
 function actionNote(trigger: KillSwitchTrigger, action: KillSwitchAction): string {
   if (action === 'notify') return 'notify-only — no automated action taken';
   if (trigger.severity !== 'critical') return 'warning — no automated action taken';
+  if (action === 'flatten') {
+    return 'new entries on this connection are halted and its open positions closed';
+  }
   return 'new entries on this connection are halted until it is resumed';
 }
 

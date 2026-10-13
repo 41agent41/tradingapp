@@ -57,6 +57,13 @@ import {
 } from './metrics.js';
 import { notifier, type Alert } from './notifier.js';
 import { newsCalendar } from './newsCalendar.js';
+import {
+  defaultFlattenDeps,
+  describeFlatten,
+  flattenConnection,
+  flattenSucceeded,
+  type FlattenResult,
+} from './flatten.js';
 import { inWeekendWindow } from './propRules.js';
 import { dbService } from './database.js';
 import { MarketDataService } from './marketDataService.js';
@@ -237,6 +244,9 @@ export interface StrategyRunnerDeps {
     connection: Connection,
     cause: { kind: string; detail: string; runId: number }
   ): Promise<{ created: boolean }>;
+  /** E-6: close every open position on a connection, after a critical
+   *  trigger under `KILL_SWITCH_ACTION=flatten`. */
+  flattenConnection?(connection: Connection, accountMode: string): Promise<FlattenResult>;
   /** Record the connection's equity and return its marks (start of day,
    *  high-water mark), or null when equity is unknown. */
   trackEquity?(connection: Connection): Promise<EquityMarks | null>;
@@ -678,6 +688,24 @@ function defaultDeps(
       });
       return { created };
     },
+    flattenConnection: async (connection, accountMode) => {
+      // Read the account fresh, and drop the cache after: a run must not act
+      // on the position that was just closed.
+      positionCache.delete(connectionKey(connection));
+      try {
+        return await flattenConnection(
+          {
+            ...defaultFlattenDeps(),
+            instrumentSpec: (c, symbol) => venueInstrumentSpec(c, symbol),
+          },
+          connection,
+          accountMode,
+          'killswitch'
+        );
+      } finally {
+        positionCache.delete(connectionKey(connection));
+      }
+    },
     priceIncrement: async (connection, symbol) => {
       const spec = await venueInstrumentSpec(connection, symbol);
       const increment = Number(spec?.tickSize) || Number(spec?.point) || 0;
@@ -1035,7 +1063,8 @@ export class StrategyRunner {
     run: ActiveRun,
     connection: Connection,
     label: string,
-    trigger: KillSwitchTrigger
+    trigger: KillSwitchTrigger,
+    flatten = false
   ): Promise<void> {
     if (!this.deps.haltConnection) return;
     try {
@@ -1050,15 +1079,43 @@ export class StrategyRunner {
         { run_id: run.id, connection: label, kind: trigger.kind },
         'kill switch halted entries on connection'
       );
+      // Flatten only when this trigger created the halt: the halt is the
+      // record that it already ran, so a condition that persists (an equity
+      // floor, say) never sends a second round of closing orders.
+      let flattened: FlattenResult | null = null;
+      if (flatten && this.deps.flattenConnection) {
+        flattened = await this.deps
+          .flattenConnection(connection, run.account_mode)
+          .catch((err) => ({
+            closed: [],
+            failed: [],
+            error: String((err as Error)?.message ?? err),
+          }));
+        logger.error(
+          { run_id: run.id, connection: label, flatten: flattened },
+          'kill switch flattened connection'
+        );
+      }
       await this.deps.sendAlert?.({
         key: haltAlertKey(label),
         severity: 'critical',
-        title: `Entries halted on ${label}`,
+        title: flattened
+          ? flattenSucceeded(flattened)
+            ? `Entries halted and positions closed on ${label}`
+            : `Entries halted on ${label}, FLATTEN INCOMPLETE`
+          : `Entries halted on ${label}`,
         detail:
           `The kill switch stopped new entries on ${label} after: ${trigger.title}. ` +
-          'Open positions keep their stops and exits still run. Resume the connection ' +
-          'once the cause is understood.',
-        context: { connection: label, trigger: trigger.kind, run_id: run.id },
+          (flattened
+            ? `${describeFlatten(flattened)} `
+            : 'Open positions keep their stops and exits still run. ') +
+          'Resume the connection once the cause is understood.',
+        context: {
+          connection: label,
+          trigger: trigger.kind,
+          run_id: run.id,
+          ...(flattened ? { flatten: flattened } : {}),
+        },
       });
     } catch (err) {
       this.errors++;
@@ -1195,8 +1252,8 @@ export class StrategyRunner {
       // it would walk into the same condition. Warnings never halt: a
       // divergence is expected after every broker-side exit.
       const critical = triggers.find((t) => t.severity === 'critical');
-      if (config.action === 'halt' && critical) {
-        await this.haltConnection(run, connection, label, critical);
+      if ((config.action === 'halt' || config.action === 'flatten') && critical) {
+        await this.haltConnection(run, connection, label, critical, config.action === 'flatten');
       }
 
       const previous = this.activeKillSwitchAlerts.get(run.id) ?? new Map<string, Alert>();

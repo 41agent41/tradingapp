@@ -409,3 +409,16 @@ def test_paper_flow():
         timeout=240,
     )
     assert_never_doubled("sim-b")
+
+    # Flatten (E-6): the operator closes everything on sim-b. The position is
+    # closed at the venue through the audited order path, and the connection is
+    # halted so the strategy does not walk straight back in.
+    assert sim("sim-b")["positions"], "sim-b should hold its re-entry"
+    flattened = api("POST", "/strategies/connections/mt5/sim-b/flatten")
+    assert flattened.status_code == 200, flattened.text
+    body = flattened.json()
+    assert body["complete"] is True, body
+    assert len(body["closed"]) == 1 and not body["failed"], body
+    wait_until("sim-b to be flat", lambda: not sim("sim-b")["positions"], timeout=30)
+    assert fleet_halt("sim-b")["trigger_kind"] == "operator_flatten"
+    assert fleet_halt("sim-a") is None

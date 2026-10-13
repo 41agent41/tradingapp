@@ -13,6 +13,7 @@
  *   POST /api/strategies/connections/:broker/:account/stop — panic-stop a connection
  *   GET  /api/strategies/fleet            — every connection + grouped legs (C-5)
  *   POST /api/strategies/connections/:broker/:account/resume — lift a kill-switch halt (E-6)
+ *   POST /api/strategies/connections/:broker/:account/flatten — halt and close every position (E-6)
  *   POST /api/strategies/connections/:broker/:account/reset-high-water-mark — after a withdrawal
  *   GET  /api/strategies/runs             — list runs (optional ?status=)
  *   GET  /api/strategies/runs/:id         — one run
@@ -48,6 +49,12 @@ import { evaluatePropRules } from '../services/propRules.js';
 import type { ConnectionLimits } from '../services/executionEngine.js';
 import { notifier } from '../services/notifier.js';
 import { haltAlertKey } from '../services/killSwitch.js';
+import {
+  defaultFlattenDeps,
+  describeFlatten,
+  flattenConnection,
+  flattenSucceeded,
+} from '../services/flatten.js';
 import { PromotionService } from '../services/promotionService.js';
 import type { PromotionStage } from '../services/promotionGate.js';
 
@@ -710,6 +717,70 @@ router.post('/connections/:broker/:account/resume', async (req: Request, res: Re
     res.json({ connection: label, resumed: true, halt: cleared });
   } catch (error: any) {
     fail(res, 500, 'Failed to resume connection', error?.message ?? 'unknown');
+  }
+});
+
+/**
+ * Halt a connection and close every open position on it, at market (E-6).
+ *
+ * The operator's version of `KILL_SWITCH_ACTION=flatten`. Halting first means
+ * no strategy re-enters while the positions are closing; resume lifts it as
+ * for any halt. Answers 200 even when a close fails, with `complete: false`
+ * and what is still open, because the halt did happen and the caller has to
+ * know exactly what is left to close by hand.
+ */
+router.post('/connections/:broker/:account/flatten', async (req: Request, res: Response) => {
+  try {
+    const broker = String(req.params.broker || '').toLowerCase();
+    const account = String(req.params.account || '').toLowerCase();
+    if (!broker || !account) return fail(res, 400, 'broker and account are required');
+    const label = `${broker}:${account}`;
+
+    // The order's account mode has to match the connection's, and only the
+    // broker service knows it. Without it nothing can be closed safely.
+    let accountMode: string | null = null;
+    try {
+      const providers = await axios.get(`${BROKER_SERVICE_URL}/providers`, {
+        timeout: 15000,
+        headers: { Connection: 'close' },
+      });
+      const info = providers.data?.connections?.[label];
+      if (!info) return fail(res, 404, 'Unknown connection', { connection: label });
+      accountMode = String(info.account_mode || '') || null;
+    } catch (err: any) {
+      return fail(res, 502, 'Broker service unreachable', err?.message ?? 'unknown');
+    }
+    if (!accountMode) {
+      return fail(res, 502, 'Connection reports no account mode', { connection: label });
+    }
+
+    const { created } = await repo.haltConnection({
+      broker,
+      brokerAccount: account,
+      triggerKind: 'operator_flatten',
+      detail: 'flattened by the operator',
+    });
+    const result = await flattenConnection(
+      defaultFlattenDeps(),
+      { broker, brokerAccount: account },
+      accountMode,
+      'operator'
+    );
+    const complete = flattenSucceeded(result);
+    await notifier
+      .notify({
+        key: complete ? `${haltAlertKey(label)}:flatten` : `${haltAlertKey(label)}:flatten-failed`,
+        severity: complete ? 'warning' : 'critical',
+        title: complete
+          ? `Positions closed on ${label} by the operator`
+          : `Flatten INCOMPLETE on ${label}`,
+        detail: `${describeFlatten(result)} New entries on ${label} are halted until it is resumed.`,
+        context: { connection: label, flatten: result },
+      })
+      .catch(() => undefined);
+    res.json({ connection: label, halted: true, newly_halted: created, complete, ...result });
+  } catch (error: any) {
+    fail(res, 500, 'Failed to flatten connection', error?.message ?? 'unknown');
   }
 });
 
