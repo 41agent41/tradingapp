@@ -135,11 +135,19 @@ SELECT create_hypertable('tick_data', 'timestamp', chunk_time_interval => INTERV
 CREATE INDEX IF NOT EXISTS idx_tick_contract_timestamp_desc ON tick_data(contract_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_tick_type_timestamp ON tick_data(tick_type, timestamp DESC);
 
--- Add foreign key constraints after hypertable creation
-ALTER TABLE candlestick_data ADD CONSTRAINT fk_candlestick_contract 
-    FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE CASCADE;
-ALTER TABLE tick_data ADD CONSTRAINT fk_tick_contract 
-    FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE CASCADE;
+-- Add foreign key constraints after hypertable creation. Guarded so a re-run
+-- against an existing database succeeds under `psql -v ON_ERROR_STOP=1`.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_candlestick_contract') THEN
+        ALTER TABLE candlestick_data ADD CONSTRAINT fk_candlestick_contract
+            FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE CASCADE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_tick_contract') THEN
+        ALTER TABLE tick_data ADD CONSTRAINT fk_tick_contract
+            FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE CASCADE;
+    END IF;
+END $$;
 
 -- ==============================================
 -- DATA COLLECTION METADATA
