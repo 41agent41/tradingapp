@@ -66,3 +66,6 @@ pnpm-lock.yaml
 
 # Next.js auto-generated type shim — re-created on every build
 frontend/next-env.d.ts
+
+# install/install.sh: transient copy of .env while it is being written
+.env.install-work
