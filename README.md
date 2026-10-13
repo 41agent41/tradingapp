@@ -74,6 +74,30 @@ chmod +x tradingapp.sh
 - **Alpaca** (equities/options) and **OANDA** (FX/CFD): cloud REST APIs
   called directly — no sidecar host, just API credentials. See
   [DEPLOYMENT.md](DEPLOYMENT.md#alpaca-and-oanda--optional-cloud-brokers).
+  OANDA attaches the stop loss and take profit on the fill itself, and can
+  supply an MT5 connection's balance and positions (`account_info_from`).
+- **Several accounts per platform**: the `BROKER_CONNECTIONS` manifest names
+  each account, its venue and whether it is `paper` or `live` (a binding
+  constraint). See `.env.example`.
+
+### **Systematic trading & risk controls**
+- **Rule-driven strategies** evaluated on **closed bars only**, with the same
+  rule-set used by the backtester and the live runner.
+- **Promotion gate**: a strategy needs a passing backtest before paper and a
+  paper record before live.
+- **Stops at the venue**: the protective stop is attached with the entry, an
+  entry filled without one is closed, and trailing stops only tighten.
+- **Account loss limits**: realised and equity-based daily loss and drawdown
+  per connection, plus prop-firm rules (`PROP_RULES__<connection>`) with
+  news blackouts, a weekend cutoff and trading-day counts.
+- **Kill switch**: `KILL_SWITCH_ACTION` of `notify` (default), `halt` (stop
+  new entries on that connection) or `flatten` (also close its positions).
+- **Fleet view** on `/systematic`: every connection's equity, limits and halt
+  state, with **Resume entries** and **Close all positions** buttons.
+- **Alerting**: Telegram alerts and a dead-man's switch heartbeat
+  (`HEARTBEAT_URL`) to a monitor off the host.
+- Walk through it on paper with
+  [PAPER_DEPLOYMENT_RUNBOOK.md](PAPER_DEPLOYMENT_RUNBOOK.md).
 
 ### **Backtesting**
 - **`/backtest` page** with strategy picker, parameter form, metrics
@@ -145,6 +169,9 @@ no separate Jesse install, database or exchange drivers.
   session cookie; scripts use `API_TOKEN`. Nothing secret is compiled into
   the frontend. The broker service is loopback-only and requires
   `BROKER_SERVICE_TOKEN`. Production refuses to start with default secrets.
+- **Live trading guard rails**: `LIVE_TRADING_ENABLED=true` also requires
+  `TRADING_TOKENS` (the trader role) and `ORDER_MFA_SECRET` (TOTP on orders),
+  or the backend refuses to start.
 - **Strict CORS**: Bound to `CORS_ORIGINS` rather than a wildcard.
 - **Whitelisted settings**: `GET /api/settings` returns only allow-listed,
   non-credential environment variables.
@@ -152,8 +179,9 @@ no separate Jesse install, database or exchange drivers.
   endpoints, degrading gracefully to a cache miss on a Redis outage.
 - **CI per service**: GitHub Actions runs lint, format-check, type-check and
   tests for the backend (ESLint/Prettier/Jest), frontend
-  (ESLint/Prettier/Vitest) and the broker service (Ruff/Black/pytest) on
-  every push to `master`.
+  (ESLint/Prettier/Vitest), the broker service and the MT5 sidecar
+  (Ruff/Black/pytest) on every push to `master`, plus an end-to-end paper
+  run of the whole stack against a simulated MT5 terminal (`e2e/`).
 
 ## 🔧 **Configuration**
 
