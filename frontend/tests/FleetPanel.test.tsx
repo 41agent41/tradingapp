@@ -297,6 +297,9 @@ describe('FleetPanel', () => {
                   stopped: false,
                 },
               ],
+              news_blackout: { minutes_before: 2, minutes_after: 2, impact: ['High'] },
+              weekend: { no_entries_after: 'fri 20:00', resume: 'mon 00:00' },
+              min_trading_days: { days: 4, start_date: '2026-10-01', traded: 2 },
             },
             last_at: '2026-10-13T00:00:00Z',
             hwm_at: '2026-10-12T00:00:00Z',
@@ -308,6 +311,11 @@ describe('FleetPanel', () => {
 
     await waitFor(() => expect(screen.getByText('FTMO 100k')).toBeInTheDocument());
     expect(screen.getByText(/Daily loss: room 800.00 above 95,000.00/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/No entries 2 min before to 2 min after High-impact news/)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/No entries from fri 20:00 to mon 00:00/)).toBeInTheDocument();
+    expect(screen.getByText(/Trading days: 2 of 4 since 2026-10-01/)).toBeInTheDocument();
     expect(
       screen.getByText('Prop daily loss buffer reached: new entries refused for today')
     ).toBeInTheDocument();

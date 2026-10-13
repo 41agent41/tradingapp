@@ -41,6 +41,15 @@ start_sidecar() { # name port secret symbol login balance
   wait_for "http://127.0.0.1:$2/health" -H "X-MT5-Bridge-Secret: $3"
 }
 
+# The economic calendar the backend reads for prop news blackouts, served from
+# a file the test rewrites, because the real feed is not reachable from CI.
+start_calendar() {
+  mkdir -p "$E2E_DIR/calendar"
+  [ -f "$E2E_DIR/calendar/calendar.json" ] || echo '[]' >"$E2E_DIR/calendar/calendar.json"
+  start_bg calendar "$PYTHON" -m http.server 9199 --bind 127.0.0.1 --directory "$E2E_DIR/calendar"
+  wait_for "http://127.0.0.1:9199/calendar.json"
+}
+
 start_broker() {
   (
     cd "$ROOT/broker_service"
@@ -78,7 +87,9 @@ start_backend() {
     export KILL_SWITCH_ACTION=halt
     export CONNECTION_MAX_DAILY_EQUITY_LOSS__MT5_SIM_A=50
     export CONNECTION_MAX_DRAWDOWN__MT5_SIM_A=80
-    export PROP_RULES__MT5_SIM_B='{"firm":"Sim Prop 25k","initial_balance":25000,"daily_loss":{"pct":5,"basis":"higher"},"max_loss":{"pct":10,"mode":"trailing_equity"},"buffer_pct":20}'
+    export PROP_RULES__MT5_SIM_B='{"firm":"Sim Prop 25k","initial_balance":25000,"daily_loss":{"pct":5,"basis":"higher"},"max_loss":{"pct":10,"mode":"trailing_equity"},"buffer_pct":20,"news_blackout":{"minutes_before":60,"minutes_after":60,"impact":["High"]}}'
+    export NEWS_CALENDAR_URL=http://127.0.0.1:9199/calendar.json
+    export NEWS_CALENDAR_REFRESH_MINUTES=0.05
     export LOG_LEVEL=info
     exec node dist/index.js
   ) >"$E2E_DIR/backend.log" 2>&1 &
@@ -98,12 +109,14 @@ case "${1:-}" in
   start)
     start_sidecar a 9101 "$E2E_SECRET_A" EURUSD.a 51234567 10000
     start_sidecar b 9102 "$E2E_SECRET_B" EURUSDm 88776655 25000
+    mkdir -p "$E2E_DIR/calendar" && echo '[]' >"$E2E_DIR/calendar/calendar.json"
+    start_calendar
     start_broker
     start_backend
     echo "stack up; logs in $E2E_DIR"
     ;;
   stop)
-    for name in backend broker sidecar-a sidecar-b; do stop_one "$name"; done
+    for name in backend broker calendar sidecar-a sidecar-b; do stop_one "$name"; done
     ;;
   restart)
     # Restart one component in place: e2e/stack.sh restart backend|broker|sidecar-a|sidecar-b
@@ -112,6 +125,7 @@ case "${1:-}" in
     case "$2" in
       backend) start_backend ;;
       broker) start_broker ;;
+      calendar) start_calendar ;;
       sidecar-a) start_sidecar a 9101 "$E2E_SECRET_A" EURUSD.a 51234567 10000 ;;
       sidecar-b) start_sidecar b 9102 "$E2E_SECRET_B" EURUSDm 88776655 25000 ;;
     esac

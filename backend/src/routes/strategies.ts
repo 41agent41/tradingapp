@@ -41,6 +41,7 @@ import {
   evaluateAccountLimits,
   propMarks,
   toEquityMarks,
+  tradingDayTimeZone,
   type EquityMarks,
 } from '../services/accountLimits.js';
 import { evaluatePropRules } from '../services/propRules.js';
@@ -321,23 +322,11 @@ function haltView(halt: ConnectionHaltRow | undefined) {
  * has recorded any equity for it.
  */
 function equityView(
-  label: string,
-  info: { platform?: string; account?: string },
-  entry: { marks: EquityMarks; last_at: string; hwm_at: string } | undefined
+  entry: { marks: EquityMarks; last_at: string; hwm_at: string } | undefined,
+  limits: ConnectionLimits | null,
+  limitsError: string | null,
+  tradingDays: number | null
 ) {
-  const [broker, ...rest] = label.split(':');
-  let limits: ConnectionLimits | null = null;
-  let limitsError: string | null = null;
-  try {
-    limits = connectionLimitsFor({
-      broker: info.platform ?? broker,
-      brokerAccount: info.account ?? rest.join(':'),
-    });
-  } catch (err) {
-    // A prop account whose rules cannot be read refuses every entry; the
-    // panel has to say why rather than look healthy.
-    limitsError = (err as Error).message;
-  }
   if (!entry) return limitsError ? { limits_error: limitsError } : null;
   const { marks } = entry;
   return {
@@ -363,6 +352,16 @@ function equityView(
             stop_at: r.stop_at,
             stopped: r.stopped,
           })),
+          news_blackout: limits.prop.news_blackout ?? null,
+          weekend: limits.prop.weekend
+            ? {
+                no_entries_after: limits.prop.weekend.no_entries_after,
+                resume: limits.prop.weekend.resume,
+              }
+            : null,
+          min_trading_days: limits.prop.min_trading_days
+            ? { ...limits.prop.min_trading_days, traded: tradingDays }
+            : null,
         }
       : null,
     limits_error: limitsError,
@@ -440,6 +439,42 @@ router.get('/fleet', async (_req: Request, res: Response) => {
       (await repo.listActiveHalts()).map((h) => [`${h.broker}:${h.broker_account}`, h])
     );
 
+    // Each connection's declared limits, and for a prop account with a
+    // minimum-trading-days rule, how many it has traded so far.
+    const limitsByLabel = new Map<
+      string,
+      [ConnectionLimits | null, string | null, number | null]
+    >();
+    for (const [label, info] of Object.entries(connections) as [string, any][]) {
+      const [broker, ...rest] = label.split(':');
+      const connection = {
+        broker: info.platform ?? broker,
+        brokerAccount: info.account ?? rest.join(':'),
+      };
+      let limits: ConnectionLimits | null = null;
+      let limitsError: string | null = null;
+      try {
+        limits = connectionLimitsFor(connection);
+      } catch (err) {
+        // A prop account whose rules cannot be read refuses every entry; the
+        // panel has to say why rather than look healthy.
+        limitsError = (err as Error).message;
+      }
+      let tradingDays: number | null = null;
+      const minimum = limits?.prop?.min_trading_days;
+      if (minimum) {
+        tradingDays = await repo
+          .countTradingDays(
+            connection.broker,
+            connection.brokerAccount,
+            minimum.start_date,
+            tradingDayTimeZone()
+          )
+          .catch(() => null);
+      }
+      limitsByLabel.set(label, [limits, limitsError, tradingDays]);
+    }
+
     const runsPerConnection: Record<string, number> = {};
     for (const run of active) {
       const label = `${run.broker}:${run.broker_account}`;
@@ -452,7 +487,7 @@ router.get('/fleet', async (_req: Request, res: Response) => {
         ...info,
         active_runs: runsPerConnection[label] ?? 0,
         halt: haltView(halts.get(label)),
-        equity: equityView(label, info, equity.get(label)),
+        equity: equityView(equity.get(label), ...(limitsByLabel.get(label) ?? [null, null, null])),
       })),
       currency,
       strategies,

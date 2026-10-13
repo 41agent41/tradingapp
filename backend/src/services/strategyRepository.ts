@@ -663,6 +663,27 @@ export class StrategyRepository {
     return toEquityMarks(result.rows[0] as ConnectionEquityRow);
   }
 
+  /**
+   * Days with at least one fill on a connection since `startDate`, counted in
+   * the trading-day timezone. What prop firms' minimum-trading-days rule
+   * counts, near enough: some count only days a trade was opened.
+   */
+  async countTradingDays(
+    broker: string,
+    brokerAccount: string,
+    startDate: string,
+    timeZone: string
+  ): Promise<number> {
+    const result = await this.db.query(
+      `SELECT COUNT(DISTINCT (executed_at AT TIME ZONE $4)::date) AS days
+         FROM order_executions
+        WHERE LOWER(broker) = LOWER($1) AND LOWER(broker_account) = LOWER($2)
+          AND (executed_at AT TIME ZONE $4)::date >= $3::date`,
+      [broker, brokerAccount, startDate, timeZone]
+    );
+    return Number(result.rows[0]?.days ?? 0);
+  }
+
   async listEquityMarks(): Promise<ConnectionEquityRow[]> {
     const result = await this.db.query(`SELECT ${EQUITY_COLUMNS} FROM connection_equity`, []);
     return result.rows as ConnectionEquityRow[];

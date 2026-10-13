@@ -333,6 +333,26 @@ function ConnectionCard({
                   {money(rule.stop_at)})
                 </div>
               ))}
+              {equity.prop.news_blackout && (
+                <div>
+                  No entries {equity.prop.news_blackout.minutes_before} min before to{' '}
+                  {equity.prop.news_blackout.minutes_after} min after{' '}
+                  {equity.prop.news_blackout.impact.join('/')}-impact news
+                </div>
+              )}
+              {equity.prop.weekend && (
+                <div>
+                  No entries from {equity.prop.weekend.no_entries_after} to{' '}
+                  {equity.prop.weekend.resume}
+                </div>
+              )}
+              {equity.prop.min_trading_days && (
+                <div>
+                  Trading days: {equity.prop.min_trading_days.traded ?? 'unknown'} of{' '}
+                  {equity.prop.min_trading_days.days} since{' '}
+                  {equity.prop.min_trading_days.start_date}
+                </div>
+              )}
             </div>
           )}
           {equity.breaches.map((kind) => (

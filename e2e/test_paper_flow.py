@@ -15,9 +15,11 @@ stops it out.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
@@ -112,6 +114,18 @@ def fleet_halt(account: str) -> Any:
 
 def signals(run_id: int) -> List[Dict[str, Any]]:
     return api("GET", f"/strategies/runs/{run_id}/signals").json()["signals"]
+
+
+E2E_DIR = Path(os.environ.get("E2E_DIR", "/tmp/tradingapp-e2e"))
+
+
+def backend_log() -> str:
+    return (E2E_DIR / "backend.log").read_text()
+
+
+def set_calendar(events: List[Dict[str, Any]]) -> None:
+    """Rewrite the economic calendar the backend reads (see stack.sh)."""
+    (E2E_DIR / "calendar" / "calendar.json").write_text(json.dumps(events))
 
 
 def restart(component: str) -> None:
@@ -357,3 +371,41 @@ def test_paper_flow():
     )
     assert len(entries("sim-a")) == limited_entries
     assert not sim("sim-a")["positions"]
+
+    # News blackout (R-P2): a high-impact USD release is due now, and sim-b's
+    # firm forbids entries within an hour of one. Stopped out, sim-b is refused
+    # re-entry with the release named; once the calendar clears, it re-enters.
+    set_calendar(
+        [
+            {
+                "title": "Non-Farm Employment Change",
+                "country": "USD",
+                "date": datetime.now(timezone.utc).isoformat(),
+                "impact": "High",
+            }
+        ]
+    )
+    blackout_entries = len(entries("sim-b"))
+    stops_before = len([d for d in sim("sim-b")["deals"] if d["comment"] == "[sl]"])
+    sim_set("sim-b", price_offset=-0.006)
+    wait_until(
+        "sim-b's stop to fire again",
+        lambda: len([d for d in sim("sim-b")["deals"] if d["comment"] == "[sl]"])
+        > stops_before,
+        timeout=30,
+    )
+    wait_until(
+        "an entry refused by the news blackout",
+        lambda: "news blackout: USD Non-Farm Employment Change" in backend_log(),
+        timeout=240,
+    )
+    assert len(entries("sim-b")) == blackout_entries
+    assert not sim("sim-b")["positions"]
+
+    set_calendar([])
+    wait_until(
+        "sim-b's entry once the blackout clears",
+        lambda: len(entries("sim-b")) == blackout_entries + 1,
+        timeout=240,
+    )
+    assert_never_doubled("sim-b")

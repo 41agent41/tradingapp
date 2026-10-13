@@ -25,7 +25,22 @@
  *    "daily_loss":{"pct":5,"basis":"balance"},
  *    "max_loss":{"pct":10,"mode":"static"},
  *    "buffer_pct":20}
+ *
+ * Firms also restrict *when* an account may trade (R-P2), and those rules are
+ * optional blocks in the same JSON:
+ *
+ *   - `news_blackout`: no new entries from `minutes_before` to
+ *     `minutes_after` a news release of the listed `impact` for either of the
+ *     instrument's currencies (see newsCalendar.ts). When the calendar cannot
+ *     be read, entries are refused.
+ *   - `weekend`: no new entries from `no_entries_after` (e.g. `"fri 20:00"`)
+ *     until `resume` (default `"mon 00:00"`), both in `TRADING_DAY_TIMEZONE`.
+ *     A position still open inside that window pages the operator.
+ *   - `min_trading_days`: the firm's minimum number of days traded since
+ *     `start_date`. Nothing is refused for it; the Fleet panel shows progress.
  */
+
+import { blackoutEvent, type BlackoutRule, type CalendarState } from './newsCalendar.js';
 
 export type DailyBasis = 'balance' | 'equity' | 'higher';
 export type MaxLossMode = 'static' | 'trailing_equity' | 'trailing_balance';
@@ -37,6 +52,18 @@ export interface PropRules {
   max_loss?: { pct?: number; amount?: number; mode: MaxLossMode; lock_at_initial?: boolean };
   /** Stop entries once the room left is within this % of the allowance. */
   buffer_pct: number;
+  news_blackout?: BlackoutRule;
+  weekend?: WeekendRule;
+  min_trading_days?: { days: number; start_date: string };
+}
+
+/** A weekly window, as minutes after Monday 00:00 in the trading timezone. */
+export interface WeekendRule {
+  no_entries_after: string;
+  resume: string;
+  /** Parsed forms of the two above. */
+  from_minute: number;
+  until_minute: number;
 }
 
 /** The balance and equity readings the rules are measured against. */
@@ -119,7 +146,137 @@ export function parsePropRules(raw: string): PropRules {
   if (!rules.daily_loss && !rules.max_loss) {
     throw new Error('needs daily_loss, max_loss or both');
   }
+
+  if (value.news_blackout != null) {
+    const block = value.news_blackout;
+    const before = Number(block.minutes_before ?? 2);
+    const after = Number(block.minutes_after ?? 2);
+    if (![before, after].every((m) => Number.isFinite(m) && m >= 0 && m <= 1440)) {
+      throw new Error('news_blackout minutes_before and minutes_after must be 0 to 1440');
+    }
+    const impact = block.impact ?? ['High'];
+    if (
+      !Array.isArray(impact) ||
+      impact.length === 0 ||
+      !impact.every((i) => typeof i === 'string')
+    ) {
+      throw new Error('news_blackout.impact must be a list such as ["High"]');
+    }
+    rules.news_blackout = { minutes_before: before, minutes_after: after, impact };
+  }
+
+  if (value.weekend != null) {
+    const from = String(value.weekend.no_entries_after ?? '');
+    const until = String(value.weekend.resume ?? 'mon 00:00');
+    const fromMinute = weekMinute(from);
+    const untilMinute = weekMinute(until);
+    if (fromMinute == null) throw new Error('weekend.no_entries_after must look like "fri 20:00"');
+    if (untilMinute == null) throw new Error('weekend.resume must look like "mon 00:00"');
+    if (fromMinute === untilMinute) throw new Error('weekend window is empty');
+    rules.weekend = {
+      no_entries_after: from,
+      resume: until,
+      from_minute: fromMinute,
+      until_minute: untilMinute,
+    };
+  }
+
+  if (value.min_trading_days != null) {
+    const days = Number(value.min_trading_days.days);
+    const start = String(value.min_trading_days.start_date ?? '');
+    if (!Number.isInteger(days) || days <= 0) {
+      throw new Error('min_trading_days.days must be a positive whole number');
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || Number.isNaN(Date.parse(start))) {
+      throw new Error('min_trading_days.start_date must be YYYY-MM-DD');
+    }
+    rules.min_trading_days = { days, start_date: start };
+  }
   return rules;
+}
+
+const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+/** `"fri 20:00"` as minutes after Monday 00:00, or null when malformed. */
+export function weekMinute(text: string): number | null {
+  const match = /^\s*([a-z]{3})[a-z]*\s+(\d{1,2}):(\d{2})\s*$/i.exec(text);
+  if (!match) return null;
+  const day = WEEKDAYS.indexOf(match[1].toLowerCase());
+  const hour = Number(match[2]);
+  const minute = Number(match[3]);
+  if (day < 0 || hour > 23 || minute > 59) return null;
+  return day * 1440 + hour * 60 + minute;
+}
+
+/** Where `at` falls in the week, in minutes after Monday 00:00 in `timeZone`. */
+export function minuteOfWeek(at: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(at);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  const day = WEEKDAYS.indexOf(get('weekday').slice(0, 3).toLowerCase());
+  return day * 1440 + Number(get('hour')) * 60 + Number(get('minute'));
+}
+
+/** Whether `at` is inside the weekend window. The window may wrap past Sunday. */
+export function inWeekendWindow(at: Date, rule: WeekendRule, timeZone: string): boolean {
+  const m = minuteOfWeek(at, timeZone);
+  return rule.from_minute < rule.until_minute
+    ? m >= rule.from_minute && m < rule.until_minute
+    : m >= rule.from_minute || m < rule.until_minute;
+}
+
+/**
+ * Why a new entry is refused by the firm's schedule rules right now, or null
+ * when it may go ahead. Pure.
+ *
+ * `calendar` is only read when there is a news rule, and a stale or missing
+ * calendar refuses: a blackout that cannot be checked is treated as in force.
+ */
+export function propScheduleRefusal(input: {
+  rules: PropRules;
+  now: Date;
+  timeZone: string;
+  currencies: string[];
+  calendar: CalendarState | null;
+}): string | null {
+  const { rules, now, timeZone, currencies, calendar } = input;
+  if (rules.weekend && inWeekendWindow(now, rules.weekend, timeZone)) {
+    return (
+      `${rules.firm} weekend rule: no new entries from ${rules.weekend.no_entries_after} ` +
+      `until ${rules.weekend.resume} (${timeZone})`
+    );
+  }
+  if (rules.news_blackout) {
+    if (!calendar || calendar.stale) {
+      return (
+        `${rules.firm} news rule cannot be checked: the economic calendar is ` +
+        `${calendar?.fetchedAt ? 'out of date' : 'unavailable'}` +
+        (calendar?.error ? ` (${calendar.error})` : '')
+      );
+    }
+    if (currencies.length === 0) {
+      return `${rules.firm} news rule cannot be checked: the instrument's currencies are unknown`;
+    }
+    const event = blackoutEvent(calendar.events, currencies, now, rules.news_blackout);
+    if (event) {
+      return (
+        `${rules.firm} news blackout: ${event.currency} ${event.title} at ` +
+        `${event.at.toISOString()} (${rules.news_blackout.minutes_before} min before to ` +
+        `${rules.news_blackout.minutes_after} min after)`
+      );
+    }
+  }
+  return null;
+}
+
+/** Whether the rules restrict when entries may be placed. */
+export function hasScheduleRules(rules: PropRules | null | undefined): boolean {
+  return Boolean(rules && (rules.news_blackout || rules.weekend));
 }
 
 function allowanceOf(block: any, name: string): { pct?: number; amount?: number } {
