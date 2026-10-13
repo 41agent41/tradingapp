@@ -206,10 +206,11 @@ def test_paper_flow():
         lambda: (fleet_connection("sim-b")["equity"] or {}).get("prop"),
         timeout=90,
     )
-    assert fleet_connection("sim-b")["equity"]["balance"] == pytest.approx(10_000)
+    assert fleet_connection("sim-b")["equity"]["balance"] == pytest.approx(25_000)
     rules = {r["kind"]: r for r in prop["rules"]}
-    assert rules["prop_daily_loss"]["floor"] >= 9_500, rules
-    assert rules["prop_max_loss"]["floor"] >= 9_000, rules
+    # 5% daily and 10% trailing of a 25,000 initial balance.
+    assert rules["prop_daily_loss"]["floor"] == pytest.approx(23_750, abs=50), rules
+    assert rules["prop_max_loss"]["floor"] == pytest.approx(22_500, abs=50), rules
     assert not any(r["stopped"] for r in rules.values()), rules
 
     # Step 21: the stop trails up, one move per bar, never down.
