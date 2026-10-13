@@ -239,12 +239,45 @@ describe('StrategyRepository equity marks', () => {
     const marks = await new StrategyRepository(db).recordEquity('mt5', 'sim-a', '2026-10-13', 9800);
     expect(calls[0].text).toMatch(/ON CONFLICT \(broker, broker_account\) DO UPDATE/);
     expect(calls[0].text).toMatch(/GREATEST\(connection_equity.high_water_mark/);
-    expect(calls[0].params).toEqual(['mt5', 'sim-a', '2026-10-13', 9800]);
+    expect(calls[0].params).toEqual(['mt5', 'sim-a', '2026-10-13', 9800, null]);
     expect(marks).toEqual({
       trading_day: '2026-10-13',
       day_start_equity: 10000,
       high_water_mark: 10500,
       equity: 9800,
+      balance: null,
+      day_start_balance: null,
+      balance_high_water_mark: null,
     });
+  });
+
+  it('records the balance marks alongside equity when the venue reports one', async () => {
+    const { db, calls } = fakeDb(() => [
+      {
+        trading_day: '2026-10-13',
+        day_start_equity: '10000',
+        high_water_mark: '10000',
+        last_equity: '9800',
+        day_start_balance: '10000',
+        last_balance: '9900',
+        balance_hwm: '10000',
+      },
+    ]);
+    const marks = await new StrategyRepository(db).recordEquity(
+      'mt5',
+      'ftmo',
+      '2026-10-13',
+      9800,
+      9900
+    );
+    expect(calls[0].params[4]).toBe(9900);
+    expect(calls[0].text).toMatch(/GREATEST\(connection_equity.balance_hwm/);
+    expect(marks).toEqual(
+      expect.objectContaining({
+        balance: 9900,
+        day_start_balance: 10000,
+        balance_high_water_mark: 10000,
+      })
+    );
   });
 });

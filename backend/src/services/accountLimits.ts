@@ -24,6 +24,7 @@
 
 import type { ConnectionLimits } from './executionEngine.js';
 import type { Connection } from './orderTypes.js';
+import { evaluatePropRules, parsePropRules, type PropMarks } from './propRules.js';
 
 /** What the app knows about a connection's equity. */
 export interface EquityMarks {
@@ -33,6 +34,11 @@ export interface EquityMarks {
   high_water_mark: number;
   /** The most recent observation. */
   equity: number;
+  /** Balance (closed P&L only), when the venue reports it. Prop firms measure
+   *  some rules from it rather than from equity. */
+  balance?: number | null;
+  day_start_balance?: number | null;
+  balance_high_water_mark?: number | null;
 }
 
 /** A connection's equity marks as stored. NUMERIC columns arrive as strings. */
@@ -45,6 +51,9 @@ export interface ConnectionEquityRow {
   hwm_at: string;
   last_equity: string | number;
   last_at: string;
+  day_start_balance?: string | number | null;
+  last_balance?: string | number | null;
+  balance_hwm?: string | number | null;
 }
 
 export function toEquityMarks(row: ConnectionEquityRow): EquityMarks {
@@ -53,11 +62,20 @@ export function toEquityMarks(row: ConnectionEquityRow): EquityMarks {
     day_start_equity: Number(row.day_start_equity),
     high_water_mark: Number(row.high_water_mark),
     equity: Number(row.last_equity),
+    balance: numberOrNull(row.last_balance),
+    day_start_balance: numberOrNull(row.day_start_balance),
+    balance_high_water_mark: numberOrNull(row.balance_hwm),
   };
 }
 
+function numberOrNull(value: string | number | null | undefined): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 export interface AccountLimitBreach {
-  kind: 'daily_equity_loss' | 'drawdown';
+  kind: 'daily_equity_loss' | 'drawdown' | 'prop_daily_loss' | 'prop_max_loss';
   /** The loss measured, as a positive amount. */
   loss: number;
   limit: number;
@@ -102,12 +120,22 @@ export function connectionLimitsFor(
   if (loss != null) limits.max_daily_loss = loss;
   if (equityLoss != null) limits.max_daily_equity_loss = equityLoss;
   if (drawdown != null) limits.max_drawdown = drawdown;
+  // Prop rules are per account only: two funded accounts never share a firm's
+  // limits, so there is no fleet-wide default to fall back to.
+  const prop = env[`PROP_RULES__${key}`];
+  if (prop && prop.trim()) {
+    try {
+      limits.prop = parsePropRules(prop);
+    } catch (err) {
+      throw new Error(`PROP_RULES__${key} ${(err as Error).message}`);
+    }
+  }
   return Object.keys(limits).length > 0 ? limits : null;
 }
 
 /** Whether the limits include any equity-based cap. */
 export function hasEquityLimits(limits: ConnectionLimits | null | undefined): boolean {
-  return Boolean(limits && (limits.max_daily_equity_loss || limits.max_drawdown));
+  return Boolean(limits && (limits.max_daily_equity_loss || limits.max_drawdown || limits.prop));
 }
 
 /**
@@ -167,7 +195,31 @@ export function evaluateAccountLimits(
       });
     }
   }
+
+  if (limits.prop) {
+    for (const state of evaluatePropRules(propMarks(marks), limits.prop)) {
+      if (!state.stopped) continue;
+      breaches.push({
+        kind: state.kind,
+        loss: state.allowance - state.room,
+        limit: state.allowance - state.stop_at,
+        detail: state.detail,
+      });
+    }
+  }
   return breaches;
+}
+
+/** The marks in the shape the prop rules read. */
+export function propMarks(marks: EquityMarks): PropMarks {
+  return {
+    equity: marks.equity,
+    balance: marks.balance ?? null,
+    day_start_equity: marks.day_start_equity,
+    day_start_balance: marks.day_start_balance ?? null,
+    equity_high_water_mark: marks.high_water_mark,
+    balance_high_water_mark: marks.balance_high_water_mark ?? null,
+  };
 }
 
 function round(value: number): string {

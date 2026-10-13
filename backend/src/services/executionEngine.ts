@@ -27,8 +27,14 @@ import {
   type OrderAction,
   type ValidatedOrder,
 } from './orderTypes.js';
-import { evaluateAccountLimits, hasEquityLimits, type EquityMarks } from './accountLimits.js';
+import {
+  evaluateAccountLimits,
+  hasEquityLimits,
+  type AccountLimitBreach,
+  type EquityMarks,
+} from './accountLimits.js';
 import type { Alert } from './notifier.js';
+import type { PropRules } from './propRules.js';
 import type { SubmitCreateOutcome } from './orderService.js';
 import type { ActiveRun } from './strategyRepository.js';
 import { runSymbol } from './strategyRunner.js';
@@ -127,6 +133,8 @@ export interface ConnectionLimits {
   max_daily_equity_loss?: number;
   /** Equity (with floating P&L) below its high-water mark. */
   max_drawdown?: number;
+  /** A prop firm's daily and maximum loss rules, computed the firm's way. */
+  prop?: PropRules;
 }
 
 /** Fleet-wide caps. */
@@ -137,6 +145,14 @@ export interface PortfolioLimits {
   currency_consistent: boolean;
   currencies?: string[];
 }
+
+/** How each equity limit is named in a refusal. */
+const LIMIT_NAMES: Record<AccountLimitBreach['kind'], string> = {
+  daily_equity_loss: 'max_daily_equity_loss',
+  drawdown: 'max_drawdown',
+  prop_daily_loss: 'prop daily loss buffer',
+  prop_max_loss: 'prop max loss buffer',
+};
 
 /** What a signal asks the engine to do, once the vocabulary is normalised. */
 export type SignalIntent = 'long' | 'short' | 'flat';
@@ -373,7 +389,7 @@ export class ExecutionEngine {
       if (breach) {
         return {
           placed: false,
-          reason: `connection ${breach.kind === 'drawdown' ? 'max_drawdown' : 'max_daily_equity_loss'} reached on ${connection.broker}:${connection.brokerAccount}: ${breach.detail}`,
+          reason: `connection ${LIMIT_NAMES[breach.kind]} reached on ${connection.broker}:${connection.brokerAccount}: ${breach.detail}`,
         };
       }
     }

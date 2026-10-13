@@ -671,6 +671,10 @@ CREATE TABLE IF NOT EXISTS connection_equity (
     last_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (broker, broker_account)
 );
+-- Balance marks, for prop-firm rules measured from balance rather than equity.
+ALTER TABLE connection_equity ADD COLUMN IF NOT EXISTS day_start_balance NUMERIC(20,4);
+ALTER TABLE connection_equity ADD COLUMN IF NOT EXISTS last_balance NUMERIC(20,4);
+ALTER TABLE connection_equity ADD COLUMN IF NOT EXISTS balance_hwm NUMERIC(20,4);
 
 CREATE INDEX IF NOT EXISTS idx_strategy_runs_status
     ON strategy_runs (status);

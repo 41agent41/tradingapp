@@ -78,6 +78,7 @@ start_backend() {
     export KILL_SWITCH_ACTION=halt
     export CONNECTION_MAX_DAILY_EQUITY_LOSS__MT5_SIM_A=50
     export CONNECTION_MAX_DRAWDOWN__MT5_SIM_A=80
+    export PROP_RULES__MT5_SIM_B='{"firm":"Sim Prop 10k","initial_balance":10000,"daily_loss":{"pct":5,"basis":"higher"},"max_loss":{"pct":10,"mode":"trailing_equity"},"buffer_pct":20}'
     export LOG_LEVEL=info
     exec node dist/index.js
   ) >"$E2E_DIR/backend.log" 2>&1 &

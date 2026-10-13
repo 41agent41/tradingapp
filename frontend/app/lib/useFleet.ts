@@ -32,7 +32,24 @@ export interface FleetConnection {
   equity?: FleetEquity | null;
 }
 
+export type FleetLimitKind = 'daily_equity_loss' | 'drawdown' | 'prop_daily_loss' | 'prop_max_loss';
+
+export interface FleetPropRule {
+  kind: 'prop_daily_loss' | 'prop_max_loss';
+  /** Null when a balance-based rule had no balance to read. */
+  floor: number | null;
+  allowance: number;
+  room: number | null;
+  stop_at: number;
+  stopped: boolean;
+}
+
+/** Only `limits_error` is set when the runner has recorded no equity yet but
+ *  the connection's prop rules cannot be read. */
 export interface FleetEquity {
+  limits_error?: string | null;
+  balance?: number | null;
+  prop?: { firm: string; buffer_pct: number; rules: FleetPropRule[] } | null;
   equity: number;
   trading_day: string;
   day_start_equity: number;
@@ -41,7 +58,7 @@ export interface FleetEquity {
   drawdown: number;
   max_daily_equity_loss: number | null;
   max_drawdown: number | null;
-  breaches: Array<'daily_equity_loss' | 'drawdown'>;
+  breaches: FleetLimitKind[];
   last_at: string;
   hwm_at: string;
 }
