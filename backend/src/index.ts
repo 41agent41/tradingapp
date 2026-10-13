@@ -19,6 +19,7 @@ import { createStreamingBridge } from './services/streamingBridge.js';
 import { createBackfillScheduler } from './services/backfillScheduler.js';
 import { createStrategyRunner } from './services/strategyRunner.js';
 import { createExecutionsPoller } from './services/executionsPoller.js';
+import { Heartbeat, heartbeatOptionsFromEnv } from './services/heartbeat.js';
 import { checkConnectionSchema, reportSchemaGuard } from './services/schemaGuard.js';
 import { createAuthMiddleware, checkSocketAuth } from './middleware/auth.js';
 import { observabilityMiddleware } from './middleware/observability.js';
@@ -193,6 +194,7 @@ app.get('/api/health', async (_req, res) => {
       backfill: backfillScheduler.status(),
       systematic: strategyRunner.status(),
       executions: executionsPoller.status(),
+      heartbeat: heartbeat.status(),
     },
   });
 });
@@ -289,6 +291,28 @@ const strategyRunner = createStrategyRunner({
 // strategy's `max_daily_loss` cap enforceable. Opt-in via
 // EXECUTIONS_SYNC_ENABLED — see services/executionsPoller.ts.
 const executionsPoller = createExecutionsPoller();
+
+// Dead-man's switch: pings a monitor off the host while the app can trade, so
+// silence pages you when it cannot. Opt-in via HEARTBEAT_URL — see
+// services/heartbeat.ts.
+const heartbeat = new Heartbeat(
+  {
+    database: () => dbService.testConnection(),
+    brokerService: async () => {
+      await axios.get(`${BROKER_SERVICE_URL}/health`, { timeout: 5000 });
+      return true;
+    },
+    runner: () => {
+      const status = strategyRunner.status();
+      return {
+        enabled: status.enabled,
+        intervalSeconds: status.interval_seconds,
+        lastRunAt: status.last_run ? Date.parse(status.last_run) : null,
+      };
+    },
+  },
+  heartbeatOptionsFromEnv()
+);
 
 io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
@@ -416,6 +440,7 @@ async function shutdown(signal: string) {
   } catch (err) {
     console.warn('Error stopping executions poller:', err);
   }
+  heartbeat.stop();
   server.close(() => {
     console.log('Server closed');
     process.exit(0);
@@ -436,6 +461,7 @@ server.listen(PORT, '0.0.0.0', () => {
   });
 
   backfillScheduler.start();
+  heartbeat.start();
 
   // Multi-connection on a pre-C-0 schema silently drops colliding fills, so
   // the systematic services do not start until the schema is verified. The

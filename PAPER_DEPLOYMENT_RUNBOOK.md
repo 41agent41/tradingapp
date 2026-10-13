@@ -309,6 +309,15 @@ its stop by hand in the terminal.
 same condition does **not** re-alert every bar afterwards.
 **Then:** put the stop back and confirm the alert resolves.
 
+**Dead-man's switch:** create a check on a monitor off the Proxmox host
+(healthchecks.io: period 1 minute, grace 5 minutes, alerts to your phone),
+set `HEARTBEAT_URL` and `HEARTBEAT_FAIL_URL`, and restart the backend.
+`/api/health` shows `heartbeat.last_result: ok` and the check turns green.
+**Verify:** stop the backend container.
+**Pass:** you are paged within the grace period. Start it again and the check
+recovers. Then stop the broker service instead: the page arrives at once
+(the fail URL), naming "broker service unreachable" in the check's log.
+
 ---
 
 ## Phase 5 — Observe

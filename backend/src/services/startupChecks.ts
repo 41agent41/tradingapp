@@ -94,6 +94,19 @@ export function checkStartupConfig(env: Env = process.env): StartupCheckResult {
     }
   }
 
+  // --- Dead-man's switch: unattended trading with nothing watching ---------
+  const heartbeatUrl = val(env, 'HEARTBEAT_URL');
+  for (const name of ['HEARTBEAT_URL', 'HEARTBEAT_FAIL_URL']) {
+    const url = val(env, name);
+    if (url && !/^https?:\/\//i.test(url)) errors.push(`${name} must be an http(s) URL.`);
+  }
+  if (!heartbeatUrl && val(env, 'SYSTEMATIC_EXECUTION_ENABLED').toLowerCase() === 'true') {
+    warnings.push(
+      'SYSTEMATIC_EXECUTION_ENABLED=true with no HEARTBEAT_URL: nothing will page you if the ' +
+        'app, the host or its internet goes down. Set a monitor off the host.'
+    );
+  }
+
   if (val(env, 'NEXT_PUBLIC_API_TOKEN')) {
     warnings.push(
       'NEXT_PUBLIC_API_TOKEN is no longer used and should be removed from .env. If it ever ' +
