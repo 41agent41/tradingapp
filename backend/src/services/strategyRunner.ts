@@ -32,7 +32,13 @@
 import axios from 'axios';
 import { logger } from './logger.js';
 import { applyTrail } from './stopManager.js';
-import { evaluateKillSwitch, killSwitchConfig, triggerAlert } from './killSwitch.js';
+import {
+  evaluateKillSwitch,
+  haltAlertKey,
+  killSwitchConfig,
+  triggerAlert,
+  type KillSwitchTrigger,
+} from './killSwitch.js';
 import {
   connectionActiveRuns,
   connectionBreakerOpen,
@@ -215,6 +221,12 @@ export interface StrategyRunnerDeps {
     key: string,
     message?: { title: string; detail?: string; context?: Record<string, unknown> }
   ): Promise<unknown>;
+  /** E-6: halt new entries on a connection after a critical kill-switch
+   *  trigger. `created` is false when it was already halted. */
+  haltConnection?(
+    connection: Connection,
+    cause: { kind: string; detail: string; runId: number }
+  ): Promise<{ created: boolean }>;
   /** C-3 staged deploy. Optional so a runner without groups behaves as before. */
   listStagingGroups?(): Promise<StagingGroup[]>;
   admitGroup?(groupId: number): Promise<number>;
@@ -404,6 +416,7 @@ function defaultDeps(
     realisedPnlTodayPortfolio: async () =>
       (await executionRepo.realisedPnlTodayAllConnections()).realised,
     sendAlert: (alert) => notifier.notify(alert),
+    connectionHalt: (connection) => repo.activeHalt(connection.broker, connection.brokerAccount),
   });
   // Venue caches, keyed per **connection** (platform + account), not per
   // platform. Two accounts on one platform have different equity, different
@@ -630,6 +643,16 @@ function defaultDeps(
     connectionEquity: (connection) => venueEquity(connection),
     sendAlert: (alert) => notifier.notify(alert),
     resolveAlert: (key, message) => notifier.resolve(key, message),
+    haltConnection: async (connection, cause) => {
+      const { created } = await repo.haltConnection({
+        broker: connection.broker,
+        brokerAccount: connection.brokerAccount,
+        triggerKind: cause.kind,
+        detail: cause.detail,
+        runId: cause.runId,
+      });
+      return { created };
+    },
     priceIncrement: async (connection, symbol) => {
       const spec = await venueInstrumentSpec(connection, symbol);
       const increment = Number(spec?.tickSize) || Number(spec?.point) || 0;
@@ -698,6 +721,7 @@ export class StrategyRunner {
   public positionDivergences = 0;
   public stopsTightened = 0;
   public killSwitchTriggers = 0;
+  public killSwitchHalts = 0;
   /** Kill-switch alerts currently raised, per run: alert key → its alert. A
    *  key that stops firing is resolved, so the operator hears the all-clear
    *  and a recurrence alerts at once rather than being deduplicated. */
@@ -905,6 +929,62 @@ export class StrategyRunner {
   }
 
   /**
+   * Halt new entries on a connection and page the operator (E-6).
+   *
+   * Only the first halt pages: the connection stays halted, and later
+   * triggers would only repeat it. A halt that cannot be recorded pages too,
+   * because the operator then has to stop the connection by hand.
+   */
+  private async haltConnection(
+    run: ActiveRun,
+    connection: Connection,
+    label: string,
+    trigger: KillSwitchTrigger
+  ): Promise<void> {
+    if (!this.deps.haltConnection) return;
+    try {
+      const { created } = await this.deps.haltConnection(connection, {
+        kind: trigger.kind,
+        detail: trigger.detail,
+        runId: run.id,
+      });
+      if (!created) return;
+      this.killSwitchHalts++;
+      logger.error(
+        { run_id: run.id, connection: label, kind: trigger.kind },
+        'kill switch halted entries on connection'
+      );
+      await this.deps.sendAlert?.({
+        key: haltAlertKey(label),
+        severity: 'critical',
+        title: `Entries halted on ${label}`,
+        detail:
+          `The kill switch stopped new entries on ${label} after: ${trigger.title}. ` +
+          'Open positions keep their stops and exits still run. Resume the connection ' +
+          'once the cause is understood.',
+        context: { connection: label, trigger: trigger.kind, run_id: run.id },
+      });
+    } catch (err) {
+      this.errors++;
+      logger.error(
+        { run_id: run.id, connection: label, err: String(err) },
+        'kill switch could not halt connection'
+      );
+      await this.deps
+        .sendAlert?.({
+          key: `${haltAlertKey(label)}:failed`,
+          severity: 'critical',
+          title: `Kill switch could not halt ${label}`,
+          detail:
+            `${trigger.title}, but recording the halt failed (${String((err as Error)?.message ?? err)}). ` +
+            'New entries are NOT blocked. Stop the connection by hand.',
+          context: { connection: label, trigger: trigger.kind, run_id: run.id },
+        })
+        .catch(() => undefined);
+    }
+  }
+
+  /**
    * Evaluate the kill-switch triggers for one run at bar close (E-5).
    *
    * Notify-only by default. Everything here is a *detectable aftermath* rather
@@ -963,6 +1043,16 @@ export class StrategyRunner {
         { connection: label },
         triggers.some((t) => t.kind === 'unprotected_position') ? 1 : 0
       );
+
+      // E-6: a critical trigger halts new entries on the whole connection. The
+      // connection rather than the run, because every trigger here describes
+      // the account (its stops, its fills, its equity), and a second run on
+      // it would walk into the same condition. Warnings never halt: a
+      // divergence is expected after every broker-side exit.
+      const critical = triggers.find((t) => t.severity === 'critical');
+      if (config.action === 'halt' && critical) {
+        await this.haltConnection(run, connection, label, critical);
+      }
 
       const previous = this.activeKillSwitchAlerts.get(run.id) ?? new Map<string, Alert>();
       const current = new Map<string, Alert>();
@@ -1314,6 +1404,7 @@ export class StrategyRunner {
         position_divergences: this.positionDivergences,
         stops_tightened: this.stopsTightened,
         kill_switch_triggers: this.killSwitchTriggers,
+        kill_switch_halts: this.killSwitchHalts,
       },
       kill_switch: killSwitchConfig(),
       alerts: notifier.status(),

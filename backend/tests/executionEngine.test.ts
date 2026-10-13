@@ -135,6 +135,41 @@ describe('ExecutionEngine — gates & kill switch', () => {
   });
 });
 
+describe('ExecutionEngine — kill-switch halt (E-6)', () => {
+  const halted = jest.fn().mockResolvedValue({ trigger_kind: 'unprotected_position' });
+
+  it('refuses an entry on a halted connection', async () => {
+    const deps = makeDeps({ connectionHalt: halted });
+    const result = await new ExecutionEngine(deps).execute(ctx({ signal: 'long' }));
+    expect(result.placed).toBe(false);
+    if (!result.placed) expect(result.reason).toMatch(/halted .*unprotected_position/);
+    expect(deps.submitOrder).not.toHaveBeenCalled();
+  });
+
+  it('still lets an exit through on a halted connection', async () => {
+    // A halt that stranded the open position would be worse than its cause.
+    const deps = makeDeps({ connectionHalt: halted });
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'flat', position: { size: 100, avg_price: 90 } })
+    );
+    expect(result).toEqual(expect.objectContaining({ placed: true, action: 'SELL' }));
+  });
+
+  it('refuses an entry when the halt state cannot be read', async () => {
+    const deps = makeDeps({ connectionHalt: jest.fn().mockRejectedValue(new Error('db down')) });
+    const result = await new ExecutionEngine(deps).execute(ctx({ signal: 'long' }));
+    expect(result.placed).toBe(false);
+    if (!result.placed) expect(result.reason).toMatch(/halt state unavailable.*db down/);
+  });
+
+  it('places normally when the connection is not halted', async () => {
+    const deps = makeDeps({ connectionHalt: jest.fn().mockResolvedValue(null) });
+    const result = await new ExecutionEngine(deps).execute(ctx({ signal: 'long' }));
+    expect(result.placed).toBe(true);
+    expect(deps.connectionHalt).toHaveBeenCalledWith({ broker: 'ib', brokerAccount: 'default' });
+  });
+});
+
 describe('ExecutionEngine — risk caps (fail closed)', () => {
   it('enforces the per-run max_orders_per_day', async () => {
     const deps = makeDeps({ countOrdersToday: jest.fn().mockResolvedValue(4) });

@@ -5,7 +5,7 @@
  * be unmistakable at a glance, and one strategy across N accounts must read as
  * one row with N legs rather than N unrelated runs.
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import FleetPanel from '../app/components/systematic/FleetPanel';
@@ -145,6 +145,72 @@ describe('FleetPanel', () => {
     render(<FleetPanel pollMs={0} />);
 
     await waitFor(() => expect(screen.getByText(/Broker service unreachable/)).toBeInTheDocument());
+  });
+
+  it('shows a kill-switch halt and resumes the connection on request', async () => {
+    const halted = {
+      ...fleet,
+      connections: [
+        {
+          ...fleet.connections[0],
+          halt: {
+            trigger_kind: 'unprotected_position',
+            detail: 'EURUSD.a is 0.1 with no protective stop',
+            run_id: 1,
+            halted_at: '2026-01-01T00:00:00Z',
+          },
+        },
+        fleet.connections[1],
+      ],
+    };
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) =>
+      init?.method === 'POST'
+        ? new Response(JSON.stringify({ resumed: true }), { status: 200 })
+        : new Response(JSON.stringify(halted), { status: 200 })
+    );
+    global.fetch = fetchMock as any;
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<FleetPanel pollMs={0} />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/kill switch halted new entries on mt5:icmarkets/)
+      ).toBeInTheDocument()
+    );
+    expect(screen.getByText('Entries halted (unprotected position)')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resume entries' }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/api\/strategies\/connections\/mt5\/icmarkets\/resume$/),
+        expect.objectContaining({ method: 'POST' })
+      )
+    );
+  });
+
+  it('does not resume when the operator cancels', async () => {
+    const halted = {
+      ...fleet,
+      connections: [
+        {
+          ...fleet.connections[0],
+          halt: {
+            trigger_kind: 'equity_floor',
+            detail: null,
+            run_id: 1,
+            halted_at: '2026-01-01T00:00:00Z',
+          },
+        },
+      ],
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(halted), { status: 200 }));
+    global.fetch = fetchMock as any;
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    render(<FleetPanel pollMs={0} />);
+
+    await waitFor(() => screen.getByRole('button', { name: 'Resume entries' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Resume entries' }));
+    expect(fetchMock.mock.calls.some(([, init]: any) => init?.method === 'POST')).toBe(false);
   });
 
   it('reports an empty fleet plainly rather than looking broken', async () => {

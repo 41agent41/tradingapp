@@ -12,6 +12,7 @@
  *   POST /api/strategies/groups/:id/stop  — stop every leg of a group
  *   POST /api/strategies/connections/:broker/:account/stop — panic-stop a connection
  *   GET  /api/strategies/fleet            — every connection + grouped legs (C-5)
+ *   POST /api/strategies/connections/:broker/:account/resume — lift a kill-switch halt (E-6)
  *   GET  /api/strategies/runs             — list runs (optional ?status=)
  *   GET  /api/strategies/runs/:id         — one run
  *   POST /api/strategies/runs/:id/stop    — stop a run
@@ -29,7 +30,13 @@ import express from 'express';
 import type { Request, Response } from 'express';
 import axios from 'axios';
 import { dbService } from '../services/database.js';
-import { StrategyRepository, type StrategyDefinitionRow } from '../services/strategyRepository.js';
+import {
+  StrategyRepository,
+  type ConnectionHaltRow,
+  type StrategyDefinitionRow,
+} from '../services/strategyRepository.js';
+import { notifier } from '../services/notifier.js';
+import { haltAlertKey } from '../services/killSwitch.js';
 import { PromotionService } from '../services/promotionService.js';
 import type { PromotionStage } from '../services/promotionGate.js';
 
@@ -289,6 +296,16 @@ router.post('/runs', async (req: Request, res: Response) => {
  * shows a half-true answer. A connection that cannot be read reports its own
  * error alongside the ones that responded.
  */
+function haltView(halt: ConnectionHaltRow | undefined) {
+  if (!halt) return null;
+  return {
+    trigger_kind: halt.trigger_kind,
+    detail: halt.detail,
+    run_id: halt.run_id,
+    halted_at: halt.halted_at,
+  };
+}
+
 router.get('/fleet', async (_req: Request, res: Response) => {
   try {
     let connections: Record<string, any> = {};
@@ -347,6 +364,10 @@ router.get('/fleet', async (_req: Request, res: Response) => {
       };
     });
 
+    const halts = new Map(
+      (await repo.listActiveHalts()).map((h) => [`${h.broker}:${h.broker_account}`, h])
+    );
+
     const runsPerConnection: Record<string, number> = {};
     for (const run of active) {
       const label = `${run.broker}:${run.broker_account}`;
@@ -358,6 +379,7 @@ router.get('/fleet', async (_req: Request, res: Response) => {
         connection: label,
         ...info,
         active_runs: runsPerConnection[label] ?? 0,
+        halt: haltView(halts.get(label)),
       })),
       currency,
       strategies,
@@ -551,6 +573,35 @@ router.post('/connections/:broker/:account/stop', async (req: Request, res: Resp
     res.json({ connection: `${broker}:${account}`, stopped });
   } catch (error: any) {
     fail(res, 500, 'Failed to stop connection', error?.message ?? 'unknown');
+  }
+});
+
+/**
+ * Lift a kill-switch halt (E-6): new entries on the connection may trade again.
+ *
+ * Deliberately a human action. The halt fired because something about the
+ * account looked wrong, and only the operator can judge that it no longer is.
+ */
+router.post('/connections/:broker/:account/resume', async (req: Request, res: Response) => {
+  try {
+    const broker = String(req.params.broker || '').toLowerCase();
+    const account = String(req.params.account || '').toLowerCase();
+    if (!broker || !account) return fail(res, 400, 'broker and account are required');
+    const cleared = await repo.clearHalt(broker, account, 'operator');
+    if (!cleared) {
+      return fail(res, 404, 'Connection is not halted', { connection: `${broker}:${account}` });
+    }
+    const label = `${cleared.broker}:${cleared.broker_account}`;
+    await notifier
+      .resolve(haltAlertKey(label), {
+        title: `Resumed: entries on ${label}`,
+        detail: `The kill-switch halt (${cleared.trigger_kind}) was lifted by the operator.`,
+        context: { connection: label },
+      })
+      .catch(() => undefined);
+    res.json({ connection: label, resumed: true, halt: cleared });
+  } catch (error: any) {
+    fail(res, 500, 'Failed to resume connection', error?.message ?? 'unknown');
   }
 });
 

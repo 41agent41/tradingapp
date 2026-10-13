@@ -470,6 +470,82 @@ describe('StrategyRunner — kill-switch all-clear (B1)', () => {
   });
 });
 
+describe('StrategyRunner — kill-switch halt (E-6)', () => {
+  const ORIGINAL = process.env.KILL_SWITCH_ACTION;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.KILL_SWITCH_ACTION;
+    else process.env.KILL_SWITCH_ACTION = ORIGINAL;
+  });
+
+  function unprotectedDeps(overrides: Partial<StrategyRunnerDeps> = {}) {
+    return makeDeps({
+      getPosition: jest.fn().mockResolvedValue({ size: 1, avg_price: 1.1, stop_loss: null }),
+      getCurrentStop: jest.fn().mockResolvedValue(1.05),
+      evaluate: jest.fn().mockResolvedValue({ ...buyResult, signal: 'hold', entry: false }),
+      ...overrides,
+    });
+  }
+
+  it('halts the connection on a critical trigger and pages once', async () => {
+    process.env.KILL_SWITCH_ACTION = 'halt';
+    const haltConnection = jest
+      .fn()
+      .mockResolvedValueOnce({ created: true })
+      .mockResolvedValue({ created: false });
+    const deps = unprotectedDeps({ haltConnection });
+    const runner = makeRunner(deps);
+
+    await runner.runOnce();
+    await runner.runOnce();
+
+    expect(haltConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ broker: expect.any(String) }),
+      expect.objectContaining({ kind: 'unprotected_position' })
+    );
+    const haltAlerts = (deps.sendAlert as jest.Mock).mock.calls.filter(([a]) =>
+      String(a.key).startsWith('killswitch:halt:')
+    );
+    expect(haltAlerts).toHaveLength(1);
+    expect(haltAlerts[0][0].title).toMatch(/^Entries halted on /);
+    expect(runner.status().totals.kill_switch_halts).toBe(1);
+  });
+
+  it('only notifies when the action is notify', async () => {
+    process.env.KILL_SWITCH_ACTION = 'notify';
+    const haltConnection = jest.fn();
+    await makeRunner(unprotectedDeps({ haltConnection })).runOnce();
+    expect(haltConnection).not.toHaveBeenCalled();
+  });
+
+  it('never halts on a warning', async () => {
+    process.env.KILL_SWITCH_ACTION = 'halt';
+    const haltConnection = jest.fn();
+    // Venue and fills disagree, but the position is protected.
+    const deps = unprotectedDeps({
+      haltConnection,
+      getPosition: jest
+        .fn()
+        .mockResolvedValue({ size: 1, avg_price: 1.1, stop_loss: 1.05, derived_size: 0 }),
+    });
+    await makeRunner(deps).runOnce();
+    expect(haltConnection).not.toHaveBeenCalled();
+  });
+
+  it('pages that entries are NOT blocked when the halt cannot be recorded', async () => {
+    process.env.KILL_SWITCH_ACTION = 'halt';
+    const deps = unprotectedDeps({
+      haltConnection: jest.fn().mockRejectedValue(new Error('db down')),
+    });
+    await makeRunner(deps).runOnce();
+    expect(deps.sendAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: expect.stringMatching(/could not halt/),
+        detail: expect.stringMatching(/NOT blocked/),
+      })
+    );
+  });
+});
+
 describe('StrategyRunner — staged group admission (C-3)', () => {
   const STARTED = new Date(NOW - 600_000).toISOString();
 

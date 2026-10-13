@@ -635,6 +635,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_strategy_runs_one_per_connection_symbol
     ON strategy_runs (broker, broker_account, native_symbol)
     WHERE native_symbol IS NOT NULL AND status IN ('pending', 'running');
 
+-- Kill-switch halts (Component E, E-6). A critical trigger with
+-- KILL_SWITCH_ACTION=halt stops new entries on that connection until the
+-- operator resumes it. Exits and stop management keep running: a halt that
+-- stranded open positions would be worse than the condition that caused it.
+-- Persisted, not in memory, so a backend restart cannot quietly lift a halt.
+-- At most one active halt per connection; cleared rows are kept as history.
+CREATE TABLE IF NOT EXISTS connection_halts (
+    id BIGSERIAL PRIMARY KEY,
+    broker VARCHAR(16) NOT NULL,
+    broker_account VARCHAR(64) NOT NULL,
+    trigger_kind VARCHAR(32) NOT NULL,
+    detail TEXT,
+    run_id BIGINT,
+    halted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    cleared_at TIMESTAMPTZ,
+    cleared_by TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_connection_halts_active
+    ON connection_halts (broker, broker_account) WHERE cleared_at IS NULL;
+
 CREATE INDEX IF NOT EXISTS idx_strategy_runs_status
     ON strategy_runs (status);
 CREATE INDEX IF NOT EXISTS idx_strategy_runs_definition

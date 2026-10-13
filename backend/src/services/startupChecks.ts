@@ -62,12 +62,12 @@ export function checkStartupConfig(env: Env = process.env): StartupCheckResult {
     }
   }
 
-  // --- Kill switch: only notify is implemented (B8) -----------------------
+  // --- Kill switch: notify and halt are implemented, flatten is not (B8) ---
   const action = val(env, 'KILL_SWITCH_ACTION').toLowerCase();
-  if (action && action !== 'notify') {
+  if (action && action !== 'notify' && action !== 'halt') {
     errors.push(
-      `KILL_SWITCH_ACTION=${action} is not implemented: halt and flatten would only change ` +
-        'the alert text. Set KILL_SWITCH_ACTION=notify (or remove it).'
+      `KILL_SWITCH_ACTION=${action} is not implemented: flatten would only change the alert ` +
+        'text. Set KILL_SWITCH_ACTION=notify or halt (or remove it).'
     );
   }
 

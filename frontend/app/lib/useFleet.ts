@@ -25,6 +25,15 @@ export interface FleetConnection {
   server_timezone?: string | null;
   same_funds_as?: string | null;
   active_runs: number;
+  /** Set while the kill switch has halted new entries here (E-6). */
+  halt?: FleetHalt | null;
+}
+
+export interface FleetHalt {
+  trigger_kind: string;
+  detail: string | null;
+  run_id: number | null;
+  halted_at: string;
 }
 
 export interface FleetLeg {

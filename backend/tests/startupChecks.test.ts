@@ -58,16 +58,16 @@ describe('checkStartupConfig', () => {
     expect(ok.errors).toEqual([]);
   });
 
-  it.each(['halt', 'flatten', 'bogus'])(
-    'refuses KILL_SWITCH_ACTION=%s because only notify is implemented',
+  it.each(['flatten', 'bogus'])(
+    'refuses KILL_SWITCH_ACTION=%s because it is not implemented',
     (action) => {
       const { errors } = checkStartupConfig({ KILL_SWITCH_ACTION: action });
       expect(errors.join(' ')).toMatch(/KILL_SWITCH_ACTION/);
     }
   );
 
-  it('accepts KILL_SWITCH_ACTION=notify', () => {
-    expect(checkStartupConfig({ KILL_SWITCH_ACTION: 'notify' }).errors).toEqual([]);
+  it.each(['notify', 'halt'])('accepts KILL_SWITCH_ACTION=%s', (action) => {
+    expect(checkStartupConfig({ KILL_SWITCH_ACTION: action }).errors).toEqual([]);
   });
 
   it('warns about a leftover NEXT_PUBLIC_API_TOKEN', () => {

@@ -16,6 +16,9 @@
  *   - account equity below a floor
  *
  * Actions escalate: **notify** (E-5), then **halt**, then **flatten** (E-6).
+ * Halt is implemented: a critical trigger stops new entries on its connection
+ * until the operator resumes it (exits and the trail keep running). Flatten
+ * is not, and the backend refuses to start with it.
  * Starting at notify-only is not timidity — it lets the whole thing run in
  * production against real conditions with zero blast radius, so its trigger
  * accuracy can be judged from the alerts it *would* have acted on. That
@@ -190,10 +193,18 @@ export function triggerAlert(trigger: KillSwitchTrigger, action: KillSwitchActio
     key: `killswitch:${trigger.kind}:${connection}:${symbol}`,
     severity: trigger.severity,
     title: trigger.title,
-    detail:
-      action === 'notify'
-        ? `${trigger.detail}\n(notify-only — no automated action taken)`
-        : trigger.detail,
+    detail: `${trigger.detail}\n(${actionNote(trigger, action)})`,
     context: trigger.context,
   };
+}
+
+function actionNote(trigger: KillSwitchTrigger, action: KillSwitchAction): string {
+  if (action === 'notify') return 'notify-only — no automated action taken';
+  if (trigger.severity !== 'critical') return 'warning — no automated action taken';
+  return 'new entries on this connection are halted until it is resumed';
+}
+
+/** The key of the alert a halt sends, so resuming can resolve it. */
+export function haltAlertKey(connection: string): string {
+  return `killswitch:halt:${connection}`;
 }

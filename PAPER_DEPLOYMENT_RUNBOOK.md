@@ -321,6 +321,15 @@ whole escalation design depends on.
 halting have been the right response? That judgement is what makes enabling
 `halt` (E-6) a decision rather than a hope.
 
+**Once the record supports it, rehearse halt before relying on it:** set
+`KILL_SWITCH_ACTION=halt`, restart the backend, and repeat step 22's stop
+removal on one account.
+**Pass:** an "Entries halted" alert arrives; the Fleet panel shows that
+connection halted and the others not; the trail puts the stop back; no new
+entry is placed on that account after its position closes; **Resume entries**
+on the Fleet panel lifts it and the next entry signal trades. A halt survives
+a backend restart, so check it is still shown after one.
+
 ### 24. Report back
 Most useful to me: which steps failed and their raw output; the `/symbols`
 payloads from both brokers; `trade_tick_value` for each; and the alert log

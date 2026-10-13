@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { apiFetch } from '../../lib/api';
 import { useFleet, type FleetConnection, type FleetLeg } from '../../lib/useFleet';
 
 /**
@@ -41,6 +42,31 @@ export interface FleetPanelProps {
 
 export default function FleetPanel({ pollMs = 15_000 }: FleetPanelProps) {
   const { fleet, loading, error, refresh } = useFleet(pollMs);
+  const [resumeError, setResumeError] = React.useState<string | null>(null);
+
+  const resume = React.useCallback(
+    async (label: string) => {
+      // Lifting a kill-switch halt is a judgement that the cause is gone, so
+      // it asks once rather than happening on a stray click.
+      if (!window.confirm(`Resume new entries on ${label}?`)) return;
+      setResumeError(null);
+      const [broker, ...rest] = label.split(':');
+      const account = rest.join(':');
+      try {
+        const res = await apiFetch(
+          `/api/strategies/connections/${encodeURIComponent(broker)}/${encodeURIComponent(account)}/resume`,
+          { method: 'POST' }
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      } catch (err) {
+        setResumeError(`Could not resume ${label} (${(err as Error).message}).`);
+      }
+      refresh();
+    },
+    [refresh]
+  );
+
+  const halted = (fleet?.connections ?? []).filter((c) => c.halt);
 
   if (loading && !fleet) {
     return <div className="p-4 text-sm text-gray-500">Loading fleet…</div>;
@@ -53,6 +79,19 @@ export default function FleetPanel({ pollMs = 15_000 }: FleetPanelProps) {
       {error && (
         <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
           Could not refresh fleet status ({error}). Showing the last known state.
+        </div>
+      )}
+
+      {halted.length > 0 && (
+        <div className="rounded border border-red-400 bg-red-50 p-3 text-sm text-red-900">
+          The kill switch halted new entries on {halted.map((c) => c.connection).join(', ')}. Open
+          positions keep their stops and exits still run.
+        </div>
+      )}
+
+      {resumeError && (
+        <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-900">
+          {resumeError}
         </div>
       )}
 
@@ -86,7 +125,7 @@ export default function FleetPanel({ pollMs = 15_000 }: FleetPanelProps) {
         </div>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {(fleet?.connections ?? []).map((connection) => (
-            <ConnectionCard key={connection.connection} connection={connection} />
+            <ConnectionCard key={connection.connection} connection={connection} onResume={resume} />
           ))}
           {(fleet?.connections ?? []).length === 0 && (
             <div className="text-sm text-gray-500">No connections configured.</div>
@@ -182,11 +221,19 @@ export default function FleetPanel({ pollMs = 15_000 }: FleetPanelProps) {
   );
 }
 
-function ConnectionCard({ connection }: { connection: FleetConnection }) {
+function ConnectionCard({
+  connection,
+  onResume,
+}: {
+  connection: FleetConnection;
+  onResume: (label: string) => void;
+}) {
   const reachable = connection.broker !== false;
+  const halt = connection.halt;
+  const alarming = !reachable || Boolean(halt);
   return (
     <div
-      className={`rounded border p-3 ${reachable ? 'border-gray-200' : 'border-red-300 bg-red-50'}`}
+      className={`rounded border p-3 ${alarming ? 'border-red-300 bg-red-50' : 'border-gray-200'}`}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="font-mono text-xs font-medium">{connection.connection}</span>
@@ -198,6 +245,22 @@ function ConnectionCard({ connection }: { connection: FleetConnection }) {
         {connection.active_runs} active run{connection.active_runs === 1 ? '' : 's'}
         {connection.currency ? ` · ${connection.currency}` : ''}
       </div>
+      {halt && (
+        <div className="mt-2 space-y-1 text-xs text-red-800">
+          <div className="font-semibold">
+            Entries halted ({halt.trigger_kind.replace(/_/g, ' ')})
+          </div>
+          {halt.detail && <div>{halt.detail}</div>}
+          <div className="text-red-700">since {new Date(halt.halted_at).toLocaleString()}</div>
+          <button
+            type="button"
+            onClick={() => onResume(connection.connection)}
+            className="rounded border border-red-400 bg-white px-2 py-1 text-xs font-medium text-red-800 hover:bg-red-100"
+          >
+            Resume entries
+          </button>
+        </div>
+      )}
       {!reachable && (
         <div className="mt-1 text-xs text-red-700">No broker adapter — orders will be refused.</div>
       )}
