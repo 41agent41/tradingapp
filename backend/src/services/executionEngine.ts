@@ -107,6 +107,9 @@ export interface ExecutionEngineDeps {
   realisedPnlTodayPortfolio?(): Promise<number>;
   /** Pages the operator. Used when an entry fills without its stop. */
   sendAlert?(alert: Alert): Promise<unknown>;
+  /** The connection's active kill-switch halt (E-6), or null when it is
+   *  trading normally. Throwing fails closed: entries are refused. */
+  connectionHalt?(connection: Connection): Promise<{ trigger_kind: string } | null>;
 }
 
 /** Account-level caps. This is the level a broker — and a prop firm — actually
@@ -208,6 +211,28 @@ export class ExecutionEngine {
       return { placed: false, reason: `run is '${status ?? 'missing'}', not running` };
     }
 
+    // Kill-switch halt (E-6). Gates **entries only**: exits and the trail keep
+    // running, because a halt that stranded an open position would be worse
+    // than whatever tripped it. A halt we cannot read blocks the entry.
+    const connection = connectionOf(run);
+    if (this.deps.connectionHalt && isEntry(intent)) {
+      let halt: { trigger_kind: string } | null;
+      try {
+        halt = await this.deps.connectionHalt(connection);
+      } catch (err) {
+        return {
+          placed: false,
+          reason: `connection halt state unavailable (${String((err as Error)?.message ?? err)})`,
+        };
+      }
+      if (halt) {
+        return {
+          placed: false,
+          reason: `entries halted on ${connection.broker}:${connection.brokerAccount} by the kill switch (${halt.trigger_kind}); resume the connection to trade again`,
+        };
+      }
+    }
+
     // Per-run daily order cap.
     const perRunCap = Math.max(0, Number((run.risk ?? {}).max_orders_per_day) || 0);
     if (perRunCap > 0) {
@@ -236,7 +261,6 @@ export class ExecutionEngine {
     // every individual run sits comfortably inside its own. It is also the
     // level a broker or prop firm enforces at, so it is the level a breach has
     // to be caught at.
-    const connection = connectionOf(run);
     if (this.deps.connectionLimits) {
       let limits: ConnectionLimits | null;
       try {

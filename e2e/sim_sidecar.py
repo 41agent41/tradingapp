@@ -13,7 +13,7 @@ something to trade:
   short whose stop is at or below the ask) is closed at the stop, with a deal
   recorded, the way a terminal would.
 * **A control route.** `POST /_sim` changes the simulation (`drop_sl`,
-  `fail_reads`, `price_offset`); `GET /_sim` reports positions, deals and the
+  `fail_reads`, `price_offset`, and a one-shot `strip_sl`); `GET /_sim` reports positions, deals and the
   requests the sidecar sent. Both sit behind the same secret as every route.
 
 Run: python e2e/sim_sidecar.py --port 9101 --secret ... [--symbol EURUSD.a]
@@ -161,6 +161,10 @@ def build(args: argparse.Namespace):
             for key in ("drop_sl", "fail_reads", "price_offset"):
                 if key in body:
                     setattr(sim, key, body[key])
+            # One-shot: something at the venue removed the open positions' stops.
+            if body.get("strip_sl"):
+                for pos in sim.positions:
+                    pos["sl"] = 0.0
         return {"ok": True}
 
     return app

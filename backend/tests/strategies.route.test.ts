@@ -27,10 +27,18 @@ const repoImpl = {
   stopGroup: jest.fn(),
   stopConnection: jest.fn(),
   setHoldoutStart: jest.fn(),
+  listActiveHalts: jest.fn(),
+  clearHalt: jest.fn(),
 };
 jest.mock('../src/services/strategyRepository.js', () => ({
   __esModule: true,
   StrategyRepository: jest.fn().mockImplementation(() => repoImpl),
+}));
+
+const notifierImpl = { resolve: jest.fn() };
+jest.mock('../src/services/notifier.js', () => ({
+  __esModule: true,
+  notifier: notifierImpl,
 }));
 
 // The gate's own rules are tested in promotionGate.test.ts; here it is a
@@ -409,6 +417,34 @@ describe('group and connection lifecycle (C-3)', () => {
     expect(repoImpl.stopConnection).toHaveBeenCalledWith('mt5', 'pepperstone');
     expect(res.body.connection).toBe('mt5:pepperstone');
   });
+
+  it('resumes a halted connection and resolves its halt alert', async () => {
+    repoImpl.clearHalt.mockResolvedValue({
+      id: 1,
+      broker: 'mt5',
+      broker_account: 'pepperstone',
+      trigger_kind: 'unprotected_position',
+    });
+    notifierImpl.resolve.mockResolvedValue(undefined);
+    const res = await request(buildApp())
+      .post('/api/strategies/connections/mt5/pepperstone/resume')
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.resumed).toBe(true);
+    expect(repoImpl.clearHalt).toHaveBeenCalledWith('mt5', 'pepperstone', 'operator');
+    expect(notifierImpl.resolve).toHaveBeenCalledWith(
+      'killswitch:halt:mt5:pepperstone',
+      expect.objectContaining({ title: 'Resumed: entries on mt5:pepperstone' })
+    );
+  });
+
+  it('answers 404 when resuming a connection that is not halted', async () => {
+    repoImpl.clearHalt.mockResolvedValue(null);
+    const res = await request(buildApp())
+      .post('/api/strategies/connections/mt5/pepperstone/resume')
+      .send({});
+    expect(res.status).toBe(404);
+  });
 });
 
 // --------------------------------------------------------------------------- //
@@ -455,6 +491,7 @@ describe('GET /api/strategies/fleet', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     repoImpl.listRuns.mockResolvedValue(legs);
+    repoImpl.listActiveHalts.mockResolvedValue([]);
     repoImpl.findDefinition.mockResolvedValue({
       id: 10,
       name: 'EU trend',
@@ -501,6 +538,28 @@ describe('GET /api/strategies/fleet', () => {
 
     const live = res.body.connections.find((c: any) => c.connection === 'mt5:icmarkets');
     expect(live.account_mode).toBe('live');
+  });
+
+  it('marks a halted connection with what halted it', async () => {
+    axiosMock.get.mockResolvedValue(providers);
+    repoImpl.listActiveHalts.mockResolvedValue([
+      {
+        id: 3,
+        broker: 'mt5',
+        broker_account: 'icmarkets',
+        trigger_kind: 'unprotected_position',
+        detail: 'EURUSD is 0.1 with no protective stop',
+        run_id: 1,
+        halted_at: '2026-10-13T00:00:00Z',
+        cleared_at: null,
+        cleared_by: null,
+      },
+    ]);
+    const res = await request(buildApp()).get('/api/strategies/fleet');
+
+    const byLabel = Object.fromEntries(res.body.connections.map((c: any) => [c.connection, c]));
+    expect(byLabel['mt5:icmarkets'].halt.trigger_kind).toBe('unprotected_position');
+    expect(byLabel['mt5:pepperstone'].halt).toBeNull();
   });
 
   it('still answers when the broker service is unreachable', async () => {

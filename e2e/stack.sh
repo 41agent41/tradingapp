@@ -75,6 +75,7 @@ start_backend() {
     export EXECUTIONS_SYNC_INTERVAL_SECONDS=5
     export EXECUTIONS_SYNC_INITIAL_DELAY_MS=1000
     export PROMOTION_PAPER_GATE=off
+    export KILL_SWITCH_ACTION=halt
     export LOG_LEVEL=info
     exec node dist/index.js
   ) >"$E2E_DIR/backend.log" 2>&1 &

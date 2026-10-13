@@ -177,6 +177,19 @@ export interface StagingGroup {
   pending_legs: number;
 }
 
+/** An active or historical kill-switch halt on one connection (E-6). */
+export interface ConnectionHaltRow {
+  id: number;
+  broker: string;
+  broker_account: string;
+  trigger_kind: string;
+  detail: string | null;
+  run_id: number | null;
+  halted_at: string;
+  cleared_at: string | null;
+  cleared_by: string | null;
+}
+
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
 
@@ -521,6 +534,78 @@ export class StrategyRepository {
       [broker, brokerAccount]
     );
     return (result as { rowCount?: number }).rowCount ?? 0;
+  }
+
+  // ---- connection halts (E-6) ------------------------------------------- //
+
+  /**
+   * Halt new entries on a connection. Idempotent: an already-halted
+   * connection keeps its first halt, which is the one that explains it.
+   * Returns the active halt either way.
+   */
+  async haltConnection(input: {
+    broker: string;
+    brokerAccount: string;
+    triggerKind: string;
+    detail?: string | null;
+    runId?: number | null;
+  }): Promise<{ halt: ConnectionHaltRow; created: boolean }> {
+    const inserted = await this.db.query(
+      `INSERT INTO connection_halts (broker, broker_account, trigger_kind, detail, run_id)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (broker, broker_account) WHERE cleared_at IS NULL DO NOTHING
+       RETURNING *`,
+      [
+        input.broker,
+        input.brokerAccount,
+        input.triggerKind,
+        input.detail ?? null,
+        input.runId ?? null,
+      ]
+    );
+    const row = inserted.rows[0] as ConnectionHaltRow | undefined;
+    if (row) return { halt: row, created: true };
+    const existing = await this.activeHalt(input.broker, input.brokerAccount);
+    if (!existing) throw new Error('halt neither inserted nor found');
+    return { halt: existing, created: false };
+  }
+
+  /** The connection's active halt, or null when it is trading normally. */
+  async activeHalt(broker: string, brokerAccount: string): Promise<ConnectionHaltRow | null> {
+    const result = await this.db.query(
+      `SELECT * FROM connection_halts
+        WHERE broker = $1 AND broker_account = $2 AND cleared_at IS NULL
+        LIMIT 1`,
+      [broker, brokerAccount]
+    );
+    return (result.rows[0] as ConnectionHaltRow | undefined) ?? null;
+  }
+
+  async listActiveHalts(): Promise<ConnectionHaltRow[]> {
+    const result = await this.db.query(
+      'SELECT * FROM connection_halts WHERE cleared_at IS NULL ORDER BY halted_at ASC',
+      []
+    );
+    return result.rows as ConnectionHaltRow[];
+  }
+
+  /** Lift a connection's halt. Returns the cleared row, or null when it was
+   *  not halted. Matched case-insensitively, so a halt recorded under an
+   *  account id with capitals can still be lifted from a lower-cased route. */
+  async clearHalt(
+    broker: string,
+    brokerAccount: string,
+    clearedBy: string
+  ): Promise<ConnectionHaltRow | null> {
+    const result = await this.db.query(
+      `UPDATE connection_halts
+          SET cleared_at = NOW(), cleared_by = $3
+        WHERE LOWER(broker) = LOWER($1) AND LOWER(broker_account) = LOWER($2)
+          AND cleared_at IS NULL
+        RETURNING *`,
+      [broker, brokerAccount, clearedBy]
+    );
+    return (result.rows[0] as ConnectionHaltRow | undefined) ?? null;
   }
 
   async listGroupRuns(groupId: number): Promise<StrategyRunRow[]> {

@@ -101,6 +101,15 @@ def assert_never_doubled(account: str) -> None:
         ), f"{account} holds {pos['volume']}: {pos}"
 
 
+def fleet_halt(account: str) -> Any:
+    connections = api("GET", "/strategies/fleet").json()["connections"]
+    return next(c for c in connections if c["connection"] == f"mt5:{account}")["halt"]
+
+
+def signals(run_id: int) -> List[Dict[str, Any]]:
+    return api("GET", f"/strategies/runs/{run_id}/signals").json()["signals"]
+
+
 def restart(component: str) -> None:
     subprocess.run([str(ROOT / "e2e" / "stack.sh"), "restart", component], check=True)
 
@@ -108,7 +117,9 @@ def restart(component: str) -> None:
 def test_paper_flow():
     # Step 11-12: both connections are registered and routed separately.
     providers = httpx.get(f"{BROKER}/providers", headers=BROKER_AUTH, timeout=30).json()
-    assert {"mt5:sim-a", "mt5:sim-b"} <= set(providers.get("connections", {})), providers
+    assert {"mt5:sim-a", "mt5:sim-b"} <= set(
+        providers.get("connections", {})
+    ), providers
     logins = {
         account: httpx.get(
             f"{BROKER}/account/summary",
@@ -232,3 +243,56 @@ def test_paper_flow():
         timeout=150,
     )
     assert_never_doubled("sim-a")
+
+    # Kill-switch halt (E-6): sim-b's stop disappears at the venue. The runner
+    # halts new entries on sim-b alone and puts the stop back. After a stop-out
+    # the strategy wants back in, and is refused until the connection resumes.
+    sim_set("sim-b", strip_sl=True)
+    halt = wait_until("sim-b to be halted", lambda: fleet_halt("sim-b"), timeout=90)
+    assert halt["trigger_kind"] == "unprotected_position", halt
+    assert fleet_halt("sim-a") is None
+    wait_until(
+        "sim-b's stop to be re-attached",
+        lambda: sim("sim-b")["positions"] and sim("sim-b")["positions"][0]["sl"] > 0,
+        timeout=90,
+    )
+
+    halted_entries = len(entries("sim-b"))
+    sim_set("sim-b", price_offset=-0.003)
+    stopped = wait_until(
+        "sim-b's stop to fire",
+        lambda: [d for d in sim("sim-b")["deals"] if d["comment"] == "[sl]"],
+        timeout=30,
+    )
+    assert stopped
+    run_b = runs["sim-b"]["id"]
+    seen = {s["id"] for s in signals(run_b)}
+    # Entry signals the runner saw while flat, after the stop-out, that placed
+    # nothing: the halt refusing them.
+    wait_until(
+        "two refused entry signals on the halted connection",
+        lambda: len(
+            [
+                s
+                for s in signals(run_b)
+                if s["id"] not in seen
+                and s["entry"]
+                and not s["acted"]
+                and float(s["position_size"]) == 0
+            ]
+        )
+        >= 2,
+        timeout=240,
+    )
+    assert len(entries("sim-b")) == halted_entries
+    assert not sim("sim-b")["positions"]
+
+    resumed = api("POST", "/strategies/connections/mt5/sim-b/resume")
+    assert resumed.status_code == 200, resumed.text
+    assert fleet_halt("sim-b") is None
+    wait_until(
+        "sim-b's entry after resuming",
+        lambda: len(entries("sim-b")) == halted_entries + 1,
+        timeout=150,
+    )
+    assert_never_doubled("sim-b")

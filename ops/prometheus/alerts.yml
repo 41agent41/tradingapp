@@ -228,7 +228,9 @@ groups:
           description: >-
             A position on {{ $labels.connection }} closed materially beyond
             the stop that was in force — the market likely gapped through it.
-            With KILL_SWITCH_ACTION=notify nothing was halted automatically.
+            With KILL_SWITCH_ACTION=notify nothing was halted automatically;
+            with halt, new entries on the connection are stopped until it is
+            resumed.
 
       - alert: OrdersBlockedByCap
         # Not a failure on its own: a cap doing its job. Sustained blocking
