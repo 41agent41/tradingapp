@@ -414,6 +414,91 @@ describe('ExecutionEngine — broker-native sizing', () => {
 // --------------------------------------------------------------------------- //
 // Connection- and portfolio-level caps (C-4)
 // --------------------------------------------------------------------------- //
+describe('ExecutionEngine — equity limits with floating P&L', () => {
+  const marks = {
+    trading_day: '2026-10-13',
+    day_start_equity: 10_000,
+    high_water_mark: 10_500,
+    equity: 9_650,
+  };
+
+  it('refuses an entry once equity is past the daily loss', async () => {
+    // Realised P&L is zero (nothing closed), yet the account is down 350.
+    const deps = makeDeps({
+      connectionLimits: jest.fn().mockResolvedValue({ max_daily_equity_loss: 300 }),
+      equityMarks: jest.fn().mockResolvedValue(marks),
+    });
+    const result = await new ExecutionEngine(deps).execute(ctx({ signal: 'long' }));
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('max_daily_equity_loss reached'),
+    });
+    expect(deps.submitOrder).not.toHaveBeenCalled();
+  });
+
+  it('refuses an entry once equity is past the drawdown', async () => {
+    const deps = makeDeps({
+      connectionLimits: jest.fn().mockResolvedValue({ max_drawdown: 800 }),
+      equityMarks: jest.fn().mockResolvedValue(marks),
+    });
+    const result = await new ExecutionEngine(deps).execute(ctx({ signal: 'long' }));
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('max_drawdown reached'),
+    });
+  });
+
+  it('still lets an exit through past the limit', async () => {
+    const deps = makeDeps({
+      connectionLimits: jest.fn().mockResolvedValue({ max_daily_equity_loss: 300 }),
+      equityMarks: jest.fn().mockResolvedValue(marks),
+    });
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ signal: 'flat', position: { size: 100, avg_price: 10 } })
+    );
+    expect(result.placed).toBe(true);
+    expect(deps.equityMarks).not.toHaveBeenCalled();
+  });
+
+  it('refuses when equity is unknown, never treating it as fine', async () => {
+    const deps = makeDeps({
+      connectionLimits: jest.fn().mockResolvedValue({ max_drawdown: 800 }),
+      equityMarks: jest.fn().mockResolvedValue(null),
+    });
+    const result = await new ExecutionEngine(deps).execute(ctx({ signal: 'long' }));
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('equity unknown'),
+    });
+  });
+
+  it('refuses when the equity read throws, or no reader is wired', async () => {
+    const throwing = makeDeps({
+      connectionLimits: jest.fn().mockResolvedValue({ max_drawdown: 800 }),
+      equityMarks: jest.fn().mockRejectedValue(new Error('db down')),
+    });
+    const r1 = await new ExecutionEngine(throwing).execute(ctx({ signal: 'long' }));
+    expect(r1).toEqual({ placed: false, reason: expect.stringContaining('db down') });
+
+    const unwired = makeDeps({
+      connectionLimits: jest.fn().mockResolvedValue({ max_drawdown: 800 }),
+    });
+    const r2 = await new ExecutionEngine(unwired).execute(ctx({ signal: 'long' }));
+    expect(r2).toEqual({ placed: false, reason: expect.stringContaining('not measurable') });
+  });
+
+  it('places normally inside the limits', async () => {
+    const deps = makeDeps({
+      connectionLimits: jest
+        .fn()
+        .mockResolvedValue({ max_daily_equity_loss: 500, max_drawdown: 1_000 }),
+      equityMarks: jest.fn().mockResolvedValue(marks),
+    });
+    const result = await new ExecutionEngine(deps).execute(ctx({ signal: 'long' }));
+    expect(result.placed).toBe(true);
+  });
+});
+
 describe('ExecutionEngine — connection-level caps', () => {
   it('blocks an entry once the connection order cap is reached', async () => {
     // Not a duplicate of the per-run cap: a connection hosting several runs can

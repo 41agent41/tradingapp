@@ -29,6 +29,8 @@ const repoImpl = {
   setHoldoutStart: jest.fn(),
   listActiveHalts: jest.fn(),
   clearHalt: jest.fn(),
+  listEquityMarks: jest.fn(),
+  resetHighWaterMark: jest.fn(),
 };
 jest.mock('../src/services/strategyRepository.js', () => ({
   __esModule: true,
@@ -438,6 +440,21 @@ describe('group and connection lifecycle (C-3)', () => {
     );
   });
 
+  it('resets the high-water mark to current equity', async () => {
+    repoImpl.resetHighWaterMark.mockResolvedValue({
+      trading_day: '2026-10-13',
+      day_start_equity: 9000,
+      high_water_mark: 9000,
+      equity: 9000,
+    });
+    const res = await request(buildApp())
+      .post('/api/strategies/connections/mt5/pepperstone/reset-high-water-mark')
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.high_water_mark).toBe(9000);
+    expect(repoImpl.resetHighWaterMark).toHaveBeenCalledWith('mt5', 'pepperstone');
+  });
+
   it('answers 404 when resuming a connection that is not halted', async () => {
     repoImpl.clearHalt.mockResolvedValue(null);
     const res = await request(buildApp())
@@ -492,6 +509,7 @@ describe('GET /api/strategies/fleet', () => {
     jest.clearAllMocks();
     repoImpl.listRuns.mockResolvedValue(legs);
     repoImpl.listActiveHalts.mockResolvedValue([]);
+    repoImpl.listEquityMarks.mockResolvedValue([]);
     repoImpl.findDefinition.mockResolvedValue({
       id: 10,
       name: 'EU trend',
@@ -560,6 +578,39 @@ describe('GET /api/strategies/fleet', () => {
     const byLabel = Object.fromEntries(res.body.connections.map((c: any) => [c.connection, c]));
     expect(byLabel['mt5:icmarkets'].halt.trigger_kind).toBe('unprotected_position');
     expect(byLabel['mt5:pepperstone'].halt).toBeNull();
+  });
+
+  it("shows each connection's equity against its loss limits", async () => {
+    axiosMock.get.mockResolvedValue(providers);
+    process.env.CONNECTION_MAX_DRAWDOWN__MT5_ICMARKETS = '400';
+    repoImpl.listEquityMarks.mockResolvedValue([
+      {
+        broker: 'mt5',
+        broker_account: 'icmarkets',
+        trading_day: '2026-10-13',
+        day_start_equity: '10000',
+        high_water_mark: '10500',
+        last_equity: '10050',
+        hwm_at: '2026-10-12T00:00:00Z',
+        last_at: '2026-10-13T00:00:00Z',
+      },
+    ]);
+    try {
+      const res = await request(buildApp()).get('/api/strategies/fleet');
+      const byLabel = Object.fromEntries(res.body.connections.map((c: any) => [c.connection, c]));
+      expect(byLabel['mt5:icmarkets'].equity).toEqual(
+        expect.objectContaining({
+          equity: 10050,
+          daily_loss: -50,
+          drawdown: 450,
+          max_drawdown: 400,
+          breaches: ['drawdown'],
+        })
+      );
+      expect(byLabel['mt5:pepperstone'].equity).toBeNull();
+    } finally {
+      delete process.env.CONNECTION_MAX_DRAWDOWN__MT5_ICMARKETS;
+    }
   });
 
   it('still answers when the broker service is unreachable', async () => {

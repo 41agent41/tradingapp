@@ -27,6 +27,7 @@ import {
   type OrderAction,
   type ValidatedOrder,
 } from './orderTypes.js';
+import { evaluateAccountLimits, hasEquityLimits, type EquityMarks } from './accountLimits.js';
 import type { Alert } from './notifier.js';
 import type { SubmitCreateOutcome } from './orderService.js';
 import type { ActiveRun } from './strategyRepository.js';
@@ -110,13 +111,22 @@ export interface ExecutionEngineDeps {
   /** The connection's active kill-switch halt (E-6), or null when it is
    *  trading normally. Throwing fails closed: entries are refused. */
   connectionHalt?(connection: Connection): Promise<{ trigger_kind: string } | null>;
+  /** The connection's current equity and its marks (start of day, high-water
+   *  mark), recording the reading as it goes. Null when equity is unknown.
+   *  Only called when an equity limit is declared; throwing fails closed. */
+  equityMarks?(connection: Connection): Promise<EquityMarks | null>;
 }
 
 /** Account-level caps. This is the level a broker — and a prop firm — actually
  *  enforces at, so it is the level a breach has to be detected at. */
 export interface ConnectionLimits {
   max_orders_per_day?: number;
+  /** Realised P&L today, from fills. */
   max_daily_loss?: number;
+  /** Equity (with floating P&L) below the start of the trading day. */
+  max_daily_equity_loss?: number;
+  /** Equity (with floating P&L) below its high-water mark. */
+  max_drawdown?: number;
 }
 
 /** Fleet-wide caps. */
@@ -261,10 +271,12 @@ export class ExecutionEngine {
     // every individual run sits comfortably inside its own. It is also the
     // level a broker or prop firm enforces at, so it is the level a breach has
     // to be caught at.
+    let connectionLimits: ConnectionLimits | null = null;
     if (this.deps.connectionLimits) {
       let limits: ConnectionLimits | null;
       try {
         limits = await this.deps.connectionLimits(connection);
+        connectionLimits = limits;
       } catch (err) {
         // Fail closed, like every other guard here: a cap we cannot read must
         // block the order, never wave it through.
@@ -328,6 +340,41 @@ export class ExecutionEngine {
             reason: `connection max_daily_loss (${connLossCap}) reached on ${connection.broker}:${connection.brokerAccount} (realised ${realised.toFixed(2)})`,
           };
         }
+      }
+    }
+
+    // ---- Equity limits: daily loss and drawdown with floating P&L ------- //
+    //
+    // The realised caps above miss an open position deep in the red. These
+    // measure equity instead, which is what a broker or prop firm acts on.
+    if (hasEquityLimits(connectionLimits) && isEntry(intent)) {
+      if (!this.deps.equityMarks) {
+        return {
+          placed: false,
+          reason: 'connection equity limits declared but not measurable',
+        };
+      }
+      let marks: EquityMarks | null;
+      try {
+        marks = await this.deps.equityMarks(connection);
+      } catch (err) {
+        return {
+          placed: false,
+          reason: `connection equity check failed (${String((err as Error)?.message ?? err)})`,
+        };
+      }
+      if (!marks) {
+        return {
+          placed: false,
+          reason: `connection equity unknown on ${connection.broker}:${connection.brokerAccount}; equity limits cannot be checked`,
+        };
+      }
+      const breach = evaluateAccountLimits(marks, connectionLimits)[0];
+      if (breach) {
+        return {
+          placed: false,
+          reason: `connection ${breach.kind === 'drawdown' ? 'max_drawdown' : 'max_daily_equity_loss'} reached on ${connection.broker}:${connection.brokerAccount}: ${breach.detail}`,
+        };
       }
     }
 

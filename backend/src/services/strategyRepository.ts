@@ -11,6 +11,7 @@
  */
 
 import { DEFAULT_BROKER_ACCOUNT } from './orderTypes.js';
+import { toEquityMarks, type ConnectionEquityRow, type EquityMarks } from './accountLimits.js';
 
 export interface Querier {
   query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
@@ -189,6 +190,11 @@ export interface ConnectionHaltRow {
   cleared_at: string | null;
   cleared_by: string | null;
 }
+
+/** `trading_day` as text: the driver would otherwise parse a DATE into a
+ *  local-time Date, which can shift it by a day. */
+const EQUITY_COLUMNS = `broker, broker_account, trading_day::text AS trading_day,
+  day_start_equity, high_water_mark, hwm_at, last_equity, last_at`;
 
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
@@ -606,6 +612,66 @@ export class StrategyRepository {
       [broker, brokerAccount, clearedBy]
     );
     return (result.rows[0] as ConnectionHaltRow | undefined) ?? null;
+  }
+
+  // ---- equity marks ------------------------------------------------------ //
+
+  /**
+   * Record an equity reading and return the connection's marks.
+   *
+   * On the first reading of a new trading day the day's start is the
+   * **higher** of this reading and the last one before it: the true value at
+   * the rollover is somewhere between them, and the higher start reports the
+   * larger loss. The high-water mark only ever rises (see `resetHighWaterMark`).
+   */
+  async recordEquity(
+    broker: string,
+    brokerAccount: string,
+    tradingDay: string,
+    equity: number
+  ): Promise<EquityMarks> {
+    const result = await this.db.query(
+      `INSERT INTO connection_equity
+         (broker, broker_account, trading_day, day_start_equity, high_water_mark, last_equity)
+       VALUES ($1, $2, $3::date, $4, $4, $4)
+       ON CONFLICT (broker, broker_account) DO UPDATE SET
+         day_start_equity = CASE
+           WHEN connection_equity.trading_day <> EXCLUDED.trading_day
+             THEN GREATEST(connection_equity.last_equity, EXCLUDED.last_equity)
+           ELSE connection_equity.day_start_equity END,
+         trading_day = EXCLUDED.trading_day,
+         high_water_mark = GREATEST(connection_equity.high_water_mark, EXCLUDED.last_equity),
+         hwm_at = CASE
+           WHEN EXCLUDED.last_equity > connection_equity.high_water_mark THEN NOW()
+           ELSE connection_equity.hwm_at END,
+         last_equity = EXCLUDED.last_equity,
+         last_at = NOW()
+       RETURNING ${EQUITY_COLUMNS}`,
+      [broker, brokerAccount, tradingDay, equity]
+    );
+    return toEquityMarks(result.rows[0] as ConnectionEquityRow);
+  }
+
+  async listEquityMarks(): Promise<ConnectionEquityRow[]> {
+    const result = await this.db.query(`SELECT ${EQUITY_COLUMNS} FROM connection_equity`, []);
+    return result.rows as ConnectionEquityRow[];
+  }
+
+  /**
+   * Set the high-water mark to the last recorded equity. For after a
+   * withdrawal, which is a drop in equity but not a loss: without this the
+   * drawdown limit would read it as one and stop the account trading.
+   */
+  async resetHighWaterMark(broker: string, brokerAccount: string): Promise<EquityMarks | null> {
+    const result = await this.db.query(
+      `UPDATE connection_equity
+          SET high_water_mark = last_equity, hwm_at = NOW()
+        WHERE LOWER(broker) = LOWER($1) AND LOWER(broker_account) = LOWER($2)
+        RETURNING ${EQUITY_COLUMNS}`,
+      [broker, brokerAccount]
+    );
+    const row = result.rows[0] as ConnectionEquityRow | undefined;
+    return row ? toEquityMarks(row) : null;
   }
 
   async listGroupRuns(groupId: number): Promise<StrategyRunRow[]> {

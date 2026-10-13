@@ -213,6 +213,52 @@ describe('FleetPanel', () => {
     expect(fetchMock.mock.calls.some(([, init]: any) => init?.method === 'POST')).toBe(false);
   });
 
+  it('shows equity against its limits and a breached drawdown', async () => {
+    const withEquity = {
+      ...fleet,
+      connections: [
+        {
+          ...fleet.connections[0],
+          equity: {
+            equity: 9400,
+            trading_day: '2026-10-13',
+            day_start_equity: 9600,
+            high_water_mark: 10500,
+            daily_loss: 200,
+            drawdown: 1100,
+            max_daily_equity_loss: 300,
+            max_drawdown: 1000,
+            breaches: ['drawdown'],
+            last_at: '2026-10-13T00:00:00Z',
+            hwm_at: '2026-10-12T00:00:00Z',
+          },
+        },
+        fleet.connections[1],
+      ],
+    };
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
+      init?.method === 'POST'
+        ? new Response(JSON.stringify({}), { status: 200 })
+        : new Response(JSON.stringify(withEquity), { status: 200 })
+    );
+    global.fetch = fetchMock as any;
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<FleetPanel pollMs={0} />);
+
+    await waitFor(() =>
+      expect(screen.getByText('Drawdown limit reached: new entries refused')).toBeInTheDocument()
+    );
+    expect(screen.getByText(/Today −200.00 of 300.00 limit/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset high-water mark' }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/connections\/mt5\/icmarkets\/reset-high-water-mark$/),
+        expect.objectContaining({ method: 'POST' })
+      )
+    );
+  });
+
   it('reports an empty fleet plainly rather than looking broken', async () => {
     mockFleet({
       connections: [],
