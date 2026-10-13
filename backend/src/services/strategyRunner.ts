@@ -36,6 +36,7 @@ import {
   connectionLimitsFor,
   evaluateAccountLimits,
   tradingDay,
+  tradingDayTimeZone,
   type AccountLimitBreach,
   type EquityMarks,
 } from './accountLimits.js';
@@ -55,6 +56,8 @@ import {
   unprotectedPositions,
 } from './metrics.js';
 import { notifier, type Alert } from './notifier.js';
+import { newsCalendar } from './newsCalendar.js';
+import { inWeekendWindow } from './propRules.js';
 import { dbService } from './database.js';
 import { MarketDataService } from './marketDataService.js';
 import { StrategyRepository, type ActiveRun, type StagingGroup } from './strategyRepository.js';
@@ -410,6 +413,8 @@ function defaultDeps(
     sendAlert: (alert) => notifier.notify(alert),
     connectionHalt: (connection) => repo.activeHalt(connection.broker, connection.brokerAccount),
     equityMarks: (connection) => trackEquity(connection),
+    newsCalendar: () => newsCalendar.current(),
+    tradingTimeZone: () => tradingDayTimeZone(),
   });
   // Venue caches, keyed per **connection** (platform + account), not per
   // platform. Two accounts on one platform have different equity, different
@@ -744,6 +749,8 @@ export class StrategyRunner {
   public killSwitchHalts = 0;
   /** Equity-limit alerts currently raised, per connection label. */
   private activeLimitAlerts = new Map<string, Map<string, Alert>>();
+  /** Open weekend-hold alerts, by alert key. */
+  private activeWeekendAlerts = new Map<string, Alert>();
   /** Kill-switch alerts currently raised, per run: alert key → its alert. A
    *  key that stops firing is resolved, so the operator hears the all-clear
    *  and a recurrence alerts at once rather than being deduplicated. */
@@ -1084,6 +1091,55 @@ export class StrategyRunner {
    * Never throws. A failing kill switch must not take down the loop it is
    * watching over.
    */
+  /**
+   * Page when a prop account holds a position into its weekend window (R-P2).
+   *
+   * The engine already refuses new entries there; this covers the position
+   * opened earlier that is still open, which most firms forbid holding over
+   * the weekend. It does not close it: that is the operator's call, or the
+   * kill switch's. Once per position and window; resolved when the position
+   * is flat or the window ends. Never throws.
+   */
+  private async checkWeekendHold(
+    run: ActiveRun,
+    position: PositionState,
+    label: string
+  ): Promise<void> {
+    if (!this.deps.sendAlert || !this.deps.connectionLimits) return;
+    const key = `prop-weekend:${label}:${run.id}`;
+    try {
+      const limits = await this.deps.connectionLimits(connectionOf(run));
+      const weekend = limits?.prop?.weekend;
+      const timeZone = tradingDayTimeZone();
+      const holding =
+        Boolean(weekend) &&
+        position.size !== 0 &&
+        inWeekendWindow(new Date(this.deps.now()), weekend!, timeZone);
+      const open = this.activeWeekendAlerts.get(key);
+      if (holding && !open) {
+        const alert: Alert = {
+          key,
+          severity: 'critical',
+          title: `Position held into the weekend on ${label}`,
+          detail:
+            `${runSymbol(run)} is still open (${position.size}) after ${limits!.prop!.firm}'s ` +
+            `weekend cutoff of ${weekend!.no_entries_after} (${timeZone}). The firm may ` +
+            'close the account if it is held over the weekend; close it or confirm the ' +
+            'account allows weekend holding.',
+          context: { connection: label, run_id: run.id, size: position.size },
+        };
+        this.activeWeekendAlerts.set(key, alert);
+        logger.warn({ connection: label, run_id: run.id }, 'prop position held into weekend');
+        await this.deps.sendAlert(alert);
+      } else if (!holding && open) {
+        this.activeWeekendAlerts.delete(key);
+        await this.deps.resolveAlert?.(key, { title: `Resolved: ${open.title}` });
+      }
+    } catch (err) {
+      logger.warn({ connection: label, err: String(err) }, 'weekend hold check failed');
+    }
+  }
+
   private async checkKillSwitch(
     run: ActiveRun,
     position: PositionState,
@@ -1338,6 +1394,7 @@ export class StrategyRunner {
       // — and if the exit places successfully the trail was harmless anyway.
       await this.trailStop(run, position, result, bars[bars.length - 1], label);
       await this.checkKillSwitch(run, position, label);
+      await this.checkWeekendHold(run, position, label);
 
       // Dedupe: one decision per closed bar. Skip if we already recorded this
       // bar for the run (the timer can fire faster than the bar cadence).
@@ -1450,7 +1507,13 @@ export class StrategyRunner {
         };
         this.deps.emit(run.id, payload);
         logger.info(
-          { run_id: run.id, symbol: run.symbol, signal: result.signal, bar_time: result.bar_time },
+          {
+            run_id: run.id,
+            symbol: run.symbol,
+            signal: result.signal,
+            bar_time: result.bar_time,
+            execution_reason: payload.execution_reason ?? undefined,
+          },
           'strategy signal recorded'
         );
       }

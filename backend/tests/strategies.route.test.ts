@@ -30,6 +30,7 @@ const repoImpl = {
   listActiveHalts: jest.fn(),
   clearHalt: jest.fn(),
   listEquityMarks: jest.fn(),
+  countTradingDays: jest.fn(),
   resetHighWaterMark: jest.fn(),
 };
 jest.mock('../src/services/strategyRepository.js', () => ({
@@ -649,6 +650,53 @@ describe('GET /api/strategies/fleet', () => {
         }),
         expect.objectContaining({ kind: 'prop_max_loss', floor: 9000, room: 700, stopped: false }),
       ]);
+    } finally {
+      delete process.env.PROP_RULES__MT5_ICMARKETS;
+    }
+  });
+
+  it("shows a prop account's schedule rules and trading days so far", async () => {
+    axiosMock.get.mockResolvedValue(providers);
+    process.env.PROP_RULES__MT5_ICMARKETS = JSON.stringify({
+      firm: 'FTMO 10k',
+      initial_balance: 10000,
+      daily_loss: { pct: 5 },
+      news_blackout: {},
+      weekend: { no_entries_after: 'fri 20:00' },
+      min_trading_days: { days: 4, start_date: '2026-10-01' },
+    });
+    repoImpl.countTradingDays.mockResolvedValue(2);
+    repoImpl.listEquityMarks.mockResolvedValue([
+      {
+        broker: 'mt5',
+        broker_account: 'icmarkets',
+        trading_day: '2026-10-13',
+        day_start_equity: '10000',
+        high_water_mark: '10000',
+        last_equity: '10000',
+        day_start_balance: '10000',
+        last_balance: '10000',
+        balance_hwm: '10000',
+        hwm_at: '2026-10-12T00:00:00Z',
+        last_at: '2026-10-13T00:00:00Z',
+      },
+    ]);
+    try {
+      const res = await request(buildApp()).get('/api/strategies/fleet');
+      const conn = res.body.connections.find((c: any) => c.connection === 'mt5:icmarkets');
+      expect(conn.equity.prop).toEqual(
+        expect.objectContaining({
+          news_blackout: { minutes_before: 2, minutes_after: 2, impact: ['High'] },
+          weekend: { no_entries_after: 'fri 20:00', resume: 'mon 00:00' },
+          min_trading_days: { days: 4, start_date: '2026-10-01', traded: 2 },
+        })
+      );
+      expect(repoImpl.countTradingDays).toHaveBeenCalledWith(
+        'mt5',
+        'icmarkets',
+        '2026-10-01',
+        'UTC'
+      );
     } finally {
       delete process.env.PROP_RULES__MT5_ICMARKETS;
     }

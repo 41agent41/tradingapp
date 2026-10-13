@@ -336,6 +336,17 @@ floors match what the firm's dashboard shows. **Pass:** floors agree to the
 cent, and an entry signal inside the buffer is refused with "prop daily loss
 buffer reached".
 
+Add the firm's schedule rules to the same JSON: `news_blackout` with the
+firm's minutes either side, `weekend` with your Friday cutoff (before the
+firm's), and `min_trading_days` for an evaluation. From the Windows host,
+check the backend can reach `NEWS_CALENDAR_URL`: the Fleet panel lists the
+rules, and an unreachable calendar shows up as entries refused with "news
+rule cannot be checked" once the copy held is a day old. **Pass:** an entry
+signal within the window of a high-impact release for the pair is refused
+with "news blackout" and the release named; a position left open past the
+Friday cutoff raises "Position held into the weekend"; the trading-day count
+matches the firm's dashboard.
+
 **Once the record supports it, rehearse halt before relying on it:** set
 `KILL_SWITCH_ACTION=halt`, restart the backend, and repeat step 22's stop
 removal on one account.

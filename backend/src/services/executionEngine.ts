@@ -34,7 +34,8 @@ import {
   type EquityMarks,
 } from './accountLimits.js';
 import type { Alert } from './notifier.js';
-import type { PropRules } from './propRules.js';
+import { hasScheduleRules, propScheduleRefusal, type PropRules } from './propRules.js';
+import { instrumentCurrencies, type CalendarState } from './newsCalendar.js';
 import type { SubmitCreateOutcome } from './orderService.js';
 import type { ActiveRun } from './strategyRepository.js';
 import { runSymbol } from './strategyRunner.js';
@@ -121,6 +122,13 @@ export interface ExecutionEngineDeps {
    *  mark), recording the reading as it goes. Null when equity is unknown.
    *  Only called when an equity limit is declared; throwing fails closed. */
   equityMarks?(connection: Connection): Promise<EquityMarks | null>;
+  /** The economic calendar, for a prop account's news blackout. Only called
+   *  when one is declared; throwing or a stale calendar fails closed. */
+  newsCalendar?(): Promise<CalendarState>;
+  /** The trading-day timezone the weekend window is read in. */
+  tradingTimeZone?(): string;
+  /** The clock, for the schedule rules. Defaults to the system clock. */
+  now?(): number;
 }
 
 /** Account-level caps. This is the level a broker — and a prop firm — actually
@@ -390,6 +398,35 @@ export class ExecutionEngine {
         return {
           placed: false,
           reason: `connection ${LIMIT_NAMES[breach.kind]} reached on ${connection.broker}:${connection.brokerAccount}: ${breach.detail}`,
+        };
+      }
+    }
+
+    // ---- Prop schedule rules: news blackouts and the weekend (R-P2) ------ //
+    //
+    // Entries only, like the loss rules: a firm that forbids opening a trade
+    // around news still expects the stop on an open one to work.
+    const prop = connectionLimits?.prop;
+    if (prop && hasScheduleRules(prop) && isEntry(intent)) {
+      let calendar: CalendarState | null = null;
+      if (prop.news_blackout && this.deps.newsCalendar) {
+        try {
+          calendar = await this.deps.newsCalendar();
+        } catch {
+          calendar = null;
+        }
+      }
+      const refusal = propScheduleRefusal({
+        rules: prop,
+        now: new Date(this.deps.now ? this.deps.now() : Date.now()),
+        timeZone: this.deps.tradingTimeZone ? this.deps.tradingTimeZone() : 'UTC',
+        currencies: instrumentCurrencies(run.symbol || runSymbol(run), run.currency),
+        calendar,
+      });
+      if (refusal) {
+        return {
+          placed: false,
+          reason: `${refusal} on ${connection.broker}:${connection.brokerAccount}`,
         };
       }
     }

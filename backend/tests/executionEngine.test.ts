@@ -539,6 +539,95 @@ describe('ExecutionEngine — equity limits with floating P&L', () => {
   });
 });
 
+describe('ExecutionEngine — prop schedule rules (R-P2)', () => {
+  const prop = {
+    firm: 'FTMO 100k',
+    initial_balance: 100_000,
+    daily_loss: { pct: 5, basis: 'equity' },
+    buffer_pct: 20,
+    news_blackout: { minutes_before: 2, minutes_after: 2, impact: ['High'] },
+    weekend: {
+      no_entries_after: 'fri 20:00',
+      resume: 'mon 00:00',
+      from_minute: 4 * 1440 + 20 * 60,
+      until_minute: 0,
+    },
+  };
+  const healthy = {
+    trading_day: '2026-10-02',
+    day_start_equity: 100_000,
+    high_water_mark: 100_000,
+    equity: 100_000,
+  };
+  const nfp = {
+    at: new Date('2026-10-02T12:30:00Z'),
+    currency: 'USD',
+    impact: 'High',
+    title: 'Non-Farm Employment Change',
+  };
+  const fx = run({ symbol: 'EURUSD', sec_type: 'CASH' });
+
+  function depsAt(iso: string, calendar: any) {
+    return makeDeps({
+      connectionLimits: jest.fn().mockResolvedValue({ prop }),
+      equityMarks: jest.fn().mockResolvedValue(healthy),
+      newsCalendar: calendar,
+      tradingTimeZone: () => 'UTC',
+      now: () => Date.parse(iso),
+    });
+  }
+  const fresh = jest
+    .fn()
+    .mockResolvedValue({ events: [nfp], stale: false, fetchedAt: new Date(), error: null });
+
+  it('refuses an entry inside a news blackout for the pair', async () => {
+    const deps = depsAt('2026-10-02T12:29:00Z', fresh);
+    const result = await new ExecutionEngine(deps).execute(ctx({ run: fx, signal: 'long' }));
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('news blackout: USD Non-Farm Employment Change'),
+    });
+    expect(deps.submitOrder).not.toHaveBeenCalled();
+  });
+
+  it('still lets an exit through during a blackout', async () => {
+    const deps = depsAt('2026-10-02T12:29:00Z', fresh);
+    const result = await new ExecutionEngine(deps).execute(
+      ctx({ run: fx, signal: 'flat', position: { size: 1, avg_price: 1.1 } })
+    );
+    expect(result.placed).toBe(true);
+  });
+
+  it('places outside the blackout', async () => {
+    const deps = depsAt('2026-10-02T12:40:00Z', fresh);
+    const result = await new ExecutionEngine(deps).execute(ctx({ run: fx, signal: 'long' }));
+    expect(result.placed).toBe(true);
+  });
+
+  it('refuses entries when the calendar is stale, unreadable or not wired', async () => {
+    const stale = jest
+      .fn()
+      .mockResolvedValue({ events: [], stale: true, fetchedAt: null, error: 'blocked' });
+    for (const calendar of [stale, jest.fn().mockRejectedValue(new Error('boom')), undefined]) {
+      const deps = depsAt('2026-10-02T09:00:00Z', calendar);
+      const result = await new ExecutionEngine(deps).execute(ctx({ run: fx, signal: 'long' }));
+      expect(result).toEqual({
+        placed: false,
+        reason: expect.stringContaining('news rule cannot be checked'),
+      });
+    }
+  });
+
+  it('refuses entries after the Friday cutoff', async () => {
+    const deps = depsAt('2026-10-02T20:30:00Z', fresh);
+    const result = await new ExecutionEngine(deps).execute(ctx({ run: fx, signal: 'short' }));
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('weekend rule: no new entries from fri 20:00'),
+    });
+  });
+});
+
 describe('ExecutionEngine — connection-level caps', () => {
   it('blocks an entry once the connection order cap is reached', async () => {
     // Not a duplicate of the per-run cap: a connection hosting several runs can

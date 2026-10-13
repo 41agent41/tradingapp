@@ -593,6 +593,70 @@ describe('StrategyRunner — equity limit alerts', () => {
   });
 });
 
+describe('StrategyRunner — prop weekend holding (R-P2)', () => {
+  const prop = {
+    firm: 'FTMO 100k',
+    initial_balance: 100_000,
+    daily_loss: { pct: 5, basis: 'equity' },
+    buffer_pct: 20,
+    weekend: {
+      no_entries_after: 'fri 20:00',
+      resume: 'mon 00:00',
+      from_minute: 4 * 1440 + 20 * 60,
+      until_minute: 0,
+    },
+  };
+  const weekendAlerts = (deps: StrategyRunnerDeps) =>
+    (deps.sendAlert as jest.Mock).mock.calls.filter(([a]) =>
+      String(a.key).startsWith('prop-weekend:')
+    );
+
+  it('pages once for a position held into the weekend, and resolves when it closes', async () => {
+    // NOW is a Saturday.
+    const getPosition = jest
+      .fn()
+      .mockResolvedValueOnce({ size: 1, avg_price: 100 })
+      .mockResolvedValueOnce({ size: 1, avg_price: 100 })
+      .mockResolvedValue({ size: 0, avg_price: 0 });
+    const deps = makeDeps({
+      getPosition,
+      connectionLimits: jest.fn().mockResolvedValue({ prop }),
+      evaluate: jest.fn().mockResolvedValue({ ...buyResult, signal: 'hold', entry: false }),
+    });
+    const runner = makeRunner(deps);
+
+    await runner.runOnce();
+    await runner.runOnce();
+    expect(weekendAlerts(deps)).toHaveLength(1);
+    expect(weekendAlerts(deps)[0][0]).toEqual(
+      expect.objectContaining({
+        key: 'prop-weekend:ib:default:1',
+        severity: 'critical',
+        title: 'Position held into the weekend on ib:default',
+      })
+    );
+
+    await runner.runOnce();
+    expect(deps.resolveAlert).toHaveBeenCalledWith(
+      'prop-weekend:ib:default:1',
+      expect.objectContaining({ title: expect.stringMatching(/^Resolved: /) })
+    );
+  });
+
+  it('stays quiet for a flat account, or one without a weekend rule', async () => {
+    const flat = makeDeps({ connectionLimits: jest.fn().mockResolvedValue({ prop }) });
+    await makeRunner(flat).runOnce();
+    expect(weekendAlerts(flat)).toHaveLength(0);
+
+    const noRule = makeDeps({
+      getPosition: jest.fn().mockResolvedValue({ size: 1, avg_price: 100 }),
+      connectionLimits: jest.fn().mockResolvedValue({ prop: { ...prop, weekend: undefined } }),
+    });
+    await makeRunner(noRule).runOnce();
+    expect(weekendAlerts(noRule)).toHaveLength(0);
+  });
+});
+
 describe('StrategyRunner — staged group admission (C-3)', () => {
   const STARTED = new Date(NOW - 600_000).toISOString();
 

@@ -49,7 +49,15 @@ export interface FleetPropRule {
 export interface FleetEquity {
   limits_error?: string | null;
   balance?: number | null;
-  prop?: { firm: string; buffer_pct: number; rules: FleetPropRule[] } | null;
+  prop?: {
+    firm: string;
+    buffer_pct: number;
+    rules: FleetPropRule[];
+    news_blackout?: { minutes_before: number; minutes_after: number; impact: string[] } | null;
+    weekend?: { no_entries_after: string; resume: string } | null;
+    /** `traded` is null when the count could not be read. */
+    min_trading_days?: { days: number; start_date: string; traded: number | null } | null;
+  } | null;
   equity: number;
   trading_day: string;
   day_start_equity: number;

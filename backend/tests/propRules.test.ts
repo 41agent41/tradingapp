@@ -1,7 +1,15 @@
 /**
  * Prop-firm loss rules (R-P1), computed the firm's way.
  */
-import { evaluatePropRules, parsePropRules, type PropMarks } from '../src/services/propRules.js';
+import {
+  evaluatePropRules,
+  inWeekendWindow,
+  minuteOfWeek,
+  parsePropRules,
+  propScheduleRefusal,
+  weekMinute,
+  type PropMarks,
+} from '../src/services/propRules.js';
 
 const FTMO = JSON.stringify({
   firm: 'FTMO 100k',
@@ -138,5 +146,95 @@ describe('evaluatePropRules', () => {
     ).prop_daily_loss;
     expect(daily.stopped).toBe(true);
     expect(daily.detail).toMatch(/no balance/);
+  });
+});
+
+describe('prop schedule rules (R-P2)', () => {
+  const base = {
+    firm: 'FTMO 100k',
+    initial_balance: 100_000,
+    daily_loss: { pct: 5 },
+  };
+  const parse = (extra: object) => parsePropRules(JSON.stringify({ ...base, ...extra }));
+
+  it('reads a news blackout, defaulting to 2 minutes either side of high impact', () => {
+    expect(parse({ news_blackout: {} }).news_blackout).toEqual({
+      minutes_before: 2,
+      minutes_after: 2,
+      impact: ['High'],
+    });
+    expect(() => parse({ news_blackout: { minutes_before: -1 } })).toThrow('news_blackout');
+    expect(() => parse({ news_blackout: { impact: 'High' } })).toThrow('news_blackout.impact');
+  });
+
+  it('reads a weekend window, resuming Monday by default', () => {
+    expect(parse({ weekend: { no_entries_after: 'fri 20:00' } }).weekend).toEqual({
+      no_entries_after: 'fri 20:00',
+      resume: 'mon 00:00',
+      from_minute: 4 * 1440 + 20 * 60,
+      until_minute: 0,
+    });
+    expect(() => parse({ weekend: { no_entries_after: 'friday' } })).toThrow('weekend');
+    expect(() => parse({ weekend: { no_entries_after: 'fri 25:00' } })).toThrow('weekend');
+  });
+
+  it('reads a minimum number of trading days', () => {
+    expect(
+      parse({ min_trading_days: { days: 4, start_date: '2026-10-01' } }).min_trading_days
+    ).toEqual({ days: 4, start_date: '2026-10-01' });
+    expect(() => parse({ min_trading_days: { days: 0, start_date: '2026-10-01' } })).toThrow(
+      'min_trading_days.days'
+    );
+    expect(() => parse({ min_trading_days: { days: 4, start_date: 'Oct 1' } })).toThrow(
+      'start_date'
+    );
+  });
+
+  it('reads the week in the trading timezone', () => {
+    expect(weekMinute('Mon 00:00')).toBe(0);
+    expect(weekMinute('sun 23:59')).toBe(6 * 1440 + 23 * 60 + 59);
+    // Friday 21:30 UTC is Saturday 00:30 on a UTC+3 server.
+    const at = new Date('2026-10-16T21:30:00Z');
+    expect(minuteOfWeek(at, 'UTC')).toBe(4 * 1440 + 21 * 60 + 30);
+    expect(minuteOfWeek(at, 'Europe/Athens')).toBe(5 * 1440 + 30);
+  });
+
+  it('places entries outside the weekend window and refuses them inside it', () => {
+    const rules = parse({ weekend: { no_entries_after: 'fri 20:00', resume: 'sun 22:00' } });
+    const refusal = (iso: string) =>
+      propScheduleRefusal({
+        rules,
+        now: new Date(iso),
+        timeZone: 'UTC',
+        currencies: ['EUR', 'USD'],
+        calendar: null,
+      });
+    expect(refusal('2026-10-16T19:59:00Z')).toBeNull();
+    expect(refusal('2026-10-16T20:00:00Z')).toMatch(/weekend rule/);
+    expect(refusal('2026-10-17T12:00:00Z')).toMatch(/weekend rule/);
+    expect(refusal('2026-10-18T22:00:00Z')).toBeNull();
+    expect(inWeekendWindow(new Date('2026-10-14T12:00:00Z'), rules.weekend!, 'UTC')).toBe(false);
+  });
+
+  it('refuses entries near news, and when the calendar cannot be trusted', () => {
+    const rules = parse({ news_blackout: { minutes_before: 5, minutes_after: 5 } });
+    const event = {
+      at: new Date('2026-10-02T12:30:00Z'),
+      currency: 'USD',
+      impact: 'High',
+      title: 'Non-Farm Employment Change',
+    };
+    const fresh = { events: [event], stale: false, fetchedAt: new Date(), error: null };
+    const check = (iso: string, calendar: any, currencies = ['EUR', 'USD']) =>
+      propScheduleRefusal({ rules, now: new Date(iso), timeZone: 'UTC', currencies, calendar });
+
+    expect(check('2026-10-02T12:26:00Z', fresh)).toMatch(/news blackout: USD Non-Farm/);
+    expect(check('2026-10-02T12:36:00Z', fresh)).toBeNull();
+    expect(check('2026-10-02T12:30:00Z', fresh, ['GBP', 'JPY'])).toBeNull();
+    expect(check('2026-10-02T09:00:00Z', { ...fresh, stale: true, error: 'blocked' })).toMatch(
+      /calendar is out of date \(blocked\)/
+    );
+    expect(check('2026-10-02T09:00:00Z', null)).toMatch(/calendar is unavailable/);
+    expect(check('2026-10-02T09:00:00Z', fresh, [])).toMatch(/currencies are unknown/);
   });
 });
