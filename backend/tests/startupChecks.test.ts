@@ -77,6 +77,17 @@ describe('checkStartupConfig', () => {
     expect(checkStartupConfig({ TRADING_DAY_TIMEZONE: 'Europe/Athens' }).errors).toEqual([]);
   });
 
+  it('refuses unreadable prop rules and accepts valid ones', () => {
+    expect(
+      checkStartupConfig({ PROP_RULES__MT5_FTMO: '{"initial_balance":0}' }).errors.join(' ')
+    ).toMatch(/PROP_RULES__MT5_FTMO needs initial_balance/);
+    expect(
+      checkStartupConfig({
+        PROP_RULES__MT5_FTMO: '{"initial_balance":100000,"daily_loss":{"pct":5}}',
+      }).errors
+    ).toEqual([]);
+  });
+
   it('warns about a leftover NEXT_PUBLIC_API_TOKEN', () => {
     const { warnings } = checkStartupConfig({ NEXT_PUBLIC_API_TOKEN: 'old' });
     expect(warnings.join(' ')).toMatch(/rotate API_TOKEN/);

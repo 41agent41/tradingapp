@@ -199,6 +199,20 @@ def test_paper_flow():
             timeout=90,
         )
 
+    # Prop rules (R-P1) on sim-b, read through the real broker service: the
+    # balance reaches the marks, and the firm's floors are where its rules say.
+    prop = wait_until(
+        "sim-b's prop rules to be measured",
+        lambda: (fleet_connection("sim-b")["equity"] or {}).get("prop"),
+        timeout=90,
+    )
+    assert fleet_connection("sim-b")["equity"]["balance"] == pytest.approx(25_000)
+    rules = {r["kind"]: r for r in prop["rules"]}
+    # 5% daily and 10% trailing of a 25,000 initial balance.
+    assert rules["prop_daily_loss"]["floor"] == pytest.approx(23_750, abs=50), rules
+    assert rules["prop_max_loss"]["floor"] == pytest.approx(22_500, abs=50), rules
+    assert not any(r["stopped"] for r in rules.values()), rules
+
     # Step 21: the stop trails up, one move per bar, never down.
     wait_until("two trail moves", lambda: len(stop_moves("sim-a")) >= 2, timeout=200)
     moves = stop_moves("sim-a")

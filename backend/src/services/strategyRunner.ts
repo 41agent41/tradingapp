@@ -36,6 +36,7 @@ import {
   connectionLimitsFor,
   evaluateAccountLimits,
   tradingDay,
+  type AccountLimitBreach,
   type EquityMarks,
 } from './accountLimits.js';
 import {
@@ -321,6 +322,14 @@ export function runSymbol(run: Pick<ActiveRun, 'symbol' | 'native_symbol'>): str
   return native || run.symbol;
 }
 
+/** Alert titles for the equity limits. */
+const LIMIT_TITLES: Record<AccountLimitBreach['kind'], string> = {
+  daily_equity_loss: 'Daily loss limit reached',
+  drawdown: 'Drawdown limit reached',
+  prop_daily_loss: 'Prop daily loss buffer reached',
+  prop_max_loss: 'Prop max loss buffer reached',
+};
+
 /**
  * Fleet-wide caps, plus the currency check any aggregate depends on (C-4).
  *
@@ -420,7 +429,10 @@ function defaultDeps(
   // serves every equity-sized run on that connection inside a short window.
   // Fail-soft to null — the sizer then refuses with a reason rather than
   // sizing off an invented equity figure.
-  const equityCache = new Map<string, { at: number; equity: number | null }>();
+  const equityCache = new Map<
+    string,
+    { at: number; equity: number | null; balance: number | null }
+  >();
   const EQUITY_TTL_MS = 60_000;
   // Instrument specs barely change, so they are cached for far longer than
   // equity or average cost — a lot step is a property of the instrument at
@@ -459,11 +471,14 @@ function defaultDeps(
     specCache.set(key, { at: Date.now(), spec });
     return spec;
   };
-  const venueEquity = async (connection: Connection): Promise<number | null> => {
+  const venueAccount = async (
+    connection: Connection
+  ): Promise<{ equity: number | null; balance: number | null }> => {
     const key = connectionLabel(connection.broker, connection.brokerAccount);
     const cached = equityCache.get(key);
-    if (cached && Date.now() - cached.at <= EQUITY_TTL_MS) return cached.equity;
+    if (cached && Date.now() - cached.at <= EQUITY_TTL_MS) return cached;
     let equity: number | null = null;
+    let balance: number | null = null;
     try {
       const response = await axios.get(`${BROKER_SERVICE_URL}/account/summary`, {
         params: { broker: connection.broker, account: connection.brokerAccount },
@@ -472,22 +487,29 @@ function defaultDeps(
       });
       const value = Number(response.data?.net_liquidation);
       equity = Number.isFinite(value) && value > 0 ? value : null;
+      const cash = Number(response.data?.total_cash_value);
+      balance = Number.isFinite(cash) && cash > 0 ? cash : null;
     } catch {
       equity = null;
+      balance = null;
     }
-    equityCache.set(key, { at: Date.now(), equity });
-    return equity;
+    const reading = { at: Date.now(), equity, balance };
+    equityCache.set(key, reading);
+    return reading;
   };
+  const venueEquity = async (connection: Connection): Promise<number | null> =>
+    (await venueAccount(connection)).equity;
   /** Record the connection's equity against its marks. Null when the venue
    *  reports none, which the limits treat as unknown, never as zero. */
   const trackEquity = async (connection: Connection): Promise<EquityMarks | null> => {
-    const equity = await venueEquity(connection);
+    const { equity, balance } = await venueAccount(connection);
     if (equity == null) return null;
     return repo.recordEquity(
       connection.broker,
       connection.brokerAccount,
       tradingDay(new Date()),
-      equity
+      equity,
+      balance
     );
   };
   /** Every position the venue reports for a connection, keyed by symbol.
@@ -950,18 +972,17 @@ export class StrategyRunner {
       const previous = this.activeLimitAlerts.get(label) ?? new Map<string, Alert>();
       const current = new Map<string, Alert>();
       for (const breach of evaluateAccountLimits(marks, limits)) {
-        const daily = breach.kind === 'daily_equity_loss';
+        const daily = breach.kind === 'daily_equity_loss' || breach.kind === 'prop_daily_loss';
         // The daily key carries the day, so tomorrow's breach is a new alert
         // rather than one suppressed as a repeat of today's.
         const key = `account-limit:${breach.kind}:${label}${daily ? `:${marks.trading_day}` : ''}`;
         const alert: Alert = {
           key,
           severity: 'critical',
-          title: daily
-            ? `Daily loss limit reached on ${label}`
-            : `Drawdown limit reached on ${label}`,
+          title: `${LIMIT_TITLES[breach.kind]} on ${label}`,
           detail:
-            `Equity ${breach.detail}. New entries on ${label} are refused ` +
+            `${breach.kind.startsWith('prop_') ? '' : 'Equity '}${breach.detail}. ` +
+            `New entries on ${label} are refused ` +
             (daily
               ? 'for the rest of the trading day.'
               : 'until equity recovers or the high-water mark is reset.') +

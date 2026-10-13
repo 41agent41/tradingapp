@@ -108,3 +108,49 @@ describe('tradingDay', () => {
     expect(tradingDay(at, 'Europe/Athens')).toBe('2026-10-13');
   });
 });
+
+describe('prop rules through the account limits', () => {
+  const conn = { broker: 'mt5', brokerAccount: 'ftmo' };
+  const rules = JSON.stringify({
+    firm: 'FTMO 100k',
+    initial_balance: 100_000,
+    daily_loss: { pct: 5, basis: 'balance' },
+    max_loss: { pct: 10, mode: 'static' },
+  });
+
+  it("reads a connection's prop rules, and only from its own variable", () => {
+    const limits = connectionLimitsFor(conn, { PROP_RULES__MT5_FTMO: rules });
+    expect(limits?.prop?.firm).toBe('FTMO 100k');
+    expect(hasEquityLimits(limits)).toBe(true);
+    expect(
+      connectionLimitsFor(
+        { broker: 'mt5', brokerAccount: 'other' },
+        { PROP_RULES__MT5_FTMO: rules }
+      )
+    ).toBeNull();
+  });
+
+  it('throws, naming the variable, when the rules cannot be read', () => {
+    expect(() => connectionLimitsFor(conn, { PROP_RULES__MT5_FTMO: '{"daily_loss":{}}' })).toThrow(
+      /PROP_RULES__MT5_FTMO needs initial_balance/
+    );
+  });
+
+  it('reports a prop rule inside its buffer as a breach', () => {
+    const limits = connectionLimitsFor(conn, { PROP_RULES__MT5_FTMO: rules });
+    const breaches = evaluateAccountLimits(
+      {
+        trading_day: '2026-10-13',
+        day_start_equity: 100_000,
+        high_water_mark: 100_000,
+        equity: 95_800,
+        balance: 100_000,
+        day_start_balance: 100_000,
+        balance_high_water_mark: 100_000,
+      },
+      limits
+    );
+    expect(breaches.map((b) => b.kind)).toEqual(['prop_daily_loss']);
+    expect(breaches[0].detail).toMatch(/FTMO 100k daily loss/);
+  });
+});

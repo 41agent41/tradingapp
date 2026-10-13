@@ -2,7 +2,12 @@
 
 import React from 'react';
 import { apiFetch } from '../../lib/api';
-import { useFleet, type FleetConnection, type FleetLeg } from '../../lib/useFleet';
+import {
+  useFleet,
+  type FleetConnection,
+  type FleetLeg,
+  type FleetLimitKind,
+} from '../../lib/useFleet';
 
 /**
  * Fleet view (Component C — C-5).
@@ -255,6 +260,13 @@ export default function FleetPanel({ pollMs = 15_000 }: FleetPanelProps) {
   );
 }
 
+const LIMIT_MESSAGES: Record<FleetLimitKind, string> = {
+  daily_equity_loss: 'Daily loss limit reached: new entries refused for today',
+  drawdown: 'Drawdown limit reached: new entries refused',
+  prop_daily_loss: 'Prop daily loss buffer reached: new entries refused for today',
+  prop_max_loss: 'Prop max loss buffer reached: new entries refused',
+};
+
 function money(value: number): string {
   return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -271,7 +283,7 @@ function ConnectionCard({
   const reachable = connection.broker !== false;
   const halt = connection.halt;
   const equity = connection.equity;
-  const breached = (equity?.breaches ?? []).length > 0;
+  const breached = (equity?.breaches ?? []).length > 0 || Boolean(equity?.limits_error);
   const alarming = !reachable || Boolean(halt) || breached;
   return (
     <div
@@ -287,9 +299,17 @@ function ConnectionCard({
         {connection.active_runs} active run{connection.active_runs === 1 ? '' : 's'}
         {connection.currency ? ` · ${connection.currency}` : ''}
       </div>
-      {equity && (
+      {equity?.limits_error && (
+        <div className="mt-1 text-xs font-semibold text-red-800">
+          Limits unreadable, all entries refused: {equity.limits_error}
+        </div>
+      )}
+      {equity && typeof equity.equity === 'number' && (
         <div className="mt-1 space-y-0.5 text-xs text-gray-600">
-          <div>Equity {money(equity.equity)}</div>
+          <div>
+            Equity {money(equity.equity)}
+            {equity.balance != null && ` · balance ${money(equity.balance)}`}
+          </div>
           <div className={equity.breaches.includes('daily_equity_loss') ? 'text-red-700' : ''}>
             Today{' '}
             {equity.daily_loss > 0
@@ -302,13 +322,24 @@ function ConnectionCard({
             Drawdown {money(Math.max(0, equity.drawdown))}
             {equity.max_drawdown != null && ` of ${money(equity.max_drawdown)} limit`}
           </div>
-          {breached && (
-            <div className="font-semibold text-red-800">
-              {equity.breaches.includes('drawdown')
-                ? 'Drawdown limit reached: new entries refused'
-                : 'Daily loss limit reached: new entries refused for today'}
+          {equity.prop && (
+            <div className="mt-1 rounded border border-gray-200 bg-gray-50 p-1.5">
+              <div className="font-medium text-gray-800">{equity.prop.firm}</div>
+              {equity.prop.rules.map((rule) => (
+                <div key={rule.kind} className={rule.stopped ? 'text-red-700' : ''}>
+                  {rule.kind === 'prop_daily_loss' ? 'Daily' : 'Max'} loss: room{' '}
+                  {rule.room == null ? 'unknown' : money(rule.room)} above{' '}
+                  {rule.floor == null ? 'an unknown floor' : money(rule.floor)} (entries stop at{' '}
+                  {money(rule.stop_at)})
+                </div>
+              ))}
             </div>
           )}
+          {equity.breaches.map((kind) => (
+            <div key={kind} className="font-semibold text-red-800">
+              {LIMIT_MESSAGES[kind]}
+            </div>
+          ))}
           {equity.breaches.includes('drawdown') && (
             <button
               type="button"

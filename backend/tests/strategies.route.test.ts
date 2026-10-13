@@ -613,6 +613,60 @@ describe('GET /api/strategies/fleet', () => {
     }
   });
 
+  it("shows a prop account's room against its firm's rules", async () => {
+    axiosMock.get.mockResolvedValue(providers);
+    process.env.PROP_RULES__MT5_ICMARKETS = JSON.stringify({
+      firm: 'FTMO 10k',
+      initial_balance: 10000,
+      daily_loss: { pct: 5, basis: 'balance' },
+      max_loss: { pct: 10, mode: 'static' },
+    });
+    repoImpl.listEquityMarks.mockResolvedValue([
+      {
+        broker: 'mt5',
+        broker_account: 'icmarkets',
+        trading_day: '2026-10-13',
+        day_start_equity: '10000',
+        high_water_mark: '10000',
+        last_equity: '9700',
+        day_start_balance: '10000',
+        last_balance: '10000',
+        balance_hwm: '10000',
+        hwm_at: '2026-10-12T00:00:00Z',
+        last_at: '2026-10-13T00:00:00Z',
+      },
+    ]);
+    try {
+      const res = await request(buildApp()).get('/api/strategies/fleet');
+      const conn = res.body.connections.find((c: any) => c.connection === 'mt5:icmarkets');
+      expect(conn.equity.prop.firm).toBe('FTMO 10k');
+      expect(conn.equity.prop.rules).toEqual([
+        expect.objectContaining({
+          kind: 'prop_daily_loss',
+          floor: 9500,
+          room: 200,
+          stopped: false,
+        }),
+        expect.objectContaining({ kind: 'prop_max_loss', floor: 9000, room: 700, stopped: false }),
+      ]);
+    } finally {
+      delete process.env.PROP_RULES__MT5_ICMARKETS;
+    }
+  });
+
+  it("says so when a prop account's rules cannot be read", async () => {
+    axiosMock.get.mockResolvedValue(providers);
+    process.env.PROP_RULES__MT5_ICMARKETS = 'not json';
+    try {
+      const res = await request(buildApp()).get('/api/strategies/fleet');
+      expect(res.status).toBe(200);
+      const conn = res.body.connections.find((c: any) => c.connection === 'mt5:icmarkets');
+      expect(conn.equity.limits_error).toMatch(/PROP_RULES__MT5_ICMARKETS is not valid JSON/);
+    } finally {
+      delete process.env.PROP_RULES__MT5_ICMARKETS;
+    }
+  });
+
   it('still answers when the broker service is unreachable', async () => {
     // The DB half is still worth having, and "the broker service is down" is
     // itself the headline rather than a blank screen.

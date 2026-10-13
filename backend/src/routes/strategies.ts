@@ -39,9 +39,12 @@ import {
 import {
   connectionLimitsFor,
   evaluateAccountLimits,
+  propMarks,
   toEquityMarks,
   type EquityMarks,
 } from '../services/accountLimits.js';
+import { evaluatePropRules } from '../services/propRules.js';
+import type { ConnectionLimits } from '../services/executionEngine.js';
 import { notifier } from '../services/notifier.js';
 import { haltAlertKey } from '../services/killSwitch.js';
 import { PromotionService } from '../services/promotionService.js';
@@ -322,15 +325,24 @@ function equityView(
   info: { platform?: string; account?: string },
   entry: { marks: EquityMarks; last_at: string; hwm_at: string } | undefined
 ) {
-  if (!entry) return null;
   const [broker, ...rest] = label.split(':');
-  const limits = connectionLimitsFor({
-    broker: info.platform ?? broker,
-    brokerAccount: info.account ?? rest.join(':'),
-  });
+  let limits: ConnectionLimits | null = null;
+  let limitsError: string | null = null;
+  try {
+    limits = connectionLimitsFor({
+      broker: info.platform ?? broker,
+      brokerAccount: info.account ?? rest.join(':'),
+    });
+  } catch (err) {
+    // A prop account whose rules cannot be read refuses every entry; the
+    // panel has to say why rather than look healthy.
+    limitsError = (err as Error).message;
+  }
+  if (!entry) return limitsError ? { limits_error: limitsError } : null;
   const { marks } = entry;
   return {
     equity: marks.equity,
+    balance: marks.balance ?? null,
     trading_day: marks.trading_day,
     day_start_equity: marks.day_start_equity,
     high_water_mark: marks.high_water_mark,
@@ -339,6 +351,21 @@ function equityView(
     max_daily_equity_loss: limits?.max_daily_equity_loss ?? null,
     max_drawdown: limits?.max_drawdown ?? null,
     breaches: evaluateAccountLimits(marks, limits).map((b) => b.kind),
+    prop: limits?.prop
+      ? {
+          firm: limits.prop.firm,
+          buffer_pct: limits.prop.buffer_pct,
+          rules: evaluatePropRules(propMarks(marks), limits.prop).map((r) => ({
+            kind: r.kind,
+            floor: Number.isFinite(r.floor) ? r.floor : null,
+            allowance: r.allowance,
+            room: Number.isFinite(r.room) ? r.room : null,
+            stop_at: r.stop_at,
+            stopped: r.stopped,
+          })),
+        }
+      : null,
+    limits_error: limitsError,
     last_at: entry.last_at,
     hwm_at: entry.hwm_at,
   };

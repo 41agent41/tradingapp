@@ -194,7 +194,8 @@ export interface ConnectionHaltRow {
 /** `trading_day` as text: the driver would otherwise parse a DATE into a
  *  local-time Date, which can shift it by a day. */
 const EQUITY_COLUMNS = `broker, broker_account, trading_day::text AS trading_day,
-  day_start_equity, high_water_mark, hwm_at, last_equity, last_at`;
+  day_start_equity, high_water_mark, hwm_at, last_equity, last_at,
+  day_start_balance, last_balance, balance_hwm`;
 
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
@@ -628,17 +629,27 @@ export class StrategyRepository {
     broker: string,
     brokerAccount: string,
     tradingDay: string,
-    equity: number
+    equity: number,
+    balance: number | null = null
   ): Promise<EquityMarks> {
+    // GREATEST ignores NULLs, so a venue that reports no balance leaves the
+    // balance marks as they were rather than wiping them.
     const result = await this.db.query(
       `INSERT INTO connection_equity
-         (broker, broker_account, trading_day, day_start_equity, high_water_mark, last_equity)
-       VALUES ($1, $2, $3::date, $4, $4, $4)
+         (broker, broker_account, trading_day, day_start_equity, high_water_mark, last_equity,
+          day_start_balance, last_balance, balance_hwm)
+       VALUES ($1, $2, $3::date, $4, $4, $4, $5, $5, $5)
        ON CONFLICT (broker, broker_account) DO UPDATE SET
          day_start_equity = CASE
            WHEN connection_equity.trading_day <> EXCLUDED.trading_day
              THEN GREATEST(connection_equity.last_equity, EXCLUDED.last_equity)
            ELSE connection_equity.day_start_equity END,
+         day_start_balance = CASE
+           WHEN connection_equity.trading_day <> EXCLUDED.trading_day
+             THEN GREATEST(connection_equity.last_balance, EXCLUDED.last_balance)
+           ELSE COALESCE(connection_equity.day_start_balance, EXCLUDED.last_balance) END,
+         balance_hwm = GREATEST(connection_equity.balance_hwm, EXCLUDED.last_balance),
+         last_balance = COALESCE(EXCLUDED.last_balance, connection_equity.last_balance),
          trading_day = EXCLUDED.trading_day,
          high_water_mark = GREATEST(connection_equity.high_water_mark, EXCLUDED.last_equity),
          hwm_at = CASE
@@ -647,7 +658,7 @@ export class StrategyRepository {
          last_equity = EXCLUDED.last_equity,
          last_at = NOW()
        RETURNING ${EQUITY_COLUMNS}`,
-      [broker, brokerAccount, tradingDay, equity]
+      [broker, brokerAccount, tradingDay, equity, balance]
     );
     return toEquityMarks(result.rows[0] as ConnectionEquityRow);
   }
@@ -665,7 +676,8 @@ export class StrategyRepository {
   async resetHighWaterMark(broker: string, brokerAccount: string): Promise<EquityMarks | null> {
     const result = await this.db.query(
       `UPDATE connection_equity
-          SET high_water_mark = last_equity, hwm_at = NOW()
+          SET high_water_mark = last_equity, hwm_at = NOW(),
+              balance_hwm = COALESCE(last_balance, balance_hwm)
         WHERE LOWER(broker) = LOWER($1) AND LOWER(broker_account) = LOWER($2)
         RETURNING ${EQUITY_COLUMNS}`,
       [broker, brokerAccount]

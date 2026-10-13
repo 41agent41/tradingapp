@@ -12,6 +12,8 @@
  * where the app runs.
  */
 
+import { parsePropRules } from './propRules.js';
+
 export interface StartupCheckResult {
   errors: string[];
   warnings: string[];
@@ -80,6 +82,16 @@ export function checkStartupConfig(env: Env = process.env): StartupCheckResult {
       errors.push(
         `TRADING_DAY_TIMEZONE=${zone} is not a valid IANA time zone (for example Europe/Athens).`
       );
+    }
+  }
+
+  // --- Prop rules: a funded account with unreadable rules must not start --
+  for (const [name, raw] of Object.entries(env)) {
+    if (!name.startsWith('PROP_RULES__') || !raw || !raw.trim()) continue;
+    try {
+      parsePropRules(raw);
+    } catch (err) {
+      errors.push(`${name} ${(err as Error).message}.`);
     }
   }
 

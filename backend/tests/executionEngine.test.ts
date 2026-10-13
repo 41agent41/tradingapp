@@ -487,6 +487,46 @@ describe('ExecutionEngine — equity limits with floating P&L', () => {
     expect(r2).toEqual({ placed: false, reason: expect.stringContaining('not measurable') });
   });
 
+  it("refuses an entry inside a prop firm's daily loss buffer", async () => {
+    const deps = makeDeps({
+      connectionLimits: jest.fn().mockResolvedValue({
+        prop: {
+          firm: 'FTMO 100k',
+          initial_balance: 100_000,
+          daily_loss: { pct: 5, basis: 'balance' },
+          buffer_pct: 20,
+        },
+      }),
+      equityMarks: jest.fn().mockResolvedValue({
+        trading_day: '2026-10-13',
+        day_start_equity: 100_000,
+        high_water_mark: 100_000,
+        equity: 95_800,
+        balance: 100_000,
+        day_start_balance: 100_000,
+        balance_high_water_mark: 100_000,
+      }),
+    });
+    const result = await new ExecutionEngine(deps).execute(ctx({ signal: 'long' }));
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('prop daily loss buffer reached'),
+    });
+  });
+
+  it('refuses every entry when the prop rules cannot be read', async () => {
+    const deps = makeDeps({
+      connectionLimits: jest
+        .fn()
+        .mockRejectedValue(new Error('PROP_RULES__IB_DEFAULT is not valid JSON')),
+    });
+    const result = await new ExecutionEngine(deps).execute(ctx({ signal: 'long' }));
+    expect(result).toEqual({
+      placed: false,
+      reason: expect.stringContaining('PROP_RULES__IB_DEFAULT is not valid JSON'),
+    });
+  });
+
   it('places normally inside the limits', async () => {
     const deps = makeDeps({
       connectionLimits: jest

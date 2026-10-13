@@ -259,6 +259,76 @@ describe('FleetPanel', () => {
     );
   });
 
+  it("shows a prop account's room against its firm's rules", async () => {
+    mockFleet({
+      ...fleet,
+      connections: [
+        {
+          ...fleet.connections[0],
+          equity: {
+            equity: 95800,
+            balance: 100000,
+            trading_day: '2026-10-13',
+            day_start_equity: 100000,
+            high_water_mark: 100000,
+            daily_loss: 4200,
+            drawdown: 4200,
+            max_daily_equity_loss: null,
+            max_drawdown: null,
+            breaches: ['prop_daily_loss'],
+            prop: {
+              firm: 'FTMO 100k',
+              buffer_pct: 20,
+              rules: [
+                {
+                  kind: 'prop_daily_loss',
+                  floor: 95000,
+                  allowance: 5000,
+                  room: 800,
+                  stop_at: 1000,
+                  stopped: true,
+                },
+                {
+                  kind: 'prop_max_loss',
+                  floor: 90000,
+                  allowance: 10000,
+                  room: 5800,
+                  stop_at: 2000,
+                  stopped: false,
+                },
+              ],
+            },
+            last_at: '2026-10-13T00:00:00Z',
+            hwm_at: '2026-10-12T00:00:00Z',
+          },
+        },
+      ],
+    });
+    render(<FleetPanel pollMs={0} />);
+
+    await waitFor(() => expect(screen.getByText('FTMO 100k')).toBeInTheDocument());
+    expect(screen.getByText(/Daily loss: room 800.00 above 95,000.00/)).toBeInTheDocument();
+    expect(
+      screen.getByText('Prop daily loss buffer reached: new entries refused for today')
+    ).toBeInTheDocument();
+  });
+
+  it('says loudly when a prop account has unreadable rules', async () => {
+    mockFleet({
+      ...fleet,
+      connections: [
+        {
+          ...fleet.connections[0],
+          equity: { limits_error: 'PROP_RULES__MT5_ICMARKETS is not valid JSON' },
+        },
+      ],
+    });
+    render(<FleetPanel pollMs={0} />);
+    await waitFor(() =>
+      expect(screen.getByText(/Limits unreadable, all entries refused/)).toBeInTheDocument()
+    );
+  });
+
   it('reports an empty fleet plainly rather than looking broken', async () => {
     mockFleet({
       connections: [],
