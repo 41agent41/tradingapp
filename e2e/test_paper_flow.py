@@ -101,9 +101,13 @@ def assert_never_doubled(account: str) -> None:
         ), f"{account} holds {pos['volume']}: {pos}"
 
 
-def fleet_halt(account: str) -> Any:
+def fleet_connection(account: str) -> Dict[str, Any]:
     connections = api("GET", "/strategies/fleet").json()["connections"]
-    return next(c for c in connections if c["connection"] == f"mt5:{account}")["halt"]
+    return next(c for c in connections if c["connection"] == f"mt5:{account}")
+
+
+def fleet_halt(account: str) -> Any:
+    return fleet_connection(account)["halt"]
 
 
 def signals(run_id: int) -> List[Dict[str, Any]]:
@@ -296,3 +300,46 @@ def test_paper_flow():
         timeout=150,
     )
     assert_never_doubled("sim-b")
+
+    # Equity limits with floating P&L: sim-a loses 100 of equity (a balance
+    # drop stands in for a loss), past both its daily loss (50) and drawdown
+    # (80) limits. Nothing has closed at a loss in the fills, so only an
+    # equity-based limit can see it. Entries stop; the open position's stop
+    # still works.
+    sim_set("sim-a", balance=9_900)
+    equity = wait_until(
+        "sim-a's equity limits to trip",
+        lambda: (fleet_connection("sim-a")["equity"] or {}).get("breaches") or None,
+        timeout=120,
+    )
+    assert set(equity) == {"daily_equity_loss", "drawdown"}, equity
+    assert not (fleet_connection("sim-b")["equity"] or {}).get("breaches")
+
+    limited_entries = len(entries("sim-a"))
+    stops_before = len([d for d in sim("sim-a")["deals"] if d["comment"] == "[sl]"])
+    sim_set("sim-a", price_offset=-0.006)
+    wait_until(
+        "sim-a's stop to fire again",
+        lambda: len([d for d in sim("sim-a")["deals"] if d["comment"] == "[sl]"])
+        > stops_before,
+        timeout=30,
+    )
+    run_a = runs["sim-a"]["id"]
+    seen = {s["id"] for s in signals(run_a)}
+    wait_until(
+        "two entry signals refused by the equity limits",
+        lambda: len(
+            [
+                s
+                for s in signals(run_a)
+                if s["id"] not in seen
+                and s["entry"]
+                and not s["acted"]
+                and float(s["position_size"]) == 0
+            ]
+        )
+        >= 2,
+        timeout=240,
+    )
+    assert len(entries("sim-a")) == limited_entries
+    assert not sim("sim-a")["positions"]

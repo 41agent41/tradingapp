@@ -71,6 +71,18 @@ export function checkStartupConfig(env: Env = process.env): StartupCheckResult {
     );
   }
 
+  // --- Trading day zone: a bad one would make every equity check throw -----
+  const zone = val(env, 'TRADING_DAY_TIMEZONE');
+  if (zone) {
+    try {
+      new Intl.DateTimeFormat('en-CA', { timeZone: zone });
+    } catch {
+      errors.push(
+        `TRADING_DAY_TIMEZONE=${zone} is not a valid IANA time zone (for example Europe/Athens).`
+      );
+    }
+  }
+
   if (val(env, 'NEXT_PUBLIC_API_TOKEN')) {
     warnings.push(
       'NEXT_PUBLIC_API_TOKEN is no longer used and should be removed from .env. If it ever ' +

@@ -33,6 +33,12 @@ import axios from 'axios';
 import { logger } from './logger.js';
 import { applyTrail } from './stopManager.js';
 import {
+  connectionLimitsFor,
+  evaluateAccountLimits,
+  tradingDay,
+  type EquityMarks,
+} from './accountLimits.js';
+import {
   evaluateKillSwitch,
   haltAlertKey,
   killSwitchConfig,
@@ -227,6 +233,11 @@ export interface StrategyRunnerDeps {
     connection: Connection,
     cause: { kind: string; detail: string; runId: number }
   ): Promise<{ created: boolean }>;
+  /** Record the connection's equity and return its marks (start of day,
+   *  high-water mark), or null when equity is unknown. */
+  trackEquity?(connection: Connection): Promise<EquityMarks | null>;
+  /** The connection's declared caps, for the equity-limit alerts. */
+  connectionLimits?(connection: Connection): Promise<ConnectionLimits | null>;
   /** C-3 staged deploy. Optional so a runner without groups behaves as before. */
   listStagingGroups?(): Promise<StagingGroup[]>;
   admitGroup?(groupId: number): Promise<number>;
@@ -311,34 +322,6 @@ export function runSymbol(run: Pick<ActiveRun, 'symbol' | 'native_symbol'>): str
 }
 
 /**
- * Fleet-level caps (C-4), read from the connection manifest the broker service
- * already owns plus environment defaults.
- *
- * Kept here rather than in the manifest schema because the manifest describes
- * *topology* — where an account is and how to reach it — while a cap is a
- * risk decision that changes far more often than the wiring does.
- */
-function connectionLimitsFor(connection: Connection): ConnectionLimits | null {
-  const envKey = `${connection.broker}_${connection.brokerAccount}`
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '_');
-  const orders = Number(
-    process.env[`CONNECTION_MAX_ORDERS_PER_DAY__${envKey}`] ??
-      process.env.CONNECTION_MAX_ORDERS_PER_DAY ??
-      ''
-  );
-  const loss = Number(
-    process.env[`CONNECTION_MAX_DAILY_LOSS__${envKey}`] ??
-      process.env.CONNECTION_MAX_DAILY_LOSS ??
-      ''
-  );
-  const limits: ConnectionLimits = {};
-  if (Number.isFinite(orders) && orders > 0) limits.max_orders_per_day = orders;
-  if (Number.isFinite(loss) && loss > 0) limits.max_daily_loss = loss;
-  return Object.keys(limits).length > 0 ? limits : null;
-}
-
-/**
  * Fleet-wide caps, plus the currency check any aggregate depends on (C-4).
  *
  * The fleet is configured as single-currency, which is what makes a portfolio
@@ -417,6 +400,7 @@ function defaultDeps(
       (await executionRepo.realisedPnlTodayAllConnections()).realised,
     sendAlert: (alert) => notifier.notify(alert),
     connectionHalt: (connection) => repo.activeHalt(connection.broker, connection.brokerAccount),
+    equityMarks: (connection) => trackEquity(connection),
   });
   // Venue caches, keyed per **connection** (platform + account), not per
   // platform. Two accounts on one platform have different equity, different
@@ -493,6 +477,18 @@ function defaultDeps(
     }
     equityCache.set(key, { at: Date.now(), equity });
     return equity;
+  };
+  /** Record the connection's equity against its marks. Null when the venue
+   *  reports none, which the limits treat as unknown, never as zero. */
+  const trackEquity = async (connection: Connection): Promise<EquityMarks | null> => {
+    const equity = await venueEquity(connection);
+    if (equity == null) return null;
+    return repo.recordEquity(
+      connection.broker,
+      connection.brokerAccount,
+      tradingDay(new Date()),
+      equity
+    );
   };
   /** Every position the venue reports for a connection, keyed by symbol.
    *
@@ -643,6 +639,8 @@ function defaultDeps(
     connectionEquity: (connection) => venueEquity(connection),
     sendAlert: (alert) => notifier.notify(alert),
     resolveAlert: (key, message) => notifier.resolve(key, message),
+    trackEquity: (connection) => trackEquity(connection),
+    connectionLimits: async (connection) => connectionLimitsFor(connection),
     haltConnection: async (connection, cause) => {
       const { created } = await repo.haltConnection({
         broker: connection.broker,
@@ -722,6 +720,8 @@ export class StrategyRunner {
   public stopsTightened = 0;
   public killSwitchTriggers = 0;
   public killSwitchHalts = 0;
+  /** Equity-limit alerts currently raised, per connection label. */
+  private activeLimitAlerts = new Map<string, Map<string, Alert>>();
   /** Kill-switch alerts currently raised, per run: alert key → its alert. A
    *  key that stops firing is resolved, so the operator hears the all-clear
    *  and a recurrence alerts at once rather than being deduplicated. */
@@ -857,6 +857,9 @@ export class StrategyRunner {
           this.skipped += connectionRuns.length;
           continue;
         }
+        if (this.deps.trackEquity) {
+          await this.checkAccountLimits(connectionOf(connectionRuns[0]), label);
+        }
         for (const run of connectionRuns) {
           await this.evaluateRun(run, label);
         }
@@ -926,6 +929,71 @@ export class StrategyRunner {
       }
     }
     if (outcome.error) this.errors++;
+  }
+
+  /**
+   * Record the connection's equity and page when it crosses an equity limit.
+   *
+   * Recording every pass is what makes the marks meaningful: the high-water
+   * mark is only as high as the highest reading taken. The limits themselves
+   * are enforced by the engine on each entry; this only tells the operator,
+   * once per breach, and says when it clears. Never throws.
+   */
+  private async checkAccountLimits(connection: Connection, label: string): Promise<void> {
+    if (!this.deps.trackEquity) return;
+    try {
+      const marks = await this.deps.trackEquity(connection);
+      if (!marks) return;
+      const limits = this.deps.connectionLimits
+        ? await this.deps.connectionLimits(connection)
+        : null;
+      const previous = this.activeLimitAlerts.get(label) ?? new Map<string, Alert>();
+      const current = new Map<string, Alert>();
+      for (const breach of evaluateAccountLimits(marks, limits)) {
+        const daily = breach.kind === 'daily_equity_loss';
+        // The daily key carries the day, so tomorrow's breach is a new alert
+        // rather than one suppressed as a repeat of today's.
+        const key = `account-limit:${breach.kind}:${label}${daily ? `:${marks.trading_day}` : ''}`;
+        const alert: Alert = {
+          key,
+          severity: 'critical',
+          title: daily
+            ? `Daily loss limit reached on ${label}`
+            : `Drawdown limit reached on ${label}`,
+          detail:
+            `Equity ${breach.detail}. New entries on ${label} are refused ` +
+            (daily
+              ? 'for the rest of the trading day.'
+              : 'until equity recovers or the high-water mark is reset.') +
+            ' Exits and stops still run.',
+          context: {
+            connection: label,
+            equity: marks.equity,
+            day_start_equity: marks.day_start_equity,
+            high_water_mark: marks.high_water_mark,
+            limit: breach.limit,
+          },
+        };
+        current.set(key, alert);
+        if (!previous.has(key)) {
+          logger.warn({ connection: label, kind: breach.kind }, 'account equity limit reached');
+          await this.deps.sendAlert?.(alert);
+        }
+      }
+      for (const [key, alert] of previous) {
+        if (current.has(key)) continue;
+        await this.deps.resolveAlert?.(key, {
+          title: `Resolved: ${alert.title}`,
+          context: alert.context,
+        });
+      }
+      if (current.size > 0) this.activeLimitAlerts.set(label, current);
+      else this.activeLimitAlerts.delete(label);
+    } catch (err) {
+      // The engine still refuses entries when it cannot read equity; this is
+      // only the alerting side.
+      logger.warn({ connection: label, err: String(err) }, 'equity tracking failed');
+    }
   }
 
   /**

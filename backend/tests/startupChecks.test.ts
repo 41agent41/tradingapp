@@ -70,6 +70,13 @@ describe('checkStartupConfig', () => {
     expect(checkStartupConfig({ KILL_SWITCH_ACTION: action }).errors).toEqual([]);
   });
 
+  it('refuses an invalid TRADING_DAY_TIMEZONE and accepts a real one', () => {
+    expect(checkStartupConfig({ TRADING_DAY_TIMEZONE: 'Mars/Olympus' }).errors.join(' ')).toMatch(
+      /TRADING_DAY_TIMEZONE/
+    );
+    expect(checkStartupConfig({ TRADING_DAY_TIMEZONE: 'Europe/Athens' }).errors).toEqual([]);
+  });
+
   it('warns about a leftover NEXT_PUBLIC_API_TOKEN', () => {
     const { warnings } = checkStartupConfig({ NEXT_PUBLIC_API_TOKEN: 'old' });
     expect(warnings.join(' ')).toMatch(/rotate API_TOKEN/);

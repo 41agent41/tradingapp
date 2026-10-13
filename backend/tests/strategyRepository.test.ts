@@ -223,3 +223,28 @@ describe('StrategyRepository holdout start', () => {
     expect(calls[0].params).toEqual([4, '2025-01-01']);
   });
 });
+
+describe('StrategyRepository equity marks', () => {
+  it('upserts the reading, keeping the high-water mark and the day start', async () => {
+    const { db, calls } = fakeDb(() => [
+      {
+        broker: 'mt5',
+        broker_account: 'sim-a',
+        trading_day: '2026-10-13',
+        day_start_equity: '10000.0000',
+        high_water_mark: '10500.0000',
+        last_equity: '9800.0000',
+      },
+    ]);
+    const marks = await new StrategyRepository(db).recordEquity('mt5', 'sim-a', '2026-10-13', 9800);
+    expect(calls[0].text).toMatch(/ON CONFLICT \(broker, broker_account\) DO UPDATE/);
+    expect(calls[0].text).toMatch(/GREATEST\(connection_equity.high_water_mark/);
+    expect(calls[0].params).toEqual(['mt5', 'sim-a', '2026-10-13', 9800]);
+    expect(marks).toEqual({
+      trading_day: '2026-10-13',
+      day_start_equity: 10000,
+      high_water_mark: 10500,
+      equity: 9800,
+    });
+  });
+});

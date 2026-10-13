@@ -321,6 +321,13 @@ whole escalation design depends on.
 halting have been the right response? That judgement is what makes enabling
 `halt` (E-6) a decision rather than a hope.
 
+**Equity limits:** set `CONNECTION_MAX_DAILY_EQUITY_LOSS` and
+`CONNECTION_MAX_DRAWDOWN` for each account, and `TRADING_DAY_TIMEZONE` to the
+broker server's zone. Check that the Fleet panel's equity, day start and
+drawdown agree with the terminal. To rehearse, set a daily limit just below
+the floating loss of an open position. **Pass:** a "Daily loss limit reached"
+alert, the next entry signal refused, and the position's stop untouched.
+
 **Once the record supports it, rehearse halt before relying on it:** set
 `KILL_SWITCH_ACTION=halt`, restart the backend, and repeat step 22's stop
 removal on one account.

@@ -66,6 +66,35 @@ export default function FleetPanel({ pollMs = 15_000 }: FleetPanelProps) {
     [refresh]
   );
 
+  const resetHighWaterMark = React.useCallback(
+    async (label: string) => {
+      // Only right after a withdrawal: a real loss reset this way would let the
+      // account keep trading past its drawdown limit.
+      if (
+        !window.confirm(
+          `Reset the high-water mark on ${label} to its current equity? Only do this after a withdrawal.`
+        )
+      )
+        return;
+      setResumeError(null);
+      const [broker, ...rest] = label.split(':');
+      const account = rest.join(':');
+      try {
+        const res = await apiFetch(
+          `/api/strategies/connections/${encodeURIComponent(broker)}/${encodeURIComponent(account)}/reset-high-water-mark`,
+          { method: 'POST' }
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      } catch (err) {
+        setResumeError(
+          `Could not reset the high-water mark on ${label} (${(err as Error).message}).`
+        );
+      }
+      refresh();
+    },
+    [refresh]
+  );
+
   const halted = (fleet?.connections ?? []).filter((c) => c.halt);
 
   if (loading && !fleet) {
@@ -125,7 +154,12 @@ export default function FleetPanel({ pollMs = 15_000 }: FleetPanelProps) {
         </div>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {(fleet?.connections ?? []).map((connection) => (
-            <ConnectionCard key={connection.connection} connection={connection} onResume={resume} />
+            <ConnectionCard
+              key={connection.connection}
+              connection={connection}
+              onResume={resume}
+              onResetHighWaterMark={resetHighWaterMark}
+            />
           ))}
           {(fleet?.connections ?? []).length === 0 && (
             <div className="text-sm text-gray-500">No connections configured.</div>
@@ -221,16 +255,24 @@ export default function FleetPanel({ pollMs = 15_000 }: FleetPanelProps) {
   );
 }
 
+function money(value: number): string {
+  return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 function ConnectionCard({
   connection,
   onResume,
+  onResetHighWaterMark,
 }: {
   connection: FleetConnection;
   onResume: (label: string) => void;
+  onResetHighWaterMark: (label: string) => void;
 }) {
   const reachable = connection.broker !== false;
   const halt = connection.halt;
-  const alarming = !reachable || Boolean(halt);
+  const equity = connection.equity;
+  const breached = (equity?.breaches ?? []).length > 0;
+  const alarming = !reachable || Boolean(halt) || breached;
   return (
     <div
       className={`rounded border p-3 ${alarming ? 'border-red-300 bg-red-50' : 'border-gray-200'}`}
@@ -245,6 +287,39 @@ function ConnectionCard({
         {connection.active_runs} active run{connection.active_runs === 1 ? '' : 's'}
         {connection.currency ? ` · ${connection.currency}` : ''}
       </div>
+      {equity && (
+        <div className="mt-1 space-y-0.5 text-xs text-gray-600">
+          <div>Equity {money(equity.equity)}</div>
+          <div className={equity.breaches.includes('daily_equity_loss') ? 'text-red-700' : ''}>
+            Today{' '}
+            {equity.daily_loss > 0
+              ? `−${money(equity.daily_loss)}`
+              : `+${money(-equity.daily_loss)}`}
+            {equity.max_daily_equity_loss != null &&
+              ` of ${money(equity.max_daily_equity_loss)} limit`}
+          </div>
+          <div className={equity.breaches.includes('drawdown') ? 'text-red-700' : ''}>
+            Drawdown {money(Math.max(0, equity.drawdown))}
+            {equity.max_drawdown != null && ` of ${money(equity.max_drawdown)} limit`}
+          </div>
+          {breached && (
+            <div className="font-semibold text-red-800">
+              {equity.breaches.includes('drawdown')
+                ? 'Drawdown limit reached: new entries refused'
+                : 'Daily loss limit reached: new entries refused for today'}
+            </div>
+          )}
+          {equity.breaches.includes('drawdown') && (
+            <button
+              type="button"
+              onClick={() => onResetHighWaterMark(connection.connection)}
+              className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
+            >
+              Reset high-water mark
+            </button>
+          )}
+        </div>
+      )}
       {halt && (
         <div className="mt-2 space-y-1 text-xs text-red-800">
           <div className="font-semibold">

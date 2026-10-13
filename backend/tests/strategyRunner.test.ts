@@ -80,6 +80,9 @@ function makeDeps(overrides: Partial<StrategyRunnerDeps> = {}): StrategyRunnerDe
     listStagingGroups: jest.fn().mockResolvedValue([]),
     admitGroup: jest.fn().mockResolvedValue(0),
     abandonGroup: jest.fn().mockResolvedValue(0),
+    trackEquity: jest.fn().mockResolvedValue(null),
+    connectionLimits: jest.fn().mockResolvedValue(null),
+    haltConnection: jest.fn().mockResolvedValue({ created: false }),
     ...overrides,
   };
 }
@@ -543,6 +546,50 @@ describe('StrategyRunner — kill-switch halt (E-6)', () => {
         detail: expect.stringMatching(/NOT blocked/),
       })
     );
+  });
+});
+
+describe('StrategyRunner — equity limit alerts', () => {
+  const base = { trading_day: '2026-10-13', day_start_equity: 10_000, high_water_mark: 10_000 };
+
+  it('records equity every pass and pages once per breach, then resolves it', async () => {
+    const trackEquity = jest
+      .fn()
+      .mockResolvedValueOnce({ ...base, equity: 9_600 })
+      .mockResolvedValueOnce({ ...base, equity: 9_550 })
+      .mockResolvedValue({ ...base, equity: 9_900 });
+    const deps = makeDeps({
+      trackEquity,
+      connectionLimits: jest.fn().mockResolvedValue({ max_daily_equity_loss: 300 }),
+      evaluate: jest.fn().mockResolvedValue({ ...buyResult, signal: 'hold', entry: false }),
+    });
+    const runner = makeRunner(deps);
+
+    await runner.runOnce();
+    await runner.runOnce();
+    const limitAlerts = (deps.sendAlert as jest.Mock).mock.calls.filter(([a]) =>
+      String(a.key).startsWith('account-limit:')
+    );
+    expect(limitAlerts).toHaveLength(1);
+    expect(limitAlerts[0][0]).toEqual(
+      expect.objectContaining({
+        key: 'account-limit:daily_equity_loss:ib:default:2026-10-13',
+        title: 'Daily loss limit reached on ib:default',
+      })
+    );
+
+    await runner.runOnce(); // recovered
+    expect(deps.resolveAlert).toHaveBeenCalledWith(
+      'account-limit:daily_equity_loss:ib:default:2026-10-13',
+      expect.objectContaining({ title: expect.stringMatching(/^Resolved: /) })
+    );
+    expect(trackEquity).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps evaluating the runs when equity cannot be recorded', async () => {
+    const deps = makeDeps({ trackEquity: jest.fn().mockRejectedValue(new Error('db down')) });
+    await makeRunner(deps).runOnce();
+    expect(deps.evaluate).toHaveBeenCalled();
   });
 });
 

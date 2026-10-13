@@ -13,6 +13,7 @@
  *   POST /api/strategies/connections/:broker/:account/stop — panic-stop a connection
  *   GET  /api/strategies/fleet            — every connection + grouped legs (C-5)
  *   POST /api/strategies/connections/:broker/:account/resume — lift a kill-switch halt (E-6)
+ *   POST /api/strategies/connections/:broker/:account/reset-high-water-mark — after a withdrawal
  *   GET  /api/strategies/runs             — list runs (optional ?status=)
  *   GET  /api/strategies/runs/:id         — one run
  *   POST /api/strategies/runs/:id/stop    — stop a run
@@ -35,6 +36,12 @@ import {
   type ConnectionHaltRow,
   type StrategyDefinitionRow,
 } from '../services/strategyRepository.js';
+import {
+  connectionLimitsFor,
+  evaluateAccountLimits,
+  toEquityMarks,
+  type EquityMarks,
+} from '../services/accountLimits.js';
 import { notifier } from '../services/notifier.js';
 import { haltAlertKey } from '../services/killSwitch.js';
 import { PromotionService } from '../services/promotionService.js';
@@ -306,6 +313,37 @@ function haltView(halt: ConnectionHaltRow | undefined) {
   };
 }
 
+/**
+ * A connection's equity against its loss limits, or null before the runner
+ * has recorded any equity for it.
+ */
+function equityView(
+  label: string,
+  info: { platform?: string; account?: string },
+  entry: { marks: EquityMarks; last_at: string; hwm_at: string } | undefined
+) {
+  if (!entry) return null;
+  const [broker, ...rest] = label.split(':');
+  const limits = connectionLimitsFor({
+    broker: info.platform ?? broker,
+    brokerAccount: info.account ?? rest.join(':'),
+  });
+  const { marks } = entry;
+  return {
+    equity: marks.equity,
+    trading_day: marks.trading_day,
+    day_start_equity: marks.day_start_equity,
+    high_water_mark: marks.high_water_mark,
+    daily_loss: marks.day_start_equity - marks.equity,
+    drawdown: marks.high_water_mark - marks.equity,
+    max_daily_equity_loss: limits?.max_daily_equity_loss ?? null,
+    max_drawdown: limits?.max_drawdown ?? null,
+    breaches: evaluateAccountLimits(marks, limits).map((b) => b.kind),
+    last_at: entry.last_at,
+    hwm_at: entry.hwm_at,
+  };
+}
+
 router.get('/fleet', async (_req: Request, res: Response) => {
   try {
     let connections: Record<string, any> = {};
@@ -364,6 +402,13 @@ router.get('/fleet', async (_req: Request, res: Response) => {
       };
     });
 
+    const equity = new Map(
+      (await repo.listEquityMarks()).map((row) => [
+        `${row.broker}:${row.broker_account}`,
+        { marks: toEquityMarks(row), last_at: row.last_at, hwm_at: row.hwm_at },
+      ])
+    );
+
     const halts = new Map(
       (await repo.listActiveHalts()).map((h) => [`${h.broker}:${h.broker_account}`, h])
     );
@@ -380,6 +425,7 @@ router.get('/fleet', async (_req: Request, res: Response) => {
         ...info,
         active_runs: runsPerConnection[label] ?? 0,
         halt: haltView(halts.get(label)),
+        equity: equityView(label, info, equity.get(label)),
       })),
       currency,
       strategies,
@@ -604,6 +650,32 @@ router.post('/connections/:broker/:account/resume', async (req: Request, res: Re
     fail(res, 500, 'Failed to resume connection', error?.message ?? 'unknown');
   }
 });
+
+/**
+ * Reset a connection's high-water mark to its current equity.
+ *
+ * For after a withdrawal: equity drops but nothing was lost, and without a
+ * reset the drawdown limit would read it as a loss and stop the account.
+ */
+router.post(
+  '/connections/:broker/:account/reset-high-water-mark',
+  async (req: Request, res: Response) => {
+    try {
+      const broker = String(req.params.broker || '').toLowerCase();
+      const account = String(req.params.account || '').toLowerCase();
+      if (!broker || !account) return fail(res, 400, 'broker and account are required');
+      const marks = await repo.resetHighWaterMark(broker, account);
+      if (!marks) {
+        return fail(res, 404, 'No equity recorded for this connection', {
+          connection: `${broker}:${account}`,
+        });
+      }
+      res.json({ connection: `${broker}:${account}`, ...marks });
+    } catch (error: any) {
+      fail(res, 500, 'Failed to reset high-water mark', error?.message ?? 'unknown');
+    }
+  }
+);
 
 router.get('/runs', async (req: Request, res: Response) => {
   try {

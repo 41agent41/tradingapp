@@ -655,6 +655,23 @@ CREATE TABLE IF NOT EXISTS connection_halts (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_connection_halts_active
     ON connection_halts (broker, broker_account) WHERE cleared_at IS NULL;
 
+-- Equity marks per connection, for the loss limits that include floating
+-- P&L (CONNECTION_MAX_DAILY_EQUITY_LOSS, CONNECTION_MAX_DRAWDOWN). One row per
+-- connection, updated every runner pass: the start-of-day equity for the
+-- current trading day and the all-time high-water mark. Persisted so a
+-- restart neither forgets a drawdown nor resets the day's starting point.
+CREATE TABLE IF NOT EXISTS connection_equity (
+    broker VARCHAR(16) NOT NULL,
+    broker_account VARCHAR(64) NOT NULL,
+    trading_day DATE NOT NULL,
+    day_start_equity NUMERIC(20,4) NOT NULL,
+    high_water_mark NUMERIC(20,4) NOT NULL,
+    hwm_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_equity NUMERIC(20,4) NOT NULL,
+    last_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (broker, broker_account)
+);
+
 CREATE INDEX IF NOT EXISTS idx_strategy_runs_status
     ON strategy_runs (status);
 CREATE INDEX IF NOT EXISTS idx_strategy_runs_definition

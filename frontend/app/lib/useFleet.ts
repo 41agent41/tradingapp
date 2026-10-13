@@ -27,6 +27,23 @@ export interface FleetConnection {
   active_runs: number;
   /** Set while the kill switch has halted new entries here (E-6). */
   halt?: FleetHalt | null;
+  /** Equity against the loss limits that include floating P&L. Null before
+   *  the runner has recorded any. */
+  equity?: FleetEquity | null;
+}
+
+export interface FleetEquity {
+  equity: number;
+  trading_day: string;
+  day_start_equity: number;
+  high_water_mark: number;
+  daily_loss: number;
+  drawdown: number;
+  max_daily_equity_loss: number | null;
+  max_drawdown: number | null;
+  breaches: Array<'daily_equity_loss' | 'drawdown'>;
+  last_at: string;
+  hwm_at: string;
 }
 
 export interface FleetHalt {
