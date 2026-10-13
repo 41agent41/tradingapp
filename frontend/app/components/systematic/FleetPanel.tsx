@@ -48,6 +48,7 @@ export interface FleetPanelProps {
 export default function FleetPanel({ pollMs = 15_000 }: FleetPanelProps) {
   const { fleet, loading, error, refresh } = useFleet(pollMs);
   const [resumeError, setResumeError] = React.useState<string | null>(null);
+  const [notice, setNotice] = React.useState<string | null>(null);
 
   const resume = React.useCallback(
     async (label: string) => {
@@ -65,6 +66,52 @@ export default function FleetPanel({ pollMs = 15_000 }: FleetPanelProps) {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
       } catch (err) {
         setResumeError(`Could not resume ${label} (${(err as Error).message}).`);
+      }
+      refresh();
+    },
+    [refresh]
+  );
+
+  const flatten = React.useCallback(
+    async (label: string) => {
+      // Closes real positions at market, so it says exactly that before it does.
+      if (!window.confirm(`Close every open position on ${label} at market and halt new entries?`))
+        return;
+      setResumeError(null);
+      setNotice(null);
+      const [broker, ...rest] = label.split(':');
+      const account = rest.join(':');
+      try {
+        const res = await apiFetch(
+          `/api/strategies/connections/${encodeURIComponent(broker)}/${encodeURIComponent(account)}/flatten`,
+          { method: 'POST' }
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = await res.json();
+        const closed = (body.closed ?? [])
+          .map(
+            (c: { symbol: string; action: string; quantity: number }) =>
+              `${c.symbol} ${c.action} ${c.quantity}`
+          )
+          .join(', ');
+        if (body.complete) {
+          setNotice(
+            closed
+              ? `Closed on ${label}: ${closed}. New entries are halted.`
+              : `Nothing was open on ${label}. New entries are halted.`
+          );
+        } else {
+          const failed = body.error
+            ? body.error
+            : (body.failed ?? [])
+                .map((f: { symbol: string; error: string }) => `${f.symbol} (${f.error})`)
+                .join(', ');
+          setResumeError(
+            `Flatten on ${label} did not close everything: ${failed}. Close the rest by hand.`
+          );
+        }
+      } catch (err) {
+        setResumeError(`Could not flatten ${label} (${(err as Error).message}).`);
       }
       refresh();
     },
@@ -123,6 +170,12 @@ export default function FleetPanel({ pollMs = 15_000 }: FleetPanelProps) {
         </div>
       )}
 
+      {notice && (
+        <div className="rounded border border-gray-300 bg-gray-50 p-3 text-sm text-gray-800">
+          {notice}
+        </div>
+      )}
+
       {resumeError && (
         <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-900">
           {resumeError}
@@ -163,6 +216,7 @@ export default function FleetPanel({ pollMs = 15_000 }: FleetPanelProps) {
               key={connection.connection}
               connection={connection}
               onResume={resume}
+              onFlatten={flatten}
               onResetHighWaterMark={resetHighWaterMark}
             />
           ))}
@@ -274,10 +328,12 @@ function money(value: number): string {
 function ConnectionCard({
   connection,
   onResume,
+  onFlatten,
   onResetHighWaterMark,
 }: {
   connection: FleetConnection;
   onResume: (label: string) => void;
+  onFlatten: (label: string) => void;
   onResetHighWaterMark: (label: string) => void;
 }) {
   const reachable = connection.broker !== false;
@@ -389,6 +445,15 @@ function ConnectionCard({
       )}
       {!reachable && (
         <div className="mt-1 text-xs text-red-700">No broker adapter — orders will be refused.</div>
+      )}
+      {reachable && (
+        <button
+          type="button"
+          onClick={() => onFlatten(connection.connection)}
+          className="mt-2 rounded border border-red-300 bg-white px-2 py-1 text-xs text-red-700 hover:bg-red-50"
+        >
+          Close all positions
+        </button>
       )}
       {/* Two connections reaching the same money must be visible, or aggregate
           exposure looks half as large as it is. */}

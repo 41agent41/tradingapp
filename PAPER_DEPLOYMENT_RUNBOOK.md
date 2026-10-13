@@ -356,6 +356,14 @@ entry is placed on that account after its position closes; **Resume entries**
 on the Fleet panel lifts it and the next entry signal trades. A halt survives
 a backend restart, so check it is still shown after one.
 
+**Then rehearse flatten, on paper only:** with a position open on one account,
+press **Close all positions** on its Fleet card. **Pass:** the terminal shows
+the position closed, the order is in the order audit, the connection shows
+halted ("operator flatten") and the others not, and no entry is placed until
+it is resumed. Only after that, consider `KILL_SWITCH_ACTION=flatten` and
+repeat step 22's stop removal: the alert reads "Entries halted and positions
+closed".
+
 ### 24. Report back
 Most useful to me: which steps failed and their raw output; the `/symbols`
 payloads from both brokers; `trade_tick_value` for each; and the alert log

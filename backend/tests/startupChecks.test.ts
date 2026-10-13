@@ -58,15 +58,12 @@ describe('checkStartupConfig', () => {
     expect(ok.errors).toEqual([]);
   });
 
-  it.each(['flatten', 'bogus'])(
-    'refuses KILL_SWITCH_ACTION=%s because it is not implemented',
-    (action) => {
-      const { errors } = checkStartupConfig({ KILL_SWITCH_ACTION: action });
-      expect(errors.join(' ')).toMatch(/KILL_SWITCH_ACTION/);
-    }
-  );
+  it('refuses a KILL_SWITCH_ACTION that is not an action', () => {
+    const { errors } = checkStartupConfig({ KILL_SWITCH_ACTION: 'bogus' });
+    expect(errors.join(' ')).toMatch(/KILL_SWITCH_ACTION/);
+  });
 
-  it.each(['notify', 'halt'])('accepts KILL_SWITCH_ACTION=%s', (action) => {
+  it.each(['notify', 'halt', 'flatten'])('accepts KILL_SWITCH_ACTION=%s', (action) => {
     expect(checkStartupConfig({ KILL_SWITCH_ACTION: action }).errors).toEqual([]);
   });
 

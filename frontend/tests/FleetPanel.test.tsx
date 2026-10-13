@@ -188,6 +188,64 @@ describe('FleetPanel', () => {
     );
   });
 
+  it('closes every position on a connection when asked, and says what it closed', async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) =>
+      init?.method === 'POST'
+        ? new Response(
+            JSON.stringify({
+              complete: true,
+              closed: [{ symbol: 'EURUSD.a', action: 'SELL', quantity: 0.1, audit_id: 3 }],
+              failed: [],
+              error: null,
+            }),
+            { status: 200 }
+          )
+        : new Response(JSON.stringify(fleet), { status: 200 })
+    );
+    global.fetch = fetchMock as any;
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<FleetPanel pollMs={0} />);
+
+    await waitFor(() => screen.getAllByRole('button', { name: 'Close all positions' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Close all positions' })[0]);
+    await waitFor(() =>
+      expect(
+        screen.getByText('Closed on mt5:icmarkets: EURUSD.a SELL 0.1. New entries are halted.')
+      ).toBeInTheDocument()
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/api\/strategies\/connections\/mt5\/icmarkets\/flatten$/),
+      expect.objectContaining({ method: 'POST' })
+    );
+  });
+
+  it('says what is still open when a flatten is incomplete', async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) =>
+      init?.method === 'POST'
+        ? new Response(
+            JSON.stringify({
+              complete: false,
+              closed: [],
+              failed: [{ symbol: 'EURUSD.a', error: 'not placed (live_disabled)' }],
+              error: null,
+            }),
+            { status: 200 }
+          )
+        : new Response(JSON.stringify(fleet), { status: 200 })
+    );
+    global.fetch = fetchMock as any;
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<FleetPanel pollMs={0} />);
+
+    await waitFor(() => screen.getAllByRole('button', { name: 'Close all positions' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Close all positions' })[0]);
+    await waitFor(() =>
+      expect(
+        screen.getByText(/did not close everything: EURUSD.a \(not placed \(live_disabled\)\)/)
+      ).toBeInTheDocument()
+    );
+  });
+
   it('does not resume when the operator cancels', async () => {
     const halted = {
       ...fleet,

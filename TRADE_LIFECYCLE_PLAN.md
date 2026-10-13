@@ -1,6 +1,6 @@
 # Trade Lifecycle — Direction, Broker-Side Stops, Sizing, and the Kill Switch
 
-**Status:** E-0 through E-5 delivered; E-6 (halt / flatten) planned
+**Status:** E-0 through E-6 delivered (E-6: halt and flatten)
 **Scope:** what happens from the moment a strategy decides to trade until the
 position is closed — direction, order placement, protective stops, trade
 management, and the downside backstop.
