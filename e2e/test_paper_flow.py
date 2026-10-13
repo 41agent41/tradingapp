@@ -149,6 +149,19 @@ def test_paper_flow():
     }
     assert len(set(logins.values())) == 2, logins
 
+    # Dead-man's switch: with the database, the broker service and the runner
+    # all healthy, the backend pings the monitor (here, the calendar server).
+    heartbeat = wait_until(
+        "the first heartbeat",
+        lambda: (
+            api("GET", "/health").json()["services"]["heartbeat"]["last_result"] == "ok"
+        )
+        or None,
+        timeout=60,
+    )
+    assert heartbeat
+    assert "GET /heartbeat" in (E2E_DIR / "calendar.log").read_text()
+
     # Step 16: one definition, deployed to both with A as the canary.
     created = api(
         "POST",

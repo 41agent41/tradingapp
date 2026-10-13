@@ -67,6 +67,21 @@ describe('checkStartupConfig', () => {
     expect(checkStartupConfig({ KILL_SWITCH_ACTION: action }).errors).toEqual([]);
   });
 
+  it('warns when orders run unattended with no heartbeat, and checks heartbeat URLs', () => {
+    expect(checkStartupConfig({ SYSTEMATIC_EXECUTION_ENABLED: 'true' }).warnings.join(' ')).toMatch(
+      /HEARTBEAT_URL/
+    );
+    expect(
+      checkStartupConfig({
+        SYSTEMATIC_EXECUTION_ENABLED: 'true',
+        HEARTBEAT_URL: 'https://hc-ping.com/abc',
+      }).warnings.join(' ')
+    ).not.toMatch(/HEARTBEAT_URL/);
+    expect(checkStartupConfig({ HEARTBEAT_URL: 'hc-ping.com/abc' }).errors.join(' ')).toMatch(
+      /HEARTBEAT_URL must be an http\(s\) URL/
+    );
+  });
+
   it('refuses an invalid TRADING_DAY_TIMEZONE and accepts a real one', () => {
     expect(checkStartupConfig({ TRADING_DAY_TIMEZONE: 'Mars/Olympus' }).errors.join(' ')).toMatch(
       /TRADING_DAY_TIMEZONE/

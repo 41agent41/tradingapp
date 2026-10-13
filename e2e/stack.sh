@@ -46,6 +46,8 @@ start_sidecar() { # name port secret symbol login balance
 start_calendar() {
   mkdir -p "$E2E_DIR/calendar"
   [ -f "$E2E_DIR/calendar/calendar.json" ] || echo '[]' >"$E2E_DIR/calendar/calendar.json"
+  # Also stands in for the dead-man's switch monitor the backend pings.
+  echo ok >"$E2E_DIR/calendar/heartbeat"
   start_bg calendar "$PYTHON" -m http.server 9199 --bind 127.0.0.1 --directory "$E2E_DIR/calendar"
   wait_for "http://127.0.0.1:9199/calendar.json"
 }
@@ -90,6 +92,8 @@ start_backend() {
     export PROP_RULES__MT5_SIM_B='{"firm":"Sim Prop 25k","initial_balance":25000,"daily_loss":{"pct":5,"basis":"higher"},"max_loss":{"pct":10,"mode":"trailing_equity"},"buffer_pct":20,"news_blackout":{"minutes_before":60,"minutes_after":60,"impact":["High"]}}'
     export NEWS_CALENDAR_URL=http://127.0.0.1:9199/calendar.json
     export NEWS_CALENDAR_REFRESH_MINUTES=0.05
+    export HEARTBEAT_URL=http://127.0.0.1:9199/heartbeat
+    export HEARTBEAT_INTERVAL_SECONDS=10
     export LOG_LEVEL=info
     exec node dist/index.js
   ) >"$E2E_DIR/backend.log" 2>&1 &
