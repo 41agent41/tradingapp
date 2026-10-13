@@ -27,6 +27,10 @@ chmod +x tradingapp.sh
 > [PROXMOX_DEPLOYMENT.md](PROXMOX_DEPLOYMENT.md) — it builds the LXC
 > containers for the app, database and broker session from a fresh
 > hypervisor install, then runs the commands above.
+>
+> Installing unattended, or handing the install to an AI agent? Follow
+> [AGENT_INSTALL_RUNBOOK.md](AGENT_INSTALL_RUNBOOK.md): `install/install.sh all`
+> installs and verifies a paper-mode deployment from an answers file.
 
 ### **Access Your Application**
 - **Frontend**: `http://your-server-ip:3000` - Market data and charts
