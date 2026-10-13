@@ -26,6 +26,7 @@ capabilities never get conflated with aspirational plans.
    - [Watchlist](#watchlist)
    - [Order management](#order-management)
    - [Systematic trading (auto-execution)](#systematic-trading-rule-driven-auto-execution)
+   - [Risk controls, kill switch & alerting](#risk-controls-kill-switch--alerting)
    - [Multi-broker: IB + MetaTrader + Alpaca + OANDA](#multi-broker-interactive-brokers-metatrader-mt5-alpaca-oanda)
    - [REST & WebSocket API](#rest--websocket-api)
    - [Authentication & CORS](#authentication--cors)
@@ -401,7 +402,25 @@ automatically — paper-first, staged behind gates. See the
 - **Live signal runner:** an opt-in backend timer (`SYSTEMATIC_ENABLED=true`)
   evaluates every running strategy on its closed-bar cadence, persists each
   decision to `strategy_signals` (one per bar) and fans it out on the
-  `strategy:<runId>` Socket.IO room.
+  `strategy:<runId>` Socket.IO room. Only **closed** bars are evaluated: the
+  bar still forming is dropped, so a signal live is the signal the backtest
+  saw.
+- **Promotion gate:** a definition is frozen once created. Starting a paper
+  run or deploying needs a backtest of that definition from its holdout start
+  date with enough trades, positive expectancy and a bounded drawdown; a live
+  run additionally needs a paper run of the same definition lasting
+  `PROMOTION_MIN_PAPER_DAYS` with a comparable drawdown.
+  `GET /api/strategies/definitions/:id/promotion` explains what is missing.
+- **Staged deploy across accounts:** `POST /api/strategies/definitions/:id/deploy`
+  starts one run per target connection as a group; the canary leg must
+  evaluate cleanly for `settle_seconds` before its siblings start. A
+  connection that stops answering is skipped by a circuit breaker without
+  stalling the others.
+- **Stops at the venue:** a declared stop (for example `bar_extreme`) is sent
+  with the entry in the same order, never as a follow-up modify. An entry the
+  venue fills without its stop is closed at once. Trailing stops move only in
+  the protective direction, at most once per bar. `risk_pct` sizing uses the
+  venue's tick value and refuses rather than approximating when it is missing.
 - **Gated auto-execution:** with `SYSTEMATIC_EXECUTION_ENABLED=true` an
   actionable signal is turned into an order through the **same** audited
   `/api/orders` path — inheriting the live gate, `order_audit`, the fat-finger
@@ -422,6 +441,57 @@ automatically — paper-first, staged behind gates. See the
   detail with a candle chart carrying buy/sell **signal markers** (acted orders
   bolder), a summary strip (net position, signals, orders placed) and a
   live-updating signal feed.
+- **Fleet panel:** one card per connection with its `paper`/`live` badge,
+  currency, equity, day-start equity, drawdown, the account and prop-firm
+  limits in force, and its halt state. A deployed group shows as one strategy
+  row with a leg per connection (`canary` / `staged` / `running`), each with
+  its own native symbol and current stop.
+
+### Risk controls, kill switch & alerting
+
+Account-level controls that sit on top of each run's own caps. All of them
+stop **new entries** only: exits and stop management keep running, so a limit
+never strands an open position. Configuration lives in
+[`.env.example`](.env.example); the
+[paper runbook](PAPER_DEPLOYMENT_RUNBOOK.md) rehearses each one.
+
+- **Connection limits:** `CONNECTION_MAX_ORDERS_PER_DAY` and
+  `CONNECTION_MAX_DAILY_LOSS` (realised P&L from fills), plus
+  `CONNECTION_MAX_DAILY_EQUITY_LOSS` and `CONNECTION_MAX_DRAWDOWN`, which
+  measure equity (balance plus floating P&L) against the trading day's start
+  and the high-water mark. Each can be overridden per connection with a
+  `__<CONNECTION>` suffix. `TRADING_DAY_TIMEZONE` sets when the day rolls
+  over; `PORTFOLIO_MAX_DAILY_LOSS` is a fleet-wide backstop.
+- **Prop-firm rules:** `PROP_RULES__<CONNECTION>` holds a firm's rules as
+  JSON. Daily loss (balance, equity or the higher basis) and max loss (static
+  or trailing) are computed the firm's way, and entries stop `buffer_pct`
+  short of the firm's own limit. Optional schedule rules: a `news_blackout`
+  around high-impact releases for either currency of the pair (from
+  `NEWS_CALENDAR_URL`; entries are refused while the calendar is stale), a
+  `weekend` entry cutoff that pages you if a position is still open, and a
+  `min_trading_days` count shown on the Fleet panel.
+- **Kill switch:** detects unprotected positions, stops gapped through,
+  position divergence and equity-floor breaches (`KILL_SWITCH_EQUITY_FLOOR`).
+  `KILL_SWITCH_ACTION` decides the response to a critical trigger: `notify`
+  (default, alert only), `halt` (stop new entries on that connection until
+  **Resume entries** on the Fleet panel; a halt survives a restart) or
+  `flatten` (halt, then close every position on the connection at market).
+  **Close all positions** on a Fleet card does the flatten by hand under any
+  setting.
+- **Telegram alerts:** set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+  Alerts are deduplicated (`ALERT_DEDUPE_SECONDS`), rate-limited
+  (`ALERT_MAX_PER_HOUR`) and send a resolved message when the condition
+  clears.
+- **Dead-man's switch:** the backend pings `HEARTBEAT_URL` (for example a
+  healthchecks.io check) every `HEARTBEAT_INTERVAL_SECONDS`, and
+  `HEARTBEAT_FAIL_URL` when the broker service is unreachable, so a monitor
+  off the host pages you when the app, the host or its network goes down.
+  `/api/health` reports the last result.
+- **Prometheus rules:** the `tradingapp-fleet` group in
+  [`ops/prometheus/alerts.yml`](ops/prometheus/alerts.yml) alerts per
+  connection on an open circuit breaker, unprotected positions, position
+  divergence, stop gaps, orders blocked by caps and connections with no
+  active runs.
 
 ### Multi-broker: Interactive Brokers, MetaTrader (MT5), Alpaca, OANDA
 
@@ -437,7 +507,10 @@ other brokers plug in without touching the routes.
   net-exposure cap are keyed per broker — no cross-broker symbol reconciliation,
   and a strategy run targets exactly one venue.
 - **MetaTrader (MT5) via sidecar:** `MetaTrader5` is Windows-only, so MT5 runs as
-  a small HTTP service on a Windows host; the Linux
+  a small HTTP service next to the terminal, on Windows or on Linux under Wine.
+  The sidecar ships in [`mt5_sidecar/`](mt5_sidecar/README.md): it enforces
+  the shared secret, attaches the stop with the entry and echoes back the stop
+  the terminal recorded. The Linux
   [`MT5Adapter`](broker_service/mt5_adapter.py) is a thin client pointed at
   `MT5_BRIDGE_URL`, implementing both **data** (search / bars / quotes / ticks,
   normalised to the app's shapes) and **execution** (place / cancel / modify /
@@ -448,6 +521,14 @@ other brokers plug in without touching the routes.
   `X-MT5-Bridge-Secret` header — the sidecar itself must enforce it, since the
   bridge contract otherwise has no auth story; `broker_service` logs a startup
   warning if the URL is configured without the secret.
+- **Several accounts per platform:** the `BROKER_CONNECTIONS` manifest (or
+  `BROKER_CONNECTIONS_FILE`) lists each account with its venue, currency and
+  `account_mode`. The mode is binding: a live order to a paper connection is
+  refused with a 409. Requests address a connection as
+  `broker=mt5&account=<id>`, and canonical symbols resolve to each broker's
+  own (`symbol_map` overrides). An MT5 connection can read its balance and
+  positions from an OANDA account (`account_info_from`) while orders still go
+  through the sidecar.
 - **Alpaca and OANDA — cloud REST, no sidecar host.** Unlike MT5, both are
   reachable directly over HTTPS, so
   [`AlpacaAdapter`](broker_service/alpaca_adapter.py) and
@@ -457,7 +538,8 @@ other brokers plug in without touching the routes.
   instead of a bridge URL. Both implement the same data + execution surface as
   MT5. OANDA has a native 8-hour candle (unlike MT5) so every app timeframe
   maps cleanly; `STP_LMT` orders aren't representable on OANDA and are
-  rejected with a 400.
+  rejected with a 400. OANDA entries carry their stop loss and take profit
+  on the fill, and positions report the stop per trade.
 - **Provider health:** the broker service exposes `/providers` (and folds
   provider status into `/health`) so operators can see which venues are
   registered.
@@ -511,20 +593,36 @@ when the IB service is unreachable, `504` on IB timeouts.
 
 ### Authentication & CORS
 
-- **Bearer-token auth** (`backend/src/middleware/auth.ts`): every backend
-  route except `/api/health` and `/api/database/health` requires
-  `Authorization: Bearer <API_TOKEN>` (or `X-API-Token`). The frontend's
-  `apiFetch` helper attaches the header automatically; comparisons run
-  through `crypto.timingSafeEqual`.
-- **Authenticated Socket.IO handshake**: the token is read from
-  `auth.token`, the `Authorization` header or a `?token=` query parameter.
+- **Login + API token** (`backend/src/middleware/auth.ts`): the browser signs
+  in at `/login` with `APP_PASSWORD` and gets an HttpOnly session cookie
+  (signed with `SESSION_SECRET`, lifetime `SESSION_TTL_HOURS`); scripts send
+  `Authorization: Bearer <API_TOKEN>` (or `X-API-Token`). Nothing secret is
+  compiled into the frontend. Every route except health, `/metrics` and the
+  login routes needs one of the two; comparisons run through
+  `crypto.timingSafeEqual`.
+- **Authenticated Socket.IO handshake**: the session cookie, or the token
+  from `auth.token`, the `Authorization` header or a `?token=` query
+  parameter.
+- **Broker service lock-down**: the broker service listens on loopback only
+  and rejects any call without `BROKER_SERVICE_TOKEN`, which the backend
+  attaches.
+- **Trader role and order MFA**: `TRADING_TOKENS` requires an
+  `X-Trading-Token` on order-mutating requests, and `ORDER_MFA_SECRET`
+  requires a TOTP `X-MFA-Code`. Both are required when
+  `LIVE_TRADING_ENABLED=true`.
+- **Startup checks**: the backend refuses to start on an unsafe
+  configuration and logs the key at fault: in production, an open API,
+  template secrets or a default database password; always, live trading
+  without the trader role and MFA, or risk settings it cannot read
+  (`KILL_SWITCH_ACTION`, `TRADING_DAY_TIMEZONE`, `PROP_RULES__*`, heartbeat
+  URLs).
 - **Strict CORS**: origins are validated against `CORS_ORIGINS` instead of a
   blanket wildcard.
 - **Whitelisted `/api/settings`**: only allow-listed, non-credential
   environment variables are returned, with deny patterns that strip
   anything matching `*_SECRET`, `*_PASSWORD`, `*_TOKEN`, `*_KEY`, etc.
-- **Dev escape hatch**: leaving `API_TOKEN` empty (or `CORS_ORIGINS=*`)
-  prints a loud startup warning and accepts unauthenticated / any-origin
+- **Dev escape hatch**: outside production, leaving both `API_TOKEN` and
+  `APP_PASSWORD` empty (or `CORS_ORIGINS=*`) prints a loud startup warning and accepts unauthenticated / any-origin
   requests — convenient locally, never for production.
 
 ### Redis caching
@@ -558,6 +656,8 @@ Cache health surfaces in `/api/health` under `services.cache`. Set
   (`setup`, `deploy`, `redeploy`, `config`, `env`, `start`, `stop`,
   `restart`, `status`, `logs`, `test`, `diagnose`, `fix`, `ib-help`,
   `clean`).
+- The MT5 sidecar ([`mt5_sidecar/`](mt5_sidecar/README.md)) with a Task
+  Scheduler launcher for Windows and a systemd unit for Linux under Wine.
 - Optional bundled TimescaleDB via the `--with-db` flag (layers
   `docker-compose.db.yml` and applies `timescaledb-schema.sql` on first
   run). Without it, the backend points at an external Postgres.
@@ -570,9 +670,15 @@ Cache health surfaces in `/api/health` under `services.cache`. Set
 - **Frontend:** ESLint + Prettier + Vitest (`apiFetch` test suite).
 - **IB service:** Ruff + Black + pytest (indicator math + streaming tests
   under `broker_service/tests/`).
+- **MT5 sidecar:** Ruff + Black + pytest against a fake `MetaTrader5`
+  module, plus a contract test running `MT5Adapter` against the sidecar.
+- **End-to-end paper run:** `e2e/run.sh` starts the backend and broker
+  service against TimescaleDB and two simulated MT5 terminals behind the real
+  sidecar, deploys a strategy and checks the orders, stops, trailing and
+  fills that follow (the paper runbook's steps 11 to 22).
 - **CI:** `.github/workflows/ci.yml` runs lint, format-check, type-check,
-  tests and build for all three services on every push / PR to `master`
-  (and `main`).
+  tests and build for every service, plus the end-to-end paper run, on every
+  push / PR to `master` (and `main`).
 
 ---
 
@@ -647,6 +753,16 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > banner and an optional browser Notification) evaluated client-side
 > against that same polled quote — see [Watchlist](#watchlist).
 > Email/SMS/webhook delivery remain open.
+>
+> **Also recently shipped (production hardening and risk controls).**
+> Login sessions in place of the public API token, a locked-down broker
+> service, the MT5 sidecar in the repo, closed-bar evaluation, the
+> promotion gate, stops attached at entry, multi-account connections with
+> a fleet view, account and prop-firm loss limits, news and weekend rules,
+> the kill switch (notify, halt, flatten), Telegram alerts, a dead-man's
+> switch and an end-to-end paper run in CI. Now under
+> [Systematic trading](#systematic-trading-rule-driven-auto-execution) and
+> [Risk controls](#risk-controls-kill-switch--alerting).
 
 ### Systematic trading — open follow-ons
 
@@ -661,13 +777,11 @@ instrument or venue) ships today. What remains, in priority order — see
 - **Futures / options contract multipliers on IB.** The IB instrument spec is
   the whole-share constant — right for the equity path the app trades, but a
   futures contract's multiplier would need `reqContractDetails`.
-- **The MT5 sidecar's own auth**, and its `GET /orders` / `/deals` / `/symbol`
-  endpoints — all implemented on the Windows host, outside this repo.
 
 ### Authentication, authorisation & secrets (advanced)
 
-- Optional MFA, RBAC and audit logging on top of the existing
-  bearer-token auth.
+- Per-user accounts and finer-grained roles. A single login, the trader
+  role (`TRADING_TOKENS`), order MFA and the `order_audit` log ship today.
 
 ### Observability — open follow-ons
 
@@ -687,9 +801,10 @@ dashboard's metrics). What is still open:
 
 - Loading skeletons on the chart pages.
 - Parquet export from the DataFrame viewer (CSV and JSON ship today).
-- Alert delivery beyond the browser tab (email/SMS/webhook) — in-app
+- Price-alert delivery beyond the browser tab (email/SMS/webhook) — in-app
   price alerts with browser notifications have shipped, see
-  [Watchlist](#watchlist).
+  [Watchlist](#watchlist). Trading and risk alerts already go to Telegram
+  ([Risk controls](#risk-controls-kill-switch--alerting)).
 - Sector / scanner browsing.
 
 ### Test coverage expansion

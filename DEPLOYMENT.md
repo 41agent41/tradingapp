@@ -75,27 +75,31 @@ fresh Ubuntu host.
 ### MetaTrader 5 (MT5) — optional second broker
 
 MT5 is optional; skip this if you're only trading through IB. The
-`MetaTrader5` Python package only runs against a live MT5 terminal and is
-**Windows-only**, so it cannot join the Linux Docker stack. Instead:
+`MetaTrader5` Python package only runs against a live MT5 terminal under
+Windows Python, so it cannot join the Linux Docker stack. Instead:
 
-- A **dedicated Windows host** runs the MT5 terminal, logged into its own
-  MT5 account, plus a small FastAPI sidecar service that exposes the HTTP
-  contract documented in
+- A **sidecar host** runs the MT5 terminal, logged into its own MT5 account,
+  plus the FastAPI sidecar in [`mt5_sidecar/`](mt5_sidecar/README.md), which
+  exposes the HTTP contract documented in
   [`broker_service/mt5_adapter.py`](broker_service/mt5_adapter.py) (`/health`,
   `/symbols`, `/history`, `/quote`, `/tick`, `/orders`, `/positions`,
-  `/account`). The sidecar itself is not part of this repository — it's a
-  separate service you build and run on that Windows host.
+  `/account`, `/deals`, `/symbol`). The host is Windows, or Linux running the
+  terminal and Windows Python under Wine; the sidecar README covers both,
+  with a service script and a systemd unit. One sidecar serves one terminal,
+  so two accounts means two sidecars on two ports.
 - The Linux `broker_service` container talks to it as an HTTP client
   (`MT5Adapter`) — set `MT5_BRIDGE_URL` (e.g.
   `MT5_BRIDGE_URL=http://10.7.3.22:9100`) and redeploy. Until it's set,
   `source=mt5` / `broker=mt5` resolve to a clean `501` instead of a
   confusing `404`.
-- Also set `MT5_BRIDGE_SECRET` to a random shared secret, and have the
-  sidecar reject any request whose `X-MT5-Bridge-Secret` header doesn't
-  match — the sidecar contract otherwise has no auth story, so anything
-  that can reach `MT5_BRIDGE_URL` can trade the account. `broker_service`
-  logs a startup warning if `MT5_BRIDGE_URL` is set without
-  `MT5_BRIDGE_SECRET`.
+- Also set `MT5_BRIDGE_SECRET` to a random shared secret (at least 24
+  characters), and the same value in the sidecar's `sidecar.env`. The
+  sidecar rejects any request whose `X-MT5-Bridge-Secret` header doesn't
+  match, and will not start on a non-loopback address without a secret;
+  anything that can reach an unprotected sidecar can trade the account.
+- For more than one MT5 account, or to mix accounts per platform, use the
+  `BROKER_CONNECTIONS` manifest in `.env.example` instead of
+  `MT5_BRIDGE_URL`/`MT5_BRIDGE_SECRET`. Setting both is a startup error.
 - See [Multi-Broker Host Topology](#multi-broker-host-topology-ib--mt5)
   below for how this host relates to the rest of the deployment, and the
   design trade-offs of running IB and MT5 as separate dedicated hosts with
@@ -236,14 +240,14 @@ than fixing them.
   (`broker_service/mt5_adapter.py`) sends an `X-MT5-Bridge-Secret` header
   on every request when `MT5_BRIDGE_SECRET` is set (`broker_service` logs a
   startup warning if `MT5_BRIDGE_URL` is configured without it). That's
-  only half the contract — the sidecar itself, built and run on the
-  Windows host outside this repo, has to reject requests missing the
-  header or presenting the wrong value. Until that check is implemented
-  there, *anything* that can reach `MT5_BRIDGE_URL:9100` can still query
-  positions/account and place, cancel, or modify orders on that MT5
-  account — the same class of gap as the unauthenticated Redis instance in
-  the base compose file. mTLS is a stronger alternative if the sidecar
-  framework makes that easier than header-checking.
+  only half the contract — the sidecar has to reject requests missing the
+  header or presenting the wrong value. The sidecar in
+  [`mt5_sidecar/`](mt5_sidecar/README.md) does, and refuses to start on a
+  non-loopback address without a secret; a sidecar built some other way
+  must do the same, or *anything* that can reach `MT5_BRIDGE_URL:9100` can
+  query positions/account and place, cancel, or modify orders on that MT5
+  account. mTLS is a stronger alternative if you front the sidecar with a
+  proxy that supports it.
 - **"Dedicated host" doesn't necessarily mean "separate hardware."** The
   two accounts genuinely need to stay separate (they're different broker
   relationships), but the *hosts* don't automatically need to be separate
@@ -399,6 +403,34 @@ API_TOKEN=<rotate-me>
 BROKER_SERVICE_TOKEN=<rotate-me>
 REDIS_PASSWORD=<rotate-me>
 ```
+
+Before the systematic engine places orders (`SYSTEMATIC_EXECUTION_ENABLED`),
+also set up alerting and the account limits. Each key is explained in
+`.env.example`, and [`PAPER_DEPLOYMENT_RUNBOOK.md`](PAPER_DEPLOYMENT_RUNBOOK.md)
+rehearses them on paper:
+
+```bash
+# Alerts to your phone, and a monitor off the host that pages when they stop
+TELEGRAM_BOT_TOKEN=<from @BotFather>
+TELEGRAM_CHAT_ID=<your chat id>
+HEARTBEAT_URL=https://hc-ping.com/<uuid>
+HEARTBEAT_FAIL_URL=https://hc-ping.com/<uuid>/fail
+
+# Kill switch response to a critical trigger: notify | halt | flatten
+KILL_SWITCH_ACTION=notify
+
+# Account limits (per connection overrides use a __<CONNECTION> suffix)
+CONNECTION_MAX_DAILY_EQUITY_LOSS=300
+CONNECTION_MAX_DRAWDOWN=1000
+TRADING_DAY_TIMEZONE=Europe/Athens      # your broker's server zone
+
+# Prop-firm accounts: the firm's rules as JSON, one per connection
+# PROP_RULES__MT5_FTMO={"initial_balance":100000,"daily_loss":{"pct":5},"max_loss":{"pct":10}}
+# NEWS_CALENDAR_URL=...                 # only to replace the default feed
+```
+
+With `SYSTEMATIC_EXECUTION_ENABLED=true` and no `HEARTBEAT_URL`, the backend
+logs a startup warning: nothing would page you if the host went down.
 
 ### Configuring IB Gateway
 
@@ -710,6 +742,7 @@ Open the frontend in a browser at `http://<server-ip>:3000`.
 | Alpaca/OANDA requests return 503 | The broker's API is unreachable from the app host — check outbound HTTPS / firewall rules |
 | Database health check fails | Confirm `POSTGRES_HOST` is reachable from inside the backend container (`docker compose exec backend node -e "require('net').connect(5432,'$POSTGRES_HOST').on('connect',()=>console.log('ok'))"`) |
 | Charts not loading | `./tradingapp.sh logs` for frontend errors, then `./tradingapp.sh redeploy` |
+| Backend exits with `[startup] refusing to start: …` | The line names the key: a missing or template secret, live trading without `TRADING_TOKENS`/`ORDER_MFA_SECRET`, or an unreadable `KILL_SWITCH_ACTION`, `TRADING_DAY_TIMEZONE`, `PROP_RULES__*` or heartbeat URL. See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#backend-refuses-to-start) |
 
 For a fuller list, see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
 
@@ -724,11 +757,20 @@ request with HTTP 403 — paper orders work, live orders don't.
 
 To enable live trading:
 
-1. Set on **both** services in your `.env`:
+1. Set on **both** services in your `.env`, together with the trader role
+   and order MFA (the backend refuses to start with live trading on and
+   either one unset):
 
    ```bash
    LIVE_TRADING_ENABLED=true
+   TRADING_TOKENS=<openssl rand -hex 24>        # sent as X-Trading-Token
+   ORDER_MFA_SECRET=<base32 TOTP secret>         # sent as X-MFA-Code
    ```
+
+   With a `BROKER_CONNECTIONS` manifest, the account must also be declared
+   `"account_mode": "live"`; a live order to a paper connection is refused.
+   A strategy goes live only after the promotion gate sees a paper run of
+   the same definition (`GET /api/strategies/definitions/:id/promotion`).
 
 2. Restart so both containers pick the new value up:
 
@@ -891,6 +933,24 @@ relies on, so each alert and its panel always agree. Rules cover:
 - **`IBServiceNoTraffic`** (info) — the IB service is up but has served no
   application traffic for 30m.
 
+The `tradingapp-fleet` group alerts per connection (`platform:account`):
+
+- **`ConnectionBreakerOpen`** (critical) — the runner is skipping a
+  connection after repeated failures.
+- **`UnprotectedPosition`** (critical) — an open position has no stop at the
+  venue though its strategy declares one.
+- **`KillSwitchStopGap`** (critical) — a position closed well past its stop.
+- **`PositionDivergence`** (warning) — venue and recorded positions have
+  disagreed for 30m, so fills are being missed.
+- **`OrdersBlockedByCap`** (warning) — risk caps refused more than 5 orders
+  in an hour.
+- **`ConnectionHasNoActiveRuns`** (info) — a connection has evaluated
+  nothing for an hour.
+
+These complement, not replace, the Telegram alerts and the dead-man's switch
+(`HEARTBEAT_URL`): Prometheus runs on your infrastructure too, so something
+off the host still has to notice when everything stops.
+
 Thresholds are conservative starting points — tune them to your traffic.
 Validate edits with `promtool check rules ops/prometheus/alerts.yml`.
 
@@ -947,6 +1007,12 @@ find "$BACKUP_DIR" -name 'tradingapp_*.sql' -mtime +7 -delete
 - [ ] `.env` created from `.env.example` and reviewed (no placeholders left)
 - [ ] `APP_PASSWORD`, `SESSION_SECRET`, `API_TOKEN` and `BROKER_SERVICE_TOKEN` set to fresh random values
 - [ ] `CORS_ORIGINS` set to the actual browser origin(s) — not `*`
+- [ ] MT5 only: each sidecar running from `mt5_sidecar/` with its secret, and
+      rejecting requests without it
+- [ ] Before auto-execution: Telegram alerts and `HEARTBEAT_URL` set and
+      tested, account limits and `TRADING_DAY_TIMEZONE` set, kill switch on
+      `notify` (see [`PAPER_DEPLOYMENT_RUNBOOK.md`](PAPER_DEPLOYMENT_RUNBOOK.md))
+- [ ] Live only: `TRADING_TOKENS` and `ORDER_MFA_SECRET` set
 - [ ] External Postgres reachable from the backend container; schema applied
       (or `--with-db` used to bring up the bundled TimescaleDB)
 - [ ] IB Gateway / TWS running with API enabled and server IP trusted

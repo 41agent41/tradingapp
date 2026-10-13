@@ -15,10 +15,11 @@ them.
 5. [IB Gateway Connection](#ib-gateway-connection)
 6. [Docker & Containers](#docker--containers)
 7. [Database](#database)
-8. [Development Issues](#development-issues)
-9. [Performance](#performance)
-10. [Emergency Recovery](#emergency-recovery)
-11. [Reporting Issues](#reporting-issues)
+8. [Systematic trading & alerts](#systematic-trading--alerts)
+9. [Development Issues](#development-issues)
+10. [Performance](#performance)
+11. [Emergency Recovery](#emergency-recovery)
+12. [Reporting Issues](#reporting-issues)
 
 ## First-Response Commands
 
@@ -70,6 +71,52 @@ sudo systemctl stop apache2
 ./tradingapp.sh clean
 ./tradingapp.sh deploy
 ```
+
+### Backend refuses to start
+
+**Symptoms:** the backend container exits at once; its log has one or more
+`refusing to start: …` lines.
+
+```bash
+docker compose logs backend | grep -E 'refusing to start|\[startup\]'
+```
+
+Each line names the key to fix:
+
+- **`Set APP_PASSWORD (browser login) and/or API_TOKEN`**, or a secret that
+  "is not set", "is still a template or default value" or "is shorter than N
+  characters" (production only). Run `./tradingapp.sh config` to generate
+  missing secrets, or set fresh values by hand (`openssl rand -hex 32`).
+- **`BROKER_SERVICE_TOKEN …`**: it must be set, and the same value on the
+  backend and the broker service (both read `.env`).
+- **`POSTGRES_PASSWORD is empty or a known default`**: change it in the
+  database and in `.env` together.
+- **`LIVE_TRADING_ENABLED=true requires TRADING_TOKENS` / `ORDER_MFA_SECRET`**:
+  live trading needs the trader role and order MFA. Set both, or set
+  `LIVE_TRADING_ENABLED=false`.
+- **`KILL_SWITCH_ACTION=… is not an action`**: use `notify`, `halt` or
+  `flatten`.
+- **`TRADING_DAY_TIMEZONE=… is not a valid IANA time zone`**: use a name such
+  as `Europe/Athens`, not an offset.
+- **`PROP_RULES__<CONNECTION> …`**: the JSON is invalid or a rule is out of
+  range; the message says which field. The examples in `.env.example` parse.
+- **`HEARTBEAT_URL must be an http(s) URL`** (or `HEARTBEAT_FAIL_URL`).
+One look-alike does not stop the process: **`refusing to start: unsafe
+schema for multi-connection`** means more than one connection is configured
+on the old fills schema, so the backend runs with the strategy runner and
+fills poller switched off. Apply `backend/src/database/timescaledb-schema.sql`
+(see [Database](#database)) and restart.
+
+Warnings (`[startup] …` without "refusing") do not stop the backend but are
+worth acting on, for example auto-execution with no `HEARTBEAT_URL`.
+
+### Browser shows a login page, or scripts get 401
+
+The browser now signs in with `APP_PASSWORD` and holds a session cookie;
+nothing secret is built into the frontend. Scripts and `curl` send
+`Authorization: Bearer $API_TOKEN`. If `NEXT_PUBLIC_API_TOKEN` is still in
+`.env`, remove it, and rotate `API_TOKEN` if it ever held that value: it was
+readable in the web page.
 
 ### Frontend can't reach the backend
 
@@ -287,6 +334,25 @@ If `/api/database/health` returns `unhealthy`:
    and `data_quality_metrics` tables.
 4. Apply the schema as shown above.
 
+## Systematic trading & alerts
+
+The [paper runbook](PAPER_DEPLOYMENT_RUNBOOK.md) is the step-by-step check
+for all of this; the [Fleet panel](FEATURES.md#systematic-trading-rule-driven-auto-execution)
+on `/systematic` shows each connection's limits and halt state.
+
+| Symptom | Cause / fix |
+|---|---|
+| Entry signals recorded but no orders | `SYSTEMATIC_EXECUTION_ENABLED` is off (signal-only), or a limit is refusing entries. The signal's reason says which: "Daily loss limit reached", "prop daily loss buffer reached", "news blackout", the weekend cutoff, or the connection is halted. |
+| Run won't start or deploy: promotion gate | `GET /api/strategies/definitions/:id/promotion` lists what is missing (a backtest from the holdout date, enough trades, a paper record for live). `PROMOTION_PAPER_GATE=off` skips the paper check for smoke tests only. |
+| Entries refused with "news rule cannot be checked" | The backend could not fetch `NEWS_CALENDAR_URL` for `NEWS_CALENDAR_MAX_AGE_HOURS`. Check outbound HTTPS from the app host. |
+| Connection shows halted | A critical kill-switch trigger with `KILL_SWITCH_ACTION=halt` or `flatten`, or an operator flatten. Fix the cause (the alert names it), then **Resume entries** on its Fleet card. A halt survives restarts. |
+| "FLATTEN INCOMPLETE" alert | A close at market failed. Close the remaining position in the terminal by hand, then resume. |
+| Daily figures roll over at the wrong time | Set `TRADING_DAY_TIMEZONE` to the broker's (or prop firm's) server zone. |
+| Drawdown stays high after a withdrawal | Reset the high-water mark from the connection's Fleet card. |
+| No Telegram messages | Check `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (message the bot first, then read `getUpdates`). Repeats of the same alert are suppressed for `ALERT_DEDUPE_SECONDS`. |
+| Heartbeat monitor never turns green | `/api/health` shows `heartbeat.last_result`. Check `HEARTBEAT_URL` and outbound HTTPS from the app host. |
+| `connection breaker open — skipping its runs` | That connection's sidecar or terminal is not answering. Other connections keep running; it is retried after the cooldown. |
+
 ## Development Issues
 
 ### TypeScript errors
@@ -412,6 +478,8 @@ And include:
 | `Port already in use` | Another process bound to 3000 / 4000 / 8000 |
 | `Module not found` | `npm install` / `pip install` failed during build |
 | `CORS error` | `CORS_ORIGINS` does not include the frontend's origin |
+| `[startup] refusing to start: …` | Unsafe or unreadable setting; see [Backend refuses to start](#backend-refuses-to-start) |
+| `401` from the API | Not logged in, or the script's `API_TOKEN` is wrong |
 
 ---
 

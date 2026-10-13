@@ -31,7 +31,7 @@ infrastructure; read that one to run the app.
 4. [Create the app container](#4-create-the-app-container)
 5. [Create the database container (TimescaleDB)](#5-create-the-database-container-timescaledb)
 6. [Create the IB Gateway container](#6-create-the-ib-gateway-container)
-7. [Optional: MT5 sidecar (must be a VM)](#7-optional-mt5-sidecar-must-be-a-vm)
+7. [Optional: MT5 sidecar (Windows VM)](#7-optional-mt5-sidecar-windows-vm)
 8. [Deploy the application stack](#8-deploy-the-application-stack)
 9. [Verify the deployment](#9-verify-the-deployment)
 10. [Reverse proxy, TLS and firewalling](#10-reverse-proxy-tls-and-firewalling)
@@ -94,10 +94,12 @@ operability win.
 
 Two consequences you have to design around rather than discover later:
 
-**1. MT5 cannot be a container.** LXC guests share the host's Linux kernel, so
-a Proxmox container is always Linux. The `MetaTrader5` Python package is
-Windows-only and needs a live terminal, so the MT5 sidecar stays a full VM
-(§7). If you don't trade MT5, every guest in this guide is an LXC.
+**1. MT5 runs Windows code.** LXC guests share the host's Linux kernel, so
+a Proxmox container is always Linux. The `MetaTrader5` Python package needs
+Windows Python and a live terminal, so this guide puts the MT5 sidecar in a
+Windows VM (§7). The sidecar can also run the terminal under Wine on Linux,
+in a VM or a privileged LXC (see [`mt5_sidecar/README.md`](mt5_sidecar/README.md)).
+If you don't trade MT5, every guest in this guide is an LXC.
 
 **2. Docker-in-LXC needs specific container features.** The app container runs
 a Docker Compose stack, which is nesting containers inside a container. It
@@ -721,21 +723,24 @@ the guest.
 
 ---
 
-## 7. Optional: MT5 sidecar (must be a VM)
+## 7. Optional: MT5 sidecar (Windows VM)
 
 Skip this entirely unless you trade MetaTrader 5.
 
-**This is the one guest that cannot be an LXC container.** Proxmox containers
-share the host's Linux kernel, so they can only ever run Linux. The
-`MetaTrader5` Python package is Windows-only and requires a live MT5 terminal,
-so this component is a full hardware-virtualised VM or it doesn't exist. There
-is no container workaround.
+Proxmox containers share the host's Linux kernel, so they can only ever run
+Linux. The `MetaTrader5` Python package needs Windows Python and a live MT5
+terminal, so this guide runs it in a full hardware-virtualised Windows VM. The
+alternative is the terminal and Windows Python under Wine on Linux, in a VM or
+a privileged LXC; [`mt5_sidecar/README.md`](mt5_sidecar/README.md) covers that
+path and its systemd unit.
 
-The FastAPI sidecar that `broker_service` calls is not in this repository —
-you build it against the contract documented in
-[`broker_service/mt5_adapter.py`](broker_service/mt5_adapter.py) (`/health`,
-`/symbols`, `/history`, `/quote`, `/tick`, `/orders`, `/positions`,
-`/account`).
+The FastAPI sidecar that `broker_service` calls is in
+[`mt5_sidecar/`](mt5_sidecar/README.md). Its README covers installing it on
+the Windows VM and running it as a scheduled task; the HTTP contract is
+documented at the top of
+[`broker_service/mt5_adapter.py`](broker_service/mt5_adapter.py). One sidecar
+serves one terminal and one account, so a second account needs a second
+terminal and sidecar on another port.
 
 ```bash
 qm create 140 \
@@ -764,10 +769,13 @@ MT5_BRIDGE_URL=http://10.7.3.23:9100
 MT5_BRIDGE_SECRET=<openssl rand -hex 32>
 ```
 
-`broker_service` sends `X-MT5-Bridge-Secret` on every request when that is
-set — **the sidecar must reject requests that don't carry the right value.**
-Until it does, anything that can reach port 9100 can trade the account. Scope
-the Windows firewall rule for 9100 to `10.7.3.20` only.
+Set the same secret as `MT5_BRIDGE_SECRET` in the sidecar's `sidecar.env`.
+`broker_service` sends `X-MT5-Bridge-Secret` on every request, and the sidecar
+rejects any request without the right value (it refuses to start on a
+non-loopback address without a secret of at least 24 characters). Still scope
+the Windows firewall rule for 9100 to `10.7.3.20` only. For two or more
+accounts, replace these two keys with the `BROKER_CONNECTIONS` manifest in
+`.env.example`.
 
 Alpaca and OANDA need no guest at all — they are cloud REST APIs, enabled by
 setting credentials in `.env`
@@ -1376,7 +1384,8 @@ timer, so turning several on at once makes a misbehaving one hard to identify:
 | Scheduled backfill | `BACKFILL_ENABLED=true` | [`DEPLOYMENT.md` § Data collection & retention](DEPLOYMENT.md#data-collection--retention-phase-5) |
 | Executions (fills) sync | `EXECUTIONS_SYNC_ENABLED=true` | [`DEPLOYMENT.md` § Executions sync](DEPLOYMENT.md#executions-fills-sync) |
 | Systematic strategies | `SYSTEMATIC_ENABLED=true` | [`.env.example`](.env.example), [`SYSTEMATIC_TRADING_ROADMAP.md`](SYSTEMATIC_TRADING_ROADMAP.md) |
-| Live order placement | `LIVE_TRADING_ENABLED=true` | [`DEPLOYMENT.md` § Enabling live trading](DEPLOYMENT.md#enabling-live-trading) |
+| Strategy auto-execution | `SYSTEMATIC_EXECUTION_ENABLED=true`, after Telegram, `HEARTBEAT_URL` and the account limits are set | [`PAPER_DEPLOYMENT_RUNBOOK.md`](PAPER_DEPLOYMENT_RUNBOOK.md), [`FEATURES.md` § Risk controls](FEATURES.md#risk-controls-kill-switch--alerting) |
+| Live order placement | `LIVE_TRADING_ENABLED=true` (needs `TRADING_TOKENS` and `ORDER_MFA_SECRET`) | [`DEPLOYMENT.md` § Enabling live trading](DEPLOYMENT.md#enabling-live-trading) |
 
 Proxmox-side routine: patch the host during a market close and reboot (all
 containers restart together — see §13), watch storage headroom (`pvesm
@@ -1533,6 +1542,8 @@ keeping.
       storage (not silently falling back to `suspend`)
 - [ ] Baseline snapshots taken after the first green deploy
 - [ ] Prometheus scraping both services; alert rules loaded and validated
+- [ ] Dead-man's switch: `HEARTBEAT_URL` points at a monitor **off this
+      Proxmox host**, and stopping the backend container pages you
 - [ ] Grafana dashboard imported
 - [ ] Optional subsystems (backfill, executions sync, systematic) enabled one
       at a time, each verified before the next
