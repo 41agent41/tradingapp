@@ -18,7 +18,11 @@ print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
 
 # Configuration
-DEFAULT_IB_HOST="10.7.3.21"
+# IB is optional: setup no longer asks for a gateway. Until one is configured
+# IB_HOST holds this placeholder (the same one install/install.sh uses), because
+# the broker service still reads IB_HOST at import; nothing connects to it until
+# an IB route is called. Brokers are checked inside the app, not here.
+IB_HOST_UNCONFIGURED="host.docker.internal"
 DEFAULT_SERVER_IP="10.7.3.20"
 DEFAULT_IB_PORT="4002"
 DEFAULT_CLIENT_ID="1"
@@ -123,7 +127,7 @@ show_usage() {
     echo "Usage: $0 [COMMAND] [--with-db | --no-db] [--non-interactive]"
     echo ""
     echo "Setup & Deployment:"
-    echo "  setup       - Install Docker, setup environment, configure IB"
+    echo "  setup       - Install Docker and generate the environment"
     echo "  deploy      - Deploy the complete application"
     echo "  redeploy    - Clean redeploy (recommended for changes)"
     echo ""
@@ -131,13 +135,13 @@ show_usage() {
     echo "  --with-db          - Also bring up a local TimescaleDB via"
     echo "                       docker-compose.db.yml (development / self-hosted)"
     echo "  --no-db            - Stop using the local TimescaleDB override"
-    echo "  --non-interactive  - Never prompt (setup/config/env use"
-    echo "                       DEFAULT_IB_HOST unless IB_HOST is already"
-    echo "                       exported); for CI / scripted installs"
+    echo "  --non-interactive  - Never prompt; for CI / scripted installs"
     echo ""
     echo "Configuration:"
-    echo "  config      - Configure IB Gateway connection"
-    echo "  env         - Setup/update environment variables"
+    echo "  config      - Refresh SERVER_IP and fill in missing settings"
+    echo "  env         - Same as config"
+    echo "  (Brokers: export IB_HOST before 'config' to set IB; other brokers"
+    echo "   are configured in .env, see .env.example)"
     echo ""
     echo "Management:"
     echo "  start       - Start all services"
@@ -147,17 +151,17 @@ show_usage() {
     echo "  logs        - View service logs"
     echo ""
     echo "Troubleshooting:"
-echo "  test        - Test all connections"
+echo "  test        - Check the app's services are up"
 echo "  diagnose    - Run comprehensive diagnostics"
 echo "  fix         - Auto-fix common issues"
-echo "  ib-help     - IB Gateway setup instructions"
+echo "  ib-help     - IB Gateway setup instructions (only if you use IB)"
 echo "  verify-timestamps - Check IB timestamp handling end-to-end"
 echo "  clean       - Clean up and reset"
     echo ""
     echo "Examples:"
 echo "  $0 setup     # First time setup"
 echo "  $0 deploy    # Deploy application"
-echo "  $0 test      # Test connections"
+echo "  $0 test      # Check services"
 echo "  $0 fix       # Fix connection issues"
 }
 
@@ -208,7 +212,59 @@ install_docker() {
     sudo chmod +x /usr/local/bin/docker-compose
     
     print_status "Docker installed successfully"
-    print_warning "Please log out and log back in for docker group changes to take effect"
+    print_info "You were added to the docker group. '$0 deploy' applies it for you; other docker commands need a fresh login."
+}
+
+# Make sure this shell can talk to the Docker daemon before a command that
+# needs it. Setup adds the user to the `docker` group, but a shell keeps the
+# groups it logged in with, so straight after setup `docker info` is refused
+# even though the daemon is running. In that case re-run this script under
+# `sg docker` (the group applied, no logout needed) with the given arguments.
+ensure_docker_access() {
+    if docker info &> /dev/null; then
+        return 0
+    fi
+
+    if ! command -v docker &> /dev/null; then
+        print_error "Docker is not installed. Run: $0 setup"
+        exit 1
+    fi
+
+    if [[ ! -S /var/run/docker.sock ]]; then
+        print_error "Docker is installed but not running. Start it with: sudo systemctl start docker"
+        exit 1
+    fi
+
+    # Member of `docker` in the group database, but not in this process.
+    if id -nG "${USER:-$(id -un)}" 2>/dev/null | tr ' ' '\n' | grep -qx docker \
+        && ! id -nG | tr ' ' '\n' | grep -qx docker; then
+        if [[ -z "${TRADINGAPP_SG_REEXEC:-}" ]] && command -v sg &> /dev/null; then
+            print_info "Your docker group membership is not active in this shell yet; continuing with it applied."
+            export TRADINGAPP_SG_REEXEC=1
+            exec sg docker -c "$(printf '%q ' bash "$(readlink -f "$0")" "$@")"
+        fi
+        print_error "Your docker group membership is not active in this shell yet."
+        echo "  Log out and back in (or run: newgrp docker), then re-run: $0 $*"
+        exit 1
+    fi
+
+    print_error "Cannot talk to the Docker daemon:"
+    docker info 2>&1 | tail -n 3 | sed 's/^/  /'
+    exit 1
+}
+
+# The global flags currently in effect, so a re-run under `sg docker` keeps them.
+global_flag_args() {
+    [[ "${WITH_DB:-0}" == "1" ]] && printf '%s\n' --with-db
+    [[ "${NON_INTERACTIVE:-0}" == "1" ]] && printf '%s\n' --non-interactive
+    return 0
+}
+
+# True when IB_HOST is a real gateway address rather than empty, the
+# .env.example placeholder, or the "not configured" marker.
+ib_configured() {
+    local host="$1"
+    [[ -n "$host" && "$host" != "$IB_HOST_UNCONFIGURED" && "$host" != YOUR_* ]]
 }
 
 setup_environment() {
@@ -222,39 +278,34 @@ setup_environment() {
         fi
     fi
 
-    # Get IB Gateway IP
-    if [[ -z "$IB_HOST" ]]; then
-        if [[ "${NON_INTERACTIVE:-0}" == "1" ]]; then
-            IB_HOST="$DEFAULT_IB_HOST"
-            print_info "Non-interactive mode: using default IB Gateway IP ($IB_HOST)"
-        else
-            echo ""
-            print_info "Please enter your IB Gateway IP address:"
-            read -p "IB Gateway IP [$DEFAULT_IB_HOST]: " IB_HOST
-            IB_HOST=${IB_HOST:-$DEFAULT_IB_HOST}
-        fi
-    fi
-
-    # Merge into .env rather than truncating it: SERVER_IP/IB_HOST (and the
-    # URLs derived from SERVER_IP) are what this command is explicitly
-    # asked to change, so those are force-set; everything else is only
-    # filled in if missing, so hand-edited values (a real POSTGRES_PASSWORD,
-    # POSTGRES_HOST, API_TOKEN, BACKFILL_ENABLED, ...) survive a re-run of
-    # `config`/`env`.
+    # No broker questions: brokers are optional and their connectivity is
+    # checked inside the app. IB_HOST is only written when exported by the
+    # caller; otherwise an existing value is kept, or the "not configured"
+    # marker is filled in.
+    #
+    # Merge into .env rather than truncating it: SERVER_IP (and the URLs
+    # derived from it) are what this command is explicitly asked to change,
+    # so those are force-set; everything else is only filled in if missing,
+    # so hand-edited values (a real POSTGRES_PASSWORD, POSTGRES_HOST,
+    # API_TOKEN, BACKFILL_ENABLED, ...) survive a re-run of `config`/`env`.
     if [[ ! -f .env ]]; then
         print_info "No .env found — creating one."
         cat > .env << 'HEADER'
 # TradingApp Configuration
-# Generated by tradingapp.sh. Re-running `config`/`env` updates SERVER_IP,
-# IB_HOST and the URLs derived from SERVER_IP; every other key here is
-# left alone once set, so it is safe to hand-edit the rest of this file.
+# Generated by tradingapp.sh. Re-running `config`/`env` updates SERVER_IP
+# and the URLs derived from it; every other key here is left alone once
+# set, so it is safe to hand-edit the rest of this file.
 HEADER
     fi
 
     env_set .env SERVER_IP "$SERVER_IP"
     env_set .env NEXT_PUBLIC_API_URL "http://$SERVER_IP:4000"
     env_set .env CORS_ORIGINS "http://$SERVER_IP:3000"
-    env_set .env IB_HOST "$IB_HOST"
+    if [[ -n "$IB_HOST" ]]; then
+        env_set .env IB_HOST "$IB_HOST"
+    else
+        env_set_default .env IB_HOST "$IB_HOST_UNCONFIGURED"
+    fi
 
     env_set_default .env NODE_ENV "production"
     env_set_default .env FRONTEND_PORT "3000"
@@ -289,56 +340,17 @@ HEADER
 
     print_status "Environment configured:"
     print_info "  Server IP: $SERVER_IP"
-    print_info "  IB Gateway: $IB_HOST:$(grep -E '^IB_PORT=' .env | cut -d'=' -f2)"
-    print_info "  Client ID: $(grep -E '^IB_CLIENT_ID=' .env | cut -d'=' -f2)"
-}
-
-test_ib_connection() {
-    print_info "Testing IB Gateway connection..."
-    
-    if [[ -f .env ]]; then
-        source .env
-        
-        # Test basic network connectivity first
-        print_info "Testing network connectivity to $IB_HOST..."
-        if ping -c 1 -W 3 "$IB_HOST" > /dev/null 2>&1; then
-            print_status "Host $IB_HOST is reachable"
-        else
-            print_error "Host $IB_HOST is not reachable via ping"
-            print_warning "Check network connectivity and firewall settings"
-            return 1
-        fi
-        
-        # Test TCP connection to IB Gateway port
-        print_info "Testing IB Gateway port $IB_HOST:$IB_PORT..."
-        if timeout 5 bash -c "echo >/dev/tcp/$IB_HOST/$IB_PORT" 2>/dev/null; then
-            print_status "IB Gateway is reachable at $IB_HOST:$IB_PORT"
-            return 0
-        else
-            print_error "Cannot reach IB Gateway at $IB_HOST:$IB_PORT"
-            print_warning "IB Gateway troubleshooting needed:"
-            echo "  1. Ensure IB Gateway/TWS is running on $IB_HOST"
-            echo "  2. Check API settings: File → Global Configuration → API → Settings"
-            echo "  3. Verify 'Enable ActiveX and Socket Clients' is checked"
-            echo "  4. Confirm socket port is set to $IB_PORT"
-            echo "  5. Add $SERVER_IP to trusted IPs list"
-            echo "  6. Restart IB Gateway after configuration changes"
-            return 1
-        fi
-    else
-        print_error "No .env file found. Run: $0 env"
-        return 1
+    local ib_host
+    ib_host=$(grep -E '^IB_HOST=' .env | tail -n1 | cut -d'=' -f2-)
+    if ib_configured "$ib_host"; then
+        print_info "  IB Gateway: $ib_host:$(grep -E '^IB_PORT=' .env | cut -d'=' -f2)"
     fi
+    print_info "  Brokers: add OANDA, MT5, IB or Alpaca credentials to .env (see .env.example), then '$0 deploy'."
+    print_info "  Broker connections are checked inside the app once it is running."
 }
 
 deploy_application() {
     print_info "Deploying TradingApp..."
-
-    # Ensure Docker is running
-    if ! docker info &> /dev/null; then
-        print_error "Docker is not running. Please start Docker first."
-        exit 1
-    fi
 
     # Persist the --with-db choice across subsequent invocations
     if [[ "${WITH_DB:-0}" == "1" ]]; then
@@ -374,9 +386,9 @@ deploy_application() {
 
 test_deployment() {
     print_info "Testing deployment..."
-    
+
     local success=true
-    
+
     # Test frontend
     if curl -s -f http://${SERVER_IP:-localhost}:3000 > /dev/null; then
         print_status "Frontend is responding"
@@ -384,7 +396,7 @@ test_deployment() {
         print_error "Frontend is not responding"
         success=false
     fi
-    
+
     # Test backend
     if curl -s -f http://${SERVER_IP:-localhost}:4000 > /dev/null; then
         print_status "Backend is responding"
@@ -392,29 +404,61 @@ test_deployment() {
         print_error "Backend is not responding"
         success=false
     fi
-    
-    # Test IB service
+
+    # Test broker service (the container, not any broker behind it)
     if curl -s -f http://127.0.0.1:${BROKER_SERVICE_PORT:-8000}/health > /dev/null; then
-        print_status "IB Service is responding"
+        print_status "Broker service is responding"
     else
-        print_error "IB Service is not responding"
+        print_error "Broker service is not responding"
         success=false
     fi
-    
-    # Test IB connection
-    if test_ib_connection; then
-        print_status "IB Gateway connection test passed"
+
+    # Database, as the backend sees it. A warning only: the app starts and
+    # reports itself degraded without it, and the fix is in .env, not here.
+    if curl -s -f http://${SERVER_IP:-localhost}:4000/api/database/health > /dev/null; then
+        print_status "Database is connected"
     else
-        print_warning "IB Gateway connection test failed"
-        success=false
+        print_warning "Backend cannot reach the database (check POSTGRES_* in .env, or deploy --with-db)"
     fi
-    
+
+    # Brokers are deliberately not tested here: the app checks its own
+    # broker connections once it is running, and a broker that is down
+    # must not fail a deploy.
+    show_broker_summary
+
     if $success; then
         print_status "All tests passed!"
         show_access_info
     else
         print_error "Some tests failed. Check logs with: $0 logs"
         return 1
+    fi
+}
+
+# Information only: the broker connections the running broker service has
+# registered. Never fails, and never contacts a broker.
+show_broker_summary() {
+    local summary ib_host skip_ib=1
+    if ! command -v python3 &> /dev/null; then
+        print_info "Broker connection status is shown in the app"
+        return 0
+    fi
+    ib_host=$(grep -E '^IB_HOST=' .env 2>/dev/null | tail -n1 | cut -d'=' -f2-)
+    ib_configured "$ib_host" && skip_ib=0
+    summary=$(curl -s --max-time 5 http://127.0.0.1:${BROKER_SERVICE_PORT:-8000}/health 2>/dev/null \
+        | SKIP_IB=$skip_ib python3 -c '
+import json, os, sys
+try:
+    conns = json.load(sys.stdin).get("providers", {}).get("connections", {})
+except Exception:
+    sys.exit(0)
+skip_ib = os.environ.get("SKIP_IB") == "1"
+print(", ".join(sorted(c for c in conns if not (skip_ib and c.startswith("ib:")))))
+' 2>/dev/null) || true
+    if [[ -n "$summary" ]]; then
+        print_info "Broker connections configured: $summary (their status is shown in the app)"
+    else
+        print_info "No broker connections configured yet; add one in .env (see .env.example), then '$0 deploy'"
     fi
 }
 
@@ -466,10 +510,6 @@ run_diagnostics() {
     fi
     
     echo ""
-    echo "=== Network Tests ==="
-    test_ib_connection
-    
-    echo ""
     echo "=== Service Tests ==="
     test_deployment
 
@@ -515,7 +555,7 @@ show_logs() {
         echo "--- Backend ---"
         compose_cmd logs --tail=20 backend 2>/dev/null || echo "Backend not running"
         echo ""
-        echo "--- IB Service ---"
+        echo "--- Broker Service ---"
         compose_cmd logs --tail=20 broker_service 2>/dev/null || echo "Broker Service not running"
         if [[ "${WITH_DB:-0}" == "1" ]] || [[ -f "$WITH_DB_STATE_FILE" ]]; then
             echo ""
@@ -570,9 +610,10 @@ show_ib_help() {
     echo "   - Wait for it to fully connect to IB servers"
     echo ""
     
-    echo "5. 🧪 Test Connection:"
-    echo "   - Run: ./tradingapp.sh test"
-    echo "   - Look for: ✅ IB Gateway connection test passed"
+    echo "5. 🧪 Point the app at it:"
+    echo "   - Run: IB_HOST=<gateway ip> ./tradingapp.sh config"
+    echo "   - Then: ./tradingapp.sh deploy"
+    echo "   - The app shows whether IB is connected once you sign in"
     echo ""
     
     echo "📞 Common Issues:"
@@ -586,10 +627,10 @@ show_ib_help() {
     echo "🔧 Quick Tests:"
     echo "   ping $IB_HOST                    # Test basic connectivity"
     echo "   nc -zv $IB_HOST $IB_PORT        # Test port accessibility"
-    echo "   ./tradingapp.sh config           # Reconfigure IB settings"
+    echo "   IB_HOST=<ip> ./tradingapp.sh config  # Set or change the IB Gateway address"
     echo ""
     
-    print_status "After configuring IB Gateway, run: ./tradingapp.sh test"
+    print_status "After configuring IB Gateway, run: ./tradingapp.sh deploy"
 }
 
 # Strip the global flags (--with-db / --no-db) from $@ so the case
@@ -597,13 +638,34 @@ show_ib_help() {
 parse_global_flags "$@"
 set -- "${GLOBAL_ARGS[@]}"
 
+# Commands that talk to Docker first make sure this shell can (re-running
+# under `sg docker` straight after setup, when the new group is not active).
+case "${1:-}" in
+    deploy|redeploy|start|stop|restart|status|logs|fix|clean)
+        mapfile -t _flags < <(global_flag_args)
+        ensure_docker_access "$@" "${_flags[@]}"
+        ;;
+esac
+
 # Main command handling
 case "${1:-}" in
     "setup")
         check_requirements
         install_docker
         setup_environment
-        print_status "Setup complete! Run '$0 deploy' to start the application."
+        print_status "Setup complete!"
+        deploy_now="n"
+        if [[ "${NON_INTERACTIVE:-0}" != "1" ]]; then
+            read -r -p "Deploy now? [Y/n]: " deploy_now
+            deploy_now=${deploy_now:-y}
+        fi
+        if [[ "$deploy_now" =~ ^[yY] ]]; then
+            mapfile -t _flags < <(global_flag_args)
+            ensure_docker_access deploy "${_flags[@]}"
+            deploy_application
+        else
+            print_info "Run '$0 deploy' to start the application."
+        fi
         ;;
     "deploy")
         deploy_application

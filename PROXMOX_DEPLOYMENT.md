@@ -802,9 +802,10 @@ chmod +x tradingapp.sh
 ./tradingapp.sh setup
 ```
 
-When prompted for the IB Gateway IP, answer `10.7.3.22`. **Don't accept the
-default** the prompt offers: the script's built-in default is `10.7.3.21`,
-which in this plan is the *database* container. `setup` detects the
+`setup` asks nothing about brokers; answer `n` when it offers to deploy,
+because you deploy after writing the real `.env` below. To use IB, point it at the gateway
+container with `IB_HOST=10.7.3.22 ./tradingapp.sh config` (or set
+`IB_HOST=10.7.3.22` in `.env` in §8.2). `setup` detects the
 existing Docker install and skips it — which is why §4.2 installed Docker by
 hand: the script's installer assumes a normal host, and doing it manually let
 us make the ZFS storage-driver decision before Docker's first start.
@@ -1474,7 +1475,7 @@ mkdir -p /opt/tradingapp && chown tradingapp:tradingapp /opt/tradingapp
 su - tradingapp
 git clone https://github.com/41agent41/tradingapp.git /opt/tradingapp
 cd /opt/tradingapp && chmod +x tradingapp.sh
-./tradingapp.sh setup            # answer with your IB Gateway IP
+./tradingapp.sh setup            # no broker questions; answer "n" to "Deploy now?"
 nano .env                        # APP_PASSWORD, CORS_ORIGINS, secrets
 chmod 600 .env
 ./tradingapp.sh deploy --with-db # bundled TimescaleDB, schema applied automatically

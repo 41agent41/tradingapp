@@ -211,13 +211,12 @@ no separate Jesse install, database or exchange drivers.
 The unified script handles all configuration automatically:
 
 ```bash
-# Configure IB Gateway connection
+# Refresh .env (Server IP is auto-detected; secrets are generated once)
 ./tradingapp.sh config
 
-# This will prompt for:
-# - IB Gateway IP address
-# - Server IP (auto-detected)
-# - Creates optimized .env file
+# No broker is asked for. Add broker credentials (OANDA, MT5, IB, Alpaca)
+# to .env as shown in .env.example, then redeploy. To use IB:
+IB_HOST=<gateway ip> ./tradingapp.sh config
 ```
 
 ### **Manual Configuration**
