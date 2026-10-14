@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../../lib/api';
+import { BROKERS_BY_PRIORITY } from '../../lib/brokerConnections';
 import {
   OPERATORS,
   OPERAND_SUGGESTIONS,
@@ -25,7 +26,7 @@ const emptyCondition = (): ConditionForm => ({ left: 'sma_20', op: '>', right: '
 
 // Broker priority order (API brokers, then MT5, IB, Alpaca). The form starts on
 // the server's default broker, the highest-priority one that is configured.
-const BROKERS = ['oanda', 'mt5', 'ib', 'alpaca'];
+const BROKERS = BROKERS_BY_PRIORITY;
 
 const initialForm: StrategyForm = {
   name: '',

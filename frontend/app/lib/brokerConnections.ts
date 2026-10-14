@@ -83,6 +83,13 @@ export const PLATFORM_FORM: Record<string, Field[]> = {
   ],
 };
 
+/**
+ * Every supported broker, in the built-in priority order (the broker service
+ * reports the order in effect). Mirrors BROKER_PRIORITY in
+ * broker_service/connections.py; see broker_service/ADDING_A_BROKER.md.
+ */
+export const BROKERS_BY_PRIORITY = ['oanda', 'mt5', 'ib', 'alpaca'];
+
 const PLATFORM_NAME: Record<string, string> = {
   oanda: 'OANDA',
   mt5: 'MT5',
@@ -90,8 +97,11 @@ const PLATFORM_NAME: Record<string, string> = {
   alpaca: 'Alpaca',
 };
 
-export function platformName(platform: string): string {
-  return PLATFORM_NAME[platform] ?? platform;
+/** Short names, where space is tight (the header health badge). */
+const PLATFORM_SHORT_NAME: Record<string, string> = { ib: 'IB' };
+
+export function platformName(platform: string, short = false): string {
+  return (short && PLATFORM_SHORT_NAME[platform]) || PLATFORM_NAME[platform] || platform;
 }
 
 export function checkSummary(check: ConnectionCheck | null): {

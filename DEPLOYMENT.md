@@ -155,6 +155,9 @@ enabling either is just setting credentials and redeploying:
 Until a broker's credentials are set, requests for it resolve to a clean
 `501` (same as MT5 without `MT5_BRIDGE_URL`), not a confusing `404`.
 
+To add another broker with an API, follow
+[`broker_service/ADDING_A_BROKER.md`](broker_service/ADDING_A_BROKER.md).
+
 ### External database (recommended for production)
 
 By default the base `docker-compose.yml` does **not** provision a

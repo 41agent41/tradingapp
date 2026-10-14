@@ -23,6 +23,9 @@
  * nothing.
  */
 
+// Every supported broker; the list lives in services/orderTypes.ts.
+import { BROKERS } from '../services/orderTypes.js';
+
 export type SettingType = 'boolean' | 'integer' | 'number' | 'string' | 'enum' | 'json';
 
 export type SettingSection =
@@ -73,8 +76,6 @@ export const SECTIONS: { id: SettingSection; title: string }[] = [
   { id: 'connections', title: 'Connections' },
   { id: 'network', title: 'Network' },
 ];
-
-const BROKERS = ['ib', 'mt5', 'alpaca', 'oanda'] as const;
 
 export const SETTINGS: readonly SettingDef[] = [
   // --- Trading -------------------------------------------------------------

@@ -18,8 +18,11 @@ import type { Querier } from './backtestRunRepository.js';
 import { encryptionKey, openSecret, sealSecret } from '../config/secretBox.js';
 import { logger } from './logger.js';
 
-export const PLATFORMS = ['oanda', 'mt5', 'ib', 'alpaca'] as const;
-export type Platform = (typeof PLATFORMS)[number];
+import { BROKER_PRIORITY, type Broker } from './orderTypes.js';
+
+/** Every supported broker, in priority order (services/orderTypes.ts). */
+export const PLATFORMS: readonly Broker[] = BROKER_PRIORITY;
+export type Platform = Broker;
 export type AccountMode = 'paper' | 'live';
 
 /** What each platform needs. Required fields are checked on save. */
