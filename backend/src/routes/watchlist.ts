@@ -16,7 +16,7 @@ import type { Request, Response } from 'express';
 
 import { dbService } from '../services/database.js';
 import { WatchlistRepository } from '../services/watchlistRepository.js';
-import { isBroker, BROKERS, DEFAULT_BROKER } from '../services/orderTypes.js';
+import { isBroker, BROKERS, defaultBroker } from '../services/orderTypes.js';
 
 const router = express.Router();
 const repo = new WatchlistRepository(dbService);
@@ -48,7 +48,7 @@ router.post('/', async (req: Request, res: Response) => {
   try {
     const { added, row } = await repo.add({
       symbol,
-      broker: broker ?? DEFAULT_BROKER,
+      broker: broker ?? defaultBroker(),
       sec_type: typeof sec_type === 'string' && sec_type ? sec_type : undefined,
       exchange: typeof exchange === 'string' && exchange ? exchange : undefined,
       currency: typeof currency === 'string' && currency ? currency : undefined,

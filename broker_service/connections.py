@@ -69,14 +69,18 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from observability import get_logger
 
 logger = get_logger(__name__)
 
 SUPPORTED_PLATFORMS = ("ib", "mt5", "alpaca", "oanda")
-DEFAULT_PLATFORM = "ib"
+# Broker priority, highest first: brokers with a direct API (OANDA, and those
+# that follow it), then MT5, IB and Alpaca. A request that names no platform
+# goes to the highest-ranked one that is configured, unless DEFAULT_BROKER
+# names one. Mirrored by BROKER_PRIORITY in backend/src/services/orderTypes.ts.
+BROKER_PRIORITY = ("oanda", "mt5", "ib", "alpaca")
 DEFAULT_ACCOUNT = "default"
 ACCOUNT_MODES = ("paper", "live")
 
@@ -261,20 +265,45 @@ def _manifest_json() -> Optional[str]:
     return None
 
 
+def ib_configured() -> bool:
+    """IB counts as configured when IB_HOST names a gateway: not empty and not
+    the ``YOUR_IB_GATEWAY_IP`` placeholder from .env.example."""
+    host = (os.getenv("IB_HOST") or "").strip()
+    return bool(host) and not host.upper().startswith("YOUR_")
+
+
+def default_platform(configured: Iterable[str]) -> str:
+    """The platform an unqualified request resolves to.
+
+    ``DEFAULT_BROKER``, when it names a supported platform, wins. Otherwise the
+    highest-ranked platform in :data:`BROKER_PRIORITY` that has a configured
+    connection; with none configured, the top of the list, so the request
+    fails with that platform's "not configured" hint rather than a vaguer one.
+    """
+    explicit = (os.getenv("DEFAULT_BROKER") or "").strip().lower()
+    if explicit in SUPPORTED_PLATFORMS:
+        return explicit
+    present = set(configured)
+    for platform in BROKER_PRIORITY:
+        if platform in present:
+            return platform
+    return BROKER_PRIORITY[0]
+
+
 def _legacy_connections() -> List[Connection]:
     """Synthesise one connection per platform from the pre-C-1 environment
     variables, so an existing deployment keeps working untouched. Each becomes
     ``<platform>:default``."""
-    conns: List[Connection] = [
-        # IB is always present: its host/port have defaults, and it is the
-        # platform every existing deployment is using.
-        Connection(
-            account=DEFAULT_ACCOUNT,
-            platform="ib",
-            account_mode=_legacy_account_mode(),
-            is_default=True,
+    conns: List[Connection] = []
+    if ib_configured():
+        conns.append(
+            Connection(
+                account=DEFAULT_ACCOUNT,
+                platform="ib",
+                account_mode=_legacy_account_mode(),
+                is_default=True,
+            )
         )
-    ]
 
     mt5_url = (os.getenv("MT5_BRIDGE_URL") or "").strip()
     if mt5_url:

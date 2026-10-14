@@ -10,7 +10,7 @@
  * unit-tested without Postgres (mirrors `backtestRunRepository.ts`).
  */
 
-import { DEFAULT_BROKER_ACCOUNT } from './orderTypes.js';
+import { DEFAULT_BROKER_ACCOUNT, defaultBroker } from './orderTypes.js';
 import { toEquityMarks, type ConnectionEquityRow, type EquityMarks } from './accountLimits.js';
 
 export interface Querier {
@@ -236,7 +236,7 @@ export class StrategyRepository {
     `;
     const values = [
       input.name,
-      input.broker ?? 'ib',
+      input.broker ?? defaultBroker(),
       input.symbol.toUpperCase(),
       (input.sec_type ?? 'STK').toUpperCase(),
       (input.exchange ?? 'SMART').toUpperCase(),
@@ -292,7 +292,7 @@ export class StrategyRepository {
     `;
     const values = [
       input.definition_id,
-      input.broker ?? 'ib',
+      input.broker ?? defaultBroker(),
       input.account_mode ?? 'paper',
       JSON.stringify(input.sizing ?? {}),
       JSON.stringify(input.risk ?? {}),

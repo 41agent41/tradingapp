@@ -37,7 +37,10 @@ CORS_ORIGINS = os.getenv("IB_CORS_ORIGINS", "").split(",") if os.getenv("IB_CORS
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     logger.info("Starting Broker Service...")
-    logger.info(f"IB configuration: {IB_HOST}:{IB_PORT}, Client ID: {IB_CLIENT_ID}")
+    if IB_HOST:
+        logger.info(f"IB configuration: {IB_HOST}:{IB_PORT}, Client ID: {IB_CLIENT_ID}")
+    else:
+        logger.info("IB not configured (no IB_HOST); IB routes will answer 503")
     logger.info("Broker Service ready - broker connections are established on first API call")
 
     yield

@@ -302,7 +302,7 @@ describe('connectionsToPoll — venue discovery', () => {
     expect(connectionsToPoll([a], [])).toEqual([a]);
   });
 
-  it('falls back to the IB default only when nothing is known', () => {
-    expect(connectionsToPoll([], [])).toEqual([{ broker: 'ib', brokerAccount: 'default' }]);
+  it('falls back to the default broker only when nothing is known', () => {
+    expect(connectionsToPoll([], [])).toEqual([{ broker: 'oanda', brokerAccount: 'default' }]);
   });
 });

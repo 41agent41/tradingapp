@@ -77,7 +77,7 @@ services:
     build: ./broker_service
     env_file: .env
     environment:
-      - IB_HOST=${IB_HOST}
+      - IB_HOST=${IB_HOST:-}
       - IB_PORT=${IB_PORT:-4002}
       - IB_CLIENT_ID=${IB_CLIENT_ID:-1}
       - IB_TIMEOUT=${IB_TIMEOUT:-30}

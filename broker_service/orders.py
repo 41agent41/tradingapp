@@ -72,9 +72,10 @@ class PlaceOrderRequest(BaseModel):
     secType: str = "STK"
     exchange: str = "SMART"
     currency: str = "USD"
-    # Execution venue (B1). Defaults to IB; the registry dispatches to the
-    # matching broker adapter. mt5 resolves to a 501 until its adapter lands.
-    broker: str = "ib"
+    # Execution venue (B1). Empty resolves to the priority default (see
+    # connections.BROKER_PRIORITY); the registry dispatches to the matching
+    # broker adapter, or a 501 when that platform is not configured.
+    broker: str = ""
     # Account within that platform (C-1). Omitted resolves to the platform's
     # default connection, so pre-C-1 callers are unchanged.
     account: Optional[str] = None
@@ -103,7 +104,7 @@ class ModifyOrderRequest(BaseModel):
     exchange: str = "SMART"
     currency: str = "USD"
     account_mode: str = "paper"
-    broker: str = "ib"
+    broker: str = ""
     account: Optional[str] = None
 
 
@@ -308,7 +309,7 @@ async def place_order(req: PlaceOrderRequest) -> Dict[str, Any]:
 
 @router.delete("/orders/{order_id}")
 async def cancel_order(
-    order_id: int, broker: str = "ib", account: str | None = None
+    order_id: int, broker: str = "", account: str | None = None
 ) -> Dict[str, Any]:
     import asyncio
 
@@ -337,7 +338,7 @@ class ModifyStopRequest(BaseModel):
 
 @router.post("/positions/{symbol}/stop")
 async def modify_position_stop(
-    symbol: str, req: ModifyStopRequest, broker: str = "ib", account: str | None = None
+    symbol: str, req: ModifyStopRequest, broker: str = "", account: str | None = None
 ) -> Dict[str, Any]:
     """Move an open position's protective stop at the venue (E-3's trail).
 

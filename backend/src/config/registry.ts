@@ -113,10 +113,9 @@ export const SETTINGS: readonly SettingDef[] = [
     label: 'Default broker',
     type: 'enum',
     options: BROKERS,
-    default: 'ib',
     apply: 'immediate',
     stepUp: true,
-    help: 'Venue used when an order or a run does not name one.',
+    help: 'Venue used when an order or a run does not name one. Unset uses the highest-priority configured broker: OANDA, then MT5, IB, Alpaca.',
   },
 
   // --- Risk ----------------------------------------------------------------

@@ -69,7 +69,7 @@ describe('WatchlistRepository.add', () => {
     const repo = new WatchlistRepository(db);
     const { added, row } = await repo.add({ symbol: 'msft' });
     expect(calls[0].text).toMatch(/INSERT INTO watchlist_items/);
-    expect(calls[0].params).toEqual(['ib', 'MSFT', 'STK', 'SMART', 'USD', null]);
+    expect(calls[0].params).toEqual(['oanda', 'MSFT', 'STK', 'SMART', 'USD', null]);
     expect(added).toBe(true);
     expect(row.symbol).toBe('MSFT');
     expect((row as any).inserted).toBeUndefined();

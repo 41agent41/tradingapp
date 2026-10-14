@@ -147,7 +147,7 @@ describe('POST /api/backtesting/run — validation', () => {
           sec_type: 'STK',
           exchange: 'SMART',
           currency: 'USD',
-          source: 'ib',
+          source: 'oanda', // priority default
         }),
       })
     );

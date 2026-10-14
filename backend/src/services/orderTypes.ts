@@ -21,18 +21,46 @@ export type AccountMode = (typeof ACCOUNT_MODES)[number];
 /**
  * Execution **platforms** (Systematic Trading roadmap — B1). Instruments are
  * platform-scoped (no cross-platform symbol reconciliation), so `broker` is a
- * first-class dimension on every order. Defaults to `ib`. Each of `mt5` /
- * `alpaca` / `oanda` is accepted here but only served once its adapter is
- * configured on the broker service (see `broker_service/adapters.py`) —
- * otherwise a request for it resolves to a clean 501, not a 400.
+ * first-class dimension on every order. Each is accepted here but only served
+ * once it is configured on the broker service (see
+ * `broker_service/adapters.py`) — otherwise a request for it resolves to a
+ * clean 501, not a 400.
  */
 export const BROKERS = ['ib', 'mt5', 'alpaca', 'oanda'] as const;
 export type Broker = (typeof BROKERS)[number];
-export const DEFAULT_BROKER: Broker =
-  (process.env.DEFAULT_BROKER as Broker) &&
-  (BROKERS as readonly string[]).includes(process.env.DEFAULT_BROKER as string)
-    ? (process.env.DEFAULT_BROKER as Broker)
-    : 'ib';
+
+/**
+ * Broker priority, highest first: brokers with a direct API (OANDA, and those
+ * that follow it), then MT5, IB and Alpaca. Mirrors `BROKER_PRIORITY` in
+ * `broker_service/connections.py`, which owns the choice of default.
+ */
+export const BROKER_PRIORITY: readonly Broker[] = ['oanda', 'mt5', 'ib', 'alpaca'];
+
+/**
+ * What a persisted row with no broker means. Every row written before the
+ * `broker` column existed was an IB row (the column's database default is
+ * still 'ib'), so this is history, not the default for new work.
+ */
+export const LEGACY_BROKER: Broker = 'ib';
+
+let resolvedDefaultBroker: Broker | null = null;
+
+/**
+ * The broker used when a request names none: `DEFAULT_BROKER` when it names
+ * a broker, else the broker service's choice (the highest-priority configured
+ * broker, kept current by `services/brokerDefault.ts`), else the top of
+ * {@link BROKER_PRIORITY} until the broker service has answered once.
+ */
+export function defaultBroker(): Broker {
+  const explicit = (process.env.DEFAULT_BROKER || '').trim().toLowerCase();
+  if (isBroker(explicit)) return explicit;
+  return resolvedDefaultBroker ?? BROKER_PRIORITY[0];
+}
+
+/** Record the broker service's default. Anything that is not a broker is ignored. */
+export function setResolvedDefaultBroker(value: unknown): void {
+  if (isBroker(value)) resolvedDefaultBroker = value;
+}
 
 /**
  * The **account** within a platform (Component C — C-0). `broker` names the
@@ -83,7 +111,7 @@ export function connectionOf(row: {
   broker_account?: string | null;
 }): Connection {
   return {
-    broker: row.broker || DEFAULT_BROKER,
+    broker: row.broker || LEGACY_BROKER,
     brokerAccount: row.broker_account || DEFAULT_BROKER_ACCOUNT,
   };
 }
@@ -251,7 +279,7 @@ export function validateOrder(
     errors.push(`account_mode must be one of ${ACCOUNT_MODES.join(', ')}`);
   }
 
-  const broker = r.broker ?? DEFAULT_BROKER;
+  const broker = r.broker ?? defaultBroker();
   if (!isBroker(broker)) {
     errors.push(`broker must be one of ${BROKERS.join(', ')}`);
   }

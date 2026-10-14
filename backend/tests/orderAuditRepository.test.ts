@@ -62,14 +62,14 @@ describe('OrderAuditRepository.create', () => {
     expect(calls[0].params[14]).toBe('pepperstone-live');
   });
 
-  it('defaults broker to ib and account to default when absent', async () => {
+  it('defaults broker to the priority default and account to default when absent', async () => {
     const { db, calls } = fakeDb(() => [{ id: 1 }]);
     const repo = new OrderAuditRepository(db);
     const o = order();
     delete (o as { broker?: string }).broker;
     delete (o as { broker_account?: string }).broker_account;
     await repo.create({ ...o, operation: 'CREATE' });
-    expect(calls[0].params[1]).toBe('ib');
+    expect(calls[0].params[1]).toBe('oanda');
     expect(calls[0].params[14]).toBe('default');
   });
 });
@@ -85,11 +85,11 @@ describe('OrderAuditRepository.netExposure', () => {
     expect(net).toBe(250);
   });
 
-  it('defaults the broker to ib and the account to default', async () => {
+  it('defaults the broker to the priority default and the account to default', async () => {
     const { db, calls } = fakeDb(() => [{ net: 0 }]);
     const repo = new OrderAuditRepository(db);
     await repo.netExposure('MSFT', 'paper', 24);
-    expect(calls[0].params[3]).toBe('ib');
+    expect(calls[0].params[3]).toBe('oanda');
     expect(calls[0].params[4]).toBe('default');
   });
 

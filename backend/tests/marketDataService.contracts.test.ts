@@ -32,10 +32,10 @@ describe('getOrCreateContract', () => {
     expect(params[1]).toBe('EURUSD'); // symbol is $2
   });
 
-  it('defaults broker to ib when unspecified', async () => {
+  it('defaults broker to the priority default when unspecified', async () => {
     dbMock.dbService.query.mockResolvedValueOnce({ rows: [{ id: 1 }] });
     await new MarketDataService().getOrCreateContract({ symbol: 'MSFT', secType: 'STK' });
-    expect(dbMock.dbService.query.mock.calls[0][1][0]).toBe('ib');
+    expect(dbMock.dbService.query.mock.calls[0][1][0]).toBe('oanda');
   });
 });
 

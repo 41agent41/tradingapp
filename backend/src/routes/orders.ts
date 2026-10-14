@@ -30,7 +30,8 @@ import {
   validateOrder,
   positionCap,
   BROKERS,
-  DEFAULT_BROKER,
+  BROKER_PRIORITY,
+  defaultBroker,
 } from '../services/orderTypes.js';
 
 const router = express.Router();
@@ -71,7 +72,8 @@ router.get('/config', async (_req: Request, res: Response) => {
       tif: ib.data?.tif ?? ['DAY', 'GTC', 'IOC', 'FOK'],
       actions: ib.data?.actions ?? ['BUY', 'SELL'],
       brokers: [...BROKERS],
-      default_broker: DEFAULT_BROKER,
+      default_broker: defaultBroker(),
+      broker_priority: [...BROKER_PRIORITY],
       position_limit_enabled: positionCap() > 0,
       position_cap: positionCap(),
       trading_auth_required: isTradingAuthRequired(),
@@ -89,7 +91,8 @@ router.get('/config', async (_req: Request, res: Response) => {
       tif: ['DAY', 'GTC', 'IOC', 'FOK'],
       actions: ['BUY', 'SELL'],
       brokers: [...BROKERS],
-      default_broker: DEFAULT_BROKER,
+      default_broker: defaultBroker(),
+      broker_priority: [...BROKER_PRIORITY],
       trading_auth_required: isTradingAuthRequired(),
       mfa_required: isMfaRequired(),
     });

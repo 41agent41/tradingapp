@@ -161,7 +161,7 @@ async def search_contracts(request: SearchRequest):
     """Enhanced search for contracts with better filtering and results.
 
     Broker-scoped (B1): ``request.source`` selects the venue's catalogue via
-    the adapter registry, defaulting to IB. Unknown source → 400; a recognised
+    the adapter registry, defaulting to the priority platform. Unknown source → 400; a recognised
     but not-yet-available venue (mt5) → 501.
     """
     try:

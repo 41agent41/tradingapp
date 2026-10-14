@@ -18,11 +18,9 @@ print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
 
 # Configuration
-# IB is optional: setup no longer asks for a gateway. Until one is configured
-# IB_HOST holds this placeholder (the same one install/install.sh uses), because
-# the broker service still reads IB_HOST at import; nothing connects to it until
-# an IB route is called. Brokers are checked inside the app, not here.
-IB_HOST_UNCONFIGURED="host.docker.internal"
+# IB is optional: setup asks for no gateway, and an empty IB_HOST means IB is
+# not configured (the broker service then does not register it). Brokers are
+# checked inside the app, not here.
 DEFAULT_SERVER_IP="10.7.3.20"
 DEFAULT_IB_PORT="4002"
 DEFAULT_CLIENT_ID="1"
@@ -260,11 +258,11 @@ global_flag_args() {
     return 0
 }
 
-# True when IB_HOST is a real gateway address rather than empty, the
-# .env.example placeholder, or the "not configured" marker.
+# True when IB_HOST names a gateway rather than being empty or the
+# .env.example placeholder. Mirrors `ib_configured` in broker_service/connections.py.
 ib_configured() {
     local host="$1"
-    [[ -n "$host" && "$host" != "$IB_HOST_UNCONFIGURED" && "$host" != YOUR_* ]]
+    [[ -n "$host" && "$host" != YOUR_* ]]
 }
 
 setup_environment() {
@@ -280,8 +278,8 @@ setup_environment() {
 
     # No broker questions: brokers are optional and their connectivity is
     # checked inside the app. IB_HOST is only written when exported by the
-    # caller; otherwise an existing value is kept, or the "not configured"
-    # marker is filled in.
+    # caller; otherwise an existing value is kept, or it is left empty (IB not
+    # configured).
     #
     # Merge into .env rather than truncating it: SERVER_IP (and the URLs
     # derived from it) are what this command is explicitly asked to change,
@@ -304,7 +302,7 @@ HEADER
     if [[ -n "$IB_HOST" ]]; then
         env_set .env IB_HOST "$IB_HOST"
     else
-        env_set_default .env IB_HOST "$IB_HOST_UNCONFIGURED"
+        env_set_default .env IB_HOST ""
     fi
 
     env_set_default .env NODE_ENV "production"

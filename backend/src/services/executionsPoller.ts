@@ -39,7 +39,12 @@ import axios from 'axios';
 import { logger } from './logger.js';
 import { dbService } from './database.js';
 import { ExecutionRepository, type ExecutionInput } from './executionRepository.js';
-import { DEFAULT_BROKER_ACCOUNT, connectionLabel, type Connection } from './orderTypes.js';
+import {
+  DEFAULT_BROKER_ACCOUNT,
+  connectionLabel,
+  defaultBroker,
+  type Connection,
+} from './orderTypes.js';
 
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
@@ -111,7 +116,7 @@ export interface ExecutionsPollerOptions {
  * run, so it would never be ingested and reconciliation would disagree with
  * the venue with nothing in the fills feed to explain why.
  *
- * Falls back to IB's default account only when neither source names anything,
+ * Falls back to the default broker's default account only when neither source names anything,
  * which is a fresh single-venue install.
  */
 export function connectionsToPoll(active: Connection[], declared: Connection[]): Connection[] {
@@ -123,7 +128,9 @@ export function connectionsToPoll(active: Connection[], declared: Connection[]):
     seen.add(key);
     out.push(c);
   }
-  return out.length > 0 ? out : [{ broker: 'ib', brokerAccount: DEFAULT_BROKER_ACCOUNT }];
+  return out.length > 0
+    ? out
+    : [{ broker: defaultBroker(), brokerAccount: DEFAULT_BROKER_ACCOUNT }];
 }
 
 /** Broker connections declared in the manifest, as `/providers` reports them.
