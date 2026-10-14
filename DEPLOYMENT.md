@@ -53,6 +53,38 @@ for existing deployments:
 - **Storage**: 10 GB free
 - **Ports**: 3000, 4000, 8000 (and 6379 if you expose Redis)
 
+### User account (do not install as root)
+
+`./tradingapp.sh` **refuses to run as root** (`Don't run this script as root.
+Use a user with sudo privileges.`) and calls `sudo` itself for the steps that
+need it. Fresh LXC containers, VPS images and minimal installs usually log you
+in as `root`, so create a normal user with sudo rights **before you clone**:
+
+```bash
+# As root, once per host
+apt update && apt install -y sudo git curl   # minimal images often lack sudo
+adduser tradingapp                           # set a password when prompted
+usermod -aG sudo tradingapp
+getent group docker && usermod -aG docker tradingapp   # only if Docker is already installed
+
+# Switch to the new user and work from its home directory
+su - tradingapp
+cd ~
+```
+
+Clone the repository as that user (into `~/tradingapp`, or `/opt/tradingapp`
+after `sudo mkdir -p /opt/tradingapp && sudo chown tradingapp: /opt/tradingapp`),
+not into `/root`: a checkout under `/root` is unreadable to every other user.
+
+If `./tradingapp.sh setup` installs Docker for you, it adds the user to the
+`docker` group, which only takes effect in a new login. Run `exit` and
+`su - tradingapp` again (or reconnect over SSH) before `./tradingapp.sh deploy`;
+`docker ps` working without `sudo` confirms it.
+
+The unattended installer, [`install/install.sh`](install/install.sh)
+([AGENT_INSTALL_RUNBOOK.md](AGENT_INSTALL_RUNBOOK.md)), is the exception: it
+is meant to run as root and creates the deploy user itself.
+
 ### Software
 
 - **Docker** 20.10+
@@ -298,8 +330,17 @@ for the living version of this list):
 
 ## One-Command Deployment
 
+Run these as a **non-root user with sudo rights**, not as root. On a fresh
+host or container, create one first (see
+[User account](#user-account-do-not-install-as-root)).
+
 ```bash
-# 1. Clone
+# 0. As root only: create the user, then switch to it
+#    apt install -y sudo git && adduser tradingapp && usermod -aG sudo tradingapp
+#    su - tradingapp
+
+# 1. Clone (into the user's home, not /root)
+cd ~
 git clone https://github.com/41agent41/tradingapp.git
 cd tradingapp
 
@@ -310,6 +351,8 @@ chmod +x tradingapp.sh
 ./tradingapp.sh setup
 
 # 4. Deploy the full stack
+#    If step 3 just installed Docker, log out and back in first
+#    (exit, then su - tradingapp) so the docker group applies.
 ./tradingapp.sh deploy
 
 # 5. Confirm everything is healthy
@@ -1032,6 +1075,7 @@ find "$BACKUP_DIR" -name 'tradingapp_*.sql' -mtime +7 -delete
 ## Deployment Checklist
 
 - [ ] Host meets the prerequisites
+- [ ] Working as a non-root user with sudo (not root), repo cloned in its home
 - [ ] Docker / Docker Compose installed (`./tradingapp.sh setup` handles this)
 - [ ] Repository cloned and `tradingapp.sh` executable
 - [ ] `.env` created from `.env.example` and reviewed (no placeholders left)

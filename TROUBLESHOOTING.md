@@ -53,6 +53,37 @@ current `.env`:
 
 ## Common Issues
 
+### "Don't run this script as root"
+
+**Symptoms:** `./tradingapp.sh setup` prints
+`Don't run this script as root. Use a user with sudo privileges.` and exits.
+Typical on a fresh LXC container or VPS where you are logged in as `root` and
+cloned into `/root/tradingapp`.
+
+**Fix:** create a sudo user, switch to it, and clone again in its home
+directory:
+
+```bash
+# As root
+apt update && apt install -y sudo git
+adduser tradingapp                  # set a password when prompted
+usermod -aG sudo tradingapp
+getent group docker && usermod -aG docker tradingapp   # if Docker is already installed
+su - tradingapp
+
+# As tradingapp
+cd ~
+git clone https://github.com/41agent41/tradingapp.git
+cd tradingapp && chmod +x tradingapp.sh
+./tradingapp.sh setup
+```
+
+The old `/root/tradingapp` checkout can be removed (`exit` back to root, then
+`rm -rf /root/tradingapp`). Don't work around the check with `sudo -u` from
+root or by editing the script: Docker group membership, file ownership of
+`.env` and the checkout all assume a normal user. See
+[DEPLOYMENT.md → User account](DEPLOYMENT.md#user-account-do-not-install-as-root).
+
 ### Services won't start
 
 **Symptoms:** Containers exit immediately or `docker compose up` reports

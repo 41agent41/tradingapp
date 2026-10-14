@@ -167,6 +167,12 @@ check_requirements() {
     # Check if running as root
     if [[ $EUID -eq 0 ]]; then
         print_error "Don't run this script as root. Use a user with sudo privileges."
+        echo "  Create one and re-clone as that user (see DEPLOYMENT.md, 'User account'):"
+        echo "    apt update && apt install -y sudo git"
+        echo "    adduser tradingapp && usermod -aG sudo tradingapp"
+        echo "    su - tradingapp"
+        echo "    git clone https://github.com/41agent41/tradingapp.git ~/tradingapp"
+        echo "    cd ~/tradingapp && chmod +x tradingapp.sh && ./tradingapp.sh setup"
         exit 1
     fi
     
