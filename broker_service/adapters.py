@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 from fastapi import HTTPException
 
+import app_settings
 from connections import (
     DEFAULT_ACCOUNT,
     SUPPORTED_PLATFORMS,
@@ -426,7 +427,7 @@ def currency_consistency() -> Dict[str, Any]:
     the caps that depend on it can refuse individually.
     """
     _bootstrap()
-    expected = (os.getenv("PORTFOLIO_BASE_CURRENCY") or "").strip().upper() or None
+    expected = (app_settings.get("PORTFOLIO_BASE_CURRENCY") or "").strip().upper() or None
     currencies = sorted({c.currency for c in _connections.values() if c.currency})
     mismatched = [
         c.label for c in _connections.values() if expected and c.currency != expected

@@ -20,7 +20,6 @@ Time-in-force values supported: DAY, GTC, IOC, FOK.
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -29,6 +28,7 @@ from fastapi import APIRouter, HTTPException
 from ibapi.order import Order as IBOrder
 from pydantic import BaseModel, Field
 
+import app_settings
 from ib_client import get_ib_connection
 from ib_helpers import create_contract
 from observability import get_logger
@@ -39,10 +39,9 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# Configuration — read at import time.
+# Configuration: the live gate and the status wait are read per order, from
+# .env or the Settings page (app_settings.py).
 # ---------------------------------------------------------------------------
-LIVE_TRADING_ENABLED = os.getenv("LIVE_TRADING_ENABLED", "false").lower() == "true"
-ORDER_PLACE_WAIT_SECONDS = int(os.getenv("ORDER_PLACE_WAIT_SECONDS", "3"))
 
 VALID_ORDER_TYPES = {"MKT", "LMT", "STP", "STP_LMT"}
 VALID_TIF = {"DAY", "GTC", "IOC", "FOK"}
@@ -123,10 +122,10 @@ def _validate_common(action: str, order_type: str, tif: str, account_mode: str) 
         raise HTTPException(400, f"tif must be one of {sorted(VALID_TIF)}")
     if account_mode not in VALID_ACCOUNT_MODES:
         raise HTTPException(400, f"account_mode must be one of {sorted(VALID_ACCOUNT_MODES)}")
-    if account_mode == "live" and not LIVE_TRADING_ENABLED:
+    if account_mode == "live" and not app_settings.live_trading_enabled():
         raise HTTPException(
             403,
-            "Live trading is disabled. Set LIVE_TRADING_ENABLED=true on the broker_service to enable.",
+            "Live trading is disabled. Turn it on in Settings > Trading.",
         )
 
 
@@ -202,13 +201,13 @@ def place_order_sync(req: PlaceOrderRequest) -> Dict[str, Any]:
         quantity=req.quantity,
         order_type=req.order_type,
         account_mode=req.account_mode,
-        live_enabled=LIVE_TRADING_ENABLED,
+        live_enabled=app_settings.live_trading_enabled(),
         audit_id=req.audit_id,
     )
 
     ib.placeOrder(order_id, contract, ib_order)
     # Brief sleep so the IB callback can update orderStatus before we read it.
-    time.sleep(min(ORDER_PLACE_WAIT_SECONDS, 5))
+    time.sleep(min(app_settings.order_place_wait_seconds(), 5))
 
     return {
         "order_id": order_id,
@@ -256,7 +255,7 @@ def modify_order_sync(order_id: int, req: ModifyOrderRequest) -> Dict[str, Any]:
     logger.info("modifying_order", order_id=order_id, symbol=req.symbol)
     # placeOrder with the same orderId modifies in-place per IB API docs.
     ib.placeOrder(order_id, contract, ib_order)
-    time.sleep(min(ORDER_PLACE_WAIT_SECONDS, 5))
+    time.sleep(min(app_settings.order_place_wait_seconds(), 5))
     return {"order_id": order_id, "status": "modify_requested"}
 
 
@@ -367,7 +366,7 @@ async def order_routes_config() -> Dict[str, Any]:
     """Report which writes are currently enabled. Useful for the UI to
     decide whether to even render the Live-trading toggle."""
     return {
-        "live_trading_enabled": LIVE_TRADING_ENABLED,
+        "live_trading_enabled": app_settings.live_trading_enabled(),
         "order_types": sorted(VALID_ORDER_TYPES),
         "tif": sorted(VALID_TIF),
         "actions": sorted(VALID_ACTIONS),

@@ -18,16 +18,16 @@ export type TimeInForce = (typeof TIME_IN_FORCE)[number];
 export const ACCOUNT_MODES = ['paper', 'live'] as const;
 export type AccountMode = (typeof ACCOUNT_MODES)[number];
 
-/**
- * Execution **platforms** (Systematic Trading roadmap — B1). Instruments are
- * platform-scoped (no cross-platform symbol reconciliation), so `broker` is a
- * first-class dimension on every order. Each is accepted here but only served
- * once it is configured on the broker service (see
- * `broker_service/adapters.py`) — otherwise a request for it resolves to a
- * clean 501, not a 400.
- */
-export const BROKERS = ['ib', 'mt5', 'alpaca', 'oanda'] as const;
-export type Broker = (typeof BROKERS)[number];
+import { configService } from '../config/configService.js';
+import { BROKERS, type Broker } from './brokers.js';
+
+export { BROKERS };
+export type { Broker };
+
+/** A setting from `.env` or the Settings page; see config/configService.ts. */
+function setting(key: string): string | undefined {
+  return configService.get(key);
+}
 
 /**
  * Broker priority, highest first: brokers with a direct API (OANDA, and those
@@ -52,7 +52,7 @@ let resolvedDefaultBroker: Broker | null = null;
  * {@link BROKER_PRIORITY} until the broker service has answered once.
  */
 export function defaultBroker(): Broker {
-  const explicit = (process.env.DEFAULT_BROKER || '').trim().toLowerCase();
+  const explicit = (setting('DEFAULT_BROKER') || '').trim().toLowerCase();
   if (isBroker(explicit)) return explicit;
   return resolvedDefaultBroker ?? BROKER_PRIORITY[0];
 }
@@ -143,12 +143,17 @@ export interface OrderInput {
  * Quantity / price safety caps. Bigger orders are not *wrong* but you don't
  * want a fat-finger sending 1e6 shares of MSFT by accident.
  *
- * Override with env vars:
+ * Set on the Settings page (or in .env), read per order:
  *   ORDER_MAX_QUANTITY  (defaults to 100_000)
  *   ORDER_MAX_PRICE     (defaults to 1_000_000)
  */
-export const ORDER_MAX_QUANTITY = Math.max(1, Number(process.env.ORDER_MAX_QUANTITY) || 100_000);
-export const ORDER_MAX_PRICE = Math.max(0.01, Number(process.env.ORDER_MAX_PRICE) || 1_000_000);
+export function orderMaxQuantity(): number {
+  return Math.max(1, Number(setting('ORDER_MAX_QUANTITY')) || 100_000);
+}
+
+export function orderMaxPrice(): number {
+  return Math.max(0.01, Number(setting('ORDER_MAX_PRICE')) || 1_000_000);
+}
 
 /**
  * Position-limit guard (opt-in). Caps the *net* signed exposure per
@@ -166,11 +171,11 @@ export const ORDER_MAX_PRICE = Math.max(0.01, Number(process.env.ORDER_MAX_PRICE
  * fills — see `OrderAuditRepository.netExposure`.
  */
 export function positionCap(): number {
-  return Math.max(0, Number(process.env.ORDER_MAX_POSITION) || 0);
+  return Math.max(0, Number(setting('ORDER_MAX_POSITION')) || 0);
 }
 
 export function positionLookbackHours(): number {
-  return Math.max(1, Number(process.env.ORDER_POSITION_LOOKBACK_HOURS) || 24);
+  return Math.max(1, Number(setting('ORDER_POSITION_LOOKBACK_HOURS')) || 24);
 }
 
 export function isPositionLimitEnabled(): boolean {
@@ -264,8 +269,8 @@ export function validateOrder(
   const quantityNum = typeof r.quantity === 'number' ? r.quantity : Number(r.quantity);
   if (!Number.isFinite(quantityNum) || quantityNum <= 0) {
     errors.push('quantity must be a positive number');
-  } else if (quantityNum > ORDER_MAX_QUANTITY) {
-    errors.push(`quantity exceeds ORDER_MAX_QUANTITY (${ORDER_MAX_QUANTITY})`);
+  } else if (quantityNum > orderMaxQuantity()) {
+    errors.push(`quantity exceeds ORDER_MAX_QUANTITY (${orderMaxQuantity()})`);
   }
 
   const orderType = r.order_type;
@@ -300,8 +305,8 @@ export function validateOrder(
     const lp = typeof r.limit_price === 'number' ? r.limit_price : Number(r.limit_price);
     if (!Number.isFinite(lp) || lp <= 0) {
       errors.push(`limit_price is required and must be > 0 for order_type=${orderType}`);
-    } else if (lp > ORDER_MAX_PRICE) {
-      errors.push(`limit_price exceeds ORDER_MAX_PRICE (${ORDER_MAX_PRICE})`);
+    } else if (lp > orderMaxPrice()) {
+      errors.push(`limit_price exceeds ORDER_MAX_PRICE (${orderMaxPrice()})`);
     } else {
       limitPrice = lp;
     }
@@ -314,8 +319,8 @@ export function validateOrder(
     const sp = typeof r.stop_price === 'number' ? r.stop_price : Number(r.stop_price);
     if (!Number.isFinite(sp) || sp <= 0) {
       errors.push(`stop_price is required and must be > 0 for order_type=${orderType}`);
-    } else if (sp > ORDER_MAX_PRICE) {
-      errors.push(`stop_price exceeds ORDER_MAX_PRICE (${ORDER_MAX_PRICE})`);
+    } else if (sp > orderMaxPrice()) {
+      errors.push(`stop_price exceeds ORDER_MAX_PRICE (${orderMaxPrice()})`);
     } else {
       stopPrice = sp;
     }
@@ -334,8 +339,8 @@ export function validateOrder(
       errors.push(`${field} must be a positive price when supplied`);
       return null;
     }
-    if (value > ORDER_MAX_PRICE) {
-      errors.push(`${field} exceeds ORDER_MAX_PRICE (${ORDER_MAX_PRICE})`);
+    if (value > orderMaxPrice()) {
+      errors.push(`${field} exceeds ORDER_MAX_PRICE (${orderMaxPrice()})`);
       return null;
     }
     return value;
@@ -374,7 +379,27 @@ export function validateOrder(
  * real-money order reaches IB.
  */
 export function isLiveTradingEnabled(): boolean {
-  return (process.env.LIVE_TRADING_ENABLED ?? 'false').toLowerCase() === 'true';
+  if ((setting('LIVE_TRADING_ENABLED') ?? 'false').toLowerCase() !== 'true') return false;
+  // Set in .env, the startup check already refuses to run without the trader
+  // role and MFA. Set on the Settings page, the save refuses too, but either
+  // could be removed later; then the gate closes rather than leave live
+  // orders protected by the browser password alone.
+  if (configService.source('LIVE_TRADING_ENABLED') === 'environment') return true;
+  return liveTradingSafeguardsMissing().length === 0;
+}
+
+/**
+ * What live trading still needs before the Settings page may turn it on: a
+ * trading token (the trader role) and an order MFA secret. Empty when both
+ * are set.
+ */
+export function liveTradingSafeguardsMissing(): string[] {
+  const missing: string[] = [];
+  if (!(setting('TRADING_TOKENS') || '').split(',').some((t) => t.trim())) {
+    missing.push('a trading token');
+  }
+  if (!(setting('ORDER_MFA_SECRET') || '').trim()) missing.push('an order MFA secret');
+  return missing;
 }
 
 /**
@@ -388,7 +413,7 @@ export function isLiveTradingEnabled(): boolean {
  * kill) can toggle it per-case.
  */
 export function isSystematicExecutionEnabled(): boolean {
-  return (process.env.SYSTEMATIC_EXECUTION_ENABLED ?? 'false').toLowerCase() === 'true';
+  return (setting('SYSTEMATIC_EXECUTION_ENABLED') ?? 'false').toLowerCase() === 'true';
 }
 
 /**
@@ -398,5 +423,5 @@ export function isSystematicExecutionEnabled(): boolean {
  * misbehaving fleet of runs can't flood the broker.
  */
 export function systematicMaxOrdersPerDay(): number {
-  return Math.max(0, Number(process.env.SYSTEMATIC_MAX_ORDERS_PER_DAY) || 0);
+  return Math.max(0, Number(setting('SYSTEMATIC_MAX_ORDERS_PER_DAY')) || 0);
 }

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import app_settings
 import ib_client
 from connections import (
     Connection,
@@ -70,6 +71,7 @@ def apply(payload: Dict[str, Any]) -> Dict[str, Any]:
     _overridden = [c.label for c in parsed if c.platform in env_platforms]
     _revision = str(payload.get("revision") or "") or None
     set_priority_override(payload.get("priority") or None)
+    app_settings.apply(payload.get("settings"))
     _configure_ib(next((c for c in parsed if c.platform == "ib"), None), env_platforms)
 
     from adapters import reset_registry
@@ -109,3 +111,4 @@ def reset() -> None:
     global _revision, _connections, _overridden
     _revision, _connections, _overridden = None, [], []
     set_priority_override(None)
+    app_settings.reset()

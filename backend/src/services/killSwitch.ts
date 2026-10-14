@@ -27,6 +27,7 @@
  * safely rehearse is one you cannot trust.
  */
 
+import { configService } from '../config/configService.js';
 import type { Alert } from './notifier.js';
 import { connectionLabel, type Connection } from './orderTypes.js';
 
@@ -54,13 +55,14 @@ export interface KillSwitchConfig {
 }
 
 export function killSwitchConfig(): KillSwitchConfig {
-  const action = (process.env.KILL_SWITCH_ACTION || 'notify').trim().toLowerCase();
+  const read = (key: string) => configService.get(key);
+  const action = (read('KILL_SWITCH_ACTION') || 'notify').trim().toLowerCase();
   return {
     stopGapTolerancePct: Math.max(
       0,
-      Number(process.env.KILL_SWITCH_STOP_GAP_TOLERANCE_PCT ?? '25') || 0
+      Number(read('KILL_SWITCH_STOP_GAP_TOLERANCE_PCT') ?? '25') || 0
     ),
-    equityFloor: Math.max(0, Number(process.env.KILL_SWITCH_EQUITY_FLOOR ?? '0') || 0),
+    equityFloor: Math.max(0, Number(read('KILL_SWITCH_EQUITY_FLOOR') ?? '0') || 0),
     action:
       action === 'halt' || action === 'flatten'
         ? (action as KillSwitchAction)

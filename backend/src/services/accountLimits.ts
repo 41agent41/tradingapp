@@ -22,6 +22,8 @@
  * trips late is the loss it exists to prevent.
  */
 
+import { configService } from '../config/configService.js';
+import type { EnvLike } from '../config/read.js';
 import type { ConnectionLimits } from './executionEngine.js';
 import type { Connection } from './orderTypes.js';
 import { evaluatePropRules, parsePropRules, type PropMarks } from './propRules.js';
@@ -107,7 +109,7 @@ function positive(raw: string | undefined): number | null {
  */
 export function connectionLimitsFor(
   connection: Connection,
-  env: NodeJS.ProcessEnv = process.env
+  env: EnvLike = configService.asEnv()
 ): ConnectionLimits | null {
   const key = connectionEnvKey(connection);
   const read = (name: string) => positive(env[`${name}__${key}`] ?? env[name]);
@@ -154,7 +156,7 @@ export function tradingDay(at: Date, timeZone = tradingDayTimeZone()): string {
   }).format(at);
 }
 
-export function tradingDayTimeZone(env: NodeJS.ProcessEnv = process.env): string {
+export function tradingDayTimeZone(env: EnvLike = configService.asEnv()): string {
   return (env.TRADING_DAY_TIMEZONE || 'UTC').trim() || 'UTC';
 }
 

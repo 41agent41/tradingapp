@@ -23,8 +23,8 @@
  * nothing.
  */
 
-// Every supported broker; the list lives in services/orderTypes.ts.
-import { BROKERS } from '../services/orderTypes.js';
+// Every supported broker.
+import { BROKERS } from '../services/brokers.js';
 
 export type SettingType = 'boolean' | 'integer' | 'number' | 'string' | 'url' | 'enum' | 'json';
 
@@ -61,6 +61,17 @@ export interface SettingDef {
   apply: ApplyMode;
   /** Saving needs the trader role and MFA, like placing an order. */
   stepUp?: boolean;
+  /**
+   * Which way a change makes trading safer, so that direction skips the
+   * step-up (stopping trading is never harder than starting it):
+   *   off           — turning a switch off
+   *   lower         — a lower cap, where 0 or unset means no cap at all
+   *   higher        — a higher value (a longer lookback, a higher floor)
+   *   later-option  — an option further down `options`
+   */
+  safer?: 'off' | 'lower' | 'higher' | 'later-option';
+  /** Extra validation on the normalised value: a reason, or null when fine. */
+  check?: (value: string) => string | null;
   /** Saveable from the Settings page (its consumer reads `configService`). */
   editable?: boolean;
   help: string;
@@ -77,6 +88,21 @@ export const SECTIONS: { id: SettingSection; title: string }[] = [
   { id: 'network', title: 'Network' },
 ];
 
+function currencyCode(value: string): string | null {
+  return /^[A-Za-z]{3}$/.test(value)
+    ? null
+    : 'must be a three-letter currency code, for example USD';
+}
+
+function ianaZone(value: string): string | null {
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: value });
+    return null;
+  } catch {
+    return 'must be an IANA time zone, for example Europe/Athens';
+  }
+}
+
 export const SETTINGS: readonly SettingDef[] = [
   // --- Trading -------------------------------------------------------------
   {
@@ -87,7 +113,9 @@ export const SETTINGS: readonly SettingDef[] = [
     default: 'false',
     apply: 'immediate',
     stepUp: true,
-    help: 'Allows orders on live accounts. Paper orders work either way. Needs trading tokens and MFA.',
+    safer: 'off',
+    editable: true,
+    help: 'Allows orders on live accounts. Paper orders work either way. Turning it on needs a trading token and MFA, and asks you to type LIVE.',
   },
   {
     key: 'SYSTEMATIC_ENABLED',
@@ -107,6 +135,8 @@ export const SETTINGS: readonly SettingDef[] = [
     default: 'false',
     apply: 'immediate',
     stepUp: true,
+    safer: 'off',
+    editable: true,
     help: 'Lets the strategy engine place orders (paper unless live trading is also on). Turning it off is the global kill switch.',
   },
   {
@@ -117,6 +147,7 @@ export const SETTINGS: readonly SettingDef[] = [
     options: BROKERS,
     apply: 'immediate',
     stepUp: true,
+    editable: true,
     help: 'Venue used when an order or a run does not name one. Unset uses the highest-priority configured broker: OANDA, then MT5, IB, Alpaca.',
   },
 
@@ -130,6 +161,8 @@ export const SETTINGS: readonly SettingDef[] = [
     min: 1,
     apply: 'immediate',
     stepUp: true,
+    safer: 'lower',
+    editable: true,
     help: 'Fat-finger cap on every order, paper and live.',
   },
   {
@@ -141,6 +174,8 @@ export const SETTINGS: readonly SettingDef[] = [
     min: 0.01,
     apply: 'immediate',
     stepUp: true,
+    safer: 'lower',
+    editable: true,
     help: 'Fat-finger cap on limit and stop prices.',
   },
   {
@@ -152,6 +187,8 @@ export const SETTINGS: readonly SettingDef[] = [
     min: 0,
     apply: 'immediate',
     stepUp: true,
+    safer: 'lower',
+    editable: true,
     help: 'Caps the net submitted exposure per broker, symbol and account mode. 0 turns the guard off.',
   },
   {
@@ -163,6 +200,8 @@ export const SETTINGS: readonly SettingDef[] = [
     min: 1,
     apply: 'immediate',
     stepUp: true,
+    safer: 'higher',
+    editable: true,
     help: 'Only orders submitted within this window count toward the net position.',
   },
   {
@@ -174,6 +213,8 @@ export const SETTINGS: readonly SettingDef[] = [
     min: 0,
     apply: 'immediate',
     stepUp: true,
+    safer: 'lower',
+    editable: true,
     help: 'Global backstop on engine-placed orders per calendar day. 0 turns it off.',
   },
   {
@@ -184,7 +225,8 @@ export const SETTINGS: readonly SettingDef[] = [
     default: '3',
     min: 0,
     max: 5,
-    apply: 'restart',
+    apply: 'immediate',
+    editable: true,
     help: 'How long the broker service waits after an IB order for its status callback.',
   },
   {
@@ -195,6 +237,8 @@ export const SETTINGS: readonly SettingDef[] = [
     min: 0,
     apply: 'immediate',
     stepUp: true,
+    safer: 'lower',
+    editable: true,
     help: 'Applies to every connection unless the connection sets its own.',
   },
   {
@@ -205,6 +249,8 @@ export const SETTINGS: readonly SettingDef[] = [
     min: 0,
     apply: 'immediate',
     stepUp: true,
+    safer: 'lower',
+    editable: true,
     help: 'Stops new entries once a connection has lost this much today, from fills.',
   },
   {
@@ -215,6 +261,8 @@ export const SETTINGS: readonly SettingDef[] = [
     min: 0,
     apply: 'immediate',
     stepUp: true,
+    safer: 'lower',
+    editable: true,
     help: 'Stops new entries once equity is this far below where the trading day started.',
   },
   {
@@ -225,6 +273,8 @@ export const SETTINGS: readonly SettingDef[] = [
     min: 0,
     apply: 'immediate',
     stepUp: true,
+    safer: 'lower',
+    editable: true,
     help: 'Stops new entries once equity is this far below its high-water mark.',
   },
   {
@@ -235,6 +285,8 @@ export const SETTINGS: readonly SettingDef[] = [
     min: 0,
     apply: 'immediate',
     stepUp: true,
+    safer: 'lower',
+    editable: true,
     help: 'Fleet-wide backstop across every connection.',
   },
   {
@@ -244,6 +296,8 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'string',
     apply: 'immediate',
     stepUp: true,
+    check: currencyCode,
+    editable: true,
     help: 'The currency every connection must report. A mismatch makes the portfolio cap refuse.',
   },
   {
@@ -253,7 +307,8 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'number',
     default: '0.0001',
     min: 0,
-    apply: 'restart',
+    apply: 'immediate',
+    editable: true,
     help: 'How far the venue and fills may disagree on a position before it is flagged.',
   },
   {
@@ -264,6 +319,8 @@ export const SETTINGS: readonly SettingDef[] = [
     default: 'UTC',
     apply: 'immediate',
     stepUp: true,
+    check: ianaZone,
+    editable: true,
     help: 'IANA zone in which the trading day rolls over, e.g. Europe/Athens for most MT5 servers.',
   },
 
@@ -277,6 +334,8 @@ export const SETTINGS: readonly SettingDef[] = [
     default: 'notify',
     apply: 'immediate',
     stepUp: true,
+    safer: 'later-option',
+    editable: true,
     help: 'notify alerts only; halt also stops new entries on the connection; flatten also closes its positions.',
   },
   {
@@ -288,6 +347,8 @@ export const SETTINGS: readonly SettingDef[] = [
     min: 0,
     apply: 'immediate',
     stepUp: true,
+    safer: 'lower',
+    editable: true,
     help: 'How far past the stop a fill must land to count as a gap. 0 turns the check off.',
   },
   {
@@ -299,6 +360,8 @@ export const SETTINGS: readonly SettingDef[] = [
     min: 0,
     apply: 'immediate',
     stepUp: true,
+    safer: 'higher',
+    editable: true,
     help: 'Absolute equity floor per connection. 0 turns it off.',
   },
   {
@@ -942,6 +1005,13 @@ const BOOLEAN_FALSE = new Set(['false', '0', 'no', 'off']);
  * act on.
  */
 export function normalizeValue(def: SettingDef, raw: unknown): string {
+  const value = normalizeByType(def, raw);
+  const problem = def.check?.(value);
+  if (problem) throw new SettingValidationError(`${def.label} ${problem}.`);
+  return value;
+}
+
+function normalizeByType(def: SettingDef, raw: unknown): string {
   if (raw === null || raw === undefined) {
     throw new SettingValidationError(`${def.label} needs a value.`);
   }
@@ -1007,5 +1077,41 @@ export function normalizeValue(def: SettingDef, raw: unknown): string {
     default:
       if (!text) throw new SettingValidationError(`${def.label} needs a value.`);
       return text;
+  }
+}
+
+/**
+ * Whether moving a setting from `from` to `to` (both in effect values, where
+ * undefined means unset) makes trading safer, by the setting's `safer` rule.
+ * A change that is not plainly safer, or a setting with no rule, is not.
+ */
+export function isSaferChange(
+  def: SettingDef,
+  from: string | undefined,
+  to: string | undefined
+): boolean {
+  const num = (v: string | undefined) => (v === undefined || v.trim() === '' ? NaN : Number(v));
+  switch (def.safer) {
+    case 'off':
+      return (to ?? '').toLowerCase() === 'false';
+    case 'lower': {
+      // 0 or unset is "no cap", the least safe value there is.
+      const capped = (n: number) => Number.isFinite(n) && n > 0;
+      const next = num(to);
+      const prev = num(from);
+      return capped(next) && (!capped(prev) || next <= prev);
+    }
+    case 'higher': {
+      const next = num(to);
+      const prev = num(from);
+      return Number.isFinite(next) && (!Number.isFinite(prev) || next >= prev);
+    }
+    case 'later-option': {
+      const options = def.options ?? [];
+      const next = options.indexOf(to ?? '');
+      return next >= 0 && next >= options.indexOf(from ?? '');
+    }
+    default:
+      return false;
   }
 }

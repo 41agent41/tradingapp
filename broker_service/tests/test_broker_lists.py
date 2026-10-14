@@ -73,10 +73,11 @@ def test_priority_covers_every_platform():
 
 
 def test_backend_lists_match():
+    path = BACKEND / "services" / "brokers.ts"
+    assert set(_string_list(_read(path), "BROKERS", path)) == PLATFORMS, path
+
     path = BACKEND / "services" / "orderTypes.ts"
-    src = _read(path)
-    assert set(_string_list(src, "BROKERS", path)) == PLATFORMS, path
-    assert _string_list(src, "BROKER_PRIORITY", path) == PRIORITY, path
+    assert _string_list(_read(path), "BROKER_PRIORITY", path) == PRIORITY, path
 
     path = BACKEND / "services" / "brokerConnections.ts"
     assert _object_keys(_read(path), "PLATFORM_FIELDS", path) == PLATFORMS, path

@@ -25,7 +25,8 @@ it is where the fix is.
 These are not suggestions. Each one exists because breaking it can lose money
 or lock the operator out.
 
-1. **Paper only.** Never set `LIVE_TRADING_ENABLED=true`,
+1. **Paper only.** Never set `LIVE_TRADING_ENABLED=true` (in `.env` or on
+   the Settings page),
    `SYSTEMATIC_EXECUTION_ENABLED=true`, `ALPACA_PAPER=false`,
    `OANDA_ENVIRONMENT=live`, `MT5_ALLOW_REAL=true`, an IB live port
    (4001/7496), or `account_mode: "live"` in `BROKER_CONNECTIONS`. The scripts

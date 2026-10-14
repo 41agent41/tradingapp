@@ -3,11 +3,14 @@
  * any bootstrap value, saves only what the page may change, and puts the
  * order step-up in front of protected settings.
  */
+import { createHmac } from 'crypto';
 import express from 'express';
 import request from 'supertest';
 
 import { configService } from '../src/config/configService.js';
 import settingsRouter from '../src/routes/settings.js';
+import { notifier } from '../src/services/notifier.js';
+import { isLiveTradingEnabled } from '../src/services/orderTypes.js';
 
 const SAVED_ENV: NodeJS.ProcessEnv = { ...process.env };
 
@@ -121,9 +124,7 @@ describe('PUT /api/settings/:key', () => {
   });
 
   it('refuses a setting whose consumer still reads .env', async () => {
-    const r = await request(buildApp())
-      .put('/api/settings/LIVE_TRADING_ENABLED')
-      .send({ value: 'true' });
+    const r = await request(buildApp()).put('/api/settings/SESSION_TTL_HOURS').send({ value: '4' });
     expect(r.status).toBe(409);
   });
 
@@ -162,5 +163,163 @@ describe('DELETE /api/settings/:key', () => {
     const r = await request(app).delete('/api/settings/NEWS_CALENDAR_REFRESH_MINUTES');
     expect(r.status).toBe(200);
     expect(r.body.setting).toMatchObject({ value: '360', source: 'default' });
+  });
+});
+
+const MFA_SECRET = 'JBSWY3DPEHPK3PXP';
+
+/** The current RFC 6238 code for a base32 secret. */
+function totpNow(secret: string): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (const c of secret) bits += alphabet.indexOf(c).toString(2).padStart(5, '0');
+  const bytes: number[] = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
+  const mac = createHmac('sha1', Buffer.from(bytes)).update(counter).digest();
+  const offset = mac[mac.length - 1] & 0xf;
+  return String((mac.readUInt32BE(offset) & 0x7fffffff) % 1_000_000).padStart(6, '0');
+}
+
+function withSafeguards() {
+  process.env.TRADING_TOKENS = 'trader-token-1';
+  process.env.ORDER_MFA_SECRET = MFA_SECRET;
+}
+
+function stepUpHeaders() {
+  return { 'X-Trading-Token': 'trader-token-1', 'X-MFA-Code': totpNow(MFA_SECRET) };
+}
+
+describe('turning live trading on from the page', () => {
+  let alerts: jest.SpyInstance;
+  beforeEach(() => {
+    alerts = jest.spyOn(notifier, 'notify').mockResolvedValue({ sent: true });
+  });
+  afterEach(() => alerts.mockRestore());
+
+  it('is refused until a trading token and MFA are set up', async () => {
+    const r = await request(buildApp())
+      .put('/api/settings/LIVE_TRADING_ENABLED')
+      .send({ value: 'true', confirm: 'LIVE' });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatch(/trading token and an order MFA secret/);
+  });
+
+  it('needs the step-up, then the typed confirmation', async () => {
+    withSafeguards();
+    const app = buildApp();
+    const noAuth = await request(app)
+      .put('/api/settings/LIVE_TRADING_ENABLED')
+      .send({ value: 'true', confirm: 'LIVE' });
+    expect(noAuth.status).toBe(403);
+
+    const noConfirm = await request(app)
+      .put('/api/settings/LIVE_TRADING_ENABLED')
+      .set(stepUpHeaders())
+      .send({ value: 'true', confirm: 'live' });
+    expect(noConfirm.status).toBe(400);
+    expect(noConfirm.body.confirm_required).toBe('LIVE');
+    expect(isLiveTradingEnabled()).toBe(false);
+
+    const ok = await request(app)
+      .put('/api/settings/LIVE_TRADING_ENABLED')
+      .set(stepUpHeaders())
+      .send({ value: 'true', confirm: 'LIVE' });
+    expect(ok.status).toBe(200);
+    expect(isLiveTradingEnabled()).toBe(true);
+    expect(alerts).toHaveBeenCalledWith(
+      expect.objectContaining({ severity: 'critical', title: 'Setting changed: Live trading' })
+    );
+  });
+
+  it('turns off with the login alone', async () => {
+    withSafeguards();
+    const app = buildApp();
+    await request(app)
+      .put('/api/settings/LIVE_TRADING_ENABLED')
+      .set(stepUpHeaders())
+      .send({ value: 'true', confirm: 'LIVE' });
+    const off = await request(app)
+      .put('/api/settings/LIVE_TRADING_ENABLED')
+      .send({ value: 'false' });
+    expect(off.status).toBe(200);
+    expect(isLiveTradingEnabled()).toBe(false);
+  });
+
+  it('closes the gate if the safeguards are removed later', async () => {
+    withSafeguards();
+    await request(buildApp())
+      .put('/api/settings/LIVE_TRADING_ENABLED')
+      .set(stepUpHeaders())
+      .send({ value: 'true', confirm: 'LIVE' });
+    expect(isLiveTradingEnabled()).toBe(true);
+    delete process.env.ORDER_MFA_SECRET;
+    expect(isLiveTradingEnabled()).toBe(false);
+  });
+});
+
+describe('the step-up only guards the riskier direction', () => {
+  beforeEach(() => {
+    jest.spyOn(notifier, 'notify').mockResolvedValue({ sent: true });
+    process.env.TRADING_TOKENS = 'trader-token-1';
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('lowers a cap with the login alone, and raises it only with the step-up', async () => {
+    const app = buildApp();
+    const lower = await request(app).put('/api/settings/ORDER_MAX_QUANTITY').send({ value: '500' });
+    expect(lower.status).toBe(200);
+    const raise = await request(app).put('/api/settings/ORDER_MAX_QUANTITY').send({ value: '900' });
+    expect(raise.status).toBe(403);
+    // Back to the default (100000) is a raise too.
+    const reset = await request(app).delete('/api/settings/ORDER_MAX_QUANTITY');
+    expect(reset.status).toBe(403);
+  });
+
+  it('treats 0 as "no cap" for an optional limit', async () => {
+    const app = buildApp();
+    expect(
+      (await request(app).put('/api/settings/CONNECTION_MAX_DAILY_LOSS').send({ value: '200' }))
+        .status
+    ).toBe(200);
+    expect(
+      (await request(app).put('/api/settings/CONNECTION_MAX_DAILY_LOSS').send({ value: '0' }))
+        .status
+    ).toBe(403);
+  });
+
+  it('escalates the kill switch freely but needs the step-up to relax it', async () => {
+    const app = buildApp();
+    expect(
+      (await request(app).put('/api/settings/KILL_SWITCH_ACTION').send({ value: 'halt' })).status
+    ).toBe(200);
+    expect(
+      (await request(app).put('/api/settings/KILL_SWITCH_ACTION').send({ value: 'notify' })).status
+    ).toBe(403);
+  });
+
+  it('always needs the step-up for a setting with no safer direction', async () => {
+    const r = await request(buildApp())
+      .put('/api/settings/TRADING_DAY_TIMEZONE')
+      .send({ value: 'Europe/Athens' });
+    expect(r.status).toBe(403);
+  });
+});
+
+describe('risk setting validation', () => {
+  it('rejects a time zone that does not exist', async () => {
+    const r = await request(buildApp())
+      .put('/api/settings/TRADING_DAY_TIMEZONE')
+      .send({ value: 'Mars/Olympus' });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/IANA/);
+  });
+
+  it('rejects a base currency that is not a code', async () => {
+    const r = await request(buildApp())
+      .put('/api/settings/PORTFOLIO_BASE_CURRENCY')
+      .send({ value: 'dollars' });
+    expect(r.status).toBe(400);
   });
 });
