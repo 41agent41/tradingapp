@@ -25,24 +25,9 @@ services:
       - API_TOKEN=${API_TOKEN:-}
       # Shared secret the backend sends to the broker service.
       - BROKER_SERVICE_TOKEN=${BROKER_SERVICE_TOKEN:-}
-      # Redis cache controls
-      - REDIS_ENABLED=${REDIS_ENABLED:-true}
-      - CACHE_TTL_REALTIME=${CACHE_TTL_REALTIME:-2}
-      # Phase 4 real-time streaming bridge
-      - STREAMING_ENABLED=${STREAMING_ENABLED:-true}
-      # Phase 5 backfill scheduler (opt-in; drives data_collection_config)
-      - BACKFILL_ENABLED=${BACKFILL_ENABLED:-false}
-      - BACKFILL_INTERVAL_MINUTES=${BACKFILL_INTERVAL_MINUTES:-15}
-      - BACKFILL_PERIOD=${BACKFILL_PERIOD:-5D}
-      - BACKFILL_INITIAL_DELAY_MS=${BACKFILL_INITIAL_DELAY_MS:-30000}
-      # Executions (fills) sync — the source of fill-authoritative positions
-      # and realised P&L, and therefore of risk.max_daily_loss enforcement
-      # (opt-in; makes live venue requests on a timer)
-      - EXECUTIONS_SYNC_ENABLED=${EXECUTIONS_SYNC_ENABLED:-false}
-      - EXECUTIONS_SYNC_INTERVAL_SECONDS=${EXECUTIONS_SYNC_INTERVAL_SECONDS:-120}
-      - EXECUTIONS_SYNC_LOOKBACK_DAYS=${EXECUTIONS_SYNC_LOOKBACK_DAYS:-2}
-      - EXECUTIONS_SYNC_INITIAL_DELAY_MS=${EXECUTIONS_SYNC_INITIAL_DELAY_MS:-20000}
-      - EXECUTIONS_DEFAULT_ACCOUNT_MODE=${EXECUTIONS_DEFAULT_ACCOUNT_MODE:-paper}
+      # Schedulers, cache, streaming, alerts and the heartbeat are set on the
+      # Settings page. A value in .env (passed in by env_file) still wins and
+      # shows there as locked, so these are deliberately not defaulted here.
     ports:
       - "${BACKEND_PORT:-4000}:${BACKEND_PORT:-4000}"
     depends_on:

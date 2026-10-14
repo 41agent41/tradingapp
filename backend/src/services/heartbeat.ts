@@ -19,6 +19,7 @@
 
 import axios from 'axios';
 import { logger } from './logger.js';
+import { configService } from '../config/configService.js';
 
 export interface HeartbeatProbe {
   database(): Promise<boolean>;
@@ -81,7 +82,7 @@ export class Heartbeat {
 
   constructor(
     private readonly probe: HeartbeatProbe,
-    private readonly opts: HeartbeatOptions
+    private opts: HeartbeatOptions
   ) {
     this.now = opts.now ?? (() => Date.now());
     this.ping = opts.ping ?? defaultPing;
@@ -102,6 +103,13 @@ export class Heartbeat {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+
+  /** Stops the heartbeat and takes new URLs and interval. Call `start()` to
+   *  resume. */
+  reconfigure(next: Pick<HeartbeatOptions, 'url' | 'failUrl' | 'intervalSeconds'>): void {
+    this.stop();
+    this.opts = { ...this.opts, ...next };
   }
 
   /** One check and one ping. Never throws. */
@@ -168,8 +176,18 @@ async function defaultPing(url: string, problems?: string): Promise<void> {
   });
 }
 
-/** Options from the environment. Unset `HEARTBEAT_URL` turns the heartbeat off. */
-export function heartbeatOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): HeartbeatOptions {
+/** Changing any of these restarts the heartbeat with the new values. */
+export const HEARTBEAT_SETTING_KEYS = [
+  'HEARTBEAT_URL',
+  'HEARTBEAT_FAIL_URL',
+  'HEARTBEAT_INTERVAL_SECONDS',
+] as const;
+
+/** Options from `.env` or the Settings page. Unset `HEARTBEAT_URL` turns the
+ *  heartbeat off. */
+export function heartbeatOptionsFromEnv(
+  env: Record<string, string | undefined> = configService.asEnv()
+): HeartbeatOptions {
   const interval = Number(env.HEARTBEAT_INTERVAL_SECONDS ?? '');
   return {
     url: (env.HEARTBEAT_URL || '').trim() || null,

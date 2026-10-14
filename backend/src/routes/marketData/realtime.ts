@@ -4,7 +4,7 @@ import axios from 'axios';
 import { cacheService } from '../../services/cache.js';
 import {
   BROKER_SERVICE_URL,
-  REALTIME_CACHE_TTL,
+  realtimeCacheTtl,
   cacheKey,
   isDataQueryEnabled,
   handleDisabledDataQuery,
@@ -36,7 +36,7 @@ router.get('/realtime', async (req: Request, res: Response) => {
     // poll the same quote at once. A cache miss falls straight through
     // to the IB service call.
     const key = cacheKey(['rt', String(symbol), String(account_mode || '')]);
-    const data = await cacheService.wrap(key, REALTIME_CACHE_TTL, async () => {
+    const data = await cacheService.wrap(key, realtimeCacheTtl(), async () => {
       const response = await axios.get(`${BROKER_SERVICE_URL}/market-data/realtime`, {
         params: { symbol, account_mode },
         timeout: 10000,

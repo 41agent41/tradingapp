@@ -42,20 +42,31 @@ import {
   type CollectionConfig,
 } from './marketDataService.js';
 import { logger } from './logger.js';
+import { configService } from '../config/configService.js';
+import { type EnvLike, definedOnly, readBool, readInt } from '../config/read.js';
 
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
-const BACKFILL_ENABLED = (process.env.BACKFILL_ENABLED ?? 'false').toLowerCase() === 'true';
-const BACKFILL_INTERVAL_MINUTES = Math.max(
-  1,
-  parseInt(process.env.BACKFILL_INTERVAL_MINUTES || '15', 10) || 15
-);
-const BACKFILL_PERIOD = process.env.BACKFILL_PERIOD || '5D';
-// Small delay before the first run so it doesn't fire mid-startup.
-const BACKFILL_INITIAL_DELAY_MS = Math.max(
-  0,
-  parseInt(process.env.BACKFILL_INITIAL_DELAY_MS || '30000', 10) || 30000
-);
+/** The scheduler's settings, from `.env` or the Settings page. */
+export function backfillSettings(
+  env: EnvLike = configService.asEnv()
+): Required<Omit<BackfillSchedulerOptions, 'deps'>> {
+  return {
+    enabled: readBool(env, 'BACKFILL_ENABLED', false),
+    intervalMinutes: readInt(env, 'BACKFILL_INTERVAL_MINUTES', 15, 1),
+    period: env.BACKFILL_PERIOD || '5D',
+    // Small delay before the first run so it doesn't fire mid-startup.
+    initialDelayMs: readInt(env, 'BACKFILL_INITIAL_DELAY_MS', 30000, 0),
+  };
+}
+
+/** Changing any of these restarts the scheduler with the new values. */
+export const BACKFILL_SETTING_KEYS = [
+  'BACKFILL_ENABLED',
+  'BACKFILL_INTERVAL_MINUTES',
+  'BACKFILL_PERIOD',
+  'BACKFILL_INITIAL_DELAY_MS',
+] as const;
 
 /** A raw bar as returned by the IB service (`timestamp` is unix seconds). */
 export interface RawBar {
@@ -160,10 +171,10 @@ function defaultDeps(): BackfillDeps {
 
 export class BackfillScheduler {
   private readonly deps: BackfillDeps;
-  private readonly enabled: boolean;
-  private readonly intervalMs: number;
-  private readonly period: string;
-  private readonly initialDelayMs: number;
+  private enabled: boolean;
+  private intervalMs: number;
+  private period: string;
+  private initialDelayMs: number;
 
   private timer: NodeJS.Timeout | null = null;
   private initialTimer: NodeJS.Timeout | null = null;
@@ -181,10 +192,20 @@ export class BackfillScheduler {
 
   constructor(opts: BackfillSchedulerOptions = {}) {
     this.deps = { ...defaultDeps(), ...opts.deps } as BackfillDeps;
-    this.enabled = opts.enabled ?? BACKFILL_ENABLED;
-    this.intervalMs = (opts.intervalMinutes ?? BACKFILL_INTERVAL_MINUTES) * 60_000;
-    this.period = opts.period ?? BACKFILL_PERIOD;
-    this.initialDelayMs = opts.initialDelayMs ?? BACKFILL_INITIAL_DELAY_MS;
+    const settings = { ...backfillSettings(), ...definedOnly(opts) };
+    this.enabled = settings.enabled;
+    this.intervalMs = settings.intervalMinutes * 60_000;
+    this.period = settings.period;
+    this.initialDelayMs = settings.initialDelayMs;
+  }
+
+  /** Stops the scheduler and takes new settings. Call `start()` to resume. */
+  reconfigure(opts: Omit<BackfillSchedulerOptions, 'deps'>): void {
+    this.stop();
+    if (opts.enabled !== undefined) this.enabled = opts.enabled;
+    if (opts.intervalMinutes !== undefined) this.intervalMs = opts.intervalMinutes * 60_000;
+    if (opts.period !== undefined) this.period = opts.period;
+    if (opts.initialDelayMs !== undefined) this.initialDelayMs = opts.initialDelayMs;
   }
 
   // -------------------------------------------------------------------
@@ -192,7 +213,7 @@ export class BackfillScheduler {
   // -------------------------------------------------------------------
   start(): void {
     if (!this.enabled) {
-      logger.info('backfill disabled via BACKFILL_ENABLED (set BACKFILL_ENABLED=true to enable)');
+      logger.info('backfill disabled (turn it on in Settings or with BACKFILL_ENABLED=true)');
       return;
     }
     if (this.started) return;

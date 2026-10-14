@@ -31,6 +31,8 @@
 
 import axios from 'axios';
 import { logger } from './logger.js';
+import { configService } from '../config/configService.js';
+import { type EnvLike, definedOnly, readBool, readInt } from '../config/read.js';
 import { applyTrail } from './stopManager.js';
 import {
   connectionLimitsFor,
@@ -94,29 +96,32 @@ import {
 
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
-const SYSTEMATIC_ENABLED = (process.env.SYSTEMATIC_ENABLED ?? 'false').toLowerCase() === 'true';
-const SYSTEMATIC_INTERVAL_SECONDS = Math.max(
-  5,
-  parseInt(process.env.SYSTEMATIC_INTERVAL_SECONDS || '60', 10) || 60
-);
-const SYSTEMATIC_INITIAL_DELAY_MS = Math.max(
-  0,
-  parseInt(process.env.SYSTEMATIC_INITIAL_DELAY_MS || '15000', 10) || 15000
-);
-// Connections are processed concurrently, bounded. Under ~10 connections this
-// is ample; materially beyond that the runner wants a work-queue instead.
-const SYSTEMATIC_MAX_CONNECTION_CONCURRENCY = Math.max(
-  1,
-  parseInt(process.env.SYSTEMATIC_MAX_CONNECTION_CONCURRENCY || '4', 10) || 4
-);
-const SYSTEMATIC_BREAKER_THRESHOLD = Math.max(
-  1,
-  parseInt(process.env.SYSTEMATIC_CONNECTION_BREAKER_THRESHOLD || '3', 10) || 3
-);
-const SYSTEMATIC_BREAKER_COOLDOWN_SECONDS = Math.max(
-  10,
-  parseInt(process.env.SYSTEMATIC_CONNECTION_BREAKER_COOLDOWN_SECONDS || '300', 10) || 300
-);
+/** The runner's settings, from `.env` or the Settings page. */
+export function runnerSettings(
+  env: EnvLike = configService.asEnv()
+): Required<Omit<StrategyRunnerOptions, 'deps' | 'emit'>> {
+  return {
+    enabled: readBool(env, 'SYSTEMATIC_ENABLED', false),
+    intervalSeconds: readInt(env, 'SYSTEMATIC_INTERVAL_SECONDS', 60, 5),
+    initialDelayMs: readInt(env, 'SYSTEMATIC_INITIAL_DELAY_MS', 15000, 0),
+    // Connections are processed concurrently, bounded. Under ~10 connections
+    // this is ample; materially beyond that the runner wants a work-queue.
+    maxConnectionConcurrency: readInt(env, 'SYSTEMATIC_MAX_CONNECTION_CONCURRENCY', 4, 1),
+    breakerThreshold: readInt(env, 'SYSTEMATIC_CONNECTION_BREAKER_THRESHOLD', 3, 1),
+    breakerCooldownSeconds: readInt(env, 'SYSTEMATIC_CONNECTION_BREAKER_COOLDOWN_SECONDS', 300, 10),
+  };
+}
+
+/** Changing any of these restarts the runner's timer with the new values. */
+export const RUNNER_SETTING_KEYS = [
+  'SYSTEMATIC_ENABLED',
+  'SYSTEMATIC_INTERVAL_SECONDS',
+  'SYSTEMATIC_INITIAL_DELAY_MS',
+  'SYSTEMATIC_MAX_CONNECTION_CONCURRENCY',
+  'SYSTEMATIC_CONNECTION_BREAKER_THRESHOLD',
+  'SYSTEMATIC_CONNECTION_BREAKER_COOLDOWN_SECONDS',
+] as const;
+
 // Fractional lot sizes do not compare exactly, so the reconciliation check
 // needs a tolerance rather than strict equality.
 const RECONCILIATION_TOLERANCE = Number(process.env.POSITION_RECONCILIATION_TOLERANCE || '0.0001');
@@ -746,13 +751,13 @@ export function isConnectionFailure(err: unknown): boolean {
 
 export class StrategyRunner {
   private readonly deps: StrategyRunnerDeps;
-  private readonly enabled: boolean;
-  private readonly intervalMs: number;
-  private readonly initialDelayMs: number;
+  private enabled: boolean;
+  private intervalMs: number;
+  private initialDelayMs: number;
 
-  private readonly maxConnectionConcurrency: number;
-  private readonly breakerThreshold: number;
-  private readonly breakerCooldownMs: number;
+  private maxConnectionConcurrency: number;
+  private breakerThreshold: number;
+  private breakerCooldownMs: number;
   /** Consecutive failures and cooldown deadline, keyed by connection label. */
   private readonly breakers = new Map<string, { failures: number; openUntil: number }>();
 
@@ -793,14 +798,30 @@ export class StrategyRunner {
   constructor(opts: StrategyRunnerOptions = {}) {
     const emit = opts.emit ?? (() => undefined);
     this.deps = { ...defaultDeps(emit), ...opts.deps } as StrategyRunnerDeps;
-    this.enabled = opts.enabled ?? SYSTEMATIC_ENABLED;
-    this.intervalMs = (opts.intervalSeconds ?? SYSTEMATIC_INTERVAL_SECONDS) * 1000;
-    this.initialDelayMs = opts.initialDelayMs ?? SYSTEMATIC_INITIAL_DELAY_MS;
-    this.maxConnectionConcurrency =
-      opts.maxConnectionConcurrency ?? SYSTEMATIC_MAX_CONNECTION_CONCURRENCY;
-    this.breakerThreshold = opts.breakerThreshold ?? SYSTEMATIC_BREAKER_THRESHOLD;
-    this.breakerCooldownMs =
-      (opts.breakerCooldownSeconds ?? SYSTEMATIC_BREAKER_COOLDOWN_SECONDS) * 1000;
+    const settings = { ...runnerSettings(), ...definedOnly(opts) };
+    this.enabled = settings.enabled;
+    this.intervalMs = settings.intervalSeconds * 1000;
+    this.initialDelayMs = settings.initialDelayMs;
+    this.maxConnectionConcurrency = settings.maxConnectionConcurrency;
+    this.breakerThreshold = settings.breakerThreshold;
+    this.breakerCooldownMs = settings.breakerCooldownSeconds * 1000;
+  }
+
+  /** Stops the runner's timer and takes new settings. Call `start()` to
+   *  resume. A pass already in flight finishes; per-connection breakers and
+   *  open alerts are kept. */
+  reconfigure(opts: Omit<StrategyRunnerOptions, 'deps' | 'emit'>): void {
+    this.stop();
+    if (opts.enabled !== undefined) this.enabled = opts.enabled;
+    if (opts.intervalSeconds !== undefined) this.intervalMs = opts.intervalSeconds * 1000;
+    if (opts.initialDelayMs !== undefined) this.initialDelayMs = opts.initialDelayMs;
+    if (opts.maxConnectionConcurrency !== undefined) {
+      this.maxConnectionConcurrency = opts.maxConnectionConcurrency;
+    }
+    if (opts.breakerThreshold !== undefined) this.breakerThreshold = opts.breakerThreshold;
+    if (opts.breakerCooldownSeconds !== undefined) {
+      this.breakerCooldownMs = opts.breakerCooldownSeconds * 1000;
+    }
   }
 
   // -------------------------------------------------------------------
@@ -809,7 +830,7 @@ export class StrategyRunner {
   start(): void {
     if (!this.enabled) {
       logger.info(
-        'systematic runner disabled via SYSTEMATIC_ENABLED (set SYSTEMATIC_ENABLED=true to enable)'
+        'systematic runner disabled (turn it on in Settings or with SYSTEMATIC_ENABLED=true)'
       );
       return;
     }

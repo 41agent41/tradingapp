@@ -1,4 +1,4 @@
-import { checkStartupConfig } from '../src/services/startupChecks.js';
+import { checkStartupConfig, heartbeatWarnings } from '../src/services/startupChecks.js';
 
 const GOOD_PRODUCTION = {
   NODE_ENV: 'production',
@@ -80,15 +80,16 @@ describe('checkStartupConfig', () => {
   });
 
   it('warns when orders run unattended with no heartbeat, and checks heartbeat URLs', () => {
-    expect(checkStartupConfig({ SYSTEMATIC_EXECUTION_ENABLED: 'true' }).warnings.join(' ')).toMatch(
-      /HEARTBEAT_URL/
+    expect(heartbeatWarnings({ SYSTEMATIC_EXECUTION_ENABLED: 'true' }).join(' ')).toMatch(
+      /no heartbeat URL/
     );
     expect(
-      checkStartupConfig({
+      heartbeatWarnings({
         SYSTEMATIC_EXECUTION_ENABLED: 'true',
         HEARTBEAT_URL: 'https://hc-ping.com/abc',
-      }).warnings.join(' ')
-    ).not.toMatch(/HEARTBEAT_URL/);
+      })
+    ).toEqual([]);
+    expect(heartbeatWarnings({})).toEqual([]);
     expect(checkStartupConfig({ HEARTBEAT_URL: 'hc-ping.com/abc' }).errors.join(' ')).toMatch(
       /HEARTBEAT_URL must be an http\(s\) URL/
     );

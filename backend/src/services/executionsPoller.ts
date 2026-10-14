@@ -37,6 +37,8 @@
 
 import axios from 'axios';
 import { logger } from './logger.js';
+import { configService } from '../config/configService.js';
+import { type EnvLike, definedOnly, readBool, readInt } from '../config/read.js';
 import { dbService } from './database.js';
 import { ExecutionRepository, type ExecutionInput } from './executionRepository.js';
 import {
@@ -48,25 +50,32 @@ import {
 
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
-const EXECUTIONS_SYNC_ENABLED =
-  (process.env.EXECUTIONS_SYNC_ENABLED ?? 'false').toLowerCase() === 'true';
-const EXECUTIONS_SYNC_INTERVAL_SECONDS = Math.max(
-  15,
-  parseInt(process.env.EXECUTIONS_SYNC_INTERVAL_SECONDS || '120', 10) || 120
-);
-const EXECUTIONS_SYNC_LOOKBACK_DAYS = Math.min(
-  30,
-  Math.max(1, parseInt(process.env.EXECUTIONS_SYNC_LOOKBACK_DAYS || '2', 10) || 2)
-);
-const EXECUTIONS_SYNC_INITIAL_DELAY_MS = Math.max(
-  0,
-  parseInt(process.env.EXECUTIONS_SYNC_INITIAL_DELAY_MS || '20000', 10) || 20000
-);
+/** The poller's settings, from `.env` or the Settings page. */
+export function executionsSettings(
+  env: EnvLike = configService.asEnv()
+): Required<Omit<ExecutionsPollerOptions, 'deps'>> {
+  return {
+    enabled: readBool(env, 'EXECUTIONS_SYNC_ENABLED', false),
+    intervalSeconds: readInt(env, 'EXECUTIONS_SYNC_INTERVAL_SECONDS', 120, 15),
+    lookbackDays: readInt(env, 'EXECUTIONS_SYNC_LOOKBACK_DAYS', 2, 1, 30),
+    initialDelayMs: readInt(env, 'EXECUTIONS_SYNC_INITIAL_DELAY_MS', 20000, 0),
+  };
+}
+
+/** Changing any of these restarts the poller with the new values. */
+export const EXECUTIONS_SETTING_KEYS = [
+  'EXECUTIONS_SYNC_ENABLED',
+  'EXECUTIONS_SYNC_INTERVAL_SECONDS',
+  'EXECUTIONS_SYNC_LOOKBACK_DAYS',
+  'EXECUTIONS_SYNC_INITIAL_DELAY_MS',
+] as const;
+
 /** Account mode stamped on a fill with no order of ours behind it. Paper by
- *  default, matching `LIVE_TRADING_ENABLED` defaulting to false. */
-const EXECUTIONS_DEFAULT_ACCOUNT_MODE = (
-  process.env.EXECUTIONS_DEFAULT_ACCOUNT_MODE || 'paper'
-).toLowerCase();
+ *  default, matching `LIVE_TRADING_ENABLED` defaulting to false. Read per
+ *  pass, so a change on the Settings page applies to the next one. */
+export function defaultAccountMode(env: EnvLike = configService.asEnv()): string {
+  return (env.EXECUTIONS_DEFAULT_ACCOUNT_MODE || 'paper').toLowerCase();
+}
 
 /** One fill as the broker service reports it (`models.Execution`). */
 export interface RemoteExecution {
@@ -174,10 +183,10 @@ function defaultDeps(): ExecutionsPollerDeps {
 
 export class ExecutionsPoller {
   private readonly deps: ExecutionsPollerDeps;
-  private readonly enabled: boolean;
-  private readonly intervalMs: number;
-  private readonly lookbackDays: number;
-  private readonly initialDelayMs: number;
+  private enabled: boolean;
+  private intervalMs: number;
+  private lookbackDays: number;
+  private initialDelayMs: number;
 
   private timer: NodeJS.Timeout | null = null;
   private initialTimer: NodeJS.Timeout | null = null;
@@ -195,17 +204,27 @@ export class ExecutionsPoller {
 
   constructor(opts: ExecutionsPollerOptions = {}) {
     this.deps = { ...defaultDeps(), ...opts.deps } as ExecutionsPollerDeps;
-    this.enabled = opts.enabled ?? EXECUTIONS_SYNC_ENABLED;
-    this.intervalMs = (opts.intervalSeconds ?? EXECUTIONS_SYNC_INTERVAL_SECONDS) * 1000;
-    this.lookbackDays = opts.lookbackDays ?? EXECUTIONS_SYNC_LOOKBACK_DAYS;
-    this.initialDelayMs = opts.initialDelayMs ?? EXECUTIONS_SYNC_INITIAL_DELAY_MS;
+    const settings = { ...executionsSettings(), ...definedOnly(opts) };
+    this.enabled = settings.enabled;
+    this.intervalMs = settings.intervalSeconds * 1000;
+    this.lookbackDays = settings.lookbackDays;
+    this.initialDelayMs = settings.initialDelayMs;
+  }
+
+  /** Stops the poller and takes new settings. Call `start()` to resume. */
+  reconfigure(opts: Omit<ExecutionsPollerOptions, 'deps'>): void {
+    this.stop();
+    if (opts.enabled !== undefined) this.enabled = opts.enabled;
+    if (opts.intervalSeconds !== undefined) this.intervalMs = opts.intervalSeconds * 1000;
+    if (opts.lookbackDays !== undefined) this.lookbackDays = opts.lookbackDays;
+    if (opts.initialDelayMs !== undefined) this.initialDelayMs = opts.initialDelayMs;
   }
 
   start(): void {
     if (!this.enabled) {
       logger.info(
-        'executions sync disabled via EXECUTIONS_SYNC_ENABLED ' +
-          '(set EXECUTIONS_SYNC_ENABLED=true to derive positions and realised P&L from fills)'
+        'executions sync disabled (turn it on in Settings or with EXECUTIONS_SYNC_ENABLED=true ' +
+          'to derive positions and realised P&L from fills)'
       );
       return;
     }
@@ -274,6 +293,7 @@ export class ExecutionsPoller {
     const label = connectionLabel(broker, brokerAccount);
     try {
       const rows = await this.deps.fetchExecutions(connection, this.lookbackDays);
+      const accountMode = defaultAccountMode();
       this.fetched += rows.length;
       let newRows = 0;
       for (const row of rows) {
@@ -286,7 +306,7 @@ export class ExecutionsPoller {
             // accounts it is, and mis-attributing one would recreate the
             // collision the connection-scoped key exists to prevent.
             broker_account: brokerAccount,
-            account_mode: EXECUTIONS_DEFAULT_ACCOUNT_MODE,
+            account_mode: accountMode,
             exec_id: String(row.exec_id),
             broker_order_id: row.order_id != null ? String(row.order_id) : null,
             order_audit_id_hint:

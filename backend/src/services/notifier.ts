@@ -19,6 +19,8 @@
 
 import axios from 'axios';
 import { logger } from './logger.js';
+import { configService } from '../config/configService.js';
+import { type EnvLike, readInt } from '../config/read.js';
 
 export type AlertSeverity = 'info' | 'warning' | 'critical';
 
@@ -38,13 +40,14 @@ export interface NotificationChannel {
 }
 
 /** How long the same key stays suppressed after being sent. */
-const DEFAULT_DEDUPE_SECONDS = Math.max(
-  0,
-  parseInt(process.env.ALERT_DEDUPE_SECONDS || '3600', 10) || 3600
-);
+function dedupeSecondsSetting(): number {
+  return readInt(configService.asEnv(), 'ALERT_DEDUPE_SECONDS', 3600, 0);
+}
 /** Ceiling on alerts per window, whatever their keys — a backstop against a
  *  novel failure producing a new key every bar. */
-const MAX_PER_WINDOW = Math.max(1, parseInt(process.env.ALERT_MAX_PER_HOUR || '30', 10) || 30);
+function maxPerWindowSetting(): number {
+  return readInt(configService.asEnv(), 'ALERT_MAX_PER_HOUR', 30, 1);
+}
 const WINDOW_MS = 3_600_000;
 
 const SEVERITY_PREFIX: Record<AlertSeverity, string> = {
@@ -53,8 +56,8 @@ const SEVERITY_PREFIX: Record<AlertSeverity, string> = {
   critical: '🚨',
 };
 
-/** Telegram Bot API. Credentials come from the environment, never from the
- *  connection manifest or the database. */
+/** Telegram Bot API. Credentials come from `.env` or the Settings page
+ *  (where the token is stored encrypted), never from the connection manifest. */
 export class TelegramChannel implements NotificationChannel {
   readonly name = 'telegram';
 
@@ -68,9 +71,9 @@ export class TelegramChannel implements NotificationChannel {
     ) => axios.post(url, body, config)
   ) {}
 
-  static fromEnv(): TelegramChannel | null {
-    const token = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
-    const chatId = (process.env.TELEGRAM_CHAT_ID || '').trim();
+  static fromEnv(env: EnvLike = configService.asEnv()): TelegramChannel | null {
+    const token = (env.TELEGRAM_BOT_TOKEN || '').trim();
+    const chatId = (env.TELEGRAM_CHAT_ID || '').trim();
     if (!token || !chatId) return null;
     return new TelegramChannel(token, chatId);
   }
@@ -106,9 +109,9 @@ export interface NotifierOptions {
 }
 
 export class Notifier {
-  private readonly channels: NotificationChannel[];
-  private readonly dedupeMs: number;
-  private readonly maxPerWindow: number;
+  private readonly fixedChannels: NotificationChannel[] | undefined;
+  private readonly fixedDedupeSeconds: number | undefined;
+  private readonly fixedMaxPerWindow: number | undefined;
   private readonly now: () => number;
 
   private readonly lastSent = new Map<string, number>();
@@ -120,11 +123,26 @@ export class Notifier {
   public failures = 0;
 
   constructor(opts: NotifierOptions = {}) {
-    const fromEnv = TelegramChannel.fromEnv();
-    this.channels = opts.channels ?? (fromEnv ? [fromEnv] : []);
-    this.dedupeMs = (opts.dedupeSeconds ?? DEFAULT_DEDUPE_SECONDS) * 1000;
-    this.maxPerWindow = opts.maxPerWindow ?? MAX_PER_WINDOW;
+    this.fixedChannels = opts.channels;
+    this.fixedDedupeSeconds = opts.dedupeSeconds;
+    this.fixedMaxPerWindow = opts.maxPerWindow;
     this.now = opts.now ?? (() => Date.now());
+  }
+
+  // Unless fixed by the caller, these are read on every alert, so a change on
+  // the Settings page applies to the next one.
+  private get channels(): NotificationChannel[] {
+    if (this.fixedChannels) return this.fixedChannels;
+    const telegram = TelegramChannel.fromEnv();
+    return telegram ? [telegram] : [];
+  }
+
+  private get dedupeMs(): number {
+    return (this.fixedDedupeSeconds ?? dedupeSecondsSetting()) * 1000;
+  }
+
+  private get maxPerWindow(): number {
+    return this.fixedMaxPerWindow ?? maxPerWindowSetting();
   }
 
   get enabled(): boolean {
