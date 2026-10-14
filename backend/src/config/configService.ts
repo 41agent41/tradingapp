@@ -51,6 +51,8 @@ export interface SettingView {
   secret: boolean;
   apply: string;
   step_up: boolean;
+  /** The direction that skips the step-up; see `SettingDef.safer`. */
+  safer: string | null;
   editable: boolean;
   help: string;
   source: SettingSource;
@@ -272,6 +274,7 @@ export class ConfigService {
         secret: !!def.secret,
         apply: def.apply,
         step_up: !!def.stepUp,
+        safer: def.safer ?? null,
         editable: !!def.editable,
         help: def.help,
         source,

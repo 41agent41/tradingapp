@@ -12,6 +12,9 @@ import {
   applyLabel,
   displayValue,
   groupBySection,
+  LIVE_CONFIRM_WORD,
+  needsLiveConfirm,
+  protectedLabel,
   readOnlyReason,
   sourceLabel,
   stepUpHeaders,
@@ -135,7 +138,7 @@ function SettingRow({
           </span>
           {setting.step_up && (
             <span className="px-2 py-0.5 text-xs rounded-full bg-red-50 text-red-700">
-              Protected
+              {protectedLabel(setting)}
             </span>
           )}
         </div>
@@ -256,6 +259,14 @@ export default function SettingsPage() {
 
   const write = async (setting: SettingView, method: 'PUT' | 'DELETE', value?: string) => {
     if (!payload) return;
+    let confirm: string | undefined;
+    if (method === 'PUT' && needsLiveConfirm(setting, value)) {
+      const typed = window.prompt(
+        `Live trading places real orders with real money on every live account. Type ${LIVE_CONFIRM_WORD} to turn it on.`
+      );
+      if (typed === null) return;
+      confirm = typed.trim();
+    }
     setBusyKey(setting.key);
     setMessage(null);
     try {
@@ -265,7 +276,7 @@ export default function SettingsPage() {
           'Content-Type': 'application/json',
           ...stepUpHeaders(setting, payload.auth, tradingToken, mfaCode),
         },
-        body: JSON.stringify(method === 'PUT' ? { value } : {}),
+        body: JSON.stringify(method === 'PUT' ? { value, confirm } : {}),
       });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(body?.error || body?.detail || `HTTP ${r.status}`);
@@ -378,7 +389,8 @@ export default function SettingsPage() {
                   {needsStepUp && (
                     <div className="mb-4 p-3 bg-gray-50 border rounded-md">
                       <p className="text-sm text-gray-700 mb-2">
-                        Protected settings need the same credentials as placing an order.
+                        Protected settings need the same credentials as placing an order. Turning
+                        trading off or tightening a limit never does.
                       </p>
                       <div className="flex flex-col sm:flex-row gap-2">
                         {payload.auth.trading_auth_required && (

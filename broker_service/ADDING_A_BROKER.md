@@ -61,9 +61,10 @@ on any registered adapter.
 
 ## 3. Backend
 
-- `src/services/orderTypes.ts`: add the name to `BROKERS`, and to
-  `BROKER_PRIORITY` in the same position as in `connections.py`. The
-  Settings registry and the Connections store read these lists.
+- `src/services/brokers.ts`: add the name to `BROKERS`.
+- `src/services/orderTypes.ts`: add it to `BROKER_PRIORITY` in the same
+  position as in `connections.py`. The Settings registry and the
+  Connections store read these lists.
 - `src/services/brokerConnections.ts`: add a `PLATFORM_FIELDS` entry.
   `settings` are stored in plain text, `secrets` are encrypted, and
   `required` is checked on save. If the broker service needs a value derived

@@ -47,6 +47,7 @@ import { startDefaultBrokerRefresh } from './services/brokerDefault.js';
 import { brokersFromHealth, defaultBrokerProblem } from './services/brokerStatus.js';
 import brokersRoutes from './routes/brokers.js';
 import { brokerSync } from './services/brokerConnectionsRuntime.js';
+import { BROKER_SETTING_KEYS } from './services/brokerSync.js';
 
 // Refuse to start on an unsafe configuration (open API, default secrets, live
 // trading without MFA, an unimplemented kill-switch action). See the module.
@@ -558,6 +559,10 @@ server.listen(PORT, '0.0.0.0', () => {
       executionsPoller.reconfigure(executionsSettings());
       if (systematicAllowed) executionsPoller.start();
     });
+    // The broker service enforces the live gate itself; send it the stored
+    // values now and on every change, not only on the next background check.
+    void brokerSync.check();
+    configService.subscribe(BROKER_SETTING_KEYS, () => void brokerSync.check());
   });
 
   // Multi-connection on a pre-C-0 schema silently drops colliding fills, so

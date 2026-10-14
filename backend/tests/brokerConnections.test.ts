@@ -216,6 +216,26 @@ describe('BrokerSync', () => {
     expect((await buildPayload(store)).revision).not.toBe(empty.revision);
   });
 
+  it('carries the settings the broker service enforces, live gate included', async () => {
+    const saved = { ...process.env };
+    try {
+      const { db } = fakeDb();
+      const store = new BrokerConnectionStore(db, {});
+      process.env.LIVE_TRADING_ENABLED = 'true';
+      process.env.DEFAULT_BROKER = 'oanda';
+      const live = await buildPayload(store);
+      expect(live.settings).toEqual({ LIVE_TRADING_ENABLED: 'true', DEFAULT_BROKER: 'oanda' });
+
+      process.env.LIVE_TRADING_ENABLED = 'false';
+      const off = await buildPayload(store);
+      expect(off.settings.LIVE_TRADING_ENABLED).toBe('false');
+      expect(off.revision).not.toBe(live.revision);
+    } finally {
+      for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+      Object.assign(process.env, saved);
+    }
+  });
+
   it('check() never throws', async () => {
     const { db } = fakeDb();
     const store = new BrokerConnectionStore(db, {});

@@ -17,6 +17,8 @@ export interface SettingView {
   secret: boolean;
   apply: 'immediate' | 'reload' | 'restart';
   step_up: boolean;
+  /** The direction that needs no step-up (turning off, a lower cap, ...). */
+  safer?: 'off' | 'lower' | 'higher' | 'later-option' | null;
   editable: boolean;
   help: string;
   source: SettingSource;
@@ -108,4 +110,28 @@ export function stepUpHeaders(
     headers['X-MFA-Code'] = mfaCode.trim();
   }
   return headers;
+}
+
+/** The badge on a protected setting: which change needs the token and MFA. */
+export function protectedLabel(setting: SettingView): string {
+  switch (setting.safer) {
+    case 'off':
+      return 'Protected to turn on';
+    case 'lower':
+      return 'Protected to raise or remove';
+    case 'higher':
+      return 'Protected to lower';
+    case 'later-option':
+      return 'Protected to relax';
+    default:
+      return 'Protected';
+  }
+}
+
+/** The word to type before live trading is turned on. */
+export const LIVE_CONFIRM_WORD = 'LIVE';
+
+/** Whether saving `value` turns live trading on, so the page asks for LIVE first. */
+export function needsLiveConfirm(setting: SettingView, value: string | undefined): boolean {
+  return setting.key === 'LIVE_TRADING_ENABLED' && value === 'true' && setting.value !== 'true';
 }

@@ -124,11 +124,18 @@ export const RUNNER_SETTING_KEYS = [
 
 // Fractional lot sizes do not compare exactly, so the reconciliation check
 // needs a tolerance rather than strict equality.
-const RECONCILIATION_TOLERANCE = Number(process.env.POSITION_RECONCILIATION_TOLERANCE || '0.0001');
-const POSITION_LOOKBACK_HOURS = Math.max(
-  1,
-  parseInt(process.env.ORDER_POSITION_LOOKBACK_HOURS || '168', 10) || 168
-);
+// Both read per use, so a change on the Settings page applies on the next run.
+function reconciliationTolerance(): number {
+  const n = Number(configService.get('POSITION_RECONCILIATION_TOLERANCE') ?? '0.0001');
+  return Number.isFinite(n) && n >= 0 ? n : 0.0001;
+}
+
+function positionLookbackHours(): number {
+  return Math.max(
+    1,
+    parseInt(configService.get('ORDER_POSITION_LOOKBACK_HOURS') || '168', 10) || 168
+  );
+}
 
 export interface RawBar {
   timestamp: number;
@@ -361,10 +368,10 @@ const LIMIT_TITLES: Record<AccountLimitBreach['kind'], string> = {
  * sum mixed units.
  */
 async function fleetPortfolioLimits(): Promise<PortfolioLimits | null> {
-  const cap = Number(process.env.PORTFOLIO_MAX_DAILY_LOSS ?? '');
+  const cap = Number(configService.get('PORTFOLIO_MAX_DAILY_LOSS') ?? '');
   if (!Number.isFinite(cap) || cap <= 0) return null;
 
-  const expected = (process.env.PORTFOLIO_BASE_CURRENCY || '').trim().toUpperCase();
+  const expected = (configService.get('PORTFOLIO_BASE_CURRENCY') || '').trim().toUpperCase();
   let currencies: string[] = [];
   try {
     const response = await axios.get(`${BROKER_SERVICE_URL}/providers`, {
@@ -638,7 +645,7 @@ function defaultDeps(
           symbol,
           accountMode: run.account_mode,
           runId: run.id,
-          lookbackHours: POSITION_LOOKBACK_HOURS,
+          lookbackHours: positionLookbackHours(),
         });
         derived = Number.isFinite(size) ? size : null;
       } catch {
@@ -1334,7 +1341,7 @@ export class StrategyRunner {
     const derived = position.derived_size;
     if (derived == null) return;
     // A tolerance, because fractional lot sizes do not compare exactly.
-    if (Math.abs(derived - position.size) <= RECONCILIATION_TOLERANCE) {
+    if (Math.abs(derived - position.size) <= reconciliationTolerance()) {
       this.divergentRuns.delete(run.id);
       return;
     }

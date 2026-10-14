@@ -71,6 +71,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
+import app_settings
 from observability import get_logger
 
 logger = get_logger(__name__)
@@ -362,7 +363,7 @@ def default_platform(configured: Iterable[str]) -> str:
     connection; with none configured, the top of the list, so the request
     fails with that platform's "not configured" hint rather than a vaguer one.
     """
-    explicit = (os.getenv("DEFAULT_BROKER") or "").strip().lower()
+    explicit = (app_settings.get("DEFAULT_BROKER") or "").strip().lower()
     if explicit in SUPPORTED_PLATFORMS:
         return explicit
     present = set(configured)
@@ -472,7 +473,7 @@ def _legacy_account_mode() -> str:
     globally. Keep that: the synthesised connection accepts whatever the
     global gate allows, so enabling the manifest is what starts enforcing
     per-connection modes."""
-    return "live" if (os.getenv("LIVE_TRADING_ENABLED", "false").lower() == "true") else "paper"
+    return "live" if app_settings.live_trading_enabled() else "paper"
 
 
 def load_connections() -> List[Connection]:

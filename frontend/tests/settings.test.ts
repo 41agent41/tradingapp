@@ -5,6 +5,8 @@ import {
   type SettingsPayload,
   displayValue,
   groupBySection,
+  needsLiveConfirm,
+  protectedLabel,
   readOnlyReason,
   sourceLabel,
   stepUpHeaders,
@@ -73,5 +75,19 @@ describe('settings helpers', () => {
     expect(
       stepUpHeaders(setting(), { trading_auth_required: false, mfa_required: false }, 'tok', '1')
     ).toEqual({});
+  });
+
+  it('says which change a protected setting guards', () => {
+    expect(protectedLabel(setting({ safer: 'off' }))).toBe('Protected to turn on');
+    expect(protectedLabel(setting({ safer: 'lower' }))).toBe('Protected to raise or remove');
+    expect(protectedLabel(setting())).toBe('Protected');
+  });
+
+  it('asks for LIVE only when live trading is being turned on', () => {
+    const live = setting({ key: 'LIVE_TRADING_ENABLED', type: 'boolean', value: 'false' });
+    expect(needsLiveConfirm(live, 'true')).toBe(true);
+    expect(needsLiveConfirm(live, 'false')).toBe(false);
+    expect(needsLiveConfirm({ ...live, value: 'true' }, 'true')).toBe(false);
+    expect(needsLiveConfirm(setting(), 'true')).toBe(false);
   });
 });

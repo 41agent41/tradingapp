@@ -138,7 +138,7 @@ describe('ConfigService', () => {
   it('refuses keys whose consumer still reads .env, and unknown keys', async () => {
     const svc = new ConfigService({});
     svc.attach(fakeDb());
-    await expect(svc.set('LIVE_TRADING_ENABLED', 'true', ctx)).rejects.toMatchObject({
+    await expect(svc.set('SESSION_TTL_HOURS', '4', ctx)).rejects.toMatchObject({
       status: 409,
     });
     await expect(svc.set('POSTGRES_PASSWORD', 'x', ctx)).rejects.toMatchObject({ status: 404 });
@@ -146,9 +146,9 @@ describe('ConfigService', () => {
 
   it('ignores a stored row for a key that is not editable', async () => {
     const db = fakeDb();
-    db.rows.set('LIVE_TRADING_ENABLED', {
-      key: 'LIVE_TRADING_ENABLED',
-      value: 'true',
+    db.rows.set('SESSION_TTL_HOURS', {
+      key: 'SESSION_TTL_HOURS',
+      value: '4',
       ciphertext: null,
       version: 1,
       updated_at: new Date(),
@@ -157,7 +157,7 @@ describe('ConfigService', () => {
     const svc = new ConfigService({});
     svc.attach(db);
     await svc.refresh();
-    expect(svc.get('LIVE_TRADING_ENABLED')).toBeUndefined();
+    expect(svc.get('SESSION_TTL_HOURS')).toBeUndefined();
   });
 
   it('validates and normalises before saving', async () => {

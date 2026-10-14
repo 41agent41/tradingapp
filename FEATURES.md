@@ -335,9 +335,10 @@ Place, cancel and modify orders against IB Gateway from the UI:
   `order_audit` with the input set, the IB order id once known, the
   `X-Request-Id`, status transitions and raw IB response. The
   backend refuses to forward an order if the audit insert fails.
-- **Defence-in-depth gate:** `LIVE_TRADING_ENABLED=true` must be set
-  on **both** the backend and the IB service. Setting it on only one
-  rejects every live submission with HTTP 403. Paper orders work
+- **Defence-in-depth gate:** live trading must be on in **both** the
+  backend and the broker service (Settings > Trading sets both; the
+  broker service refuses live orders until the backend has told it).
+  If they disagree, every live submission is rejected with HTTP 403. Paper orders work
   regardless. The Live option is also greyed out in the UI when the
   config probe reports the gate as off, and a confirmation modal
   protects every live submission.

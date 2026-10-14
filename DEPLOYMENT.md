@@ -865,48 +865,55 @@ For a fuller list, see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
 
 ### Enabling live trading
 
-The order-placement path (`POST /api/orders` → `POST /orders` on the IB
-service) is gated by an env var that is **off by default**. Without it
-the backend and the IB service both reject any `account_mode=live`
-request with HTTP 403 — paper orders work, live orders don't.
+The order-placement path (`POST /api/orders` → `POST /orders` on the broker
+service) is gated by a switch that is **off by default**. Without it the
+backend and the broker service both reject any `account_mode=live` request
+with HTTP 403: paper orders work, live orders don't.
 
 To enable live trading:
 
-1. Set on **both** services in your `.env`, together with the trader role
-   and order MFA (the backend refuses to start with live trading on and
-   either one unset):
+1. Set the trader role and order MFA in `.env` (they move to the Security
+   tab in a later release), then `./tradingapp.sh redeploy`:
 
    ```bash
-   LIVE_TRADING_ENABLED=true
    TRADING_TOKENS=<openssl rand -hex 24>        # sent as X-Trading-Token
    ORDER_MFA_SECRET=<base32 TOTP secret>         # sent as X-MFA-Code
    ```
 
-   With a `BROKER_CONNECTIONS` manifest, the account must also be declared
-   `"account_mode": "live"`; a live order to a paper connection is refused.
-   A strategy goes live only after the promotion gate sees a paper run of
-   the same definition (`GET /api/strategies/definitions/:id/promotion`).
+2. In **Settings > Trading**, enter the trading token and a current MFA
+   code, set **Live trading** to `true` and type `LIVE` when asked. The
+   page refuses without both safeguards in place, the change is written to
+   the settings history, and an alert goes to Telegram. The backend passes
+   the switch on to the broker service, which refuses live orders until it
+   has heard from the backend.
 
-2. Restart so both containers pick the new value up:
-
-   ```bash
-   ./tradingapp.sh redeploy
-   ```
+   The account must also be added as a live connection (Settings >
+   Connections); a live order to a paper connection is refused. A strategy
+   goes live only after the promotion gate sees a paper run of the same
+   definition (`GET /api/strategies/definitions/:id/promotion`).
 
 3. Verify the gate is fully open:
 
    ```bash
-   curl -s -H "Authorization: Bearer $API_TOKEN" http://<host>:4000/api/orders/config | jq
+   curl -s -H "Authorization: Bearer $API_TOKEN" http://<host>:3000/api/orders/config | jq
    ```
 
-   `live_trading_enabled` must be `true`. If only one side has the flag
-   set, you'll see `backend_live_enabled` and `ib_live_enabled` disagree
-   — fix that before sending any live order.
+   `live_trading_enabled` must be `true`. If `backend_live_enabled` and
+   `ib_live_enabled` disagree, the broker service has not picked up the
+   change yet (it does within 15 seconds); don't send a live order until
+   they match.
 
-The `ORDER_MAX_QUANTITY` (default 100k) and `ORDER_MAX_PRICE` (default
-$1M) caps are applied by the backend validator on every submission;
-raise them only if your real-world order sizes exceed them. Every
-attempt is persisted in `order_audit` (visible in the `/trade` blotter
+Turning live trading off, or tightening any risk limit, needs only the
+login, so stopping is never harder than starting. Raising a limit or
+turning a switch on needs the trading token and MFA code as well.
+
+`.env` is a ceiling: `LIVE_TRADING_ENABLED=false` there keeps live off
+whatever the page says (the page shows it locked). Removing a trading token
+or the MFA secret later also closes the gate.
+
+The order caps (`ORDER_MAX_QUANTITY`, default 100k, and `ORDER_MAX_PRICE`,
+default 1M) are set in **Settings > Risk** and applied to every submission.
+Every attempt is persisted in `order_audit` (visible in the `/trade` blotter
 and via `GET /api/orders/audit`).
 
 ### Reverse proxy + TLS
