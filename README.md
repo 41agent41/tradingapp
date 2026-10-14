@@ -5,8 +5,25 @@ A simplified trading application with TradingView lightweight charts and reliabl
 ## 🚀 **Quick Start - One Script Does Everything**
 
 ### **Single Command Setup**
+
+Run these as a **normal user with sudo rights, not as root**: `tradingapp.sh`
+stops with *"Don't run this script as root"* otherwise. If your host or
+container only has `root` (common on fresh LXC containers and VPS images),
+create a user first:
+
 ```bash
-# Clone repository
+# As root, once
+apt update && apt install -y sudo git
+adduser tradingapp              # set a password when prompted
+usermod -aG sudo tradingapp
+su - tradingapp                 # continue as this user, in its home directory
+```
+
+Then, as that user:
+
+```bash
+# Clone repository (into your home directory, not /root)
+cd ~
 git clone https://github.com/41agent41/tradingapp.git
 cd tradingapp
 
@@ -17,6 +34,7 @@ chmod +x tradingapp.sh
 ./tradingapp.sh setup
 
 # Deploy application
+# (if setup just installed Docker: exit, then su - tradingapp again first)
 ./tradingapp.sh deploy
 
 # Test everything
@@ -24,7 +42,7 @@ chmod +x tradingapp.sh
 ```
 
 > Deploying onto a bare-metal **Proxmox VE** host? Start with
-> [PROXMOX_DEPLOYMENT.md](PROXMOX_DEPLOYMENT.md) — it builds the LXC
+> [PROXMOX_DEPLOYMENT.md](PROXMOX_DEPLOYMENT.md) (deploy user in §4.3) — it builds the LXC
 > containers for the app, database and broker session from a fresh
 > hypervisor install, then runs the commands above.
 >
