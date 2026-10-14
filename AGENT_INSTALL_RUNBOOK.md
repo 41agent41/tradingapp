@@ -352,8 +352,8 @@ code starts; `deploy` rebuilds. Snapshot first on Proxmox
 `pct rollback 110 <name>`.
 
 `env` never rotates a secret that is already set and never changes a value
-you did not put in the answers, with one exception: `NEXT_PUBLIC_API_URL`,
-`CORS_ORIGINS` and `IB_CORS_ORIGINS` follow `SERVER_IP` while they still hold
+you did not put in the answers, with one exception: `CORS_ORIGINS` and
+`IB_CORS_ORIGINS` follow `SERVER_IP` while they still hold
 the value derived from it. Once they hold anything else (an https origin
 behind nginx), they are left alone.
 

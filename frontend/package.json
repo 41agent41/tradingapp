@@ -4,9 +4,9 @@
   "description": "TradingApp Frontend",
   "private": true,
   "scripts": {
-    "dev": "next dev -H 0.0.0.0",
+    "dev": "node server.js --dev",
     "build": "next build",
-    "start": "next start -H 0.0.0.0",
+    "start": "node server.js",
     "type-check": "tsc --noEmit",
     "lint": "next lint",
     "lint:fix": "next lint --fix",

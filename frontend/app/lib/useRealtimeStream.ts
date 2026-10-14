@@ -4,7 +4,7 @@
  * Provides a small, opinionated wrapper around `socket.io-client` that
  * matches the backend's contract:
  *
- *   - Connect to `apiBaseUrl` with `socketAuth()` so the session cookie authenticates the handshake.
+ *   - Connect to the page's origin (`socketUrl`) with `socketAuth()` so the session cookie authenticates the handshake.
  *   - Emit `subscribe-market-data` with the symbol/contract details
  *     when the symbol changes.
  *   - Listen for `market-data-update` events (a stream of
@@ -24,7 +24,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { apiBaseUrl, socketAuth } from './api';
+import { socketAuth, socketUrl } from './api';
 
 export interface TickPayload {
   symbol: string;
@@ -74,7 +74,7 @@ const STATUS_EVENT = 'market-data-status';
 /**
  * Subscribe to the live tick stream for `symbol`.
  *
- * The Socket.IO connection is keyed off the (apiBaseUrl, token) tuple
+ * The Socket.IO connection is keyed off the (socketUrl, token) tuple
  * so all calls within the same page share a single connection. The
  * subscription set is keyed off `symbol`; changing it triggers an
  * unsubscribe + re-subscribe under the hood.
@@ -101,7 +101,7 @@ export function useRealtimeStream(opts: UseRealtimeStreamOptions): UseRealtimeSt
   useEffect(() => {
     if (!enabled) return;
 
-    const socket: Socket = io(apiBaseUrl, {
+    const socket: Socket = io(socketUrl(), {
       transports: ['websocket', 'polling'],
       autoConnect: true,
       ...socketAuth(),

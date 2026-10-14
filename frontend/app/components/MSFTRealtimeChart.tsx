@@ -194,7 +194,7 @@ export default function MSFTRealtimeChart() {
     setError(null);
 
     try {
-      // Simple query building (apiFetch will prefix with NEXT_PUBLIC_API_URL)
+      // Simple query building (apiFetch resolves it on the page origin)
       let url = `/api/market-data/history?symbol=MSFT&timeframe=${currentTimeframe}&account_mode=${accountMode}`;
 
       if (useCustomDateRange && startDate && endDate) {

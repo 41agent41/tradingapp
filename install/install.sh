@@ -386,7 +386,6 @@ phase_env() {
     [[ -n $new_ip ]] || fail 2 "could not determine SERVER_IP; set it in the answers"
     env_set SERVER_IP "$new_ip"
     declare -A derived=(
-        [NEXT_PUBLIC_API_URL]="http://%s:4000"
         [CORS_ORIGINS]="http://%s:3000"
         [IB_CORS_ORIGINS]="http://%s:3000"
     )

@@ -383,8 +383,7 @@ chmod +x tradingapp.sh
 | `clean` | Stop, remove project images and prune Docker | Reset before a fresh `deploy` |
 
 > `tradingapp.sh config` / `env` **merge** into `.env`: `SERVER_IP` and
-> the `NEXT_PUBLIC_API_URL` / `CORS_ORIGINS` URLs derived from it are
-> updated in place, and every other key (ports, Postgres/Redis
+> the `CORS_ORIGINS` URL derived from it are updated in place, and every other key (ports, Postgres/Redis
 > credentials, and anything you've hand-added like `POSTGRES_HOST`,
 > `API_TOKEN`, `BACKFILL_ENABLED`) is filled in only if missing — a
 > hand-edited `.env` survives a re-run. There is no broker prompt:
@@ -433,7 +432,6 @@ the values that apply to your environment. The most important keys:
 ```bash
 # Server / network
 SERVER_IP=10.7.3.20
-NEXT_PUBLIC_API_URL=http://10.7.3.20:4000
 CORS_ORIGINS=http://10.7.3.20:3000
 
 # IB Gateway
@@ -581,10 +579,13 @@ the login password once.
 - **Broker service**: only the backend may call it. It is published on the
   host's loopback only and rejects calls without `X-Broker-Service-Token`.
 
-The browser only sends the session cookie to the backend when both are on
-the same site, so `NEXT_PUBLIC_API_URL` must use the same host name (or IP) as
-the address you open the frontend on. Behind the nginx proxy they are the same
-origin and this is automatic.
+The page and the API share one address: the frontend server forwards `/api`
+and `/socket.io` to the backend (`frontend/server.js`), so the browser's
+session cookie is first-party and nothing about the server's address is built
+into the frontend. Open the app on any name or IP that reaches port 3000 and
+it works. The backend believes the client address the frontend passes on only
+from the addresses in `TRUST_PROXY` (compose sets the frontend container's), so
+login lockout and the settings history record the real visitor.
 
 With `NODE_ENV=production` the backend refuses to start without
 authentication, or with template or default secrets. Development with an
@@ -836,7 +837,7 @@ Open the frontend in a browser at `http://<server-ip>:3000`.
 | Symptom | First step |
 |---|---|
 | Services won't start (port clash) | `sudo ss -ltnp \| grep -E ':(3000\|4000\|8000)'` and free the port |
-| Frontend can't reach backend | Verify `NEXT_PUBLIC_API_URL` and `CORS_ORIGINS` agree with your server IP |
+| Frontend can't reach backend | The frontend forwards `/api` to `BACKEND_INTERNAL_URL` (set in compose); check `docker compose logs frontend` for `Backend unavailable` |
 | IB connection failures | `./tradingapp.sh ib-help`, then `./tradingapp.sh test` |
 | MT5 requests return 501 | `MT5_BRIDGE_URL` is unset — expected until the MT5 sidecar host is deployed (see [Multi-Broker Host Topology](#multi-broker-host-topology-ib--mt5)) |
 | MT5 requests return 503 | Sidecar unreachable — confirm the MT5 Windows host is up, the terminal is logged in, and the app host can reach `MT5_BRIDGE_URL` (firewall/VPN) |
@@ -905,7 +906,15 @@ sudo $EDITOR /etc/nginx/sites-available/tradingapp
 
 Example `nginx` site:
 
+Everything goes to the frontend on port 3000, which forwards `/api` and
+`/socket.io` to the backend itself:
+
 ```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
     listen 80;
     server_name your-domain.com;
@@ -919,13 +928,17 @@ server {
     ssl_certificate     /etc/letsencrypt/live/your-domain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
 
-    location /        { proxy_pass http://localhost:3000; }
-    location /api/    { proxy_pass http://localhost:4000; }
-
-    proxy_set_header Host              $host;
-    proxy_set_header X-Real-IP         $remote_addr;
-    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
+        proxy_read_timeout 3600s;
+    }
 }
 ```
 
@@ -934,6 +947,10 @@ sudo ln -s /etc/nginx/sites-available/tradingapp /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d your-domain.com
 ```
+
+To have the backend log and rate-limit by the visitor's address rather than
+nginx's, add the Docker network gateway to `TRUST_PROXY` in `.env`
+(`TRUST_PROXY=172.20.0.3,172.20.0.1`) and redeploy.
 
 ### Firewall
 

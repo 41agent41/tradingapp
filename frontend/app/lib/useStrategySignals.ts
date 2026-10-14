@@ -2,7 +2,7 @@
  * React hook for the systematic strategy signal stream (A5 / Phase 4).
  *
  * Mirrors `useRealtimeStream` but for the strategy rooms the backend fans out
- * on: it connects to `apiBaseUrl`, emits `subscribe-strategy` with a `runId`,
+ * on: it connects to the page's origin (`socketUrl`), emits `subscribe-strategy` with a `runId`,
  * and collects `strategy-signal` events (each an evaluation the runner made,
  * carrying signal/reason, entry/exit, position size and — from A3 — whether it
  * acted and the resulting order_audit id).
@@ -15,7 +15,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { apiBaseUrl, socketAuth } from './api';
+import { socketAuth, socketUrl } from './api';
 
 export interface StrategySignalEvent {
   run_id: number;
@@ -66,7 +66,7 @@ export function useStrategySignals(opts: UseStrategySignalsOptions): UseStrategy
   useEffect(() => {
     if (!enabled) return;
 
-    const socket: Socket = io(apiBaseUrl, {
+    const socket: Socket = io(socketUrl(), {
       transports: ['websocket', 'polling'],
       autoConnect: true,
       ...socketAuth(),

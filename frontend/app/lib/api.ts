@@ -3,7 +3,10 @@
  *
  * Responsibilities:
  *
- *   1. Build URLs against `NEXT_PUBLIC_API_URL` (the backend base URL).
+ *   1. Build URLs on the page's own origin: the frontend server forwards
+ *      `/api` and `/socket.io` to the backend (frontend/server.js), so the
+ *      backend's address is not built into the bundle. `NEXT_PUBLIC_API_URL`
+ *      still overrides this for a frontend run against a backend elsewhere.
  *   2. Send the login session cookie with every request
  *      (`credentials: 'include'`). The cookie is HttpOnly, so no credential
  *      is ever readable by page scripts or compiled into the bundle.
@@ -14,7 +17,7 @@
  * clients, which can't go through `apiFetch`.
  */
 
-const RAW_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+const RAW_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
 function trimTrailing(s: string): string {
   return s.endsWith('/') ? s.slice(0, -1) : s;
@@ -22,7 +25,7 @@ function trimTrailing(s: string): string {
 
 export const apiBaseUrl: string = trimTrailing(RAW_BASE);
 
-/** Returns the configured backend base URL (no trailing slash). */
+/** A backend URL: relative (same origin) unless `NEXT_PUBLIC_API_URL` is set. */
 export function apiUrl(path: string = ''): string {
   if (!path) return apiBaseUrl;
   return path.startsWith('/') ? `${apiBaseUrl}${path}` : `${apiBaseUrl}/${path}`;
@@ -63,8 +66,8 @@ export function newRequestId(): string {
 /**
  * Drop-in replacement for `fetch` that:
  *
- *   - Prefixes relative paths with `NEXT_PUBLIC_API_URL` (so callers can
- *     just pass `/api/market-data/history`).
+ *   - Resolves paths like `/api/market-data/history` against the page's
+ *     origin (or `NEXT_PUBLIC_API_URL` when set).
  *   - Sends the session cookie (`credentials: 'include'`).
  *   - Attaches `X-Request-Id` (mints one if the caller didn't) so the
  *     backend can correlate logs and metrics for this call and propagate
@@ -104,8 +107,14 @@ export function redirectToLogin(): void {
  * session cookie.
  *
  *   import { io } from 'socket.io-client';
- *   const socket = io(apiBaseUrl, { ...socketAuth() });
+ *   const socket = io(socketUrl(), { ...socketAuth() });
  */
+/** Where Socket.IO connects: the page's own origin unless overridden. */
+export function socketUrl(): string {
+  if (apiBaseUrl) return apiBaseUrl;
+  return typeof window === 'undefined' ? '' : window.location.origin;
+}
+
 export function socketAuth(): { withCredentials: true } {
   return { withCredentials: true };
 }

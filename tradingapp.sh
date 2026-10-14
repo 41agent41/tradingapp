@@ -297,7 +297,6 @@ HEADER
     fi
 
     env_set .env SERVER_IP "$SERVER_IP"
-    env_set .env NEXT_PUBLIC_API_URL "http://$SERVER_IP:4000"
     env_set .env CORS_ORIGINS "http://$SERVER_IP:3000"
     if [[ -n "$IB_HOST" ]]; then
         env_set .env IB_HOST "$IB_HOST"
