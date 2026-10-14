@@ -28,10 +28,25 @@ afterEach(() => {
 });
 
 describe('apiUrl', () => {
-  it('falls back to http://localhost:4000 when NEXT_PUBLIC_API_URL is unset', async () => {
+  it('uses relative URLs on the page origin when NEXT_PUBLIC_API_URL is unset', async () => {
     const mod = await import('../app/lib/api');
-    expect(mod.apiBaseUrl).toBe('http://localhost:4000');
-    expect(mod.apiUrl('/foo')).toBe('http://localhost:4000/foo');
+    expect(mod.apiBaseUrl).toBe('');
+    expect(mod.apiUrl('/foo')).toBe('/foo');
+    expect(mod.apiUrl('foo')).toBe('/foo');
+  });
+
+  it('points Socket.IO at the page origin when NEXT_PUBLIC_API_URL is unset', async () => {
+    vi.stubGlobal('window', { location: { origin: 'http://10.0.0.5:3000' } });
+    const mod = await import('../app/lib/api');
+    expect(mod.socketUrl()).toBe('http://10.0.0.5:3000');
+    vi.unstubAllGlobals();
+  });
+
+  it('sends a relative request to the same origin', async () => {
+    const fetchMock = mockFetch();
+    const mod = await import('../app/lib/api');
+    await mod.apiFetch('/api/health');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/health');
   });
 
   it('strips trailing slashes off NEXT_PUBLIC_API_URL', async () => {

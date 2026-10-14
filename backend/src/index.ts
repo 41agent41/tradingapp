@@ -127,6 +127,17 @@ const io = new SocketIOServer(server, {
   },
 });
 
+// The frontend server forwards the browser's /api and /socket.io requests
+// (frontend/proxy.js) and passes the browser's address in X-Forwarded-For.
+// That header is believed only from the addresses listed in TRUST_PROXY
+// (compose sets the frontend container's), so a caller reaching this port
+// directly cannot pick the address that login lockout and the audit log see.
+const TRUST_PROXY = (process.env.TRUST_PROXY || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+if (TRUST_PROXY.length > 0) app.set('trust proxy', TRUST_PROXY);
+
 app.use(cors(corsOptions));
 // JSON body parser. The default 100kb limit is fine for everything except
 // the Parquet export, which posts the full dataframe back from the

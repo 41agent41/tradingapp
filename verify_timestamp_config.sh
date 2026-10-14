@@ -84,7 +84,7 @@ echo "   Note: IB Gateway timezone is configured on remote server (10.7.3.21)"
 echo ""
 
 # Test trading app API endpoints
-API_BASE="${NEXT_PUBLIC_API_URL:-http://localhost:4000}"
+API_BASE="${API_BASE:-http://localhost:4000}"
 BROKER_SERVICE_BASE="${BROKER_SERVICE_URL:-http://localhost:8000}"
 
 echo "📡 Testing Trading App APIs (Remote IB Gateway Data):"

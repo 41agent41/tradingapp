@@ -6,6 +6,9 @@ services:
       - PORT=${BACKEND_PORT:-4000}
       - NODE_ENV=${NODE_ENV:-production}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      # The frontend container forwards the browser's API calls; believe the
+      # client address it passes on, and no one else's.
+      - TRUST_PROXY=${TRUST_PROXY:-172.20.0.3}
       - BROKER_SERVICE_URL=http://172.20.0.10:8000
       - POSTGRES_HOST=${POSTGRES_HOST:-localhost}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
@@ -42,13 +45,13 @@ services:
     build: 
       context: ./frontend
       args:
-        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:4000}
         - NODE_ENV=${NODE_ENV:-production}
-    env_file: .env
+    # No env_file: the frontend needs none of .env's secrets. The page calls
+    # the API on its own address and the frontend server forwards it here.
     environment:
       - PORT=${FRONTEND_PORT:-3000}
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:4000}
       - NODE_ENV=${NODE_ENV:-production}
+      - BACKEND_INTERNAL_URL=http://172.20.0.5:${BACKEND_PORT:-4000}
     ports:
       - "${FRONTEND_PORT:-3000}:${FRONTEND_PORT:-3000}"
     depends_on:

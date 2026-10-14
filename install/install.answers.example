@@ -51,7 +51,6 @@ INSTALL_DB_MODE=bundled
 # ---------------------------------------------------------------------------
 #SERVER_IP=10.7.3.20
 # Behind nginx/TLS (PROXMOX_DEPLOYMENT.md §10), set the public origin instead:
-#NEXT_PUBLIC_API_URL=https://trading.example.com
 #CORS_ORIGINS=https://trading.example.com
 
 # ---------------------------------------------------------------------------

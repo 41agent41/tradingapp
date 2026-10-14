@@ -177,13 +177,17 @@ readable in the web page.
 warnings.
 
 ```bash
-grep -E 'API_URL|CORS_ORIGINS' .env
-curl -fs http://<server-ip>:4000/api/health
+curl -fs http://<server-ip>:3000/api/health      # through the frontend
+curl -fs http://<server-ip>:4000/api/health      # the backend directly
+docker compose logs frontend | grep -i 'backend unavailable'
 ```
 
-The two values must agree. For example, if `NEXT_PUBLIC_API_URL` is
-`http://10.7.3.20:4000` then `CORS_ORIGINS` must contain
-`http://10.7.3.20:3000`. Update `.env` and `./tradingapp.sh restart`.
+The browser calls the API on the frontend's own address, and the frontend
+forwards it to the backend. If the first command fails and the second works,
+the frontend cannot reach the backend: check `BACKEND_INTERNAL_URL` in
+`docker-compose.yml` matches `BACKEND_PORT`. A CORS error now only affects
+pages on another site calling the backend directly; list their origins in
+`CORS_ORIGINS`.
 
 ### Market-data search returns nothing
 

@@ -815,9 +815,8 @@ us make the ZFS storage-driver decision before Docker's first start.
 `./tradingapp.sh setup` writes a *baseline* `.env` — correct IPs and ports,
 but placeholder database credentials and **no** API token. Fill in the rest by
 hand. `config` and `env` re-runs preserve hand-edited keys, with one exception
-that matters after §10: they **force-reset** `SERVER_IP`, `IB_HOST`,
-`NEXT_PUBLIC_API_URL` and `CORS_ORIGINS` (the last two to
-`http://<SERVER_IP>:4000` / `:3000`). If you re-run either once TLS is in
+that matters after §10: they **force-reset** `SERVER_IP`, `IB_HOST` and
+`CORS_ORIGINS` (the last to `http://<SERVER_IP>:3000`). If you re-run either once TLS is in
 place, put the §10.1 values back before the next `redeploy`.
 
 Generate the secrets first:
@@ -836,7 +835,6 @@ Then `nano .env` so the important keys read:
 NODE_ENV=production
 TZ=UTC
 SERVER_IP=10.7.3.20
-NEXT_PUBLIC_API_URL=http://10.7.3.20:4000     # https://trading.example.com once §10 is done
 CORS_ORIGINS=http://10.7.3.20:3000            # exact browser origin(s), never *
 
 # --- Auth -----------------------------------------------------------
@@ -873,9 +871,10 @@ commentary — read it once before you go to production.
 
 Two things that catch people out:
 
-- **`NEXT_PUBLIC_*` values are baked into the frontend bundle at build time.**
-  Changing `NEXT_PUBLIC_API_URL` requires `./tradingapp.sh redeploy`, not
-  `restart`. No secret is ever a `NEXT_PUBLIC_*` value.
+- **Nothing about the server's address is built into the frontend.** The page
+  calls the API on its own address and the frontend forwards it, so changing
+  `SERVER_IP` or adding TLS needs no frontend rebuild. No secret is ever a
+  `NEXT_PUBLIC_*` value.
 - **With `NODE_ENV=production` the backend refuses to start** when login,
   `BROKER_SERVICE_TOKEN` or the database password is missing or still a
   template value, and when `LIVE_TRADING_ENABLED=true` lacks
@@ -974,6 +973,12 @@ sudo nano /etc/nginx/sites-available/tradingapp
 ```
 
 ```nginx
+# Sites files are read inside nginx's http {} block, so the map can live here.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
     listen 80;
     server_name trading.example.com;
@@ -987,20 +992,19 @@ server {
     ssl_certificate     /etc/letsencrypt/live/trading.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/trading.example.com/privkey.pem;
 
-    proxy_set_header Host              $host;
-    proxy_set_header X-Real-IP         $remote_addr;
-    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-
-    location /     { proxy_pass http://127.0.0.1:3000; }
-    location /api/ { proxy_pass http://127.0.0.1:4000; }
-
-    # Socket.IO — the real-time tick stream needs the upgrade headers
-    location /socket.io/ {
-        proxy_pass http://127.0.0.1:4000;
+    # Everything goes to the frontend, which forwards /api and /socket.io
+    # to the backend itself. The upgrade headers carry Socket.IO's live
+    # updates through. (proxy_set_header is not inherited into a location
+    # that sets its own, so all of them live here.)
+    location / {
+        proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade    $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
         proxy_read_timeout 3600s;
     }
 }
@@ -1012,19 +1016,15 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d trading.example.com
 ```
 
-Then update `.env` to the public origin and **rebuild** (the frontend bundle
-embeds the API URL):
+The page calls the API on whatever address it was opened on, so nothing about
+the public origin is built into the frontend. Allow it for any direct API
+callers, and let the backend believe the client address nginx passes on (it
+reaches the frontend from the Docker network's gateway):
 
 ```bash
-NEXT_PUBLIC_API_URL=https://trading.example.com
 CORS_ORIGINS=https://trading.example.com
+TRUST_PROXY=172.20.0.3,172.20.0.1
 ```
-
-Use the bare origin, **without** `/api`. The frontend already prefixes every
-request path with `/api/...` and connects Socket.IO to the base URL itself, so
-`https://trading.example.com/api` would produce `/api/api/...` requests and
-point Socket.IO at a namespace that doesn't exist. nginx then routes `/api/`
-and `/socket.io/` to the backend and everything else to the frontend.
 
 ```bash
 ./tradingapp.sh redeploy

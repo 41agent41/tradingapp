@@ -1,8 +1,6 @@
 # Frontend Dockerfile
 FROM node:20-alpine
 
-# Accept build arguments
-ARG NEXT_PUBLIC_API_URL=http://localhost:4000
 ARG NODE_ENV=production
 
 WORKDIR /app
@@ -14,20 +12,15 @@ RUN npm install --include=dev
 
 COPY . .
 
-# Set environment variables for build
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-
-# Build with environment variables available
+# Nothing about the deployment is baked into the build: the page calls the
+# API on its own address, and server.js forwards /api and /socket.io to
+# BACKEND_INTERNAL_URL, read when the container starts.
 RUN npm run build
-
-# Debug: List what was built
-RUN ls -la .next/
-RUN ls -la .next/static/ || echo "No .next/static directory"
 
 # Now set NODE_ENV for runtime
 ENV NODE_ENV=$NODE_ENV
 
 EXPOSE 3000
 
-# Use regular Next.js start command (not standalone)
-CMD ["npm", "start"] 
+# server.js runs Next.js and the /api forwarding (see proxy.js).
+CMD ["npm", "start"]

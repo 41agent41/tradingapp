@@ -61,11 +61,6 @@ jobs:
     defaults:
       run:
         working-directory: frontend
-    env:
-      # The frontend bakes NEXT_PUBLIC_* into the static bundle at build
-      # time. Provide stable placeholder values so `next build` succeeds
-      # in CI without leaking real ones.
-      NEXT_PUBLIC_API_URL: http://localhost:4000
     steps:
       - uses: actions/checkout@v4
 

@@ -5,8 +5,9 @@
  *                                         priority order, with its last check
  *   POST   /api/brokers/:label/test       check one connection now
  *   GET    /api/brokers/connections       connections added in the app (no secrets)
- *   POST   /api/brokers/connections       add one
- *   PUT    /api/brokers/connections/:id   change one (blank secrets keep theirs)
+ *   POST   /api/brokers/connections       add one, then check it
+ *   PUT    /api/brokers/connections/:id   change one (blank secrets keep theirs),
+ *                                         then check it
  *   DELETE /api/brokers/connections/:id   remove one
  *   PUT    /api/brokers/priority          { priority: [platform, ...] }
  *
@@ -49,23 +50,47 @@ router.get('/status', async (_req: Request, res: Response) => {
   }
 });
 
+async function testConnection(label: string) {
+  // A venue's own HTTP timeout is 30 s; allow for it.
+  const r = await axios.post(
+    `${BROKER_SERVICE_URL}/connections/${encodeURIComponent(label)}/test`,
+    null,
+    { timeout: 40000 }
+  );
+  return r.data;
+}
+
 router.post('/:label/test', async (req: Request, res: Response) => {
   const label = String(req.params.label || '').toLowerCase();
   if (!LABEL_PATTERN.test(label)) {
     return res.status(400).json({ error: 'label must look like platform:account' });
   }
   try {
-    // A venue's own HTTP timeout is 30 s; allow for it.
-    const r = await axios.post(
-      `${BROKER_SERVICE_URL}/connections/${encodeURIComponent(label)}/test`,
-      null,
-      { timeout: 40000 }
-    );
-    res.json(r.data);
+    res.json(await testConnection(label));
   } catch (error) {
     relayError(res, error, 'broker test');
   }
 });
+
+/**
+ * Check a connection that was just saved, so a wrong key or address shows at
+ * once. The save stands either way; this only reports. Null when the broker
+ * service has not taken the new set yet (`sync_error` says why).
+ */
+async function checkAfterSave(
+  label: string,
+  syncError: string | null
+): Promise<{ check: unknown; check_error: string | null }> {
+  if (syncError) return { check: null, check_error: null };
+  try {
+    const body = await testConnection(label);
+    return { check: body?.check ?? null, check_error: null };
+  } catch (err: any) {
+    const message = String(err?.response?.data?.detail ?? err?.message ?? err);
+    logger.warn({ connection: label, err: message }, 'broker check after save failed');
+    return { check: null, check_error: message };
+  }
+}
 
 function actor(req: Request): string {
   return req.headers.authorization || req.headers['x-api-token'] ? 'api token' : 'browser';
@@ -134,7 +159,12 @@ router.post('/connections', orderAuth, async (req: Request, res: Response) => {
       ip: req.ip ?? null,
     });
     logger.info({ connection: connection.label, actor: actor(req) }, 'broker connection added');
-    res.status(201).json({ connection, sync_error: await pushNow() });
+    const syncError = await pushNow();
+    res.status(201).json({
+      connection,
+      sync_error: syncError,
+      ...(await checkAfterSave(connection.label, syncError)),
+    });
   } catch (err) {
     sendWriteError(res, err);
   }
@@ -147,7 +177,12 @@ router.put('/connections/:id', orderAuth, async (req: Request, res: Response) =>
       ip: req.ip ?? null,
     });
     logger.info({ connection: connection.label, actor: actor(req) }, 'broker connection changed');
-    res.json({ connection, sync_error: await pushNow() });
+    const syncError = await pushNow();
+    res.json({
+      connection,
+      sync_error: syncError,
+      ...(await checkAfterSave(connection.label, syncError)),
+    });
   } catch (err) {
     sendWriteError(res, err);
   }

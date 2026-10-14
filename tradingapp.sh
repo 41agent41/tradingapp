@@ -18,12 +18,10 @@ print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
 
 # Configuration
-# IB is optional: setup asks for no gateway, and an empty IB_HOST means IB is
-# not configured (the broker service then does not register it). Brokers are
-# checked inside the app, not here.
+# Brokers (IB, MT5, OANDA, Alpaca) and their credentials are added in the app,
+# under Settings > Connections, and checked there when saved. Setup never asks
+# for them and never writes them to .env.
 DEFAULT_SERVER_IP="10.7.3.20"
-DEFAULT_IB_PORT="4002"
-DEFAULT_CLIENT_ID="1"
 
 # State file that remembers whether the last deploy opted into the
 # bundled TimescaleDB (`--with-db`). The presence of this file makes all
@@ -138,8 +136,7 @@ show_usage() {
     echo "Configuration:"
     echo "  config      - Refresh SERVER_IP and fill in missing settings"
     echo "  env         - Same as config"
-    echo "  (Brokers: export IB_HOST before 'config' to set IB; other brokers"
-    echo "   are configured in .env, see .env.example)"
+    echo "  (Brokers are added in the app: Settings > Connections)"
     echo ""
     echo "Management:"
     echo "  start       - Start all services"
@@ -276,10 +273,8 @@ setup_environment() {
         fi
     fi
 
-    # No broker questions: brokers are optional and their connectivity is
-    # checked inside the app. IB_HOST is only written when exported by the
-    # caller; otherwise an existing value is kept, or it is left empty (IB not
-    # configured).
+    # No broker questions and no broker keys: brokers are added in the app
+    # (Settings > Connections) and checked there when saved.
     #
     # Merge into .env rather than truncating it: SERVER_IP (and the URLs
     # derived from it) are what this command is explicitly asked to change,
@@ -297,20 +292,12 @@ HEADER
     fi
 
     env_set .env SERVER_IP "$SERVER_IP"
-    env_set .env NEXT_PUBLIC_API_URL "http://$SERVER_IP:4000"
     env_set .env CORS_ORIGINS "http://$SERVER_IP:3000"
-    if [[ -n "$IB_HOST" ]]; then
-        env_set .env IB_HOST "$IB_HOST"
-    else
-        env_set_default .env IB_HOST ""
-    fi
 
     env_set_default .env NODE_ENV "production"
     env_set_default .env FRONTEND_PORT "3000"
     env_set_default .env BACKEND_PORT "4000"
     env_set_default .env BROKER_SERVICE_PORT "8000"
-    env_set_default .env IB_PORT "$DEFAULT_IB_PORT"
-    env_set_default .env IB_CLIENT_ID "$DEFAULT_CLIENT_ID"
     env_set_default .env IB_TIMEOUT "30"
     env_set_default .env POSTGRES_USER "tradingapp"
     env_set_default .env POSTGRES_DB "tradingapp"
@@ -341,10 +328,10 @@ HEADER
     local ib_host
     ib_host=$(grep -E '^IB_HOST=' .env | tail -n1 | cut -d'=' -f2-)
     if ib_configured "$ib_host"; then
-        print_info "  IB Gateway: $ib_host:$(grep -E '^IB_PORT=' .env | cut -d'=' -f2)"
+        print_warning "  IB Gateway is set in .env ($ib_host), which overrides any IB connection added in the app."
     fi
-    print_info "  Brokers: add OANDA, MT5, IB or Alpaca credentials to .env (see .env.example), then '$0 deploy'."
-    print_info "  Broker connections are checked inside the app once it is running."
+    print_info "  Brokers: once deployed, sign in at http://$SERVER_IP:${FRONTEND_PORT:-3000}/settings and add"
+    print_info "  OANDA, MT5, IB or Alpaca under Connections. Each is checked as soon as you save it."
 }
 
 deploy_application() {
@@ -437,30 +424,27 @@ test_deployment() {
 # registered, with the app's last check of each. Never fails, and never
 # contacts a broker itself.
 show_broker_summary() {
-    local summary ib_host skip_ib=1
+    local summary
     if ! command -v python3 &> /dev/null; then
         print_info "Broker connection status is shown in the app"
         return 0
     fi
-    ib_host=$(grep -E '^IB_HOST=' .env 2>/dev/null | tail -n1 | cut -d'=' -f2-)
-    ib_configured "$ib_host" && skip_ib=0
     summary=$(curl -s --max-time 5 http://127.0.0.1:${BROKER_SERVICE_PORT:-8000}/health 2>/dev/null \
-        | SKIP_IB=$skip_ib python3 -c '
+        | python3 -c '
 import json, os, sys
 try:
     conns = json.load(sys.stdin).get("providers", {}).get("connections", {})
 except Exception:
     sys.exit(0)
-skip_ib = os.environ.get("SKIP_IB") == "1"
 def state(c):
     check = (conns[c] or {}).get("check") or {}
     return check.get("status") or "not checked yet"
-print(", ".join(f"{c} ({state(c)})" for c in sorted(conns) if not (skip_ib and c.startswith("ib:"))))
+print(", ".join(f"{c} ({state(c)})" for c in sorted(conns)))
 ' 2>/dev/null) || true
     if [[ -n "$summary" ]]; then
         print_info "Broker connections: $summary (checked in the app; see Settings > Connections)"
     else
-        print_info "No broker connections configured yet; add one in .env (see .env.example), then '$0 deploy'"
+        print_info "No broker connections yet; add one in the app under Settings > Connections"
     fi
 }
 
@@ -506,7 +490,7 @@ run_diagnostics() {
     if [[ -f .env ]]; then
         print_status ".env file exists"
         echo "Configuration:"
-        grep -E "^(SERVER_IP|IB_HOST|IB_PORT|IB_CLIENT_ID)=" .env | sed 's/^/  /'
+        grep -E "^(SERVER_IP|FRONTEND_PORT|BACKEND_PORT)=" .env | sed 's/^/  /'
     else
         print_error ".env file missing"
     fi
@@ -575,13 +559,13 @@ show_ib_help() {
     
     if [[ -f .env ]]; then
         source .env
-        echo "Current Configuration:"
-        echo "  IB Gateway IP: $IB_HOST"
-        echo "  IB Gateway Port: $IB_PORT"
-        echo "  Trading Server IP: $SERVER_IP"
-        echo "  Client ID: $IB_CLIENT_ID"
-        echo ""
     fi
+    # The values to enter in IB Gateway; the same port and client id go into
+    # the IB connection in the app (Settings > Connections).
+    IB_PORT="${IB_PORT:-4002}"
+    IB_CLIENT_ID="${IB_CLIENT_ID:-1}"
+    echo "Trading Server IP: ${SERVER_IP:-<this server>}"
+    echo ""
     
     echo "📋 IB Gateway Setup Checklist:"
     echo ""
@@ -613,9 +597,9 @@ show_ib_help() {
     echo ""
     
     echo "5. 🧪 Point the app at it:"
-    echo "   - Run: IB_HOST=<gateway ip> ./tradingapp.sh config"
-    echo "   - Then: ./tradingapp.sh deploy"
-    echo "   - The app shows whether IB is connected once you sign in"
+    echo "   - Sign in, open Settings > Connections and add Interactive Brokers"
+    echo "   - Enter the gateway's IP, port $IB_PORT and client ID $IB_CLIENT_ID, then save"
+    echo "   - The app checks the connection as soon as it is saved"
     echo ""
     
     echo "📞 Common Issues:"
@@ -627,12 +611,11 @@ show_ib_help() {
     echo ""
     
     echo "🔧 Quick Tests:"
-    echo "   ping $IB_HOST                    # Test basic connectivity"
-    echo "   nc -zv $IB_HOST $IB_PORT        # Test port accessibility"
-    echo "   IB_HOST=<ip> ./tradingapp.sh config  # Set or change the IB Gateway address"
+    echo "   ping <gateway ip>                # Test basic connectivity"
+    echo "   nc -zv <gateway ip> $IB_PORT     # Test port accessibility"
     echo ""
     
-    print_status "After configuring IB Gateway, run: ./tradingapp.sh deploy"
+    print_status "After configuring IB Gateway, add it in the app under Settings > Connections"
 }
 
 # Strip the global flags (--with-db / --no-db) from $@ so the case

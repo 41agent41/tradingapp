@@ -118,6 +118,32 @@ export function checkSummary(check: ConnectionCheck | null): {
   return { tone: 'bad', text: `Unreachable${check.error ? `: ${check.error}` : ''}` };
 }
 
+/**
+ * What to say after a save: the backend checks a connection right after it is
+ * added or changed, so a wrong key or address shows at once.
+ */
+export function saveMessage(
+  done: string,
+  res: { sync_error?: string | null; check?: ConnectionCheck | null; check_error?: string | null }
+): { kind: 'ok' | 'error'; text: string } {
+  if (res?.sync_error) {
+    return {
+      kind: 'error',
+      text: `${done} The broker service has not picked it up yet: ${res.sync_error}`,
+    };
+  }
+  if (res?.check_error) {
+    return { kind: 'error', text: `${done} It could not be checked: ${res.check_error}` };
+  }
+  if (res?.check) {
+    const summary = checkSummary(res.check);
+    return summary.tone === 'ok'
+      ? { kind: 'ok', text: `${done} ${summary.text}.` }
+      : { kind: 'error', text: `${done} Check failed. ${summary.text}` };
+  }
+  return { kind: 'ok', text: done };
+}
+
 /** Move `platform` one place up (-1) or down (+1). */
 export function movePlatform(order: string[], platform: string, by: -1 | 1): string[] {
   const i = order.indexOf(platform);
