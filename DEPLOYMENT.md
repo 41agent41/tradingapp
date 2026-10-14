@@ -393,7 +393,10 @@ chmod +x tradingapp.sh
 > Alpaca. Set `DEFAULT_BROKER` in `.env` to pin one instead. Each
 > configured broker is checked every `BROKER_PROBE_INTERVAL_SECONDS`
 > (default 60): see the header health badge or **Settings > Connections**,
-> which has a Test button per broker. Pass
+> which has a Test button per broker. Brokers can be added, edited,
+> removed and reranked on that tab too; their credentials are stored
+> encrypted under `SETTINGS_ENCRYPTION_KEY`. A broker configured in `.env`
+> wins over one added there, so an existing install is unchanged. Pass
 > `--non-interactive` to skip the "Deploy now?" question at the end of
 > `setup`, for scripted / CI installs.
 

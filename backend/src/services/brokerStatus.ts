@@ -30,17 +30,25 @@ export interface BrokerStatusSummary {
   connections: BrokerConnectionStatus[];
 }
 
-function rank(platform: string): number {
-  const i = (BROKER_PRIORITY as readonly string[]).indexOf(platform);
-  return i === -1 ? BROKER_PRIORITY.length : i;
+function ranker(priority: unknown): (platform: string) => number {
+  const order: readonly string[] =
+    Array.isArray(priority) && priority.length ? priority.map(String) : BROKER_PRIORITY;
+  return (platform) => {
+    const i = order.indexOf(platform);
+    return i === -1 ? order.length : i;
+  };
 }
 
-/** Build the status list from the broker service's `/health` `providers` block. */
+/**
+ * Build the status list from the broker service's `/health` `providers` block,
+ * in its priority order (which the Settings page or .env may have changed).
+ */
 export function brokersFromHealth(providers: any): BrokerStatusSummary {
   const defaultPlatform = typeof providers?.default === 'string' ? providers.default : null;
   const raw = providers?.connections;
   if (!raw || typeof raw !== 'object') return { default: defaultPlatform, connections: [] };
 
+  const rank = ranker(providers?.priority);
   const connections = Object.entries(raw as Record<string, any>).map(([label, c]) => {
     const check = c?.check;
     const status: BrokerConnectionState =

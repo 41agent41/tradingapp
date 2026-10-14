@@ -37,13 +37,13 @@ from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 from fastapi import HTTPException
 
 from connections import (
-    BROKER_PRIORITY,
     DEFAULT_ACCOUNT,
     SUPPORTED_PLATFORMS,
     Connection,
     ManifestError,
+    broker_priority,
     default_platform,
-    load_connections,
+    priority_from_env,
 )
 from observability import get_logger
 from probes import result_for as probe_result
@@ -177,8 +177,11 @@ def _bootstrap() -> None:
     if _bootstrapped:
         return
 
+    import managed
+
     try:
-        connections = load_connections()
+        # .env's connections, plus those added on the Settings page.
+        connections = managed.merged_connections()
     except ManifestError as exc:
         logger.error("connection_manifest_invalid", error=str(exc))
         raise HTTPException(500, f"Connection manifest is invalid: {exc}")
@@ -435,6 +438,8 @@ def provider_health() -> Dict[str, Any]:
     unaffected; a platform is "available" when at least one of its connections
     is. ``connections`` is the new, finer view.
     """
+    import managed
+
     try:
         _bootstrap()
     except HTTPException as exc:
@@ -442,7 +447,9 @@ def provider_health() -> Dict[str, Any]:
         # health check itself into a 500.
         return {
             "default": default_provider(),
-            "priority": list(BROKER_PRIORITY),
+            "priority": broker_priority(),
+            "priority_from_env": priority_from_env(),
+            "managed": {"revision": managed.revision(), "overridden": managed.overridden()},
             "error": exc.detail,
             "providers": {
                 name: {"market_data": False, "broker": False, "available": False}
@@ -476,6 +483,8 @@ def provider_health() -> Dict[str, Any]:
             "account_info_from": (
                 f"oanda:{conn.account_info_from}" if conn.account_info_from else None
             ),
+            # "env" (.env / manifest) or "app" (added on the Settings page).
+            "source": conn.source,
             # Last connectivity check (probes.py); None until the first one.
             "check": probe_result(conn.label),
         }
@@ -484,9 +493,11 @@ def provider_health() -> Dict[str, Any]:
 
     return {
         "default": default_provider(),
-        "priority": list(BROKER_PRIORITY),
+        "priority": broker_priority(),
+        "priority_from_env": priority_from_env(),
         "providers": providers,
         "connections": connections,
+        "managed": {"revision": managed.revision(), "overridden": managed.overridden()},
         "same_funds_groups": same_funds_groups(),
         "currency": currency_consistency(),
     }

@@ -40,6 +40,11 @@ describe('brokersFromHealth', () => {
     expect(s.connections.map((c) => c.is_default)).toEqual([true, false, false]);
   });
 
+  it("follows the broker service's priority when it reports one", () => {
+    const s = brokersFromHealth({ ...providers, priority: ['ib', 'mt5', 'oanda', 'alpaca'] });
+    expect(s.connections.map((c) => c.label)).toEqual(['ib:default', 'mt5:demo', 'oanda:default']);
+  });
+
   it('reports a connection not checked yet as unchecked', () => {
     const mt5 = brokersFromHealth(providers).connections.find((c) => c.platform === 'mt5');
     expect(mt5?.status).toBe('unchecked');

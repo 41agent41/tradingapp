@@ -238,6 +238,11 @@ export default function SettingsPage() {
   const groups = useMemo(() => (payload ? groupBySection(payload) : []), [payload]);
   const activeTab = tab || groups[0]?.id || HISTORY_TAB;
   const active = groups.find((g) => g.id === activeTab);
+  // Broker priority is set with the arrows on the Connections tab.
+  const envConnectionSettings =
+    groups
+      .find((g) => g.id === CONNECTIONS_TAB)
+      ?.settings.filter((s) => s.key !== 'BROKER_PRIORITY') ?? [];
   const needsStepUp =
     !!payload &&
     !!active?.settings.some((s) => s.step_up && !readOnlyReason(s)) &&
@@ -317,7 +322,9 @@ export default function SettingsPage() {
             <nav className="flex flex-wrap gap-2" aria-label="Settings sections">
               {[
                 { id: CONNECTIONS_TAB, title: 'Connections' },
-                ...groups,
+                // The registry's own connections section is shown inside the
+                // Connections tab, below the brokers.
+                ...groups.filter((g) => g.id !== CONNECTIONS_TAB),
                 { id: HISTORY_TAB, title: 'History' },
               ].map((g) => (
                 <button
@@ -337,7 +344,27 @@ export default function SettingsPage() {
 
             <section className="bg-white rounded-lg shadow-sm border p-4 sm:p-6">
               {activeTab === CONNECTIONS_TAB ? (
-                <BrokerConnections />
+                <>
+                  <BrokerConnections />
+                  {envConnectionSettings.length > 0 && (
+                    <details className="mt-6">
+                      <summary className="cursor-pointer text-sm font-medium text-gray-700">
+                        Connection settings from .env
+                      </summary>
+                      <ul className="divide-y">
+                        {envConnectionSettings.map((s) => (
+                          <SettingRow
+                            key={s.key}
+                            setting={s}
+                            busy={busyKey === s.key}
+                            onSave={(value) => void write(s, 'PUT', value)}
+                            onReset={() => void write(s, 'DELETE')}
+                          />
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </>
               ) : activeTab === HISTORY_TAB ? (
                 <History />
               ) : (

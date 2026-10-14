@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Body, HTTPException, status
 
 from ib_client import (
     IB_CLIENT_ID,
@@ -47,16 +48,22 @@ async def health_check():
 async def connections_status():
     """Last connectivity check per configured connection, in broker priority
     order, plus the default platform. Checks run on a timer (probes.py)."""
-    from adapters import BROKER_PRIORITY, default_provider, list_connections
+    import managed
+    from adapters import default_provider, list_connections
+    from connections import broker_priority, priority_from_env
     from probes import result_for
 
+    priority = broker_priority()
     connections = sorted(
         list_connections(),
-        key=lambda c: (BROKER_PRIORITY.index(c.platform), not c.is_default, c.account),
+        key=lambda c: (priority.index(c.platform), not c.is_default, c.account),
     )
     return {
         "default": default_provider(),
-        "priority": list(BROKER_PRIORITY),
+        "priority": priority,
+        "priority_from_env": priority_from_env(),
+        # Added in the app but ignored: .env configures that platform.
+        "overridden": managed.overridden(),
         "connections": [
             {
                 "label": c.label,
@@ -64,6 +71,7 @@ async def connections_status():
                 "account": c.account,
                 "account_mode": c.account_mode,
                 "is_default": c.is_default,
+                "source": c.source,
                 "check": result_for(c.label),
             }
             for c in connections
@@ -83,6 +91,32 @@ async def test_connection(label: str):
     if conn is None:
         raise HTTPException(status_code=404, detail=f"No connection '{label}' is configured.")
     return {"label": label, "check": await asyncio.to_thread(probe_connection, conn)}
+
+
+@router.put("/connections/managed")
+async def put_managed_connections(payload: Dict[str, Any] = Body(...)):
+    """Replace the connections added on the Settings page (sent by the
+    backend, secrets decrypted) and the broker priority chosen there.
+
+    Body: ``{"revision": str, "priority": [platform, ...] | null,
+    "connections": [entry, ...]}``, entries in the manifest shape with literal
+    secrets (``token``, ``account_id``, ``api_key``, ``api_secret``,
+    ``secret``, ``host``, ``port``, ``client_id``). All or nothing: a bad
+    entry answers 422 and changes nothing.
+    """
+    import asyncio
+
+    import managed
+    from connections import ManifestError
+    from probes import probe_all
+
+    try:
+        result = managed.apply(payload)
+    except ManifestError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    # Check the new set now rather than at the next timer tick.
+    asyncio.get_running_loop().run_in_executor(None, probe_all)
+    return result
 
 
 @router.get("/providers")

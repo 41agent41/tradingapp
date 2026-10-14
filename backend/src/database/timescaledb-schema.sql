@@ -911,6 +911,25 @@ CREATE TABLE IF NOT EXISTS settings_audit (
 CREATE INDEX IF NOT EXISTS idx_settings_audit_key_time
     ON settings_audit (key, changed_at DESC);
 
+-- Broker connections added on the Settings page (Connections tab). Secrets
+-- are sealed together in `ciphertext` under SETTINGS_ENCRYPTION_KEY; `.env`
+-- still wins per platform. The backend also creates this table on first use
+-- (backend/src/services/brokerConnections.ts) for installs that predate it.
+CREATE TABLE IF NOT EXISTS broker_connections (
+    id BIGSERIAL PRIMARY KEY,
+    platform VARCHAR(16) NOT NULL,
+    account VARCHAR(64) NOT NULL,
+    account_mode VARCHAR(8) NOT NULL DEFAULT 'paper',
+    currency VARCHAR(8) NOT NULL DEFAULT 'USD',
+    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+    settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ciphertext TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by VARCHAR(64),
+    UNIQUE (platform, account)
+);
+
 -- ==============================================
 -- INITIAL DATA
 -- ==============================================
