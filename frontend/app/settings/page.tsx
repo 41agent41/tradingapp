@@ -69,7 +69,13 @@ function SettingEditor({
         aria-label={setting.label}
         className={inputClass}
         type={setting.secret ? 'password' : 'text'}
-        inputMode={setting.type === 'integer' || setting.type === 'number' ? 'decimal' : undefined}
+        inputMode={
+          setting.type === 'integer' || setting.type === 'number'
+            ? 'decimal'
+            : setting.type === 'url'
+              ? 'url'
+              : undefined
+        }
         placeholder={setting.secret ? 'New value' : (setting.default ?? '')}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}

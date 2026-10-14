@@ -32,13 +32,19 @@ import axios from 'axios';
 import type { Server as SocketIOServer } from 'socket.io';
 import { createClient } from 'redis';
 import { logger } from './logger.js';
+import { configService } from '../config/configService.js';
+import { readBool } from '../config/read.js';
 
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
 const REDIS_HOST = process.env.REDIS_HOST || 'redis';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 const REDIS_PASSWORD = process.env.REDIS_PASSWORD || undefined;
-const STREAMING_ENABLED = (process.env.STREAMING_ENABLED ?? 'true').toLowerCase() !== 'false';
+/** From `.env` or the Settings page; `index.ts` starts or stops the bridge
+ *  when it changes. */
+export function streamingEnabled(): boolean {
+  return readBool(configService.asEnv(), 'STREAMING_ENABLED', true);
+}
 
 const TICK_PATTERN = 'marketdata:tick:*';
 const STATUS_CHANNEL = 'marketdata:status';
@@ -144,8 +150,8 @@ export class StreamingBridge {
   // Lifecycle
   // -------------------------------------------------------------------
   async start(): Promise<void> {
-    if (!STREAMING_ENABLED) {
-      logger.info('streaming disabled via STREAMING_ENABLED=false');
+    if (!streamingEnabled()) {
+      logger.info('streaming disabled (Settings or STREAMING_ENABLED=false)');
       return;
     }
     if (this.started) return;
@@ -363,7 +369,7 @@ export class StreamingBridge {
       subs.push({ symbol, refCount: state.refCount, sockets: state.sockets.size });
     }
     return {
-      enabled: STREAMING_ENABLED,
+      enabled: streamingEnabled(),
       connected: !!this.subscriber?.isOpen,
       last_error: this.lastError,
       subscriptions: subs.sort((a, b) => a.symbol.localeCompare(b.symbol)),

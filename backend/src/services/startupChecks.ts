@@ -95,17 +95,12 @@ export function checkStartupConfig(env: Env = process.env): StartupCheckResult {
     }
   }
 
-  // --- Dead-man's switch: unattended trading with nothing watching ---------
-  const heartbeatUrl = val(env, 'HEARTBEAT_URL');
+  // --- Dead-man's switch: a URL in .env must be one -----------------------
+  // (Whether one is set at all is `heartbeatWarnings`, checked once the
+  // Settings page's values are read, since it can be set there too.)
   for (const name of ['HEARTBEAT_URL', 'HEARTBEAT_FAIL_URL']) {
     const url = val(env, name);
     if (url && !/^https?:\/\//i.test(url)) errors.push(`${name} must be an http(s) URL.`);
-  }
-  if (!heartbeatUrl && val(env, 'SYSTEMATIC_EXECUTION_ENABLED').toLowerCase() === 'true') {
-    warnings.push(
-      'SYSTEMATIC_EXECUTION_ENABLED=true with no HEARTBEAT_URL: nothing will page you if the ' +
-        'app, the host or its internet goes down. Set a monitor off the host.'
-    );
   }
 
   // --- Settings encryption key: secrets saved on the Settings page --------
@@ -175,4 +170,16 @@ export function checkStartupConfig(env: Env = process.env): StartupCheckResult {
   }
 
   return { errors, warnings };
+}
+
+/** Unattended trading with nothing watching. Called with the settings in
+ *  effect (`.env` and the Settings page), after they have been read. */
+export function heartbeatWarnings(env: Record<string, string | undefined>): string[] {
+  if (val(env, 'HEARTBEAT_URL')) return [];
+  if (val(env, 'SYSTEMATIC_EXECUTION_ENABLED').toLowerCase() !== 'true') return [];
+  return [
+    'SYSTEMATIC_EXECUTION_ENABLED=true with no heartbeat URL: nothing will page you if the ' +
+      'app, the host or its internet goes down. Set a monitor off the host (Settings, ' +
+      'Alerts and safety, or HEARTBEAT_URL).',
+  ];
 }

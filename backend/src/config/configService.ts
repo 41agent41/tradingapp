@@ -101,6 +101,7 @@ export class ConfigService {
   private timer: NodeJS.Timeout | null = null;
   private loadedAt: Date | null = null;
   private lastError: string | null = null;
+  private listeners: { keys: readonly string[]; seen: string; fn: () => void }[] = [];
 
   constructor(private readonly env: Record<string, string | undefined> = process.env) {}
 
@@ -109,11 +110,23 @@ export class ConfigService {
     this.db = db;
   }
 
-  start(): void {
-    if (this.timer) return;
-    void this.refresh();
+  /**
+   * Starts the periodic re-read. The promise settles after the first read, or
+   * after `firstReadMs` if the database is slow, so callers can start the
+   * services that depend on settings with the stored values already in place.
+   */
+  start(firstReadMs = 10_000): Promise<void> {
+    if (this.timer) return Promise.resolve();
     this.timer = setInterval(() => void this.refresh(), REFRESH_MS);
     this.timer.unref?.();
+    let timeout: NodeJS.Timeout | undefined;
+    return Promise.race([
+      this.refresh().then(() => undefined),
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, firstReadMs);
+        timeout.unref?.();
+      }),
+    ]).finally(() => clearTimeout(timeout));
   }
 
   stop(): void {
@@ -131,6 +144,7 @@ export class ConfigService {
       this.load(rows as StoredRow[]);
       this.loadedAt = new Date();
       this.lastError = null;
+      this.notify();
       return true;
     } catch (err) {
       const message = (err as Error)?.message ?? String(err);
@@ -167,6 +181,39 @@ export class ConfigService {
     }
     this.rows = next;
     this.secrets = secrets;
+  }
+
+  private snapshot(keys: readonly string[]): string {
+    return JSON.stringify(keys.map((key) => this.get(key) ?? null));
+  }
+
+  /**
+   * Calls `fn` whenever the value in effect of any of `keys` changes, which
+   * is how a loop that reads its settings once (a timer interval) picks up a
+   * save without a restart. Returns the unsubscribe function.
+   */
+  subscribe(keys: readonly string[], fn: () => void): () => void {
+    const listener = { keys, seen: this.snapshot(keys), fn };
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== listener);
+    };
+  }
+
+  private notify(): void {
+    for (const listener of this.listeners) {
+      const now = this.snapshot(listener.keys);
+      if (now === listener.seen) continue;
+      listener.seen = now;
+      try {
+        listener.fn();
+      } catch (err) {
+        logger.error(
+          { keys: listener.keys, err: (err as Error)?.message ?? String(err) },
+          'settings: applying a change failed'
+        );
+      }
+    }
   }
 
   private fromEnv(key: string): string | undefined {

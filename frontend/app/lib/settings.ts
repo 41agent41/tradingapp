@@ -9,7 +9,7 @@ export interface SettingView {
   key: string;
   section: string;
   label: string;
-  type: 'boolean' | 'integer' | 'number' | 'string' | 'enum' | 'json';
+  type: 'boolean' | 'integer' | 'number' | 'string' | 'url' | 'enum' | 'json';
   options?: string[];
   min?: number;
   max?: number;

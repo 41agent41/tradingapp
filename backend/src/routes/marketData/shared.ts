@@ -15,11 +15,15 @@
  */
 import type { Request, Response } from 'express';
 import { BROKERS, defaultBroker } from '../../services/orderTypes.js';
+import { configService } from '../../config/configService.js';
+import { readInt } from '../../config/read.js';
 
 export const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
-// Cache TTLs (seconds). Tunable via env so operators don't have to redeploy.
-export const REALTIME_CACHE_TTL = parseInt(process.env.CACHE_TTL_REALTIME || '2', 10);
+// Realtime quote cache TTL (seconds), from `.env` or the Settings page.
+export function realtimeCacheTtl(): number {
+  return readInt(configService.asEnv(), 'CACHE_TTL_REALTIME', 2, 0);
+}
 
 export const VALID_TIMEFRAMES = [
   'tick',

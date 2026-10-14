@@ -195,6 +195,59 @@ describe('ConfigService', () => {
     expect(svc.status().error).toMatch(/app_settings/);
   });
 
+  it('tells subscribers when a watched value changes, and only then', async () => {
+    const db = fakeDb();
+    const svc = new ConfigService({});
+    svc.attach(db);
+    const backfill = jest.fn();
+    const other = jest.fn();
+    const stop = svc.subscribe(['BACKFILL_ENABLED', 'BACKFILL_PERIOD'], backfill);
+    svc.subscribe(['NEWS_CALENDAR_URL'], other);
+
+    await svc.set('BACKFILL_ENABLED', 'true', ctx);
+    expect(backfill).toHaveBeenCalledTimes(1);
+    await svc.refresh();
+    expect(backfill).toHaveBeenCalledTimes(1);
+    await svc.set('BACKFILL_ENABLED', 'true', ctx);
+    expect(backfill).toHaveBeenCalledTimes(1);
+    await svc.clear('BACKFILL_ENABLED', ctx);
+    expect(backfill).toHaveBeenCalledTimes(2);
+    expect(other).not.toHaveBeenCalled();
+
+    stop();
+    await svc.set('BACKFILL_PERIOD', '1D', ctx);
+    expect(backfill).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps notifying when one subscriber throws', async () => {
+    const svc = new ConfigService({});
+    svc.attach(fakeDb());
+    const after = jest.fn();
+    svc.subscribe(['BACKFILL_PERIOD'], () => {
+      throw new Error('boom');
+    });
+    svc.subscribe(['BACKFILL_PERIOD'], after);
+    await svc.set('BACKFILL_PERIOD', '1D', ctx);
+    expect(after).toHaveBeenCalledTimes(1);
+  });
+
+  it('start resolves once the stored values are read', async () => {
+    const db = fakeDb();
+    db.rows.set('BACKFILL_PERIOD', {
+      key: 'BACKFILL_PERIOD',
+      value: '1M',
+      ciphertext: null,
+      version: 1,
+      updated_at: new Date(),
+      updated_by: null,
+    });
+    const svc = new ConfigService({});
+    svc.attach(db);
+    await svc.start();
+    expect(svc.get('BACKFILL_PERIOD')).toBe('1M');
+    svc.stop();
+  });
+
   it('asEnv resolves registered keys lazily and passes others through', async () => {
     const svc = new ConfigService({ SOMETHING_ELSE: 'x' });
     svc.attach(fakeDb());

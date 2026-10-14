@@ -1,5 +1,7 @@
 import { createClient, RedisClientType } from 'redis';
 import { logger } from './logger.js';
+import { configService } from '../config/configService.js';
+import { readBool } from '../config/read.js';
 
 /**
  * Thin Redis cache wrapper.
@@ -17,10 +19,13 @@ import { logger } from './logger.js';
  *   REDIS_HOST     (default: redis)
  *   REDIS_PORT     (default: 6379)
  *   REDIS_PASSWORD (optional)
- *   REDIS_ENABLED  ("false" disables the cache entirely)
+ *   REDIS_ENABLED  ("false" disables the cache entirely; also on the
+ *                  Settings page, read on every use)
  */
 
-const ENABLED = (process.env.REDIS_ENABLED ?? 'true').toLowerCase() !== 'false';
+function cacheEnabled(): boolean {
+  return readBool(configService.asEnv(), 'REDIS_ENABLED', true);
+}
 
 const HOST = process.env.REDIS_HOST || 'redis';
 const PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
@@ -31,14 +36,12 @@ export class CacheService {
   private connecting: Promise<void> | null = null;
   private lastError: string | null = null;
 
-  constructor() {
-    if (!ENABLED) {
-      logger.info('redis cache disabled via REDIS_ENABLED=false');
-    }
-  }
-
   private async ensureConnected(): Promise<RedisClientType | null> {
-    if (!ENABLED) return null;
+    if (!cacheEnabled()) {
+      // Turned off from the Settings page while connected: let it go.
+      if (this.client) void this.close();
+      return null;
+    }
     if (this.client?.isOpen) return this.client;
     if (this.connecting) {
       await this.connecting;
@@ -81,7 +84,7 @@ export class CacheService {
 
   /** Returns true if Redis is reachable. Never throws. */
   async ping(): Promise<boolean> {
-    if (!ENABLED) return false;
+    if (!cacheEnabled()) return false;
     try {
       const client = await this.ensureConnected();
       if (!client) return false;
@@ -148,7 +151,7 @@ export class CacheService {
 
   status() {
     return {
-      enabled: ENABLED,
+      enabled: cacheEnabled(),
       connected: !!this.client?.isOpen,
       host: HOST,
       port: PORT,

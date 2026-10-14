@@ -15,17 +15,33 @@ import authRoutes from './routes/auth.js';
 import axios from 'axios';
 import { dbService } from './services/database.js';
 import { cacheService } from './services/cache.js';
-import { createStreamingBridge } from './services/streamingBridge.js';
-import { createBackfillScheduler } from './services/backfillScheduler.js';
-import { createStrategyRunner } from './services/strategyRunner.js';
-import { createExecutionsPoller } from './services/executionsPoller.js';
-import { Heartbeat, heartbeatOptionsFromEnv } from './services/heartbeat.js';
+import { createStreamingBridge, streamingEnabled } from './services/streamingBridge.js';
+import {
+  BACKFILL_SETTING_KEYS,
+  backfillSettings,
+  createBackfillScheduler,
+} from './services/backfillScheduler.js';
+import {
+  RUNNER_SETTING_KEYS,
+  createStrategyRunner,
+  runnerSettings,
+} from './services/strategyRunner.js';
+import {
+  EXECUTIONS_SETTING_KEYS,
+  createExecutionsPoller,
+  executionsSettings,
+} from './services/executionsPoller.js';
+import {
+  HEARTBEAT_SETTING_KEYS,
+  Heartbeat,
+  heartbeatOptionsFromEnv,
+} from './services/heartbeat.js';
 import { checkConnectionSchema, reportSchemaGuard } from './services/schemaGuard.js';
 import { createAuthMiddleware, checkSocketAuth } from './middleware/auth.js';
 import { observabilityMiddleware } from './middleware/observability.js';
 import { logger, currentRequestId } from './services/logger.js';
 import { registry } from './services/metrics.js';
-import { checkStartupConfig } from './services/startupChecks.js';
+import { checkStartupConfig, heartbeatWarnings } from './services/startupChecks.js';
 import { configService } from './config/configService.js';
 import { startDefaultBrokerRefresh } from './services/brokerDefault.js';
 import { brokersFromHealth, defaultBrokerProblem } from './services/brokerStatus.js';
@@ -289,7 +305,8 @@ const streamingBridge = createStreamingBridge(io);
 
 // Backfill scheduler (Phase 5): periodically tops up the local store with
 // recent bars for every enabled `auto_collect` row in data_collection_config.
-// Opt-in via BACKFILL_ENABLED — see services/backfillScheduler.ts.
+// Opt-in via BACKFILL_ENABLED (Settings page or .env) — see
+// services/backfillScheduler.ts.
 const backfillScheduler = createBackfillScheduler();
 
 // Strategy runner (Systematic Trading Phase 2, signal-only): evaluates every
@@ -485,17 +502,52 @@ server.listen(PORT, '0.0.0.0', () => {
 
   // Settings saved from the Settings page. `.env` still wins over them.
   configService.attach(dbService);
-  configService.start();
+  const settingsLoaded = configService.start();
 
   // Broker connections added on the Settings page, sent to the broker service.
   brokerSync.start();
 
-  void streamingBridge.start().catch((err) => {
-    logger.warn({ err: String(err) }, 'streaming bridge failed to start');
-  });
+  // The loops below read their settings once, so they start after the stored
+  // values are in (or the first read gives up), and restart when one changes.
+  let systematicAllowed = false;
+  void settingsLoaded.then(() => {
+    for (const w of heartbeatWarnings(configService.asEnv())) logger.warn(w);
 
-  backfillScheduler.start();
-  heartbeat.start();
+    void streamingBridge.start().catch((err) => {
+      logger.warn({ err: String(err) }, 'streaming bridge failed to start');
+    });
+    backfillScheduler.reconfigure(backfillSettings());
+    backfillScheduler.start();
+    heartbeat.reconfigure(heartbeatOptionsFromEnv());
+    heartbeat.start();
+
+    configService.subscribe(['STREAMING_ENABLED'], () => {
+      if (streamingEnabled()) {
+        void streamingBridge.start().catch((err) => {
+          logger.warn({ err: String(err) }, 'streaming bridge failed to start');
+        });
+      } else {
+        void streamingBridge.stop();
+      }
+    });
+    configService.subscribe(BACKFILL_SETTING_KEYS, () => {
+      backfillScheduler.reconfigure(backfillSettings());
+      backfillScheduler.start();
+    });
+    configService.subscribe(HEARTBEAT_SETTING_KEYS, () => {
+      heartbeat.reconfigure(heartbeatOptionsFromEnv());
+      heartbeat.start();
+    });
+    // The systematic services only restart if the schema guard let them start.
+    configService.subscribe(RUNNER_SETTING_KEYS, () => {
+      strategyRunner.reconfigure(runnerSettings());
+      if (systematicAllowed) strategyRunner.start();
+    });
+    configService.subscribe(EXECUTIONS_SETTING_KEYS, () => {
+      executionsPoller.reconfigure(executionsSettings());
+      if (systematicAllowed) executionsPoller.start();
+    });
+  });
 
   // Multi-connection on a pre-C-0 schema silently drops colliding fills, so
   // the systematic services do not start until the schema is verified. The
@@ -519,7 +571,11 @@ server.listen(PORT, '0.0.0.0', () => {
       );
       return;
     }
+    await settingsLoaded;
+    systematicAllowed = true;
+    strategyRunner.reconfigure(runnerSettings());
     strategyRunner.start();
+    executionsPoller.reconfigure(executionsSettings());
     executionsPoller.start();
   })();
 

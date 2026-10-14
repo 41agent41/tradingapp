@@ -26,7 +26,7 @@
 // Every supported broker; the list lives in services/orderTypes.ts.
 import { BROKERS } from '../services/orderTypes.js';
 
-export type SettingType = 'boolean' | 'integer' | 'number' | 'string' | 'enum' | 'json';
+export type SettingType = 'boolean' | 'integer' | 'number' | 'string' | 'url' | 'enum' | 'json';
 
 export type SettingSection =
   | 'trading'
@@ -96,6 +96,7 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'boolean',
     default: 'false',
     apply: 'reload',
+    editable: true,
     help: 'Evaluates every running strategy on a timer and records its signals. Signal-only unless systematic execution is also on.',
   },
   {
@@ -307,6 +308,7 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'string',
     secret: true,
     apply: 'immediate',
+    editable: true,
     help: 'Alerts are off until both the token and the chat id are set.',
   },
   {
@@ -315,6 +317,7 @@ export const SETTINGS: readonly SettingDef[] = [
     label: 'Telegram chat id',
     type: 'string',
     apply: 'immediate',
+    editable: true,
     help: 'Chat or channel the bot posts to.',
   },
   {
@@ -324,7 +327,8 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'integer',
     default: '3600',
     min: 0,
-    apply: 'restart',
+    apply: 'immediate',
+    editable: true,
     help: 'An ongoing condition is alerted again only after this long.',
   },
   {
@@ -334,25 +338,28 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'integer',
     default: '30',
     min: 1,
-    apply: 'restart',
+    apply: 'immediate',
+    editable: true,
     help: 'Rate limit across all alerts.',
   },
   {
     key: 'HEARTBEAT_URL',
     section: 'alerts',
     label: 'Heartbeat URL',
-    type: 'string',
+    type: 'url',
     secret: true,
-    apply: 'restart',
+    apply: 'reload',
+    editable: true,
     help: 'Pinged while the app can trade, by a monitor off the host that pages when pings stop.',
   },
   {
     key: 'HEARTBEAT_FAIL_URL',
     section: 'alerts',
     label: 'Heartbeat failure URL',
-    type: 'string',
+    type: 'url',
     secret: true,
-    apply: 'restart',
+    apply: 'reload',
+    editable: true,
     help: 'Called at once when a known problem stops trading.',
   },
   {
@@ -362,7 +369,8 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'integer',
     default: '60',
     min: 10,
-    apply: 'restart',
+    apply: 'reload',
+    editable: true,
     help: 'How often the heartbeat URL is pinged.',
   },
 
@@ -438,6 +446,7 @@ export const SETTINGS: readonly SettingDef[] = [
     default: '60',
     min: 5,
     apply: 'reload',
+    editable: true,
     help: 'How often the runner evaluates every running strategy.',
   },
   {
@@ -447,7 +456,8 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'integer',
     default: '15000',
     min: 0,
-    apply: 'restart',
+    apply: 'reload',
+    editable: true,
     help: 'Delay before the first evaluation after startup.',
   },
   {
@@ -458,6 +468,7 @@ export const SETTINGS: readonly SettingDef[] = [
     default: '4',
     min: 1,
     apply: 'reload',
+    editable: true,
     help: 'Runs within one connection stay sequential.',
   },
   {
@@ -468,6 +479,7 @@ export const SETTINGS: readonly SettingDef[] = [
     default: '3',
     min: 1,
     apply: 'reload',
+    editable: true,
     help: 'Consecutive failures before a connection is skipped.',
   },
   {
@@ -478,6 +490,7 @@ export const SETTINGS: readonly SettingDef[] = [
     default: '300',
     min: 1,
     apply: 'reload',
+    editable: true,
     help: 'How long a failing connection is skipped.',
   },
   {
@@ -487,6 +500,7 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'boolean',
     default: 'false',
     apply: 'reload',
+    editable: true,
     help: 'Tops up the database with recent bars for every auto-collect row.',
   },
   {
@@ -497,6 +511,7 @@ export const SETTINGS: readonly SettingDef[] = [
     default: '15',
     min: 1,
     apply: 'reload',
+    editable: true,
     help: 'How often the backfill scheduler ticks.',
   },
   {
@@ -506,6 +521,7 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'string',
     default: '5D',
     apply: 'reload',
+    editable: true,
     help: 'Window fetched per run, as an IB period (1D, 5D, 1M).',
   },
   {
@@ -515,7 +531,8 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'integer',
     default: '30000',
     min: 0,
-    apply: 'restart',
+    apply: 'reload',
+    editable: true,
     help: 'Delay before the first backfill after startup.',
   },
   {
@@ -525,6 +542,7 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'boolean',
     default: 'false',
     apply: 'reload',
+    editable: true,
     help: "Pulls each venue's fills into the database. Needed for P&L and max_daily_loss.",
   },
   {
@@ -535,6 +553,7 @@ export const SETTINGS: readonly SettingDef[] = [
     default: '120',
     min: 15,
     apply: 'reload',
+    editable: true,
     help: 'How often each venue is polled.',
   },
   {
@@ -546,6 +565,7 @@ export const SETTINGS: readonly SettingDef[] = [
     min: 1,
     max: 30,
     apply: 'reload',
+    editable: true,
     help: 'How far back each poll reaches.',
   },
   {
@@ -555,7 +575,8 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'integer',
     default: '20000',
     min: 0,
-    apply: 'restart',
+    apply: 'reload',
+    editable: true,
     help: 'Delay before the first poll after startup.',
   },
   {
@@ -565,7 +586,8 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'enum',
     options: ['paper', 'live'],
     default: 'paper',
-    apply: 'reload',
+    apply: 'immediate',
+    editable: true,
     help: 'Account mode stamped on a fill with no order of ours behind it.',
   },
   {
@@ -574,7 +596,8 @@ export const SETTINGS: readonly SettingDef[] = [
     label: 'Redis cache',
     type: 'boolean',
     default: 'true',
-    apply: 'restart',
+    apply: 'immediate',
+    editable: true,
     help: 'Read-through cache for quotes and searches.',
   },
   {
@@ -584,7 +607,8 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'integer',
     default: '2',
     min: 0,
-    apply: 'restart',
+    apply: 'immediate',
+    editable: true,
     help: 'How long a realtime quote is cached.',
   },
   {
@@ -593,14 +617,15 @@ export const SETTINGS: readonly SettingDef[] = [
     label: 'Live streaming',
     type: 'boolean',
     default: 'true',
-    apply: 'restart',
+    apply: 'reload',
+    editable: true,
     help: 'Fans out ticks from Redis to the browser.',
   },
   {
     key: 'NEWS_CALENDAR_URL',
     section: 'schedulers',
     label: 'News calendar URL',
-    type: 'string',
+    type: 'url',
     default: 'https://nfs.faireconomy.media/ff_calendar_thisweek.json',
     apply: 'immediate',
     editable: true,
@@ -965,6 +990,18 @@ export function normalizeValue(def: SettingDef, raw: unknown): string {
       } catch {
         throw new SettingValidationError(`${def.label} must be valid JSON.`);
       }
+    }
+    case 'url': {
+      let url: URL | null = null;
+      try {
+        url = new URL(text);
+      } catch {
+        url = null;
+      }
+      if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
+        throw new SettingValidationError(`${def.label} must be an http(s) URL.`);
+      }
+      return text;
     }
     case 'string':
     default:

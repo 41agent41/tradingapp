@@ -751,9 +751,12 @@ phase_verify() {
     fi
 
     # V16 dead-man's switch
-    local hb
-    hb=$(jq -r '.services.heartbeat.last_result // empty' <<<"$(curl -s --max-time 15 "http://127.0.0.1:$bp/api/health" || true)" 2>/dev/null || true)
-    if [[ -n $(env_get HEARTBEAT_URL) ]]; then
+    local hb hbon health
+    health=$(curl -s --max-time 15 "http://127.0.0.1:$bp/api/health" || true)
+    hb=$(jq -r '.services.heartbeat.last_result // empty' <<<"$health" 2>/dev/null || true)
+    # Set in .env or on the Settings page; the backend reports either.
+    hbon=$(jq -r '.services.heartbeat.enabled // empty' <<<"$health" 2>/dev/null || true)
+    if [[ -n $(env_get HEARTBEAT_URL) || $hbon == true ]]; then
         [[ $hb == ok ]] && check V16 PASS "heartbeat last_result ok" || check V16 FAIL "heartbeat last_result ${hb:-none yet} (it pings every HEARTBEAT_INTERVAL_SECONDS; re-run verify after a minute)"
     else
         check V16 SKIP "HEARTBEAT_URL not set (needed before any unattended execution)"

@@ -467,6 +467,10 @@ also set up alerting and the account limits. Each key is explained in
 `.env.example`, and [`PAPER_DEPLOYMENT_RUNBOOK.md`](PAPER_DEPLOYMENT_RUNBOOK.md)
 rehearses them on paper:
 
+The Telegram and heartbeat values can be entered on the Settings page (Alerts
+and safety) instead, where the token and URLs are stored encrypted; the rest
+are still set here for now.
+
 ```bash
 # Alerts to your phone, and a monitor off the host that pages when they stop
 TELEGRAM_BOT_TOKEN=<from @BotFather>
@@ -487,8 +491,8 @@ TRADING_DAY_TIMEZONE=Europe/Athens      # your broker's server zone
 # NEWS_CALENDAR_URL=...                 # only to replace the default feed
 ```
 
-With `SYSTEMATIC_EXECUTION_ENABLED=true` and no `HEARTBEAT_URL`, the backend
-logs a startup warning: nothing would page you if the host went down.
+With `SYSTEMATIC_EXECUTION_ENABLED=true` and no heartbeat URL (in `.env` or on
+the Settings page), the backend logs a startup warning: nothing would page you if the host went down.
 
 ### Settings page
 
@@ -501,9 +505,21 @@ recorded in `settings_audit` (the page's History tab).
   locked on the page. To manage a setting from the page, remove its line from
   `.env` and restart. This also makes `.env` a break-glass for anything the
   page can change.
-- **What it can change today:** the promotion gate thresholds and the news
-  calendar. Everything else is listed read-only and is moving to the page in
-  stages (see the settings migration plan).
+- **What it can change today:** broker connections and broker priority
+  (Connections tab), the promotion gate thresholds, the news calendar, the
+  strategy runner and its scheduling, the backfill scheduler, fills sync, the
+  Redis cache and quote TTL, live streaming, Telegram alerts and their limits,
+  and the heartbeat. Everything else is listed read-only and is moving to the
+  page in stages (see the settings migration plan).
+- **When a change applies** is shown next to each setting. "Applies
+  immediately" means the next use reads it. "Applies on the next cycle" means
+  the loop it drives (runner, backfill, fills sync, streaming, heartbeat)
+  restarts with the new value as soon as it is saved, after its usual start
+  delay. Neither needs a service restart.
+- **Upgrading an existing install:** `docker-compose.yml` no longer pins the
+  scheduler, cache and streaming defaults, and `.env.example` ships them
+  commented out. A `.env` written before this still sets them, so they show as
+  locked; delete a line to manage that setting from the page.
 - **Protected settings** (marked on the page) need the same trading token and
   MFA code as placing an order, when those are configured.
 - **What never moves to the page:** the database connection, the ports,
@@ -599,8 +615,8 @@ into the backend as a **read-through cache** for high-traffic endpoints:
 
 A Redis outage degrades into a cache miss — every endpoint keeps working
 without it. Health is surfaced in `/api/health` under
-`services.cache.connected`. To disable caching entirely set
-`REDIS_ENABLED=false` in `.env`.
+`services.cache.connected`. To disable caching entirely turn off **Redis
+cache** on the Settings page (or set `REDIS_ENABLED=false` in `.env`).
 
 ## Real-time streaming (Phase 4)
 
@@ -636,8 +652,9 @@ Operational notes:
   display with a one-shot `/api/market-data/realtime` call before the
   first tick arrives — useful when streaming is disabled or when
   Redis is briefly unreachable.
-- **Turning it off:** set `STREAMING_ENABLED=false` in `.env` and the
-  backend bridge will not connect to Redis. The chart falls back to
+- **Turning it off:** turn off **Live streaming** on the Settings page (or
+  set `STREAMING_ENABLED=false` in `.env`) and the backend bridge
+  disconnects from Redis. The chart falls back to
   one-shot REST calls (no live updates) and the rest of the app keeps
   working normally.
 - **Diagnostics:**
@@ -682,17 +699,15 @@ ON CONFLICT (contract_id, timeframe) DO UPDATE
 ### 2. Enable the scheduler
 
 The scheduler is **off by default** because it makes live IB requests on
-a timer. Turn it on in `.env` and redeploy:
+a timer. Turn on **Backfill scheduler** on the Settings page (Schedulers and
+data), where its interval, window and start delay are set too. It starts
+without a redeploy. Or pin it in `.env` and redeploy:
 
 ```bash
 BACKFILL_ENABLED=true
 BACKFILL_INTERVAL_MINUTES=15   # how often the scheduler ticks
 BACKFILL_PERIOD=5D             # window fetched per run (any IB period)
 BACKFILL_INITIAL_DELAY_MS=30000
-```
-
-```bash
-./tradingapp.sh redeploy
 ```
 
 Each pass fetches the recent window for every eligible row and upserts it
@@ -736,16 +751,15 @@ P&L source — with the sync off, a declared cap fails *closed* and the run
 places nothing), or you want `/api/account/executions` and `/api/account/pnl`
 to report anything.
 
+Turn on **Fills sync** on the Settings page (Schedulers and data); it starts
+without a redeploy. Or pin it in `.env` and redeploy:
+
 ```bash
 # .env
 EXECUTIONS_SYNC_ENABLED=true
 EXECUTIONS_SYNC_INTERVAL_SECONDS=120   # per-venue poll cadence (min 15)
 EXECUTIONS_SYNC_LOOKBACK_DAYS=2        # window per poll (1-30)
 EXECUTIONS_DEFAULT_ACCOUNT_MODE=paper  # for fills with no order of ours behind them
-```
-
-```bash
-./tradingapp.sh redeploy
 ```
 
 The poller reads every venue the app has traded at recently plus every venue
