@@ -76,6 +76,9 @@ TICK_TYPE_NAMES: dict[int, str] = {
 }
 
 
+_TICK_NAME_TO_CODE = {name: code for code, name in TICK_TYPE_NAMES.items()}
+
+
 @dataclass
 class Subscription:
     """Per-symbol bookkeeping for an active IB subscription."""
@@ -366,6 +369,36 @@ class StreamingManager:
             "timestamp": now,
         }
 
+        self._publish(self._tick_channel(symbol), payload)
+
+    def publish_tick(
+        self,
+        symbol: str,
+        tick_name: str,
+        price: float | None = None,
+        size: float | None = None,
+        source: str | None = None,
+    ) -> None:
+        """Publish one tick that did not come from IB (venue_streaming.py),
+        in the same payload shape and channel as an IB tick, so the backend
+        and the charts cannot tell the difference."""
+        value = price if price is not None else size
+        if value is None or _is_nanish(value):
+            self.ticks_dropped += 1
+            return
+        self.ticks_total += 1
+        payload = {
+            "symbol": symbol.upper(),
+            "type": "tick",
+            "tick_type": tick_name,
+            "tick_type_code": _TICK_NAME_TO_CODE.get(tick_name),
+            "price": float(price) if price is not None else None,
+            "size": float(size) if size is not None else None,
+            "value": float(value),
+            "timestamp": self._clock(),
+        }
+        if source:
+            payload["source"] = source
         self._publish(self._tick_channel(symbol), payload)
 
     # ------------------------------------------------------------------

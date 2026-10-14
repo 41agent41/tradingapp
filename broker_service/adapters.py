@@ -354,6 +354,38 @@ def get_market_data_adapter(
     return adapter
 
 
+def market_data_candidates(
+    source: Optional[str] = None, account: Optional[str] = None
+) -> List[tuple[str, Optional[str]]]:
+    """Where to get market data, in the order to try.
+
+    A request that names a source gets exactly that source: no fallback.
+    One that names none gets the default platform first, then every other
+    platform with market data in broker-priority order, so prices and charts
+    keep working when the default broker is down. Orders never use this:
+    they only ever go to the broker they were addressed to.
+    """
+    if (source or "").strip():
+        return [(resolve_provider(source), account)]
+    first = default_provider()
+    try:
+        _bootstrap()
+    except HTTPException:
+        return [(first, None)]
+    available = {p for (p, _) in _market_data}
+    rest = [p for p in broker_priority() if p != first and p in available]
+    return [(first, None)] + [(p, None) for p in rest]
+
+
+def falls_back(exc: BaseException) -> bool:
+    """Whether a market-data failure should move on to the next platform:
+    the venue was unavailable or broken (5xx, 501 "not configured", or an
+    unexpected error), not a bad request the next venue would refuse too."""
+    if isinstance(exc, HTTPException):
+        return exc.status_code >= 500
+    return True
+
+
 def get_broker_adapter(
     broker: Optional[str] = None,
     account: Optional[str] = None,

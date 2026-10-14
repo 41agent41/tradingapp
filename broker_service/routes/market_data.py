@@ -6,7 +6,7 @@ import math
 import time
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from ibapi.ticktype import TickTypeEnum
 
 from bars_processing import (
@@ -30,8 +30,105 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+async def _with_fallback(source: str, account: str | None, response: Response, fetch):
+    """Run ``fetch(platform, account)`` on the requested source or, with none,
+    on the default broker and then each other broker with market data until
+    one answers (see ``adapters.market_data_candidates``). The broker that
+    answered is named in the ``X-Market-Data-Source`` header. With every
+    broker failing, the default broker's error is returned.
+    """
+    from adapters import falls_back, market_data_candidates
+
+    first_error: Exception | None = None
+    for platform, acct in market_data_candidates(source, account):
+        try:
+            result = await fetch(platform, acct)
+        except Exception as exc:  # noqa: BLE001 — try the next broker
+            if not falls_back(exc):
+                raise
+            if first_error is None:
+                first_error = exc
+            logger.warning(f"market data from {platform} failed, trying the next broker: {exc}")
+            continue
+        response.headers["X-Market-Data-Source"] = platform
+        return result
+    raise first_error or HTTPException(503, "No broker has market data")
+
+
 @router.get("/market-data/history", response_model=HistoricalDataResponse)
 async def get_historical_data(
+    response: Response,
+    symbol: str,
+    timeframe: str,
+    period: str = "1Y",
+    account_mode: str = "paper",
+    start_date: str = None,
+    end_date: str = None,
+    indicators: str = None,
+    secType: str = "STK",
+    exchange: str = "SMART",
+    currency: str = "USD",
+    source: str = "",
+    account: str | None = None,
+):
+    """Get historical market data with support for date ranges and technical
+    indicators, from ``source`` or (with none) the first broker that answers."""
+    return await _with_fallback(
+        source,
+        account,
+        response,
+        lambda platform, acct: _historical_data_from(
+            symbol,
+            timeframe,
+            period,
+            account_mode,
+            start_date,
+            end_date,
+            indicators,
+            secType,
+            exchange,
+            currency,
+            source=platform,
+            account=acct,
+        ),
+    )
+
+
+@router.get("/market-data/tick")
+async def get_tick_data(
+    response: Response,
+    symbol: str,
+    account_mode: str = "paper",
+    source: str = "",
+    account: str | None = None,
+):
+    """Get high-frequency tick data, from ``source`` or the first broker that answers."""
+    return await _with_fallback(
+        source,
+        account,
+        response,
+        lambda platform, acct: _tick_data_from(symbol, account_mode, platform, acct),
+    )
+
+
+@router.get("/market-data/realtime", response_model=RealTimeQuote)
+async def get_realtime_data(
+    response: Response,
+    symbol: str,
+    account_mode: str = "paper",
+    source: str = "",
+    account: str | None = None,
+):
+    """Get real-time market data, from ``source`` or the first broker that answers."""
+    return await _with_fallback(
+        source,
+        account,
+        response,
+        lambda platform, acct: _realtime_data_from(symbol, account_mode, platform, acct),
+    )
+
+
+async def _historical_data_from(
     symbol: str,
     timeframe: str,
     period: str = "1Y",
@@ -410,8 +507,7 @@ def get_realtime_data_sync(symbol: str, account_mode: str = "paper"):
         raise Exception(f"Failed to get real-time data for {symbol}: {type(e).__name__}: {str(e)}")
 
 
-@router.get("/market-data/tick")
-async def get_tick_data(
+async def _tick_data_from(
     symbol: str,
     account_mode: str = "paper",
     source: str = "",
@@ -510,8 +606,7 @@ def get_tick_data_sync(symbol: str, account_mode: str = "paper"):
         raise Exception(f"Failed to get tick data for {symbol}: {type(e).__name__}: {str(e)}")
 
 
-@router.get("/market-data/realtime", response_model=RealTimeQuote)
-async def get_realtime_data(
+async def _realtime_data_from(
     symbol: str,
     account_mode: str = "paper",
     source: str = "",

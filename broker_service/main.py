@@ -30,6 +30,7 @@ from orders import router as orders_router
 from probes import PROBE_INTERVAL_SECONDS, probe_loop
 from routes import register_routes
 from service_auth import attach_service_auth
+from venue_streaming import venue_streamer
 
 logger = get_logger(__name__)
 
@@ -56,6 +57,7 @@ async def lifespan(app: FastAPI):
         probe_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await probe_task
+    venue_streamer.stop_all()
     disconnect_ib()
 
 
