@@ -8,6 +8,7 @@ import {
   type StatusPayload,
   type StoredConnection,
   type StoredPayload,
+  BROKERS_BY_PRIORITY,
   PLATFORM_FORM,
   checkSummary,
   emptyForm,
@@ -31,7 +32,7 @@ import {
 
 export { checkSummary, platformName };
 
-const DEFAULT_ORDER = ['oanda', 'mt5', 'ib', 'alpaca'];
+const DEFAULT_ORDER = BROKERS_BY_PRIORITY;
 
 const TONE_STYLES = {
   ok: 'bg-emerald-100 text-emerald-800',

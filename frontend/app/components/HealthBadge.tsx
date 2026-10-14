@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
+import { platformName } from '../lib/brokerConnections';
 
 const POLL_INTERVAL_MS = 10_000;
 
@@ -92,13 +93,6 @@ function rowsFromPayload(p: HealthPayload | null, fetchError: string | null): Se
   ];
 }
 
-const PLATFORM_NAME: Record<string, string> = {
-  oanda: 'OANDA',
-  mt5: 'MT5',
-  ib: 'IB',
-  alpaca: 'Alpaca',
-};
-
 /**
  * One row per broker connection, in the priority order the backend sends.
  * The default broker being unreachable is down (orders can't be placed);
@@ -118,7 +112,7 @@ function brokerRows(brokers: BrokersBlock | undefined): ServiceRow[] {
     seen.add(c.platform);
   }
   return connections.map((c) => {
-    const name = PLATFORM_NAME[c.platform] ?? c.platform;
+    const name = platformName(c.platform, true);
     const label = `${name}${multi.has(c.platform) ? ` (${c.account})` : ''}${
       c.is_default ? ' · default' : ''
     }`;
