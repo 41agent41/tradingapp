@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -20,6 +21,41 @@ def _exchange_sort_key(result):
     """Sort contracts SMART-first, then by common US exchanges, then symbol."""
     exchange_priority = {"SMART": 0, "NYSE": 1, "NASDAQ": 2, "AMEX": 3}
     return (exchange_priority.get(result["exchange"], 999), result["symbol"])
+
+
+def venue_search(
+    source: str,
+    symbol: str,
+    *,
+    secType: str = "STK",
+    exchange: str = "SMART",
+    currency: str = "USD",
+    name: bool = False,
+    account_mode: str = "paper",
+) -> Optional[dict]:
+    """Search a venue other than IB with its adapter's contract search.
+
+    Returns None when ``source`` resolves to IB, whose advanced search and
+    symbol discovery talk to the gateway directly.
+    """
+    from adapters import get_market_data_adapter, resolve_provider
+
+    if resolve_provider(source) == "ib":
+        return None
+    if not symbol.strip():
+        raise HTTPException(status_code=400, detail="Enter a symbol to search")
+    adapter = get_market_data_adapter(source)
+    return adapter.search_contracts(
+        SearchRequest(
+            symbol=symbol,
+            secType=secType,
+            exchange=exchange,
+            currency=currency,
+            name=name,
+            account_mode=account_mode,
+            source=source,
+        )
+    )
 
 
 def _contract_to_result(contract) -> dict:
@@ -184,6 +220,18 @@ async def search_contracts(request: SearchRequest):
 async def advanced_search_contracts(request: AdvancedSearchRequest):
     """Advanced search for contracts with additional filters"""
     try:
+        found = venue_search(
+            request.source,
+            request.symbol,
+            secType=request.secType,
+            exchange=request.exchange,
+            currency=request.currency,
+            name=request.name,
+            account_mode=request.account_mode,
+        )
+        if found is not None:
+            return found
+
         # Log the account mode being used
         data_type = get_data_type_for_account_mode(request.account_mode)
         logger.info(

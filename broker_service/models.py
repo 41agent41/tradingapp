@@ -90,6 +90,9 @@ class AdvancedSearchRequest(BaseModel):
     includeExpired: bool = False
     name: bool = False
     account_mode: str = "paper"
+    # Venue, as on SearchRequest. Only IB has the advanced filters; any other
+    # venue answers with its ordinary contract search.
+    source: str = ""
 
 
 class SymbolDiscoveryRequest(BaseModel):
@@ -100,6 +103,9 @@ class SymbolDiscoveryRequest(BaseModel):
     max_results: int = 50
     use_fallback: bool = True  # Whether to use reqMatchingSymbols as fallback
     account_mode: str = "paper"
+    # Venue, as on SearchRequest. IB uses the discovery below; any other venue
+    # answers with its ordinary contract search.
+    source: str = ""
 
 
 # Account-related models

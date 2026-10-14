@@ -4,7 +4,7 @@
  * The market-data endpoints were split out of a single ~870-line
  * `routes/marketData.ts` (GAP_ANALYSIS §3.4) into one module per resource:
  *
- *   search.ts     — POST /search, POST /search/advanced
+ *   search.ts     — POST /search, POST /search/advanced, POST /symbols/discover
  *   history.ts    — GET  /history
  *   realtime.ts   — GET  /realtime
  *   indicators.ts — GET  /indicators, GET /indicators/available
