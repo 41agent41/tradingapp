@@ -11,6 +11,7 @@ import {
   BROKERS_BY_PRIORITY,
   PLATFORM_FORM,
   checkSummary,
+  saveMessage,
   emptyForm,
   formFromStored,
   movePlatform,
@@ -217,14 +218,7 @@ export default function BrokerConnections() {
           body: body === undefined ? undefined : JSON.stringify(body),
         })
       );
-      setMessage(
-        res?.sync_error
-          ? {
-              kind: 'error',
-              text: `${done} The broker service has not picked it up yet: ${res.sync_error}`,
-            }
-          : { kind: 'ok', text: done }
-      );
+      setMessage(saveMessage(done, res));
       if (auth?.mfa_required) setMfaCode('');
       await load();
       return true;
@@ -406,7 +400,8 @@ export default function BrokerConnections() {
     <div className="space-y-4">
       <p className="text-sm text-gray-600">
         Brokers in priority order. The highest-ranked broker with a connection is the default for
-        orders that name none. Each connection is checked in the background.
+        orders that name none. Credentials are entered here, never in .env, and each connection is
+        checked when it is saved and again in the background.
       </p>
 
       {stored && !stored.encryption_ready && (

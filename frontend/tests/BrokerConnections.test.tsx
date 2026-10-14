@@ -12,6 +12,7 @@ import {
   formFromStored,
   movePlatform,
   requestBody,
+  saveMessage,
 } from '../app/lib/brokerConnections';
 
 function respond(body: unknown, status = 200) {
@@ -99,6 +100,32 @@ describe('helpers', () => {
     expect(
       checkSummary({ status: 'unreachable', error: 'refused', latency_ms: 1, checked_at: null })
     ).toEqual({ tone: 'bad', text: 'Unreachable: refused' });
+  });
+
+  it('reports the check that runs right after a save', () => {
+    const ok = { status: 'connected' as const, error: null, latency_ms: 40, checked_at: null };
+    const bad = {
+      status: 'unreachable' as const,
+      error: '401 Unauthorized',
+      latency_ms: 3,
+      checked_at: null,
+    };
+    expect(saveMessage('Connection added.', { sync_error: null, check: ok })).toEqual({
+      kind: 'ok',
+      text: 'Connection added. Connected (40 ms).',
+    });
+    expect(saveMessage('Connection added.', { check: bad })).toEqual({
+      kind: 'error',
+      text: 'Connection added. Check failed. Unreachable: 401 Unauthorized',
+    });
+    expect(saveMessage('Connection saved.', { check_error: 'timeout' }).text).toBe(
+      'Connection saved. It could not be checked: timeout'
+    );
+    expect(saveMessage('Connection saved.', { sync_error: 'down' }).kind).toBe('error');
+    expect(saveMessage('Connection removed.', { sync_error: null })).toEqual({
+      kind: 'ok',
+      text: 'Connection removed.',
+    });
   });
 
   it('moves a broker up and down, stopping at the ends', () => {

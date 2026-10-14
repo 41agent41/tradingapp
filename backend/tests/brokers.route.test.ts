@@ -99,22 +99,38 @@ describe('/api/brokers/connections', () => {
     expect(res.body.platforms).toEqual(['oanda', 'mt5', 'ib', 'alpaca']);
   });
 
-  it('adds one and sends the set to the broker service', async () => {
+  it('adds one, sends the set to the broker service and checks it', async () => {
     store.create.mockResolvedValue({ id: 1, label: 'oanda:practice' });
+    axiosMock.post.mockResolvedValue({
+      data: { label: 'oanda:practice', check: { status: 'connected', latency_ms: 80 } },
+    });
     const res = await request(buildApp())
       .post('/api/brokers/connections')
       .send({ platform: 'oanda', secrets: { token: 't' } });
     expect(res.status).toBe(201);
     expect(res.body.sync_error).toBeNull();
     expect(runtime.brokerSync.sync).toHaveBeenCalledWith(true);
+    expect(axiosMock.post.mock.calls[0][0]).toMatch(/\/connections\/oanda%3Apractice\/test$/);
+    expect(res.body.check).toEqual({ status: 'connected', latency_ms: 80 });
+    expect(res.body.check_error).toBeNull();
   });
 
-  it('reports a failed send with the save', async () => {
+  it('keeps the save when the check cannot run, and says why', async () => {
+    store.update.mockResolvedValue({ id: 2, label: 'mt5:default' });
+    axiosMock.post.mockRejectedValue({ response: { data: { detail: 'unknown connection' } } });
+    const res = await request(buildApp()).put('/api/brokers/connections/2').send({});
+    expect(res.status).toBe(200);
+    expect(res.body.check).toBeNull();
+    expect(res.body.check_error).toBe('unknown connection');
+  });
+
+  it('reports a failed send with the save, and skips the check', async () => {
     store.update.mockResolvedValue({ id: 2, label: 'mt5:default' });
     runtime.brokerSync.sync.mockRejectedValue({ response: { data: { detail: 'bad entry' } } });
     const res = await request(buildApp()).put('/api/brokers/connections/2').send({});
     expect(res.status).toBe(200);
     expect(res.body.sync_error).toBe('bad entry');
+    expect(axiosMock.post).not.toHaveBeenCalled();
   });
 
   it('needs the trader role to change connections', async () => {

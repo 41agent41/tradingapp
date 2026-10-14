@@ -174,3 +174,19 @@ def test_put_route(mods, monkeypatch):
 
     status = client.get("/connections/status").json()
     assert status["connections"][0]["source"] == "app"
+
+
+def test_app_oanda_environment_follows_account_mode(mods):
+    connections, _, _ = mods
+    base = {k: v for k, v in OANDA.items() if k != "environment"}
+    live, paper = connections.parse_managed(
+        [
+            {**base, "id": "live", "account_mode": "live"},
+            {**base, "id": "demo", "account_mode": "paper"},
+        ]
+    )
+    assert live.environment == "live"
+    assert paper.environment == "practice"
+    # An explicit environment still wins.
+    (explicit,) = connections.parse_managed([{**OANDA, "account_mode": "live"}])
+    assert explicit.environment == "practice"

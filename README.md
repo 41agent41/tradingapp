@@ -214,9 +214,8 @@ The unified script handles all configuration automatically:
 # Refresh .env (Server IP is auto-detected; secrets are generated once)
 ./tradingapp.sh config
 
-# No broker is asked for. Add broker credentials (OANDA, MT5, IB, Alpaca)
-# to .env as shown in .env.example, then redeploy. To use IB:
-IB_HOST=<gateway ip> ./tradingapp.sh config
+# No broker is asked for. Once deployed, add OANDA, MT5, IB or Alpaca in
+# the app under Settings > Connections; each is checked when you save it.
 ```
 
 ### **Manual Configuration**
@@ -225,9 +224,6 @@ If needed, you can manually edit the `.env` file:
 ```bash
 # Core Configuration
 SERVER_IP=10.7.3.20
-IB_HOST=10.7.3.21
-IB_PORT=4002
-IB_CLIENT_ID=1
 
 # Service Ports
 FRONTEND_PORT=3000

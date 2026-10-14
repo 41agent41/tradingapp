@@ -224,7 +224,14 @@ def _parse_entry(raw: Any, index: int, literal: bool = False) -> Connection:
         ),
         token=_literal(raw.get("token")) if literal else _env(raw.get("token_env")),
         account_id=(_literal(raw.get("account_id")) if literal else _env(raw.get("account_env"))),
-        environment=(str(raw.get("environment")).strip() if raw.get("environment") else None),
+        # An app-added OANDA connection has no environment field: its paper or
+        # live mode picks practice or live, so a live account never lands on
+        # the practice server.
+        environment=(
+            str(raw.get("environment")).strip()
+            if raw.get("environment")
+            else (("live" if account_mode == "live" else "practice") if literal else None)
+        ),
         paper=account_mode != "live",
         host=_literal(raw.get("host")) if literal else None,
         port=_optional_int(raw, "port", account) if literal else None,

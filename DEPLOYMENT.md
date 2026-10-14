@@ -94,6 +94,18 @@ is meant to run as root and creates the deploy user itself.
 `./tradingapp.sh setup` will install Docker and Docker Compose for you on a
 fresh Ubuntu host.
 
+### Adding brokers
+
+Brokers are added in the app, never in `.env`. Once the app is deployed, sign
+in and open **Settings > Connections**, choose the broker, and enter its
+details: the IB Gateway address and port, the MT5 sidecar URL and secret, the
+OANDA token and account id, or the Alpaca keys. Secrets are stored encrypted
+under `SETTINGS_ENCRYPTION_KEY`, and the connection is checked as soon as it
+is saved, so a wrong key or address shows at once. Add several accounts per
+broker the same way, each marked paper or live.
+
+The sections below cover what each broker needs before you add it.
+
 ### Interactive Brokers
 
 - **IB Gateway** or **TWS** running and logged in.
@@ -120,18 +132,16 @@ Windows Python, so it cannot join the Linux Docker stack. Instead:
   with a service script and a systemd unit. One sidecar serves one terminal,
   so two accounts means two sidecars on two ports.
 - The Linux `broker_service` container talks to it as an HTTP client
-  (`MT5Adapter`) — set `MT5_BRIDGE_URL` (e.g.
-  `MT5_BRIDGE_URL=http://10.7.3.22:9100`) and redeploy. Until it's set,
+  (`MT5Adapter`). Add an MT5 connection in **Settings > Connections** with
+  the sidecar's URL (e.g. `http://10.7.3.22:9100`). Until one exists,
   `source=mt5` / `broker=mt5` resolve to a clean `501` instead of a
   confusing `404`.
-- Also set `MT5_BRIDGE_SECRET` to a random shared secret (at least 24
-  characters), and the same value in the sidecar's `sidecar.env`. The
+- Give it a random shared secret (at least 24 characters), and the same value
+  as `MT5_BRIDGE_SECRET` in the sidecar's own `sidecar.env` on its host. The
   sidecar rejects any request whose `X-MT5-Bridge-Secret` header doesn't
   match, and will not start on a non-loopback address without a secret;
   anything that can reach an unprotected sidecar can trade the account.
-- For more than one MT5 account, or to mix accounts per platform, use the
-  `BROKER_CONNECTIONS` manifest in `.env.example` instead of
-  `MT5_BRIDGE_URL`/`MT5_BRIDGE_SECRET`. Setting both is a startup error.
+- For more than one MT5 account, add one connection per sidecar.
 - See [Multi-Broker Host Topology](#multi-broker-host-topology-ib--mt5)
   below for how this host relates to the rest of the deployment, and the
   design trade-offs of running IB and MT5 as separate dedicated hosts with
@@ -141,19 +151,21 @@ Windows Python, so it cannot join the Linux Docker stack. Instead:
 
 Both are optional and, unlike MT5, need **no dedicated host** — they're cloud
 REST APIs the `broker_service` container calls directly over HTTPS, so
-enabling either is just setting credentials and redeploying:
+enabling either is just adding it in **Settings > Connections**, no redeploy:
 
-- **Alpaca** (US equities/options): set `ALPACA_API_KEY` and
-  `ALPACA_API_SECRET`; `ALPACA_PAPER` (default `true`) selects Alpaca's paper
-  or live trading endpoint. Once both credentials are set, `source=alpaca` /
-  `broker=alpaca` become available.
-- **OANDA** (FX/CFD): set `OANDA_API_TOKEN` and `OANDA_ACCOUNT_ID`;
-  `OANDA_ENVIRONMENT` (`practice` default, or `live`) selects the endpoint.
-  Once both credentials are set, `source=oanda` / `broker=oanda` become
-  available.
+- **Alpaca** (US equities/options): the API key and secret. A paper
+  connection uses Alpaca's paper endpoint, a live one the live endpoint.
+- **OANDA** (FX/CFD): the API token and account id. A paper connection uses
+  OANDA's practice environment, a live one the live environment.
 
-Until a broker's credentials are set, requests for it resolve to a clean
-`501` (same as MT5 without `MT5_BRIDGE_URL`), not a confusing `404`.
+Until a broker has a connection, requests for it resolve to a clean `501`,
+not a confusing `404`.
+
+> **Break-glass.** The broker service still reads the old `.env` variables
+> (`IB_HOST`, `MT5_BRIDGE_URL`, `ALPACA_API_KEY`, `OANDA_API_TOKEN`, the
+> `BROKER_CONNECTIONS` manifest; see `broker_service/connections.py`). A
+> broker set there replaces the app's connections for it, and the page shows
+> them as overridden. Use them only when the app cannot be reached.
 
 To add another broker with an API, follow
 [`broker_service/ADDING_A_BROKER.md`](broker_service/ADDING_A_BROKER.md).
@@ -370,7 +382,7 @@ chmod +x tradingapp.sh
 | `setup` | Install Docker, write a baseline `.env`, offer to deploy | First-time host setup |
 | `deploy` | Build images and bring the stack up | Initial deployment |
 | `redeploy` | Stop, prune project images, rebuild from scratch | After code changes |
-| `config` | Refresh `SERVER_IP` and fill in missing `.env` keys (`IB_HOST=<ip> ./tradingapp.sh config` sets IB) | Server IP changed, or adding IB |
+| `config` | Refresh `SERVER_IP` and fill in missing `.env` keys | Server IP changed |
 | `env` | Same as `config`, but does not redeploy | Quick env regeneration |
 | `start` / `stop` / `restart` | Compose lifecycle | Day-to-day ops |
 | `status` | `docker-compose ps` | Quick health check |
@@ -386,10 +398,9 @@ chmod +x tradingapp.sh
 > the `CORS_ORIGINS` URL derived from it are updated in place, and every other key (ports, Postgres/Redis
 > credentials, and anything you've hand-added like `POSTGRES_HOST`,
 > `API_TOKEN`, `BACKFILL_ENABLED`) is filled in only if missing — a
-> hand-edited `.env` survives a re-run. There is no broker prompt:
-> `IB_HOST` is written only when you export it, and otherwise left
-> empty, meaning IB is not configured. Brokers are optional and are
-> checked inside the app, never by `deploy` or `test`, so a broker that
+> hand-edited `.env` survives a re-run. There is no broker prompt and no
+> broker key is written: brokers are added in the app (see
+> [Adding brokers](#adding-brokers)) and checked there, never by `deploy` or `test`, so a broker that
 > is down does not fail a deploy. A request that names no broker goes to
 > the highest-priority configured one: OANDA (API brokers), then MT5, IB,
 > Alpaca. Set `DEFAULT_BROKER` in `.env` to pin one instead. Each
@@ -542,10 +553,11 @@ to save.
    - Set **Socket port** to `4002` (paper) or `4001` (live).
    - Add your trading server IP to **Trusted IPs**.
 3. Apply, click OK, and restart IB Gateway.
-4. Run `./tradingapp.sh test` to confirm the socket is reachable.
+4. In the app, add an Interactive Brokers connection under **Settings >
+   Connections** with the gateway's IP and port. It is checked as soon as
+   it is saved.
 
-`./tradingapp.sh ib-help` prints the same walk-through with values
-substituted from your current `.env`.
+`./tradingapp.sh ib-help` prints the same walk-through.
 
 ## Authentication & CORS
 
