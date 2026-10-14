@@ -12,6 +12,7 @@
  * where the app runs.
  */
 
+import { encryptionKey } from '../config/secretBox.js';
 import { parsePropRules } from './propRules.js';
 
 export interface StartupCheckResult {
@@ -104,6 +105,22 @@ export function checkStartupConfig(env: Env = process.env): StartupCheckResult {
     warnings.push(
       'SYSTEMATIC_EXECUTION_ENABLED=true with no HEARTBEAT_URL: nothing will page you if the ' +
         'app, the host or its internet goes down. Set a monitor off the host.'
+    );
+  }
+
+  // --- Settings encryption key: secrets saved on the Settings page --------
+  if (val(env, 'SETTINGS_ENCRYPTION_KEY')) {
+    try {
+      encryptionKey(env);
+    } catch (err) {
+      // Production refuses it; a development .env copied from the template
+      // only warns, since nothing there is encrypted yet.
+      (production ? errors : warnings).push((err as Error).message);
+    }
+  } else if (production) {
+    warnings.push(
+      'SETTINGS_ENCRYPTION_KEY is not set: secrets cannot be saved from the Settings page. ' +
+        'Run ./tradingapp.sh config to generate one.'
     );
   }
 

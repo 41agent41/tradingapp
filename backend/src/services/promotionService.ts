@@ -16,6 +16,7 @@ import {
   realisedDrawdown,
 } from './promotionGate.js';
 import type { Fill } from './realisedPnl.js';
+import { configService } from '../config/configService.js';
 
 export interface Querier {
   query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
@@ -128,7 +129,7 @@ export class PromotionService {
 
   /** The decision for deploying `definition` at `stage`. */
   async check(definition: DefinitionFacts, stage: PromotionStage): Promise<PromotionDecision> {
-    const thresholds = promotionThresholds();
+    const thresholds = promotionThresholds(configService.asEnv());
     const backtests = (await this.backtests([definition.id])).get(definition.id) ?? [];
     const paper = stage === 'live' ? await this.paperRuns(definition.id) : [];
     return evaluatePromotion(definition, stage, backtests, paper, thresholds);
@@ -136,7 +137,7 @@ export class PromotionService {
 
   /** Paper-stage decisions for a page of definitions, in one query. */
   async paperStatus(definitions: DefinitionFacts[]): Promise<Map<number, PromotionDecision>> {
-    const thresholds = promotionThresholds();
+    const thresholds = promotionThresholds(configService.asEnv());
     const backtests = await this.backtests(definitions.map((d) => d.id));
     const out = new Map<number, PromotionDecision>();
     for (const d of definitions) {

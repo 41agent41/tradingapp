@@ -433,7 +433,7 @@ phase_env() {
 
     # 5. Internal secrets: generated once, never rotated by a re-run.
     local generated=()
-    for key in SESSION_SECRET API_TOKEN BROKER_SERVICE_TOKEN REDIS_PASSWORD; do
+    for key in SESSION_SECRET API_TOKEN BROKER_SERVICE_TOKEN REDIS_PASSWORD SETTINGS_ENCRYPTION_KEY; do
         if is_placeholder "$(env_get "$key")"; then
             env_set "$key" "$(gen_hex)"
             generated+=("$key")

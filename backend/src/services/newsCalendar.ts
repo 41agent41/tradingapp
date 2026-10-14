@@ -16,6 +16,7 @@
  */
 
 import axios from 'axios';
+import { configService } from '../config/configService.js';
 import { logger } from './logger.js';
 
 export interface NewsEvent {
@@ -103,7 +104,7 @@ export class NewsCalendar {
 
   constructor(
     private readonly fetchBody: () => Promise<unknown> = defaultFetch,
-    private readonly env: NodeJS.ProcessEnv = process.env
+    private readonly env: Record<string, string | undefined> = configService.asEnv()
   ) {}
 
   /** The calendar, refreshed first when due. Never throws. */
@@ -143,7 +144,7 @@ function minutes(raw: string | undefined, fallback: number): number {
 }
 
 async function defaultFetch(): Promise<unknown> {
-  const url = (process.env.NEWS_CALENDAR_URL || DEFAULT_CALENDAR_URL).trim();
+  const url = (configService.get('NEWS_CALENDAR_URL') || DEFAULT_CALENDAR_URL).trim();
   const response = await axios.get(url, { timeout: 15000, headers: { Connection: 'close' } });
   return response.data;
 }

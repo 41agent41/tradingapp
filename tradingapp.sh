@@ -271,6 +271,7 @@ HEADER
         env_set_secret .env SESSION_SECRET
         env_set_secret .env API_TOKEN
         env_set_secret .env BROKER_SERVICE_TOKEN
+        env_set_secret .env SETTINGS_ENCRYPTION_KEY
         env_set_secret .env APP_PASSWORD
     )
     if [[ -n "$generated" ]]; then
