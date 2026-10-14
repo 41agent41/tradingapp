@@ -587,7 +587,7 @@ out on paper.
 | `ALPACA_PAPER` | `true` | Alpaca paper vs. live trading endpoint |
 | `OANDA_API_TOKEN` / `OANDA_ACCOUNT_ID` | _unset_ | OANDA credentials — both required to register the adapter |
 | `OANDA_ENVIRONMENT` | `practice` | OANDA practice vs. live endpoint |
-| `DEFAULT_BROKER` | `ib` | Default `broker=`/`source=` when unspecified |
+| `DEFAULT_BROKER` | unset | Default `broker=`/`source=` when unspecified; unset uses broker priority (OANDA, MT5, IB, Alpaca: the highest-ranked configured) |
 
 All default to today's behaviour; nothing here changes an existing deployment
 until explicitly set.

@@ -27,6 +27,7 @@ import { logger, currentRequestId } from './services/logger.js';
 import { registry } from './services/metrics.js';
 import { checkStartupConfig } from './services/startupChecks.js';
 import { configService } from './config/configService.js';
+import { startDefaultBrokerRefresh } from './services/brokerDefault.js';
 
 // Refuse to start on an unsafe configuration (open API, default secrets, live
 // trading without MFA, an unimplemented kill-switch action). See the module.
@@ -444,6 +445,7 @@ async function shutdown(signal: string) {
     console.warn('Error stopping executions poller:', err);
   }
   heartbeat.stop();
+  stopDefaultBrokerRefresh();
   configService.stop();
   server.close(() => {
     console.log('Server closed');
@@ -457,8 +459,13 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
+let stopDefaultBrokerRefresh: () => void = () => {};
+
 server.listen(PORT, '0.0.0.0', () => {
   logger.info({ port: PORT, broker_service: BROKER_SERVICE_URL }, 'backend listening');
+
+  // The broker an order or run goes to when it names none (broker priority).
+  stopDefaultBrokerRefresh = startDefaultBrokerRefresh(BROKER_SERVICE_URL);
 
   // Settings saved from the Settings page. `.env` still wins over them.
   configService.attach(dbService);

@@ -226,7 +226,7 @@ def get_executions_sync(days: int = 1):
 
 @router.get("/account/executions", response_model=list[Execution])
 async def get_account_executions(
-    broker: str = "ib",
+    broker: str = "",
     account: str | None = None,
     days: int = Query(default=1, ge=1, le=30),
 ):
@@ -271,7 +271,7 @@ async def get_account_executions(
 @router.get("/instrument/spec", response_model=InstrumentSpec)
 async def get_instrument_spec(
     symbol: str = Query(..., min_length=1),
-    broker: str = "ib",
+    broker: str = "",
     account: str | None = None,
 ):
     """What one unit of quantity means for an instrument at a venue.
@@ -302,7 +302,7 @@ async def get_instrument_spec(
 
 
 @router.get("/account/summary", response_model=AccountSummary)
-async def get_account_summary(broker: str = "ib", account: str | None = None):
+async def get_account_summary(broker: str = "", account: str | None = None):
     """Account summary for a venue.
 
     Broker-aware for the same reason positions are: a run on MT5 / Alpaca /
@@ -342,7 +342,7 @@ async def get_account_summary(broker: str = "ib", account: str | None = None):
 
 
 @router.get("/account/positions", response_model=list[Position])
-async def get_account_positions(broker: str = "ib", account: str | None = None):
+async def get_account_positions(broker: str = "", account: str | None = None):
     """Get current account positions for a venue (B1 close-out).
 
     Dispatches through the broker adapter registry, so a run on MT5 / Alpaca /
@@ -378,7 +378,7 @@ async def get_account_positions(broker: str = "ib", account: str | None = None):
 
 
 @router.get("/account/orders", response_model=list[OrderModel])
-async def get_account_orders(broker: str = "ib", account: str | None = None):
+async def get_account_orders(broker: str = "", account: str | None = None):
     """Working orders for a venue.
 
     These are orders still *open* at the venue, as opposed to `/account/executions`
@@ -411,7 +411,7 @@ async def get_account_orders(broker: str = "ib", account: str | None = None):
 
 
 @router.get("/account/all", response_model=AccountData)
-async def get_all_account_data(broker: str = "ib", account: str | None = None):
+async def get_all_account_data(broker: str = "", account: str | None = None):
     """All account data (summary, positions, orders) in one call for a venue.
 
     Sequential rather than concurrent: the IB path shares one synchronous
@@ -526,7 +526,7 @@ def _resolve_one(symbol: str, broker: str, account: str | None, include_spec: bo
 @router.get("/instrument/resolve")
 async def resolve_instrument(
     symbol: str = Query(..., min_length=1),
-    broker: str = "ib",
+    broker: str = "",
     account: str | None = None,
     include_spec: bool = True,
 ):

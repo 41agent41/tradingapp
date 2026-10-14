@@ -36,7 +36,7 @@ describe('StrategyRepository.createDefinition', () => {
     });
     expect(calls[0].text).toMatch(/INSERT INTO strategy_definitions/);
     expect(calls[0].params[2]).toBe('MSFT'); // symbol uppercased
-    expect(calls[0].params[1]).toBe('ib'); // broker defaults
+    expect(calls[0].params[1]).toBe('oanda'); // broker defaults to the priority default
     // Instrument fields default to the previously-implied STK/SMART/USD.
     expect(calls[0].params[3]).toBe('STK');
     expect(calls[0].params[4]).toBe('SMART');
@@ -64,13 +64,13 @@ describe('StrategyRepository.createDefinition', () => {
 });
 
 describe('StrategyRepository.createRun', () => {
-  it('defaults broker=ib and account_mode=paper and serialises sizing/risk', async () => {
+  it('defaults broker to the priority default and account_mode=paper and serialises sizing/risk', async () => {
     const { db, calls } = fakeDb(() => [{ id: 7 }]);
     const repo = new StrategyRepository(db);
     await repo.createRun({ definition_id: 3, sizing: { size: 100 }, risk: { max: 4 } });
     expect(calls[0].text).toMatch(/INSERT INTO strategy_runs/);
     expect(calls[0].params[0]).toBe(3);
-    expect(calls[0].params[1]).toBe('ib');
+    expect(calls[0].params[1]).toBe('oanda');
     expect(calls[0].params[2]).toBe('paper');
     expect(JSON.parse(calls[0].params[3] as string)).toEqual({ size: 100 });
   });

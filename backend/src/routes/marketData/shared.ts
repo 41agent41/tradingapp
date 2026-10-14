@@ -14,7 +14,7 @@
  * `/api/market-data`, so the public surface is unchanged.
  */
 import type { Request, Response } from 'express';
-import { BROKERS } from '../../services/orderTypes.js';
+import { BROKERS, defaultBroker } from '../../services/orderTypes.js';
 
 export const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
@@ -63,7 +63,7 @@ export interface SearchQuery {
   currency?: string;
   searchByName?: boolean;
   account_mode?: string;
-  /** Venue (B1): 'ib' | 'mt5', default 'ib'. Accepts `source` as an alias. */
+  /** Venue (B1): 'ib' | 'mt5' | 'alpaca' | 'oanda', default the priority broker. Accepts `source` as an alias. */
   broker?: string;
   source?: string;
 }
@@ -85,10 +85,10 @@ export interface AdvancedSearchQuery {
   source?: string;
 }
 
-/** Resolve a request's venue to a supported broker (B1), defaulting to 'ib'. */
+/** Resolve a request's venue to a supported broker (B1), defaulting to the priority broker. */
 export function resolveBroker(raw?: string): string {
   const v = (raw || '').trim().toLowerCase();
-  return (BROKERS as readonly string[]).includes(v) ? v : 'ib';
+  return (BROKERS as readonly string[]).includes(v) ? v : defaultBroker();
 }
 
 export function cacheKey(parts: Array<string | number | boolean | undefined | null>): string {

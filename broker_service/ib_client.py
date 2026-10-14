@@ -32,9 +32,10 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Configuration (read at import time)
 # ---------------------------------------------------------------------------
-IB_HOST = os.getenv("IB_HOST")
-if not IB_HOST:
-    raise ValueError("IB_HOST environment variable is required")
+# IB is optional: with no IB_HOST the service still starts, IB is simply not
+# registered as a connection (see `connections.ib_configured`), and anything
+# that reaches for the gateway gets a clear 503 instead.
+IB_HOST = (os.getenv("IB_HOST") or "").strip() or None
 
 IB_PORT = int(os.getenv("IB_PORT", "4002"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
@@ -188,6 +189,12 @@ def get_ib_connection() -> IBApp:
     """Get or create IB connection with intelligent client ID retry."""
 
     global _ib_client
+
+    if not IB_HOST:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="IB is not configured. Set IB_HOST (the IB Gateway address) to use IB.",
+        )
 
     try:
         if _ib_client and _ib_client.isConnected():

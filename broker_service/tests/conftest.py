@@ -15,9 +15,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-# ib_client.py reads IB_HOST at import time and raises without it. The tests
-# never touch a real gateway, so default it here — before any test module
-# imports the IB layer — while `setdefault` preserves a real value if set.
+# IB is registered only when IB_HOST is set, and most tests exercise the
+# legacy IB-default topology. The tests never touch a real gateway, so default
+# it here, while `setdefault` preserves a real value if set.
 os.environ.setdefault("IB_HOST", "127.0.0.1")
 
 # Make sure the broker_service package is importable when pytest is invoked

@@ -188,7 +188,7 @@ describe('POST /api/orders — position-limit guard', () => {
       expect.objectContaining({
         symbol: 'MSFT',
         accountMode: 'paper',
-        broker: 'ib',
+        broker: 'oanda', // priority default
         // Account-wide, not scoped to a strategy run — a fat-finger cap is
         // about the account's exposure, so a manual trade counts too.
         runId: null,

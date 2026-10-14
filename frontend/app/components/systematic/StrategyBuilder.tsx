@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../../lib/api';
 import {
   OPERATORS,
@@ -23,13 +23,15 @@ import {
 
 const emptyCondition = (): ConditionForm => ({ left: 'sma_20', op: '>', right: 'sma_50' });
 
-const BROKERS = ['ib', 'mt5', 'alpaca', 'oanda'];
+// Broker priority order (API brokers, then MT5, IB, Alpaca). The form starts on
+// the server's default broker, the highest-priority one that is configured.
+const BROKERS = ['oanda', 'mt5', 'ib', 'alpaca'];
 
 const initialForm: StrategyForm = {
   name: '',
   symbol: 'MSFT',
   timeframe: '5min',
-  broker: 'ib',
+  broker: BROKERS[0],
   secType: 'STK',
   exchange: 'SMART',
   currency: 'USD',
@@ -52,6 +54,27 @@ export default function StrategyBuilder({ onCreated }: StrategyBuilderProps) {
   const [errors, setErrors] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const brokerTouched = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch('/api/orders/config');
+        if (!res.ok) return;
+        const body = (await res.json()) as { default_broker?: string };
+        const def = body.default_broker;
+        if (!cancelled && !brokerTouched.current && def && BROKERS.includes(def)) {
+          setForm((f) => ({ ...f, broker: def }));
+        }
+      } catch {
+        // Keep the top-priority broker; the server validates on submit.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const set = <K extends keyof StrategyForm>(key: K, value: StrategyForm[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -157,7 +180,10 @@ export default function StrategyBuilder({ onCreated }: StrategyBuilderProps) {
           <span className="text-sm font-medium text-gray-700">Broker</span>
           <select
             value={form.broker}
-            onChange={(e) => set('broker', e.target.value)}
+            onChange={(e) => {
+              brokerTouched.current = true;
+              set('broker', e.target.value);
+            }}
             className="mt-1 w-full border border-gray-300 rounded px-3 py-2 bg-white"
           >
             {BROKERS.map((b) => (

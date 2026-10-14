@@ -1,6 +1,7 @@
 import { dbService } from './database.js';
 import { logger } from './logger.js';
 import { PoolClient } from 'pg';
+import { defaultBroker } from './orderTypes.js';
 
 // Interfaces for market data
 export interface CandlestickBar {
@@ -15,7 +16,7 @@ export interface CandlestickBar {
 }
 
 export interface Contract {
-  /** Execution/data venue (B1). Broker-scoped catalogue; defaults to 'ib'. */
+  /** Execution/data venue (B1). Broker-scoped catalogue; defaults to the priority broker. */
   broker?: string;
   symbol: string;
   secType: string;
@@ -73,7 +74,7 @@ export class MarketDataService {
     `;
 
     const params = [
-      contract.broker || 'ib',
+      contract.broker || defaultBroker(),
       contract.symbol,
       contract.secType,
       contract.exchange || null,

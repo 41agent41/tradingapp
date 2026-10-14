@@ -4,10 +4,10 @@
 import { resolveBroker } from '../src/routes/marketData/shared.js';
 
 describe('resolveBroker', () => {
-  it('defaults to ib', () => {
-    expect(resolveBroker()).toBe('ib');
-    expect(resolveBroker('')).toBe('ib');
-    expect(resolveBroker(undefined)).toBe('ib');
+  it('defaults to the priority default', () => {
+    expect(resolveBroker()).toBe('oanda');
+    expect(resolveBroker('')).toBe('oanda');
+    expect(resolveBroker(undefined)).toBe('oanda');
   });
 
   it('accepts mt5 (case/space-insensitive)', () => {
@@ -22,8 +22,8 @@ describe('resolveBroker', () => {
     expect(resolveBroker(' OANDA ')).toBe('oanda');
   });
 
-  it('falls back to ib for anything else', () => {
-    expect(resolveBroker('robinhood')).toBe('ib');
+  it('falls back to the priority default for anything else', () => {
+    expect(resolveBroker('robinhood')).toBe('oanda');
     expect(resolveBroker('IB')).toBe('ib');
   });
 });

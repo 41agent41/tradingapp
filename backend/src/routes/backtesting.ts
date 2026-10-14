@@ -27,6 +27,7 @@ import { dbService } from '../services/database.js';
 import { BacktestRunRepository } from '../services/backtestRunRepository.js';
 import { StrategyRepository } from '../services/strategyRepository.js';
 import { backtestRunsPersisted } from '../services/metrics.js';
+import { defaultBroker } from '../services/orderTypes.js';
 
 const router = express.Router();
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
@@ -193,7 +194,7 @@ router.post('/run', async (req: Request, res: Response) => {
     secType = String(secType || 'STK').toUpperCase();
     exchange = String(exchange || 'SMART').toUpperCase();
     currency = String(currency || 'USD').toUpperCase();
-    source = String(source || 'ib').toLowerCase();
+    source = String(source || defaultBroker()).toLowerCase();
 
     if (!symbol) {
       return res.status(400).json({

@@ -29,7 +29,7 @@ describe('validateOrder — happy paths', () => {
     expect(result.value.symbol).toBe('MSFT'); // uppercased (not an MT5 order)
     expect(result.value.tif).toBe('DAY');
     expect(result.value.account_mode).toBe('paper');
-    expect(result.value.broker).toBe('ib'); // default venue (B1)
+    expect(result.value.broker).toBe('oanda'); // priority default venue
     expect(result.value.limit_price).toBeNull();
     expect(result.value.stop_price).toBeNull();
   });

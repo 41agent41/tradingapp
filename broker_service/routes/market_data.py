@@ -42,7 +42,7 @@ async def get_historical_data(
     secType: str = "STK",
     exchange: str = "SMART",
     currency: str = "USD",
-    source: str = "ib",
+    source: str = "",
     account: str | None = None,
 ):
     """Get historical market data with support for date ranges and technical indicators"""
@@ -414,7 +414,7 @@ def get_realtime_data_sync(symbol: str, account_mode: str = "paper"):
 async def get_tick_data(
     symbol: str,
     account_mode: str = "paper",
-    source: str = "ib",
+    source: str = "",
     account: str | None = None,
 ):
     """Get high-frequency tick data"""
@@ -514,7 +514,7 @@ def get_tick_data_sync(symbol: str, account_mode: str = "paper"):
 async def get_realtime_data(
     symbol: str,
     account_mode: str = "paper",
-    source: str = "ib",
+    source: str = "",
     account: str | None = None,
 ):
     """Get real-time market data"""

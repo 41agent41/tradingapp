@@ -33,6 +33,7 @@ def adapters_mod(monkeypatch):
         "OANDA_API_TOKEN",
         "OANDA_ACCOUNT_ID",
         "LIVE_TRADING_ENABLED",
+        "DEFAULT_BROKER",
     ):
         monkeypatch.delenv(name, raising=False)
     import connections

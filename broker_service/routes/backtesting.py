@@ -257,7 +257,7 @@ async def run_backtest(
     sec_type: str = "STK",
     exchange: str = "SMART",
     currency: str = "USD",
-    source: str = "ib",
+    source: str = "",
     body: BacktestRunBody | None = Body(None),
 ):
     """Run backtest on historical data"""

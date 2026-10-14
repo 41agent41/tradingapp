@@ -385,10 +385,12 @@ chmod +x tradingapp.sh
 > credentials, and anything you've hand-added like `POSTGRES_HOST`,
 > `API_TOKEN`, `BACKFILL_ENABLED`) is filled in only if missing — a
 > hand-edited `.env` survives a re-run. There is no broker prompt:
-> `IB_HOST` is written only when you export it, and otherwise holds
-> `host.docker.internal`, meaning IB is not configured. Brokers are
-> optional and are checked inside the app, never by `deploy` or `test`,
-> so a broker that is down does not fail a deploy. Pass
+> `IB_HOST` is written only when you export it, and otherwise left
+> empty, meaning IB is not configured. Brokers are optional and are
+> checked inside the app, never by `deploy` or `test`, so a broker that
+> is down does not fail a deploy. A request that names no broker goes to
+> the highest-priority configured one: OANDA (API brokers), then MT5, IB,
+> Alpaca. Set `DEFAULT_BROKER` in `.env` to pin one instead. Pass
 > `--non-interactive` to skip the "Deploy now?" question at the end of
 > `setup`, for scripted / CI installs.
 

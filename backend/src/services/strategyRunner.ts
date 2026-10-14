@@ -78,6 +78,7 @@ import {
 import type { InstrumentSpec } from './orderSizing.js';
 import {
   DEFAULT_BROKER_ACCOUNT,
+  LEGACY_BROKER,
   connectionLabel,
   connectionOf,
   type Connection,
@@ -575,7 +576,7 @@ function defaultDeps(
           secType: run.sec_type || 'STK',
           exchange: run.exchange || 'SMART',
           currency: run.currency || 'USD',
-          source: run.broker || 'ib',
+          source: run.broker || LEGACY_BROKER,
           account: run.broker_account || DEFAULT_BROKER_ACCOUNT,
         },
         timeout: 60000,

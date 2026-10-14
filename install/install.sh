@@ -425,10 +425,10 @@ phase_env() {
     done
 
     # 4. IB host: a placeholder left in place is a misleading value. Without
-    #    IB in the answers, point it at the Docker host; nothing connects to
-    #    it until an IB route is used.
+    #    IB in the answers, leave it empty: IB is optional, and the broker
+    #    service registers it only when IB_HOST names a gateway.
     if is_placeholder "$(env_get IB_HOST)"; then
-        env_set IB_HOST host.docker.internal
+        env_set IB_HOST ""
     fi
 
     # 5. Internal secrets: generated once, never rotated by a re-run.

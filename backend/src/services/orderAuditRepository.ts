@@ -11,7 +11,7 @@
  */
 
 import type { Querier } from './backtestRunRepository.js';
-import { DEFAULT_BROKER_ACCOUNT } from './orderTypes.js';
+import { DEFAULT_BROKER_ACCOUNT, defaultBroker } from './orderTypes.js';
 import type { OrderOperation, ValidatedOrder } from './orderTypes.js';
 
 export interface AuditCreateInput extends ValidatedOrder {
@@ -73,7 +73,7 @@ export class OrderAuditRepository {
     `;
     const result = await this.db.query(sql, [
       input.account_mode,
-      input.broker ?? 'ib',
+      input.broker ?? defaultBroker(),
       input.action,
       // Stored upper-case so the lookups below (which upper-case their
       // argument) match; the venue still received the symbol in its own case.
@@ -146,7 +146,7 @@ export class OrderAuditRepository {
     symbol: string,
     accountMode: string,
     lookbackHours: number,
-    broker: string = 'ib',
+    broker: string = defaultBroker(),
     brokerAccount: string = DEFAULT_BROKER_ACCOUNT
   ): Promise<number> {
     const sql = `

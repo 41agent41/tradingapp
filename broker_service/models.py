@@ -72,9 +72,10 @@ class SearchRequest(BaseModel):
     currency: str = "USD"
     name: bool = False
     account_mode: str = "paper"
-    # Broker-scoped source (B1). Defaults to IB; contract universes are keyed
+    # Broker-scoped source (B1). Empty resolves to the priority default (see
+    # connections.BROKER_PRIORITY); contract universes are keyed
     # per broker (no cross-broker symbol reconciliation).
-    source: str = "ib"
+    source: str = ""
 
 
 class AdvancedSearchRequest(BaseModel):
@@ -231,7 +232,7 @@ class AccountData(BaseModel):
 
 class ConnectionInfo(BaseModel):
     connected: bool
-    host: str
+    host: Optional[str] = None
     port: int
     client_id: int
     last_connected: Optional[str] = None
@@ -247,7 +248,7 @@ class ConnectionInfo(BaseModel):
 class ResolveTarget(BaseModel):
     """One connection to resolve a canonical symbol against."""
 
-    broker: str = "ib"
+    broker: str = ""
     account: Optional[str] = None
 
 

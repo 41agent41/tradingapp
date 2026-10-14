@@ -37,11 +37,12 @@ from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 from fastapi import HTTPException
 
 from connections import (
+    BROKER_PRIORITY,
     DEFAULT_ACCOUNT,
-    DEFAULT_PLATFORM,
     SUPPORTED_PLATFORMS,
     Connection,
     ManifestError,
+    default_platform,
     load_connections,
 )
 from observability import get_logger
@@ -51,7 +52,6 @@ logger = get_logger(__name__)
 # Retained under their historical names: routes, tests and the health payload
 # all speak "provider" for what is now precisely a *platform*.
 SUPPORTED_PROVIDERS = SUPPORTED_PLATFORMS
-DEFAULT_PROVIDER = DEFAULT_PLATFORM
 
 
 # --------------------------------------------------------------------------- #
@@ -245,10 +245,24 @@ def reset_registry() -> None:
 # --------------------------------------------------------------------------- #
 # Resolution
 # --------------------------------------------------------------------------- #
+def default_provider() -> str:
+    """The platform an unqualified request resolves to: ``DEFAULT_BROKER`` if
+    set, else the highest-priority configured platform (see
+    :func:`connections.default_platform`)."""
+    try:
+        _bootstrap()
+    except HTTPException:
+        # A broken manifest still has to answer /health; the request itself
+        # will fail on resolution with the manifest error.
+        return default_platform(())
+    return default_platform(p for (p, _) in _connections)
+
+
 def resolve_provider(name: Optional[str]) -> str:
     """Normalise a ``source=``/``broker=`` value to a supported platform name,
-    defaulting to IB. Raises 400 for an unrecognised platform."""
-    key = (name or "").strip().lower() or DEFAULT_PROVIDER
+    defaulting to :func:`default_provider`. Raises 400 for an unrecognised
+    platform."""
+    key = (name or "").strip().lower() or default_provider()
     if key not in SUPPORTED_PROVIDERS:
         raise HTTPException(
             status_code=400,
@@ -328,7 +342,7 @@ def _unavailable(provider: str, side: str) -> HTTPException:
 def get_market_data_adapter(
     source: Optional[str] = None, account: Optional[str] = None
 ) -> MarketDataAdapter:
-    """Resolve ``source=``/``account=`` to a market-data adapter (default IB)."""
+    """Resolve ``source=``/``account=`` to a market-data adapter (default: the priority platform)."""
     conn = resolve_connection(source, account)
     adapter = _market_data.get(conn.key)
     if adapter is None:
@@ -342,7 +356,7 @@ def get_broker_adapter(
     *,
     account_mode: Optional[str] = None,
 ) -> BrokerAdapter:
-    """Resolve ``broker=``/``account=`` to a broker adapter (default IB).
+    """Resolve ``broker=``/``account=`` to a broker adapter (default: the priority platform).
 
     Pass ``account_mode`` on any order-placing path so the connection's declared
     mode is enforced before the request reaches a venue.
@@ -426,7 +440,8 @@ def provider_health() -> Dict[str, Any]:
         # A broken manifest must be visible on /health rather than turning the
         # health check itself into a 500.
         return {
-            "default": DEFAULT_PROVIDER,
+            "default": default_provider(),
+            "priority": list(BROKER_PRIORITY),
             "error": exc.detail,
             "providers": {
                 name: {"market_data": False, "broker": False, "available": False}
@@ -465,7 +480,8 @@ def provider_health() -> Dict[str, Any]:
     }
 
     return {
-        "default": DEFAULT_PROVIDER,
+        "default": default_provider(),
+        "priority": list(BROKER_PRIORITY),
         "providers": providers,
         "connections": connections,
         "same_funds_groups": same_funds_groups(),

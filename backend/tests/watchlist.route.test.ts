@@ -63,7 +63,7 @@ describe('POST /api/watchlist', () => {
     expect(res.status).toBe(201);
     expect(res.body.symbol).toBe('MSFT');
     expect(repoImpl.add).toHaveBeenCalledWith(
-      expect.objectContaining({ symbol: 'msft', broker: 'ib' })
+      expect.objectContaining({ symbol: 'msft', broker: 'oanda' }) // priority default
     );
   });
 

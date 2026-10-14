@@ -61,7 +61,6 @@ start_broker() {
       {"id":"sim-b","platform":"mt5","url":"http://127.0.0.1:9102","secret_env":"E2E_SECRET_B",
        "account_mode":"paper","currency":"USD","symbol_map":{"EURUSD":"EURUSDm"}}]'
     export BROKER_SERVICE_TOKEN="$E2E_BROKER_TOKEN"
-    export IB_HOST=127.0.0.1  # required at import; no IB connection is made
     exec "$PYTHON" -m uvicorn main:app --host 127.0.0.1 --port 8000 --log-level warning
   ) >"$E2E_DIR/broker.log" 2>&1 &
   echo $! >"$E2E_DIR/broker.pid"

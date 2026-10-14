@@ -7,6 +7,8 @@
  * unit-tested without Postgres.
  */
 
+import { defaultBroker } from './orderTypes.js';
+
 export interface Querier {
   query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
 }
@@ -60,7 +62,7 @@ export class WatchlistRepository {
       RETURNING *, (xmax = 0) AS inserted
     `;
     const values = [
-      input.broker ?? 'ib',
+      input.broker ?? defaultBroker(),
       input.symbol.toUpperCase(),
       input.sec_type ?? 'STK',
       input.exchange ?? 'SMART',

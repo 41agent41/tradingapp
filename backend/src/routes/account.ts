@@ -5,7 +5,7 @@ import axios from 'axios';
 import { dbService } from '../services/database.js';
 import { ExecutionRepository } from '../services/executionRepository.js';
 import { realisedPnl } from '../services/realisedPnl.js';
-import { DEFAULT_BROKER_ACCOUNT } from '../services/orderTypes.js';
+import { DEFAULT_BROKER_ACCOUNT, defaultBroker } from '../services/orderTypes.js';
 
 const router = express.Router();
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
@@ -86,7 +86,8 @@ router.get('/summary', async (req: Request, res: Response) => {
 
     // Broker-scoped: the summary comes from the venue named by `?broker=`,
     // defaulting to IB. It is also where `pct_equity` sizing gets its equity.
-    const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+    const broker =
+      typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : defaultBroker();
     const account =
       typeof req.query.account === 'string' ? req.query.account.toLowerCase() : undefined;
 
@@ -141,7 +142,8 @@ router.get('/positions', async (req: Request, res: Response) => {
 
     // Broker-scoped (B1): positions come from the venue named by `?broker=`,
     // defaulting to IB. Each adapter normalises its payload to the same shape.
-    const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+    const broker =
+      typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : defaultBroker();
     const account =
       typeof req.query.account === 'string' ? req.query.account.toLowerCase() : undefined;
 
@@ -198,7 +200,8 @@ router.get('/orders', async (req: Request, res: Response) => {
       return handleDisabledDataQuery(res, 'Account orders data querying is disabled');
     }
 
-    const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+    const broker =
+      typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : defaultBroker();
     const account =
       typeof req.query.account === 'string' ? req.query.account.toLowerCase() : undefined;
 
@@ -273,7 +276,7 @@ router.get('/executions', async (req: Request, res: Response) => {
 
     if (String(req.query.fresh).toLowerCase() === 'true') {
       const response = await axios.get(`${BROKER_SERVICE_URL}/account/executions`, {
-        params: { broker: broker || 'ib', account, days: Number(req.query.days) || 1 },
+        params: { broker: broker || defaultBroker(), account, days: Number(req.query.days) || 1 },
         timeout: 45000,
         headers: { Connection: 'close' },
       });
@@ -382,7 +385,8 @@ router.get('/pnl', async (req: Request, res: Response) => {
  */
 router.get('/reconciliation', async (req: Request, res: Response) => {
   try {
-    const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+    const broker =
+      typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : defaultBroker();
     const account =
       typeof req.query.account === 'string' ? req.query.account.toLowerCase() : undefined;
     const accountMode =
@@ -537,7 +541,8 @@ router.get('/all', async (req: Request, res: Response) => {
       return handleDisabledDataQuery(res, 'All account data querying is disabled');
     }
 
-    const broker = typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : 'ib';
+    const broker =
+      typeof req.query.broker === 'string' ? req.query.broker.toLowerCase() : defaultBroker();
     const account =
       typeof req.query.account === 'string' ? req.query.account.toLowerCase() : undefined;
 
