@@ -97,7 +97,7 @@ export function useContractSearch(accountMode: 'paper' | 'live'): ContractSearch
 
       try {
         const endpoint = isAdvanced
-          ? '/api/market-data/advanced-search'
+          ? '/api/market-data/search/advanced'
           : '/api/market-data/search';
 
         const searchPayload = isAdvanced

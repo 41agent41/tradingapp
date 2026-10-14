@@ -38,7 +38,9 @@ router.get('/indicators', async (req: Request, res: Response) => {
 
     console.log(`Calculating technical indicators for ${symbol} ${timeframe}`);
 
-    const response = await axios.get(`${BROKER_SERVICE_URL}/market-data/indicators`, {
+    // The broker service computes indicators alongside the bars they are
+    // derived from, on its history route.
+    const response = await axios.get(`${BROKER_SERVICE_URL}/market-data/history`, {
       params: {
         symbol: symbol,
         timeframe: timeframe,

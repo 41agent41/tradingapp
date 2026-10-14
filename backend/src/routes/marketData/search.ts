@@ -14,6 +14,38 @@ import {
 
 const router = express.Router();
 
+/**
+ * Save the contracts a broker-service search returned to the catalogue. The
+ * broker service answers `{ results: [...] }`; each result's `conid` is IB's
+ * numeric id, or a venue's own instrument name (OANDA's `EUR_USD`), which has
+ * no numeric id to keep.
+ */
+async function storeContracts(venue: string, data: any): Promise<void> {
+  const found = Array.isArray(data?.results) ? data.results : [];
+  for (const contract of found) {
+    try {
+      const conid = Number(contract.conid ?? contract.contractId);
+      const contractData: Contract = {
+        broker: venue,
+        symbol: contract.symbol,
+        secType: contract.secType,
+        exchange: contract.exchange,
+        currency: contract.currency,
+        multiplier: contract.multiplier || undefined,
+        expiry: contract.expiry || undefined,
+        strike: Number(contract.strike) || undefined,
+        right: contract.right || undefined,
+        localSymbol: contract.localSymbol || undefined,
+        contractId: Number.isInteger(conid) ? conid : undefined,
+      };
+      await marketDataService.getOrCreateContract(contractData);
+    } catch (error) {
+      console.error('Error storing contract in database:', error);
+      // Continue processing other contracts
+    }
+  }
+}
+
 // Contract search endpoint
 router.post('/search', async (req: Request, res: Response) => {
   try {
@@ -55,13 +87,13 @@ router.post('/search', async (req: Request, res: Response) => {
     console.log(`Searching for contract: ${symbol} (${secType}) on ${exchange || 'any exchange'}`);
 
     const response = await axios.post(
-      `${BROKER_SERVICE_URL}/market-data/search`,
+      `${BROKER_SERVICE_URL}/contract/search`,
       {
         symbol: symbol,
         secType: secType,
         exchange: exchange,
         currency: currency,
-        searchByName: searchByName,
+        name: searchByName,
         account_mode: account_mode,
         source: venue,
       },
@@ -73,33 +105,9 @@ router.post('/search', async (req: Request, res: Response) => {
       }
     );
 
-    console.log(`Found ${response.data?.contracts?.length || 0} contracts for ${symbol}`);
+    console.log(`Found ${response.data?.results?.length || 0} contracts for ${symbol}`);
 
-    // Store contracts in database for future reference
-    if (response.data?.contracts && Array.isArray(response.data.contracts)) {
-      for (const contract of response.data.contracts) {
-        try {
-          const contractData: Contract = {
-            broker: venue,
-            symbol: contract.symbol,
-            secType: contract.secType,
-            exchange: contract.exchange,
-            currency: contract.currency,
-            multiplier: contract.multiplier,
-            expiry: contract.expiry,
-            strike: contract.strike,
-            right: contract.right,
-            localSymbol: contract.localSymbol,
-            contractId: contract.contractId,
-          };
-
-          await marketDataService.getOrCreateContract(contractData);
-        } catch (error) {
-          console.error('Error storing contract in database:', error);
-          // Continue processing other contracts
-        }
-      }
-    }
+    await storeContracts(venue, response.data);
 
     res.json(response.data);
   } catch (error: any) {
@@ -165,7 +173,7 @@ router.post('/search/advanced', async (req: Request, res: Response) => {
     console.log(`Advanced search for: ${secType} ${symbol || ''} on ${exchange || 'any exchange'}`);
 
     const response = await axios.post(
-      `${BROKER_SERVICE_URL}/market-data/search/advanced`,
+      `${BROKER_SERVICE_URL}/contract/advanced-search`,
       {
         symbol: symbol,
         secType: secType,
@@ -176,7 +184,7 @@ router.post('/search/advanced', async (req: Request, res: Response) => {
         right: right,
         multiplier: multiplier,
         includeExpired: includeExpired,
-        searchByName: searchByName,
+        name: searchByName,
         account_mode: account_mode,
         source: venue,
       },
@@ -188,32 +196,9 @@ router.post('/search/advanced', async (req: Request, res: Response) => {
       }
     );
 
-    console.log(`Advanced search found ${response.data?.contracts?.length || 0} contracts`);
+    console.log(`Advanced search found ${response.data?.results?.length || 0} contracts`);
 
-    // Store contracts in database
-    if (response.data?.contracts && Array.isArray(response.data.contracts)) {
-      for (const contract of response.data.contracts) {
-        try {
-          const contractData: Contract = {
-            broker: venue,
-            symbol: contract.symbol,
-            secType: contract.secType,
-            exchange: contract.exchange,
-            currency: contract.currency,
-            multiplier: contract.multiplier,
-            expiry: contract.expiry,
-            strike: contract.strike,
-            right: contract.right,
-            localSymbol: contract.localSymbol,
-            contractId: contract.contractId,
-          };
-
-          await marketDataService.getOrCreateContract(contractData);
-        } catch (error) {
-          console.error('Error storing contract in database:', error);
-        }
-      }
-    }
+    await storeContracts(venue, response.data);
 
     res.json(response.data);
   } catch (error: any) {
@@ -238,6 +223,46 @@ router.post('/search/advanced', async (req: Request, res: Response) => {
     res.status(statusCode).json({
       error: 'Failed to perform advanced search',
       message: errorMessage,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+// Symbol discovery (type-ahead): partial pattern -> matching symbols
+router.post('/symbols/discover', async (req: Request, res: Response) => {
+  const { pattern, secType, exchange, currency, max_results, use_fallback, account_mode } =
+    req.body ?? {};
+  const venue = resolveBroker(req.body?.broker ?? req.body?.source);
+
+  if (typeof pattern !== 'string' || !pattern.trim()) {
+    return res.json({ results: [], method: 'none', cached: false, count: 0 });
+  }
+
+  if (!isDataQueryEnabled(req)) {
+    return handleDisabledDataQuery(res, 'Symbol discovery is disabled');
+  }
+
+  try {
+    const response = await axios.post(
+      `${BROKER_SERVICE_URL}/symbols/discover`,
+      {
+        pattern: pattern.trim(),
+        secType,
+        exchange,
+        currency,
+        max_results,
+        use_fallback,
+        account_mode,
+        source: venue,
+      },
+      { timeout: 30000, headers: { Connection: 'close' } }
+    );
+    res.json(response.data);
+  } catch (error: any) {
+    const statusCode = error.code === 'ECONNREFUSED' ? 503 : (error.response?.status ?? 500);
+    res.status(statusCode).json({
+      error: 'Failed to discover symbols',
+      message: error.response?.data?.detail || error.message || 'Unknown error',
       timestamp: new Date().toISOString(),
     });
   }

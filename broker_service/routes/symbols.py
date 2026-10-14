@@ -22,6 +22,8 @@ from ib_helpers import (
 from models import SymbolDiscoveryRequest
 from observability import get_logger
 
+from .contracts import venue_search
+
 logger = get_logger(__name__)
 router = APIRouter()
 
@@ -38,6 +40,23 @@ async def discover_symbols(request: SymbolDiscoveryRequest):
         pattern = request.pattern.strip().upper()
         if not pattern:
             return {"results": [], "method": "none", "cached": False, "count": 0}
+
+        found = venue_search(
+            request.source,
+            pattern,
+            secType=request.secType,
+            exchange=request.exchange,
+            currency=request.currency,
+            account_mode=request.account_mode,
+        )
+        if found is not None:
+            results = found.get("results", [])
+            return {
+                "results": results[: request.max_results],
+                "method": "venue_search",
+                "cached": False,
+                "count": len(results),
+            }
 
         # Phase 3: Check cache first
         cache_key = get_cache_key(pattern, request.secType, request.exchange, request.currency)
@@ -261,6 +280,8 @@ async def discover_symbols(request: SymbolDiscoveryRequest):
             "currency": request.currency,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in symbol discovery: {e}")
         raise HTTPException(

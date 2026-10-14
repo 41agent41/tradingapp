@@ -11,7 +11,7 @@ import { useContractSearch } from '../app/lib/useContractSearch';
 
 const HEALTH = '/api/health';
 const SEARCH = '/api/market-data/search';
-const ADVANCED = '/api/market-data/advanced-search';
+const ADVANCED = '/api/market-data/search/advanced';
 const REALTIME = '/api/market-data/realtime';
 
 /** Route the mocked fetch by URL substring. Unmatched URLs 404. */
