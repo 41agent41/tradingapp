@@ -30,6 +30,7 @@ import { configService } from './config/configService.js';
 import { startDefaultBrokerRefresh } from './services/brokerDefault.js';
 import { brokersFromHealth, defaultBrokerProblem } from './services/brokerStatus.js';
 import brokersRoutes from './routes/brokers.js';
+import { brokerSync } from './services/brokerConnectionsRuntime.js';
 
 // Refuse to start on an unsafe configuration (open API, default secrets, live
 // trading without MFA, an unimplemented kill-switch action). See the module.
@@ -460,6 +461,7 @@ async function shutdown(signal: string) {
   }
   heartbeat.stop();
   stopDefaultBrokerRefresh();
+  brokerSync.stop();
   configService.stop();
   server.close(() => {
     console.log('Server closed');
@@ -484,6 +486,9 @@ server.listen(PORT, '0.0.0.0', () => {
   // Settings saved from the Settings page. `.env` still wins over them.
   configService.attach(dbService);
   configService.start();
+
+  // Broker connections added on the Settings page, sent to the broker service.
+  brokerSync.start();
 
   void streamingBridge.start().catch((err) => {
     logger.warn({ err: String(err) }, 'streaming bridge failed to start');

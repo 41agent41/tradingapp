@@ -122,6 +122,11 @@ class Connection:
     account_id: Optional[str] = None
     environment: Optional[str] = None
     paper: bool = True
+    # IB Gateway address, for an ib connection added in the app (an ib
+    # connection from .env uses IB_HOST / IB_PORT / IB_CLIENT_ID).
+    host: Optional[str] = None
+    port: Optional[int] = None
+    client_id: Optional[int] = None
     # Operational metadata.
     server_timezone: Optional[str] = None
     same_funds_as: Optional[str] = None
@@ -130,6 +135,9 @@ class Connection:
     # orders keep going through the MT5 sidecar. See `split_account_adapter`.
     account_info_from: Optional[str] = None
     symbol_map: Dict[str, str] = field(default_factory=dict)
+    # Where the connection is defined: "env" (.env / the manifest) or "app"
+    # (added on the Settings page; see managed.py).
+    source: str = "env"
 
     @property
     def key(self) -> tuple[str, str]:
@@ -147,6 +155,11 @@ class Connection:
         return account_mode.strip().lower() == self.account_mode
 
 
+def _literal(value: Any) -> Optional[str]:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
 def _env(name: Optional[str]) -> Optional[str]:
     if not name:
         return None
@@ -154,7 +167,20 @@ def _env(name: Optional[str]) -> Optional[str]:
     return value or None
 
 
-def _parse_entry(raw: Any, index: int) -> Connection:
+def _optional_int(raw: Any, name: str, account: str) -> Optional[int]:
+    value = raw.get(name)
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ManifestError(f"connection '{account}': {name} must be a whole number")
+
+
+def _parse_entry(raw: Any, index: int, literal: bool = False) -> Connection:
+    """One manifest entry. With ``literal`` the entry carries its secrets
+    itself (a connection added in the app, sent by the backend) instead of
+    naming environment variables."""
     if not isinstance(raw, dict):
         raise ManifestError(f"connection #{index} must be an object, got {type(raw).__name__}")
 
@@ -191,13 +217,18 @@ def _parse_entry(raw: Any, index: int) -> Connection:
         currency=str(raw.get("currency") or "USD").strip().upper(),
         is_default=bool(raw.get("default")),
         url=(str(raw.get("url")).rstrip("/") if raw.get("url") else None),
-        secret=_env(raw.get("secret_env")),
-        api_key=_env(raw.get("key_env")),
-        api_secret=_env(raw.get("secret_key_env")),
-        token=_env(raw.get("token_env")),
-        account_id=_env(raw.get("account_env")),
+        secret=_literal(raw.get("secret")) if literal else _env(raw.get("secret_env")),
+        api_key=_literal(raw.get("api_key")) if literal else _env(raw.get("key_env")),
+        api_secret=(
+            _literal(raw.get("api_secret")) if literal else _env(raw.get("secret_key_env"))
+        ),
+        token=_literal(raw.get("token")) if literal else _env(raw.get("token_env")),
+        account_id=(_literal(raw.get("account_id")) if literal else _env(raw.get("account_env"))),
         environment=(str(raw.get("environment")).strip() if raw.get("environment") else None),
         paper=account_mode != "live",
+        host=_literal(raw.get("host")) if literal else None,
+        port=_optional_int(raw, "port", account) if literal else None,
+        client_id=_optional_int(raw, "client_id", account) if literal else None,
         server_timezone=(
             str(raw.get("server_timezone")).strip() if raw.get("server_timezone") else None
         ),
@@ -210,12 +241,13 @@ def _parse_entry(raw: Any, index: int) -> Connection:
             else None
         ),
         symbol_map=symbol_map,
+        source="app" if literal else "env",
     )
-    _validate_platform_fields(conn)
+    _validate_platform_fields(conn, literal)
     return conn
 
 
-def _validate_platform_fields(conn: Connection) -> None:
+def _validate_platform_fields(conn: Connection, literal: bool = False) -> None:
     """Each platform needs different wiring; catch a missing field at startup
     rather than as a confusing 501 on the first request."""
     if conn.platform == "mt5":
@@ -226,7 +258,7 @@ def _validate_platform_fields(conn: Connection) -> None:
                 "connection_no_shared_secret",
                 connection=conn.label,
                 msg=(
-                    "MT5 connection configured without a resolvable secret_env — the "
+                    "MT5 connection configured without a shared secret — the "
                     "sidecar HTTP contract is unauthenticated; anything that can reach "
                     "it can query positions/account and place, cancel, or modify orders."
                 ),
@@ -234,15 +266,22 @@ def _validate_platform_fields(conn: Connection) -> None:
     elif conn.platform == "alpaca":
         if not (conn.api_key and conn.api_secret):
             raise ManifestError(
-                f"connection '{conn.account}': alpaca requires 'key_env' and 'secret_key_env' "
-                "naming environment variables that are set"
+                f"connection '{conn.account}': alpaca requires an API key and secret"
+                if literal
+                else f"connection '{conn.account}': alpaca requires 'key_env' and "
+                "'secret_key_env' naming environment variables that are set"
             )
     elif conn.platform == "oanda":
         if not (conn.token and conn.account_id):
             raise ManifestError(
-                f"connection '{conn.account}': oanda requires 'token_env' and 'account_env' "
-                "naming environment variables that are set"
+                f"connection '{conn.account}': oanda requires an API token and account id"
+                if literal
+                else f"connection '{conn.account}': oanda requires 'token_env' and "
+                "'account_env' naming environment variables that are set"
             )
+    elif conn.platform == "ib" and literal:
+        if not conn.host:
+            raise ManifestError(f"connection '{conn.account}': ib requires the IB Gateway host")
 
 
 def _manifest_json() -> Optional[str]:
@@ -272,11 +311,47 @@ def ib_configured() -> bool:
     return bool(host) and not host.upper().startswith("YOUR_")
 
 
+# Broker priority chosen on the Settings page (sent by the backend; see
+# managed.py). BROKER_PRIORITY in .env wins over it.
+_priority_override: Optional[List[str]] = None
+
+
+def _complete_priority(raw: Iterable[str]) -> List[str]:
+    """Known platforms from ``raw`` in its order, then any it left out in the
+    built-in order, so every platform always has a rank."""
+    order: List[str] = []
+    for item in raw:
+        name = str(item).strip().lower()
+        if name in SUPPORTED_PLATFORMS and name not in order:
+            order.append(name)
+    return order + [p for p in BROKER_PRIORITY if p not in order]
+
+
+def set_priority_override(order: Optional[Iterable[str]]) -> None:
+    global _priority_override
+    _priority_override = _complete_priority(order) if order else None
+
+
+def priority_from_env() -> bool:
+    return bool((os.getenv("BROKER_PRIORITY") or "").strip())
+
+
+def broker_priority() -> List[str]:
+    """Platforms highest first: BROKER_PRIORITY in .env, else the order set on
+    the Settings page, else :data:`BROKER_PRIORITY`."""
+    env = (os.getenv("BROKER_PRIORITY") or "").strip()
+    if env:
+        return _complete_priority(env.split(","))
+    if _priority_override:
+        return list(_priority_override)
+    return list(BROKER_PRIORITY)
+
+
 def default_platform(configured: Iterable[str]) -> str:
     """The platform an unqualified request resolves to.
 
     ``DEFAULT_BROKER``, when it names a supported platform, wins. Otherwise the
-    highest-ranked platform in :data:`BROKER_PRIORITY` that has a configured
+    highest-ranked platform in :func:`broker_priority` that has a configured
     connection; with none configured, the top of the list, so the request
     fails with that platform's "not configured" hint rather than a vaguer one.
     """
@@ -284,10 +359,11 @@ def default_platform(configured: Iterable[str]) -> str:
     if explicit in SUPPORTED_PLATFORMS:
         return explicit
     present = set(configured)
-    for platform in BROKER_PRIORITY:
+    priority = broker_priority()
+    for platform in priority:
         if platform in present:
             return platform
-    return BROKER_PRIORITY[0]
+    return priority[0]
 
 
 def _legacy_connections() -> List[Connection]:
@@ -520,3 +596,21 @@ def _apply_defaults(connections: List[Connection]) -> None:
             connections[connections.index(first)] = Connection(
                 **{**first.__dict__, "is_default": True}
             )
+
+
+def parse_managed(entries: Any) -> List[Connection]:
+    """Validate connections added in the app (literal secrets). All or
+    nothing, like the manifest: one bad entry rejects the set."""
+    if not isinstance(entries, list):
+        raise ManifestError("connections must be a list")
+    connections = [_parse_entry(entry, i, literal=True) for i, entry in enumerate(entries)]
+    seen: Dict[tuple[str, str], Connection] = {}
+    for conn in connections:
+        if conn.key in seen:
+            raise ManifestError(f"duplicate connection '{conn.label}'")
+        seen[conn.key] = conn
+    ib = [c.label for c in connections if c.platform == "ib"]
+    if len(ib) > 1:
+        raise ManifestError(f"only one IB connection is supported, got {ib}")
+    _apply_defaults(connections)
+    return connections

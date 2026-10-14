@@ -701,6 +701,16 @@ export const SETTINGS: readonly SettingDef[] = [
 
   // --- Connections (single-account shorthand; moves to connection rows) ----
   {
+    key: 'BROKER_PRIORITY',
+    section: 'connections',
+    label: 'Broker priority',
+    type: 'string',
+    apply: 'immediate',
+    stepUp: true,
+    editable: true,
+    help: 'Brokers highest first, comma separated (for example oanda,mt5,ib,alpaca). Sets the default broker and the display order. Set it with the arrows on the Connections tab.',
+  },
+  {
     key: 'BROKER_CONNECTIONS',
     section: 'connections',
     label: 'Connection manifest',
