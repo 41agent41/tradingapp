@@ -13,7 +13,7 @@ create a user first:
 
 ```bash
 # As root, once
-apt update && apt install -y sudo git
+apt update && apt install -y sudo git curl
 adduser tradingapp              # set a password when prompted
 usermod -aG sudo tradingapp
 su - tradingapp                 # continue as this user, in its home directory
