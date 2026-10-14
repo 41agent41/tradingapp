@@ -8,11 +8,23 @@ const GOOD_PRODUCTION = {
   BROKER_SERVICE_TOKEN: 'z'.repeat(64),
   POSTGRES_PASSWORD: 'p'.repeat(32),
   REDIS_PASSWORD: 'r'.repeat(32),
+  SETTINGS_ENCRYPTION_KEY: 'e'.repeat(64),
 };
 
 describe('checkStartupConfig', () => {
   it('passes a complete production configuration', () => {
     expect(checkStartupConfig(GOOD_PRODUCTION)).toEqual({ errors: [], warnings: [] });
+  });
+
+  it('checks the settings encryption key', () => {
+    const missing = checkStartupConfig({ ...GOOD_PRODUCTION, SETTINGS_ENCRYPTION_KEY: '' });
+    expect(missing.errors).toEqual([]);
+    expect(missing.warnings.join(' ')).toMatch(/SETTINGS_ENCRYPTION_KEY/);
+    const malformed = { ...GOOD_PRODUCTION, SETTINGS_ENCRYPTION_KEY: 'CHANGE_ME' };
+    expect(checkStartupConfig(malformed).errors.join(' ')).toMatch(/SETTINGS_ENCRYPTION_KEY/);
+    const devMalformed = checkStartupConfig({ SETTINGS_ENCRYPTION_KEY: 'CHANGE_ME' });
+    expect(devMalformed.errors).toEqual([]);
+    expect(devMalformed.warnings.join(' ')).toMatch(/SETTINGS_ENCRYPTION_KEY/);
   });
 
   it('lets development run with an empty environment', () => {

@@ -4,7 +4,6 @@ services:
     env_file: .env
     environment:
       - PORT=${BACKEND_PORT:-4000}
-      - HOST=${BACKEND_HOST:-0.0.0.0}
       - NODE_ENV=${NODE_ENV:-production}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
       - BROKER_SERVICE_URL=http://172.20.0.10:8000
@@ -29,7 +28,6 @@ services:
       # Redis cache controls
       - REDIS_ENABLED=${REDIS_ENABLED:-true}
       - CACHE_TTL_REALTIME=${CACHE_TTL_REALTIME:-2}
-      - CACHE_TTL_SEARCH=${CACHE_TTL_SEARCH:-300}
       # Phase 4 real-time streaming bridge
       - STREAMING_ENABLED=${STREAMING_ENABLED:-true}
       # Phase 5 backfill scheduler (opt-in; drives data_collection_config)
@@ -64,7 +62,6 @@ services:
     env_file: .env
     environment:
       - PORT=${FRONTEND_PORT:-3000}
-      - HOST=${FRONTEND_HOST:-0.0.0.0}
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:4000}
       - NODE_ENV=${NODE_ENV:-production}
     ports:
@@ -90,8 +87,6 @@ services:
       - IB_TIMEZONE=${IB_TIMEZONE:-UTC}
       - EXPECTED_TIMESTAMP_FORMAT=${EXPECTED_TIMESTAMP_FORMAT:-unix_seconds}
       - DATA_TIMEZONE=${DATA_TIMEZONE:-UTC}
-      - IB_DATE_FORMAT=${IB_DATE_FORMAT:-YYYYMMDD}
-      - IB_TIME_FORMAT=${IB_TIME_FORMAT:-HHMMSS}
       - IB_FORMAT_DATE=${IB_FORMAT_DATE:-2}
       - BROKER_SERVICE_TOKEN=${BROKER_SERVICE_TOKEN:-}
     # The broker service can place orders, and only the backend should call

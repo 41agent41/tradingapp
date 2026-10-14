@@ -875,6 +875,43 @@ CREATE INDEX IF NOT EXISTS idx_price_alerts_status
     ON price_alerts (status);
 
 -- ==============================================
+-- APP SETTINGS (Settings page)
+-- ==============================================
+-- Settings saved from the Settings page, one row per key, stored as the same
+-- string `.env` would hold. A value set in `.env` still wins over a row here.
+-- Secrets are kept only as `ciphertext` (AES-256-GCM under
+-- SETTINGS_ENCRYPTION_KEY, which stays in `.env`); `value` is then NULL.
+-- Bootstrap values (database connection, encryption key, service token,
+-- ports) never live here. See backend/src/config/registry.ts.
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key VARCHAR(128) PRIMARY KEY,
+    value TEXT,
+    ciphertext TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by VARCHAR(64),
+    CHECK (value IS NULL OR ciphertext IS NULL)
+);
+
+-- Every change, written in the same statement as the change itself. A
+-- secret's old and new values are recorded only as "(secret)".
+CREATE TABLE IF NOT EXISTS settings_audit (
+    id BIGSERIAL PRIMARY KEY,
+    key VARCHAR(128) NOT NULL,
+    action VARCHAR(16) NOT NULL,               -- 'set' | 'clear'
+    old_value TEXT,
+    new_value TEXT,
+    changed_by VARCHAR(64),
+    source_ip VARCHAR(64),
+    reason TEXT,
+    changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_settings_audit_key_time
+    ON settings_audit (key, changed_at DESC);
+
+-- ==============================================
 -- INITIAL DATA
 -- ==============================================
 

@@ -432,6 +432,36 @@ TRADING_DAY_TIMEZONE=Europe/Athens      # your broker's server zone
 With `SYSTEMATIC_EXECUTION_ENABLED=true` and no `HEARTBEAT_URL`, the backend
 logs a startup warning: nothing would page you if the host went down.
 
+### Settings page
+
+The app's **Settings** page (`/settings`, linked from the home page) shows every
+setting the app reads, where its value comes from, and changes the ones it can
+manage. Saved values live in the `app_settings` table, and every change is
+recorded in `settings_audit` (the page's History tab).
+
+- **`.env` always wins.** A key set in `.env` shows as "Set in .env" and is
+  locked on the page. To manage a setting from the page, remove its line from
+  `.env` and restart. This also makes `.env` a break-glass for anything the
+  page can change.
+- **What it can change today:** the promotion gate thresholds and the news
+  calendar. Everything else is listed read-only and is moving to the page in
+  stages (see the settings migration plan).
+- **Protected settings** (marked on the page) need the same trading token and
+  MFA code as placing an order, when those are configured.
+- **What never moves to the page:** the database connection, the ports,
+  `BROKER_SERVICE_TOKEN`, `REDIS_PASSWORD`, `NODE_ENV`, `TZ`, `LOG_LEVEL` and
+  `SETTINGS_ENCRYPTION_KEY`. The app needs them before it can read its own
+  database.
+- **`SETTINGS_ENCRYPTION_KEY`** encrypts secrets saved on the page.
+  `./tradingapp.sh config` and the installer generate it. Keep a copy off the
+  host. If it is lost, secrets saved on the page have to be entered again;
+  nothing else is affected.
+
+The tables are created by `timescaledb-schema.sql`. On an existing install,
+apply the schema again (it is idempotent) before relying on the page. Until
+then the page still loads, shows values from `.env` and defaults, and refuses
+to save.
+
 ### Configuring IB Gateway
 
 1. Launch IB Gateway / TWS and log in.

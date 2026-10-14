@@ -26,6 +26,7 @@ import { observabilityMiddleware } from './middleware/observability.js';
 import { logger, currentRequestId } from './services/logger.js';
 import { registry } from './services/metrics.js';
 import { checkStartupConfig } from './services/startupChecks.js';
+import { configService } from './config/configService.js';
 
 // Refuse to start on an unsafe configuration (open API, default secrets, live
 // trading without MFA, an unimplemented kill-switch action). See the module.
@@ -84,6 +85,8 @@ const corsOptions: CorsOptions = {
     'X-API-Token',
     'X-Data-Query-Enabled',
     'X-Request-Id',
+    'X-Trading-Token',
+    'X-MFA-Code',
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   maxAge: 86400,
@@ -441,6 +444,7 @@ async function shutdown(signal: string) {
     console.warn('Error stopping executions poller:', err);
   }
   heartbeat.stop();
+  configService.stop();
   server.close(() => {
     console.log('Server closed');
     process.exit(0);
@@ -455,6 +459,10 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 // ---------------------------------------------------------------------------
 server.listen(PORT, '0.0.0.0', () => {
   logger.info({ port: PORT, broker_service: BROKER_SERVICE_URL }, 'backend listening');
+
+  // Settings saved from the Settings page. `.env` still wins over them.
+  configService.attach(dbService);
+  configService.start();
 
   void streamingBridge.start().catch((err) => {
     logger.warn({ err: String(err) }, 'streaming bridge failed to start');
