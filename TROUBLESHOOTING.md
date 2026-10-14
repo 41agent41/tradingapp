@@ -84,6 +84,28 @@ root or by editing the script: Docker group membership, file ownership of
 `.env` and the checkout all assume a normal user. See
 [DEPLOYMENT.md → User account](DEPLOYMENT.md#user-account-do-not-install-as-root).
 
+### "Docker is not running" or "docker group membership is not active" right after setup
+
+`setup` adds you to the `docker` group, but a shell keeps the groups it
+logged in with. `deploy` (and `start`, `stop`, `status`, `logs` and the
+other Docker commands) notice this and re-run themselves under
+`sg docker`, so no logout is needed. If you still see the message:
+
+```bash
+newgrp docker          # or log out and back in
+./tradingapp.sh deploy
+```
+
+"Docker is installed but not running" means the daemon itself is down:
+`sudo systemctl start docker`.
+
+### Deploy no longer tests the IB Gateway
+
+Brokers are optional and are checked inside the app once it is running, so
+`deploy` and `test` never ping or port-test a broker, and a broker that is
+down does not fail a deploy. To check IB reachability by hand, see
+[IB Gateway Connection](#ib-gateway-connection).
+
 ### Services won't start
 
 **Symptoms:** Containers exit immediately or `docker compose up` reports

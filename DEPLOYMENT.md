@@ -347,12 +347,13 @@ cd tradingapp
 # 2. Make the script executable
 chmod +x tradingapp.sh
 
-# 3. First-time setup (installs Docker, writes .env)
+# 3. First-time setup (installs Docker, writes .env). No broker questions;
+#    it offers to deploy straight away.
 ./tradingapp.sh setup
 
-# 4. Deploy the full stack
-#    If step 3 just installed Docker, log out and back in first
-#    (exit, then su - tradingapp) so the docker group applies.
+# 4. Deploy the full stack (if you didn't at the end of setup). No logout
+#    is needed after setup installs Docker: deploy applies the new docker
+#    group itself.
 ./tradingapp.sh deploy
 
 # 5. Confirm everything is healthy
@@ -363,30 +364,33 @@ chmod +x tradingapp.sh
 
 | Command | Purpose | When to use |
 |---|---|---|
-| `setup` | Install Docker, write a baseline `.env`, configure IB | First-time host setup |
+| `setup` | Install Docker, write a baseline `.env`, offer to deploy | First-time host setup |
 | `deploy` | Build images and bring the stack up | Initial deployment |
 | `redeploy` | Stop, prune project images, rebuild from scratch | After code changes |
-| `config` | Re-prompt for IB Gateway host and rewrite `.env` | Change IB settings |
+| `config` | Refresh `SERVER_IP` and fill in missing `.env` keys (`IB_HOST=<ip> ./tradingapp.sh config` sets IB) | Server IP changed, or adding IB |
 | `env` | Same as `config`, but does not redeploy | Quick env regeneration |
 | `start` / `stop` / `restart` | Compose lifecycle | Day-to-day ops |
 | `status` | `docker-compose ps` | Quick health check |
 | `logs` | Last 20 lines per service (`logs -f` to follow) | Inspect output |
-| `test` | Check frontend, backend, IB service and IB Gateway reachability | Troubleshooting |
+| `test` | Check frontend, backend, broker service and database; list the configured broker connections (brokers themselves are checked inside the app) | Troubleshooting |
 | `diagnose` | All of `test`, plus Docker, env file and container summaries | Debug a broken host |
 | `fix` | Recreate `.env` if missing, restart services and re-test | Auto-recover |
 | `ib-help` | Print IB Gateway configuration walk-through | Tweaking IB settings |
 | `verify-timestamps` | Run `verify_timestamp_config.sh` against the running stack | Debug wrong-year / wrong-timezone bars |
 | `clean` | Stop, remove project images and prune Docker | Reset before a fresh `deploy` |
 
-> `tradingapp.sh config` / `env` **merge** into `.env`: `SERVER_IP`,
-> `IB_HOST` and the `NEXT_PUBLIC_API_URL` / `CORS_ORIGINS` URLs derived
-> from `SERVER_IP` are updated in place, and every other key (ports,
-> Postgres/Redis credentials, and anything you've hand-added like
-> `POSTGRES_HOST`, `API_TOKEN`, `BACKFILL_ENABLED`) is filled in only if
-> missing — a hand-edited `.env` survives a re-run. Pass
-> `--non-interactive` to skip the IB Gateway IP prompt (uses
-> `DEFAULT_IB_HOST` unless `IB_HOST` is already exported), for scripted /
-> CI installs.
+> `tradingapp.sh config` / `env` **merge** into `.env`: `SERVER_IP` and
+> the `NEXT_PUBLIC_API_URL` / `CORS_ORIGINS` URLs derived from it are
+> updated in place, and every other key (ports, Postgres/Redis
+> credentials, and anything you've hand-added like `POSTGRES_HOST`,
+> `API_TOKEN`, `BACKFILL_ENABLED`) is filled in only if missing — a
+> hand-edited `.env` survives a re-run. There is no broker prompt:
+> `IB_HOST` is written only when you export it, and otherwise holds
+> `host.docker.internal`, meaning IB is not configured. Brokers are
+> optional and are checked inside the app, never by `deploy` or `test`,
+> so a broker that is down does not fail a deploy. Pass
+> `--non-interactive` to skip the "Deploy now?" question at the end of
+> `setup`, for scripted / CI installs.
 
 ## Manual Deployment
 
