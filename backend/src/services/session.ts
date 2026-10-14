@@ -8,29 +8,33 @@
  * cannot read. `API_TOKEN` remains for scripts and curl.
  *
  * Sessions are stateless: the cookie value is `v1.<expiresAtMs>.<hmac>`,
- * signed with `SESSION_SECRET`. Rotating `SESSION_SECRET` signs everyone out.
- * There is one user, so there is nothing per-user to store server-side.
+ * signed with `SESSION_SECRET`, or with a key the app generates and stores
+ * when that is not set (see credentials.ts). Rotating the key signs everyone
+ * out; a password change does that. There is one user, so there is nothing
+ * per-user to store server-side.
+ *
+ * The password is `APP_PASSWORD` when set in `.env`, else the one chosen on
+ * the first-run setup screen or the Security tab.
  */
 import crypto from 'crypto';
+
+import { configService } from '../config/configService.js';
+import { credentials } from './credentials.js';
 
 export const SESSION_COOKIE = 'tradingapp_session';
 const VERSION = 'v1';
 
 function sessionSecret(): string {
-  return (process.env.SESSION_SECRET || '').trim();
+  return credentials.sessionSecret();
 }
 
-export function appPassword(): string {
-  return (process.env.APP_PASSWORD || '').trim();
-}
-
-/** True when browser login is possible (a password and a signing key). */
+/** True when browser login is possible (a password is set). */
 export function isLoginConfigured(): boolean {
-  return appPassword().length > 0 && sessionSecret().length > 0;
+  return credentials.hasPassword();
 }
 
 export function sessionTtlMs(): number {
-  const hours = Number(process.env.SESSION_TTL_HOURS ?? '12');
+  const hours = Number(configService.get('SESSION_TTL_HOURS') ?? '12');
   return (Number.isFinite(hours) && hours > 0 ? hours : 12) * 3_600_000;
 }
 
@@ -46,9 +50,7 @@ export function safeEqual(a: string, b: string): boolean {
 }
 
 export function checkPassword(supplied: unknown): boolean {
-  const expected = appPassword();
-  if (!expected || typeof supplied !== 'string') return false;
-  return safeEqual(supplied, expected);
+  return credentials.verifyPassword(supplied);
 }
 
 export function issueSession(now: number = Date.now()): { value: string; expiresAt: number } {

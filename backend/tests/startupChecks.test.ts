@@ -31,13 +31,14 @@ describe('checkStartupConfig', () => {
     expect(checkStartupConfig({}).errors).toEqual([]);
   });
 
-  it('refuses production with no authentication', () => {
+  it('starts production with no password or token in .env (they are set in the app)', () => {
     const { errors } = checkStartupConfig({
       ...GOOD_PRODUCTION,
       APP_PASSWORD: '',
       API_TOKEN: '',
+      SESSION_SECRET: '',
     });
-    expect(errors.join(' ')).toMatch(/APP_PASSWORD .*API_TOKEN/);
+    expect(errors).toEqual([]);
   });
 
   it.each([
@@ -57,17 +58,10 @@ describe('checkStartupConfig', () => {
     expect(warnings.join(' ')).toMatch(/REDIS_PASSWORD/);
   });
 
-  it('refuses live trading without the trader role and MFA, in any environment', () => {
-    const { errors } = checkStartupConfig({ LIVE_TRADING_ENABLED: 'true' });
-    expect(errors.join(' ')).toMatch(/TRADING_TOKENS/);
-    expect(errors.join(' ')).toMatch(/ORDER_MFA_SECRET/);
-
-    const ok = checkStartupConfig({
-      LIVE_TRADING_ENABLED: 'true',
-      TRADING_TOKENS: 'abc',
-      ORDER_MFA_SECRET: 'JBSWY3DPEHPK3PXP',
-    });
-    expect(ok.errors).toEqual([]);
+  it('leaves live trading without safeguards to the gate, which stays closed', () => {
+    // The trader role and MFA can be set up in the app after startup, so this
+    // is checked per order (orderTypes.isLiveTradingEnabled), not here.
+    expect(checkStartupConfig({ LIVE_TRADING_ENABLED: 'true' }).errors).toEqual([]);
   });
 
   it('refuses a KILL_SWITCH_ACTION that is not an action', () => {

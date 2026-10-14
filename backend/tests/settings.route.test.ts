@@ -3,7 +3,6 @@
  * any bootstrap value, saves only what the page may change, and puts the
  * order step-up in front of protected settings.
  */
-import { createHmac } from 'crypto';
 import express from 'express';
 import request from 'supertest';
 
@@ -11,6 +10,7 @@ import { configService } from '../src/config/configService.js';
 import settingsRouter from '../src/routes/settings.js';
 import { notifier } from '../src/services/notifier.js';
 import { isLiveTradingEnabled } from '../src/services/orderTypes.js';
+import { stepUpHeaders, withSafeguards } from './helpers/totp.js';
 
 const SAVED_ENV: NodeJS.ProcessEnv = { ...process.env };
 
@@ -124,7 +124,7 @@ describe('PUT /api/settings/:key', () => {
   });
 
   it('refuses a setting whose consumer still reads .env', async () => {
-    const r = await request(buildApp()).put('/api/settings/SESSION_TTL_HOURS').send({ value: '4' });
+    const r = await request(buildApp()).put('/api/settings/IB_HOST').send({ value: '10.0.0.2' });
     expect(r.status).toBe(409);
   });
 
@@ -165,31 +165,6 @@ describe('DELETE /api/settings/:key', () => {
     expect(r.body.setting).toMatchObject({ value: '360', source: 'default' });
   });
 });
-
-const MFA_SECRET = 'JBSWY3DPEHPK3PXP';
-
-/** The current RFC 6238 code for a base32 secret. */
-function totpNow(secret: string): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-  let bits = '';
-  for (const c of secret) bits += alphabet.indexOf(c).toString(2).padStart(5, '0');
-  const bytes: number[] = [];
-  for (let i = 0; i + 8 <= bits.length; i += 8) bytes.push(parseInt(bits.slice(i, i + 8), 2));
-  const counter = Buffer.alloc(8);
-  counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
-  const mac = createHmac('sha1', Buffer.from(bytes)).update(counter).digest();
-  const offset = mac[mac.length - 1] & 0xf;
-  return String((mac.readUInt32BE(offset) & 0x7fffffff) % 1_000_000).padStart(6, '0');
-}
-
-function withSafeguards() {
-  process.env.TRADING_TOKENS = 'trader-token-1';
-  process.env.ORDER_MFA_SECRET = MFA_SECRET;
-}
-
-function stepUpHeaders() {
-  return { 'X-Trading-Token': 'trader-token-1', 'X-MFA-Code': totpNow(MFA_SECRET) };
-}
 
 describe('turning live trading on from the page', () => {
   let alerts: jest.SpyInstance;

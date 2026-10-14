@@ -136,17 +136,13 @@ docker compose logs backend | grep -E 'refusing to start|\[startup\]'
 
 Each line names the key to fix:
 
-- **`Set APP_PASSWORD (browser login) and/or API_TOKEN`**, or a secret that
-  "is not set", "is still a template or default value" or "is shorter than N
-  characters" (production only). Run `./tradingapp.sh config` to generate
+- A secret that "is still a template or default value" or "is shorter than
+  N characters" (production only). Run `./tradingapp.sh config` to generate
   missing secrets, or set fresh values by hand (`openssl rand -hex 32`).
 - **`BROKER_SERVICE_TOKEN …`**: it must be set, and the same value on the
   backend and the broker service (both read `.env`).
 - **`POSTGRES_PASSWORD is empty or a known default`**: change it in the
   database and in `.env` together.
-- **`LIVE_TRADING_ENABLED=true requires TRADING_TOKENS` / `ORDER_MFA_SECRET`**:
-  live trading needs the trader role and order MFA. Set both, or set
-  `LIVE_TRADING_ENABLED=false`.
 - **`KILL_SWITCH_ACTION=… is not an action`**: use `notify`, `halt` or
   `flatten`.
 - **`TRADING_DAY_TIMEZONE=… is not a valid IANA time zone`**: use a name such
@@ -536,7 +532,9 @@ And include:
 | `Module not found` | `npm install` / `pip install` failed during build |
 | `CORS error` | `CORS_ORIGINS` does not include the frontend's origin |
 | `[startup] refusing to start: …` | Unsafe or unreadable setting; see [Backend refuses to start](#backend-refuses-to-start) |
-| `401` from the API | Not logged in, or the script's `API_TOKEN` is wrong |
+| `401` from the API | Not logged in, or the script's API token is wrong |
+| Login page asks for a setup code | No password is set yet. Run `./tradingapp.sh setup-code` on the server for the code |
+| Forgot the password or lost the authenticator | Set `APP_PASSWORD` (or `ORDER_MFA_SECRET`) in `.env` and `./tradingapp.sh redeploy`; the `.env` value wins, then reset it on the Security tab |
 
 ---
 

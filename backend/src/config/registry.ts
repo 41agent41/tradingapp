@@ -718,26 +718,9 @@ export const SETTINGS: readonly SettingDef[] = [
   },
 
   // --- Security ------------------------------------------------------------
-  {
-    key: 'APP_PASSWORD',
-    section: 'security',
-    label: 'Login password',
-    type: 'string',
-    secret: true,
-    apply: 'immediate',
-    stepUp: true,
-    help: 'The browser login.',
-  },
-  {
-    key: 'SESSION_SECRET',
-    section: 'security',
-    label: 'Session signing secret',
-    type: 'string',
-    secret: true,
-    apply: 'immediate',
-    stepUp: true,
-    help: 'Signs login cookies. Changing it signs every browser out.',
-  },
+  // The login password, API and trading tokens and the order MFA secret are
+  // not settings: they live in `auth_credentials`, hashed or sealed, and are
+  // managed on the Security tab (services/credentials.ts).
   {
     key: 'SESSION_TTL_HOURS',
     section: 'security',
@@ -746,6 +729,7 @@ export const SETTINGS: readonly SettingDef[] = [
     default: '12',
     min: 1,
     apply: 'immediate',
+    editable: true,
     help: 'How long a login lasts.',
   },
   {
@@ -755,37 +739,8 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'boolean',
     default: 'false',
     apply: 'immediate',
+    editable: true,
     help: 'Set when served over HTTPS by a proxy that does not send X-Forwarded-Proto.',
-  },
-  {
-    key: 'API_TOKEN',
-    section: 'security',
-    label: 'API token',
-    type: 'string',
-    secret: true,
-    apply: 'immediate',
-    stepUp: true,
-    help: 'Bearer token for scripts. Read access only; orders also need a trading token.',
-  },
-  {
-    key: 'TRADING_TOKENS',
-    section: 'security',
-    label: 'Trading tokens',
-    type: 'string',
-    secret: true,
-    apply: 'immediate',
-    stepUp: true,
-    help: 'Comma-separated tokens that grant the trader role (X-Trading-Token).',
-  },
-  {
-    key: 'ORDER_MFA_SECRET',
-    section: 'security',
-    label: 'Order MFA secret',
-    type: 'string',
-    secret: true,
-    apply: 'immediate',
-    stepUp: true,
-    help: 'Base32 TOTP secret for the X-MFA-Code on orders and protected settings.',
   },
 
   // --- Connections (single-account shorthand; moves to connection rows) ----

@@ -144,6 +144,7 @@ show_usage() {
     echo "  restart     - Restart all services"
     echo "  status      - Check service status"
     echo "  logs        - View service logs"
+    echo "  setup-code  - Show the code for the first-run setup screen"
     echo ""
     echo "Troubleshooting:"
 echo "  test        - Check the app's services are up"
@@ -626,7 +627,7 @@ set -- "${GLOBAL_ARGS[@]}"
 # Commands that talk to Docker first make sure this shell can (re-running
 # under `sg docker` straight after setup, when the new group is not active).
 case "${1:-}" in
-    deploy|redeploy|start|stop|restart|status|logs|fix|clean)
+    deploy|redeploy|start|stop|restart|status|logs|setup-code|fix|clean)
         mapfile -t _flags < <(global_flag_args)
         ensure_docker_access "$@" "${_flags[@]}"
         ;;
@@ -694,6 +695,18 @@ case "${1:-}" in
         ;;
     "logs")
         show_logs "$2"
+        ;;
+    "setup-code")
+        # With no login password set (in the app or as APP_PASSWORD in .env),
+        # the backend prints a one-time code at startup; the setup screen asks
+        # for it before letting anyone choose the password.
+        code=$(compose_cmd logs --no-color backend 2>/dev/null | grep -o 'SETUP CODE: [A-Z0-9-]*' | tail -1 | sed 's/SETUP CODE: //')
+        if [[ -n "$code" ]]; then
+            echo "$code"
+        else
+            print_info "No setup code in the backend log: the login password is already set."
+            print_info "Locked out? Set APP_PASSWORD in .env and run '$0 redeploy'; it takes precedence."
+        fi
         ;;
     "test")
         test_deployment

@@ -87,7 +87,8 @@ export async function apiFetch(pathOrUrl: string, init: ApiFetchInit = {}): Prom
   }
 
   const res = await fetch(url, { credentials: 'include', ...rest, headers: merged });
-  if (res.status === 401 && !skipAuthRedirect) {
+  // A 401 about the MFA code on a protected change is not a lost login.
+  if (res.status === 401 && !skipAuthRedirect && !res.headers.get('X-Step-Up-Required')) {
     redirectToLogin();
   }
   return res;

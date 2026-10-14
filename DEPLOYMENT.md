@@ -566,26 +566,48 @@ credential is ever compiled into the frontend.
 
 ### Configure
 
+The login password, API tokens, trading tokens and order MFA are managed in
+**Settings > Security**. Passwords are stored as scrypt hashes, tokens as
+SHA-256 hashes (each shown once when created), and the MFA and session
+secrets encrypted with `SETTINGS_ENCRYPTION_KEY`.
+
+On a fresh install with no password set anywhere, the app opens a first-run
+screen that asks for a setup code and a new password. The backend prints the
+code at startup; read it with:
+
+```bash
+./tradingapp.sh setup-code
+```
+
+The same keys in `.env` still work and take precedence over the page:
+
 ```bash
 APP_PASSWORD=<12+ characters>          # the one user's login
 SESSION_SECRET=$(openssl rand -hex 32) # signs session cookies
-API_TOKEN=$(openssl rand -hex 32)      # scripts and curl only
+API_TOKEN=$(openssl rand -hex 32)      # scripts and curl, alongside page tokens
 BROKER_SERVICE_TOKEN=$(openssl rand -hex 32)
 ```
 
-`./tradingapp.sh config` generates any of these that are missing and prints
-the login password once.
+`./tradingapp.sh config` currently still generates `APP_PASSWORD`,
+`SESSION_SECRET` and `API_TOKEN` when they are missing and prints the login
+password once. Remove them from `.env` and redeploy to manage them on the page
+instead.
+
+**Locked out?** Set `APP_PASSWORD` (or `ORDER_MFA_SECRET`, if the authenticator
+is lost) in `.env` and `./tradingapp.sh redeploy`. The `.env` value wins, so
+you can sign in and set a new one on the Security tab, then remove it again.
 
 ### How it works
 
 - **Browser**: `/login` posts the password to `POST /api/auth/login`, which
   sets an HttpOnly, SameSite=Lax session cookie (Secure over HTTPS) signed
-  with `SESSION_SECRET`. Sessions last `SESSION_TTL_HOURS` (default 12).
-  Rotating `SESSION_SECRET` signs every browser out. Five wrong passwords
+  with the session secret. Sessions last `SESSION_TTL_HOURS` (default 12).
+  Changing the password on the Security tab, or rotating `SESSION_SECRET`,
+  signs every browser out. Five wrong passwords
   from one address lock it out for 15 minutes.
 - **Scripts**: every backend route except the health checks, `/metrics` and
-  `/api/auth/*` accepts `Authorization: Bearer <API_TOKEN>` (or
-  `X-API-Token`).
+  `/api/auth/*` accepts `Authorization: Bearer <token>` (or `X-API-Token`),
+  with an API token from the Security tab or `API_TOKEN`.
 - **Socket.IO**: the handshake accepts the session cookie (the frontend
   connects with `withCredentials`) or the API token in `auth.token`.
 - **Broker service**: only the backend may call it. It is published on the
@@ -857,7 +879,7 @@ Open the frontend in a browser at `http://<server-ip>:3000`.
 | Alpaca/OANDA requests return 503 | The broker's API is unreachable from the app host — check outbound HTTPS / firewall rules |
 | Database health check fails | Confirm `POSTGRES_HOST` is reachable from inside the backend container (`docker compose exec backend node -e "require('net').connect(5432,'$POSTGRES_HOST').on('connect',()=>console.log('ok'))"`) |
 | Charts not loading | `./tradingapp.sh logs` for frontend errors, then `./tradingapp.sh redeploy` |
-| Backend exits with `[startup] refusing to start: …` | The line names the key: a missing or template secret, live trading without `TRADING_TOKENS`/`ORDER_MFA_SECRET`, or an unreadable `KILL_SWITCH_ACTION`, `TRADING_DAY_TIMEZONE`, `PROP_RULES__*` or heartbeat URL. See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#backend-refuses-to-start) |
+| Backend exits with `[startup] refusing to start: …` | The line names the key: a template or too-short secret, or an unreadable `KILL_SWITCH_ACTION`, `TRADING_DAY_TIMEZONE`, `PROP_RULES__*` or heartbeat URL. See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#backend-refuses-to-start) |
 
 For a fuller list, see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
 
@@ -872,13 +894,10 @@ with HTTP 403: paper orders work, live orders don't.
 
 To enable live trading:
 
-1. Set the trader role and order MFA in `.env` (they move to the Security
-   tab in a later release), then `./tradingapp.sh redeploy`:
-
-   ```bash
-   TRADING_TOKENS=<openssl rand -hex 24>        # sent as X-Trading-Token
-   ORDER_MFA_SECRET=<base32 TOTP secret>         # sent as X-MFA-Code
-   ```
+1. In **Settings > Security**, create a trading token (copy it, it is
+   shown once) and set up MFA by scanning the QR code with an authenticator
+   app and entering a code. `TRADING_TOKENS` and `ORDER_MFA_SECRET` in `.env`
+   still work instead.
 
 2. In **Settings > Trading**, enter the trading token and a current MFA
    code, set **Live trading** to `true` and type `LIVE` when asked. The
@@ -1144,14 +1163,14 @@ find "$BACKUP_DIR" -name 'tradingapp_*.sql' -mtime +7 -delete
 - [ ] Docker / Docker Compose installed (`./tradingapp.sh setup` handles this)
 - [ ] Repository cloned and `tradingapp.sh` executable
 - [ ] `.env` created from `.env.example` and reviewed (no placeholders left)
-- [ ] `APP_PASSWORD`, `SESSION_SECRET`, `API_TOKEN` and `BROKER_SERVICE_TOKEN` set to fresh random values
+- [ ] `BROKER_SERVICE_TOKEN` and `SETTINGS_ENCRYPTION_KEY` set to fresh random values; login password set (first-run screen or `APP_PASSWORD`)
 - [ ] `CORS_ORIGINS` set to the actual browser origin(s) — not `*`
 - [ ] MT5 only: each sidecar running from `mt5_sidecar/` with its secret, and
       rejecting requests without it
 - [ ] Before auto-execution: Telegram alerts and `HEARTBEAT_URL` set and
       tested, account limits and `TRADING_DAY_TIMEZONE` set, kill switch on
       `notify` (see [`PAPER_DEPLOYMENT_RUNBOOK.md`](PAPER_DEPLOYMENT_RUNBOOK.md))
-- [ ] Live only: `TRADING_TOKENS` and `ORDER_MFA_SECRET` set
+- [ ] Live only: a trading token and MFA set up in Settings > Security
 - [ ] External Postgres reachable from the backend container; schema applied
       (or `--with-db` used to bring up the bundled TimescaleDB)
 - [ ] IB Gateway / TWS running with API enabled and server IP trusted
