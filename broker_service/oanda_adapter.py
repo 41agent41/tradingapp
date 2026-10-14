@@ -54,9 +54,10 @@ Order placement runs the same `_validate_common` gate the IB path applies
 
 from __future__ import annotations
 
+import json as _json
 import re
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 import pandas as pd
@@ -96,6 +97,9 @@ _MARKET_TIF_TO_OANDA = {"DAY": "FOK", "GTC": "FOK", "IOC": "IOC", "FOK": "FOK"}
 _HTTP_TIMEOUT_SECONDS = 30.0
 _PRACTICE_BASE = "https://api-fxpractice.oanda.com"
 _LIVE_BASE = "https://api-fxtrade.oanda.com"
+# The pricing stream lives on its own hosts.
+_PRACTICE_STREAM_BASE = "https://stream-fxpractice.oanda.com"
+_LIVE_STREAM_BASE = "https://stream-fxtrade.oanda.com"
 
 # Rough candle budget per app period (OANDA caps a single request at 5000).
 _PERIOD_TO_COUNT = {
@@ -145,6 +149,7 @@ class OANDAAdapter:
         timeout: float = _HTTP_TIMEOUT_SECONDS,
     ) -> None:
         self._base = _LIVE_BASE if environment == "live" else _PRACTICE_BASE
+        self._stream_base = _LIVE_STREAM_BASE if environment == "live" else _PRACTICE_STREAM_BASE
         self._account_id = account_id
         self._headers = {"Authorization": f"Bearer {api_token}"}
         self._timeout = timeout
@@ -324,6 +329,52 @@ class OANDAAdapter:
             volume=None,
             timestamp=_iso_from(p.get("time")),
         )
+
+    def stream_prices(
+        self,
+        symbols: List[str],
+        on_price: Callable[[str, Optional[float], Optional[float]], None],
+        should_stop: Callable[[], bool],
+    ) -> None:
+        """Stream bid/ask for ``symbols`` from OANDA's pricing stream, calling
+        ``on_price(symbol, bid, ask)`` with each symbol as the caller wrote it.
+
+        Blocks until ``should_stop()`` is true (checked on every message;
+        OANDA sends a heartbeat every 5 s, so that is the longest wait) or the
+        stream ends. Raises on a connection or HTTP error; the caller retries.
+        """
+        by_instrument = {_to_instrument(s): s for s in symbols}
+        if not by_instrument:
+            return
+        url = f"{self._stream_base}{self._account_path('/pricing/stream')}"
+        params = {"instruments": ",".join(sorted(by_instrument))}
+        timeout = httpx.Timeout(self._timeout, read=30.0)
+        with httpx.Client(timeout=timeout) as client:
+            with client.stream("GET", url, headers=self._headers, params=params) as resp:
+                if resp.status_code >= 400:
+                    resp.read()
+                    raise HTTPException(
+                        502, f"OANDA stream error {resp.status_code}: {resp.text[:200]}"
+                    )
+                for line in resp.iter_lines():
+                    if should_stop():
+                        return
+                    if not line:
+                        continue
+                    try:
+                        msg = _json.loads(line)
+                    except ValueError:
+                        continue
+                    if msg.get("type") != "PRICE":
+                        continue
+                    symbol = by_instrument.get(msg.get("instrument", ""))
+                    if symbol is None:
+                        continue
+                    bids = msg.get("bids") or [{}]
+                    asks = msg.get("asks") or [{}]
+                    on_price(
+                        symbol, _opt_float(bids[0].get("price")), _opt_float(asks[0].get("price"))
+                    )
 
     def tick(self, symbol: str, account_mode: str = "paper") -> Dict[str, Any]:
         quote = self.realtime_quote(symbol, account_mode)
