@@ -37,7 +37,7 @@ describe('HealthBadge popover interactions', () => {
     fireEvent.click(screen.getByRole('button'));
 
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByText('IB Gateway')).toBeInTheDocument();
+    expect(screen.getByText('Broker service')).toBeInTheDocument();
     expect(screen.getByText('Database')).toBeInTheDocument();
     expect(screen.getByText('Cache')).toBeInTheDocument();
     expect(screen.getByText('Streaming')).toBeInTheDocument();

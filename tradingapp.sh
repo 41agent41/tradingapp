@@ -434,7 +434,8 @@ test_deployment() {
 }
 
 # Information only: the broker connections the running broker service has
-# registered. Never fails, and never contacts a broker.
+# registered, with the app's last check of each. Never fails, and never
+# contacts a broker itself.
 show_broker_summary() {
     local summary ib_host skip_ib=1
     if ! command -v python3 &> /dev/null; then
@@ -451,10 +452,13 @@ try:
 except Exception:
     sys.exit(0)
 skip_ib = os.environ.get("SKIP_IB") == "1"
-print(", ".join(sorted(c for c in conns if not (skip_ib and c.startswith("ib:")))))
+def state(c):
+    check = (conns[c] or {}).get("check") or {}
+    return check.get("status") or "not checked yet"
+print(", ".join(f"{c} ({state(c)})" for c in sorted(conns) if not (skip_ib and c.startswith("ib:"))))
 ' 2>/dev/null) || true
     if [[ -n "$summary" ]]; then
-        print_info "Broker connections configured: $summary (their status is shown in the app)"
+        print_info "Broker connections: $summary (checked in the app; see Settings > Connections)"
     else
         print_info "No broker connections configured yet; add one in .env (see .env.example), then '$0 deploy'"
     fi

@@ -14,11 +14,26 @@ interface ServiceRow {
   detail?: string;
 }
 
+interface BrokerConnection {
+  label: string;
+  platform: string;
+  account: string;
+  is_default?: boolean;
+  status?: 'connected' | 'unreachable' | 'unchecked';
+  error?: string | null;
+}
+
+interface BrokersBlock {
+  default?: string | null;
+  connections?: BrokerConnection[];
+}
+
 interface HealthPayload {
   status?: string;
   services?: {
     database?: { connected?: boolean };
     broker_service?: { connected?: boolean; status?: string; error?: string };
+    brokers?: BrokersBlock;
     cache?: { connected?: boolean; enabled?: boolean; last_error?: string | null };
     streaming?: { connected?: boolean; enabled?: boolean; last_error?: string | null };
     backfill?: { running?: boolean; enabled?: boolean; last_error?: string | null };
@@ -35,7 +50,7 @@ function rowsFromPayload(p: HealthPayload | null, fetchError: string | null): Se
 
   const svc = p.services ?? {};
 
-  const ibState: ServiceState = svc.broker_service?.connected
+  const brokerServiceState: ServiceState = svc.broker_service?.connected
     ? 'ok'
     : svc.broker_service?.status === 'error'
       ? 'down'
@@ -54,11 +69,12 @@ function rowsFromPayload(p: HealthPayload | null, fetchError: string | null): Se
 
   return [
     {
-      key: 'ib',
-      label: 'IB Gateway',
-      state: ibState,
+      key: 'broker_service',
+      label: 'Broker service',
+      state: brokerServiceState,
       detail: svc.broker_service?.error ?? svc.broker_service?.status,
     },
+    ...brokerRows(svc.broker_service?.connected ? svc.brokers : undefined),
     { key: 'db', label: 'Database', state: dbState },
     { key: 'cache', label: 'Cache', state: cacheState, detail: svc.cache?.last_error ?? undefined },
     {
@@ -74,6 +90,48 @@ function rowsFromPayload(p: HealthPayload | null, fetchError: string | null): Se
       detail: svc.backfill?.last_error ?? undefined,
     },
   ];
+}
+
+const PLATFORM_NAME: Record<string, string> = {
+  oanda: 'OANDA',
+  mt5: 'MT5',
+  ib: 'IB',
+  alpaca: 'Alpaca',
+};
+
+/**
+ * One row per broker connection, in the priority order the backend sends.
+ * The default broker being unreachable is down (orders can't be placed);
+ * any other connection being unreachable is a warning. Nothing is shown when
+ * the broker service itself is not answering: its own row already says so.
+ */
+function brokerRows(brokers: BrokersBlock | undefined): ServiceRow[] {
+  if (!brokers) return [];
+  const connections = brokers.connections ?? [];
+  if (connections.length === 0) {
+    return [{ key: 'broker:none', label: 'No broker connected', state: 'warn' }];
+  }
+  const multi = new Set<string>();
+  const seen = new Set<string>();
+  for (const c of connections) {
+    if (seen.has(c.platform)) multi.add(c.platform);
+    seen.add(c.platform);
+  }
+  return connections.map((c) => {
+    const name = PLATFORM_NAME[c.platform] ?? c.platform;
+    const label = `${name}${multi.has(c.platform) ? ` (${c.account})` : ''}${
+      c.is_default ? ' · default' : ''
+    }`;
+    const state: ServiceState =
+      c.status === 'connected'
+        ? 'ok'
+        : c.status === 'unreachable'
+          ? c.is_default
+            ? 'down'
+            : 'warn'
+          : 'unknown';
+    return { key: `broker:${c.label}`, label, state, detail: c.error ?? undefined };
+  });
 }
 
 const STATE_DOT: Record<ServiceState, string> = {
@@ -197,4 +255,4 @@ export default function HealthBadge({ intervalMs = POLL_INTERVAL_MS }: HealthBad
   );
 }
 
-export const __test = { rowsFromPayload, summarise };
+export const __test = { rowsFromPayload, summarise, brokerRows };

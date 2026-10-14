@@ -9,8 +9,8 @@
  * `HEARTBEAT_INTERVAL_SECONDS`, and the monitor pages you when they stop.
  *
  * A ping means "this app is able to trade", not merely "this process is up":
- * it is sent only when the database answers, the broker service answers, and
- * the strategy runner (when enabled) has completed a pass recently. A runner
+ * it is sent only when the database answers, the broker service answers, the
+ * default broker's last connectivity check did not fail, and the strategy runner (when enabled) has completed a pass recently. A runner
  * whose timer died, or that the schema guard never started, stops the pings
  * just as a crash would. When something is wrong and `HEARTBEAT_FAIL_URL` is
  * set (healthchecks.io: the check URL plus `/fail`), that is pinged instead,
@@ -23,6 +23,8 @@ import { logger } from './logger.js';
 export interface HeartbeatProbe {
   database(): Promise<boolean>;
   brokerService(): Promise<boolean>;
+  /** A problem with the default broker's connection, or null when it is fine or unchecked. */
+  defaultBroker?(): Promise<string | null>;
   /** The runner's state, or null when the app has no runner. */
   runner(): { enabled: boolean; intervalSeconds: number; lastRunAt: number | null } | null;
 }
@@ -40,6 +42,8 @@ export interface HeartbeatOptions {
 export function heartbeatProblems(input: {
   database: boolean;
   brokerService: boolean;
+  /** From brokerStatus.defaultBrokerProblem; null or absent when fine. */
+  defaultBroker?: string | null;
   runner: { enabled: boolean; intervalSeconds: number; lastRunAt: number | null } | null;
   now: number;
   since: number;
@@ -47,6 +51,7 @@ export function heartbeatProblems(input: {
   const problems: string[] = [];
   if (!input.database) problems.push('database unreachable');
   if (!input.brokerService) problems.push('broker service unreachable');
+  else if (input.defaultBroker) problems.push(input.defaultBroker);
   const runner = input.runner;
   if (runner?.enabled) {
     // Three missed passes, and never less than three minutes, so one slow
@@ -102,13 +107,15 @@ export class Heartbeat {
   /** One check and one ping. Never throws. */
   async beat(): Promise<void> {
     if (!this.opts.url) return;
-    const [database, brokerService] = await Promise.all([
+    const [database, brokerService, defaultBroker] = await Promise.all([
       this.probe.database().catch(() => false),
       this.probe.brokerService().catch(() => false),
+      this.probe.defaultBroker ? this.probe.defaultBroker().catch(() => null) : null,
     ]);
     const problems = heartbeatProblems({
       database,
       brokerService,
+      defaultBroker,
       runner: this.probe.runner(),
       now: this.now(),
       since: this.since,
