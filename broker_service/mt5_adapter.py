@@ -472,6 +472,11 @@ class MT5Adapter:
             )
         return positions
 
+    def probe(self) -> None:
+        """Connectivity check for the in-app broker status: the sidecar's
+        own health endpoint, which also reports whether its terminal is up."""
+        self._get("/health")
+
     def account_summary(self) -> Dict[str, Any]:
         """Account state normalised to the app's ``models.AccountSummary``.
 

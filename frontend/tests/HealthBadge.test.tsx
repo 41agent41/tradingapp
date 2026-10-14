@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import HealthBadge, { __test } from '../app/components/HealthBadge';
 
-const { rowsFromPayload, summarise } = __test;
+const { rowsFromPayload, summarise, brokerRows } = __test;
 
 describe('rowsFromPayload', () => {
   it('reports backend down when the fetch itself failed', () => {
@@ -53,7 +53,7 @@ describe('rowsFromPayload', () => {
     expect(byKey.backfill).toBe('disabled');
   });
 
-  it('surfaces IB error state when broker_service.status is error', () => {
+  it('surfaces the broker service error state when broker_service.status is error', () => {
     const rows = rowsFromPayload(
       {
         services: {
@@ -66,9 +66,97 @@ describe('rowsFromPayload', () => {
       },
       null
     );
-    const ib = rows.find((r) => r.key === 'ib');
-    expect(ib?.state).toBe('down');
-    expect(ib?.detail).toBe('connection refused');
+    const svc = rows.find((r) => r.key === 'broker_service');
+    expect(svc?.state).toBe('down');
+    expect(svc?.detail).toBe('connection refused');
+  });
+
+  it('adds a row per broker connection after the broker service row', () => {
+    const rows = rowsFromPayload(
+      {
+        services: {
+          database: { connected: true },
+          broker_service: { connected: true },
+          brokers: {
+            default: 'oanda',
+            connections: [
+              {
+                label: 'oanda:default',
+                platform: 'oanda',
+                account: 'default',
+                is_default: true,
+                status: 'connected',
+              },
+              {
+                label: 'mt5:default',
+                platform: 'mt5',
+                account: 'default',
+                status: 'unreachable',
+                error: 'timeout',
+              },
+            ],
+          },
+          cache: { connected: true, enabled: true },
+          streaming: { connected: true, enabled: true },
+          backfill: { enabled: true, last_error: null },
+        },
+      },
+      null
+    );
+    expect(rows.slice(0, 3).map((r) => [r.key, r.label, r.state])).toEqual([
+      ['broker_service', 'Broker service', 'ok'],
+      ['broker:oanda:default', 'OANDA · default', 'ok'],
+      ['broker:mt5:default', 'MT5', 'warn'],
+    ]);
+    expect(rows[2].detail).toBe('timeout');
+  });
+
+  it('hides broker rows while the broker service itself is down', () => {
+    const rows = rowsFromPayload(
+      {
+        services: {
+          broker_service: { connected: false, status: 'error' },
+          brokers: { default: null, connections: [] },
+        },
+      },
+      null
+    );
+    expect(rows.some((r) => r.key.startsWith('broker:'))).toBe(false);
+  });
+});
+
+describe('brokerRows', () => {
+  it('says no broker is connected when none is configured', () => {
+    expect(brokerRows({ default: null, connections: [] })).toEqual([
+      { key: 'broker:none', label: 'No broker connected', state: 'warn' },
+    ]);
+  });
+
+  it('marks an unreachable default broker down and an unchecked one unknown', () => {
+    const rows = brokerRows({
+      default: 'ib',
+      connections: [
+        {
+          label: 'ib:default',
+          platform: 'ib',
+          account: 'default',
+          is_default: true,
+          status: 'unreachable',
+        },
+        { label: 'alpaca:default', platform: 'alpaca', account: 'default', status: 'unchecked' },
+      ],
+    });
+    expect(rows.map((r) => r.state)).toEqual(['down', 'unknown']);
+  });
+
+  it('names the account when a platform has more than one', () => {
+    const rows = brokerRows({
+      connections: [
+        { label: 'oanda:live', platform: 'oanda', account: 'live', status: 'connected' },
+        { label: 'oanda:practice', platform: 'oanda', account: 'practice', status: 'connected' },
+      ],
+    });
+    expect(rows.map((r) => r.label)).toEqual(['OANDA (live)', 'OANDA (practice)']);
   });
 
   it('marks backfill as warn when last_error is populated even if running', () => {

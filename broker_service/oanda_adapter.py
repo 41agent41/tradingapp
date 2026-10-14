@@ -605,6 +605,11 @@ class OANDAAdapter:
             )
         return positions
 
+    def probe(self) -> None:
+        """Connectivity check for the in-app broker status: the cheapest
+        authenticated call, so a bad token shows as unreachable too."""
+        self._get(self._account_path("/summary"))
+
     def account_summary(self) -> Dict[str, Any]:
         """Account state normalised to the app's ``models.AccountSummary``.
 

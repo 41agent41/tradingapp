@@ -15,6 +15,8 @@ subpackages. Everything else lives in its own module:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 from contextlib import asynccontextmanager
 
@@ -25,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ib_client import IB_CLIENT_ID, IB_HOST, IB_PORT, disconnect_ib
 from observability import attach_observability, get_logger
 from orders import router as orders_router
+from probes import PROBE_INTERVAL_SECONDS, probe_loop
 from routes import register_routes
 from service_auth import attach_service_auth
 
@@ -43,9 +46,16 @@ async def lifespan(app: FastAPI):
         logger.info("IB not configured (no IB_HOST); IB routes will answer 503")
     logger.info("Broker Service ready - broker connections are established on first API call")
 
+    # Broker connectivity is checked here, inside the app, never at deploy.
+    probe_task = asyncio.create_task(probe_loop()) if PROBE_INTERVAL_SECONDS > 0 else None
+
     yield
 
     logger.info("Shutting down Broker Service...")
+    if probe_task is not None:
+        probe_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await probe_task
     disconnect_ib()
 
 

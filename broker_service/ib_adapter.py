@@ -45,6 +45,22 @@ class IBAdapter:
 
         return get_positions_sync()
 
+    def probe(self) -> None:
+        """Connectivity check for the in-app broker status. An open API session
+        is proof enough; otherwise a TCP connect to the gateway's socket port,
+        which is cheap and does not take a client id."""
+        import socket
+
+        import ib_client
+
+        client = ib_client._ib_client
+        if client is not None and client.isConnected():
+            return
+        if not ib_client.IB_HOST:
+            raise RuntimeError("IB is not configured (no IB_HOST)")
+        with socket.create_connection((ib_client.IB_HOST, ib_client.IB_PORT), timeout=3):
+            pass
+
     def account_summary(self) -> Dict[str, Any]:
         from routes.account import get_account_summary_sync
 

@@ -43,6 +43,48 @@ async def health_check():
     }
 
 
+@router.get("/connections/status")
+async def connections_status():
+    """Last connectivity check per configured connection, in broker priority
+    order, plus the default platform. Checks run on a timer (probes.py)."""
+    from adapters import BROKER_PRIORITY, default_provider, list_connections
+    from probes import result_for
+
+    connections = sorted(
+        list_connections(),
+        key=lambda c: (BROKER_PRIORITY.index(c.platform), not c.is_default, c.account),
+    )
+    return {
+        "default": default_provider(),
+        "priority": list(BROKER_PRIORITY),
+        "connections": [
+            {
+                "label": c.label,
+                "platform": c.platform,
+                "account": c.account,
+                "account_mode": c.account_mode,
+                "is_default": c.is_default,
+                "check": result_for(c.label),
+            }
+            for c in connections
+        ],
+    }
+
+
+@router.post("/connections/{label}/test")
+async def test_connection(label: str):
+    """Check one connection now (the Settings page Test button)."""
+    import asyncio
+
+    from adapters import list_connections
+    from probes import probe_connection
+
+    conn = next((c for c in list_connections() if c.label == label), None)
+    if conn is None:
+        raise HTTPException(status_code=404, detail=f"No connection '{label}' is configured.")
+    return {"label": label, "check": await asyncio.to_thread(probe_connection, conn)}
+
+
 @router.get("/providers")
 async def providers():
     """Broker / data-source registry snapshot (B1): which venues are

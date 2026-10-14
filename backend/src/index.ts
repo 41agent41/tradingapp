@@ -28,6 +28,8 @@ import { registry } from './services/metrics.js';
 import { checkStartupConfig } from './services/startupChecks.js';
 import { configService } from './config/configService.js';
 import { startDefaultBrokerRefresh } from './services/brokerDefault.js';
+import { brokersFromHealth, defaultBrokerProblem } from './services/brokerStatus.js';
+import brokersRoutes from './routes/brokers.js';
 
 // Refuse to start on an unsafe configuration (open API, default secrets, live
 // trading without MFA, an unimplemented kill-switch action). See the module.
@@ -178,7 +180,9 @@ app.get('/api/health', async (_req, res) => {
       broker_service: ibResult.ok
         ? {
             status: ibResult.data?.status || 'unknown',
-            connected: ibResult.data?.connection?.ib_gateway?.connected || false,
+            // The broker service container answering, not any broker behind it
+            // (those are under `brokers`).
+            connected: true,
             url: BROKER_SERVICE_URL,
           }
         : {
@@ -194,6 +198,11 @@ app.get('/api/health', async (_req, res) => {
         port: cacheStatus.port,
         last_error: cacheStatus.last_error,
       },
+      // Each configured broker connection and its last connectivity check,
+      // in broker priority order (broker_service/probes.py).
+      brokers: ibResult.ok
+        ? brokersFromHealth(ibResult.data?.providers)
+        : { default: null, connections: [] },
       streaming: streamingBridge.status(),
       backfill: backfillScheduler.status(),
       systematic: strategyRunner.status(),
@@ -233,6 +242,7 @@ app.use('/api/orders', ordersRoutes);
 app.use('/api/strategies', strategiesRoutes);
 app.use('/api/watchlist', watchlistRoutes);
 app.use('/api/alerts', priceAlertsRoutes);
+app.use('/api/brokers', brokersRoutes);
 
 app.get('/', (_req, res) => {
   res.json({
@@ -305,6 +315,10 @@ const heartbeat = new Heartbeat(
     brokerService: async () => {
       await axios.get(`${BROKER_SERVICE_URL}/health`, { timeout: 5000 });
       return true;
+    },
+    defaultBroker: async () => {
+      const res = await axios.get(`${BROKER_SERVICE_URL}/health`, { timeout: 5000 });
+      return defaultBrokerProblem(brokersFromHealth(res.data?.providers));
     },
     runner: () => {
       const status = strategyRunner.status();

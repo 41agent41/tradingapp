@@ -390,7 +390,10 @@ chmod +x tradingapp.sh
 > checked inside the app, never by `deploy` or `test`, so a broker that
 > is down does not fail a deploy. A request that names no broker goes to
 > the highest-priority configured one: OANDA (API brokers), then MT5, IB,
-> Alpaca. Set `DEFAULT_BROKER` in `.env` to pin one instead. Pass
+> Alpaca. Set `DEFAULT_BROKER` in `.env` to pin one instead. Each
+> configured broker is checked every `BROKER_PROBE_INTERVAL_SECONDS`
+> (default 60): see the header health badge or **Settings > Connections**,
+> which has a Test button per broker. Pass
 > `--non-interactive` to skip the "Deploy now?" question at the end of
 > `setup`, for scripted / CI installs.
 

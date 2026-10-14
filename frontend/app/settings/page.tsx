@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
 import BackToHome from '../components/BackToHome';
+import BrokerConnections from '../components/BrokerConnections';
 import { apiFetch } from '../lib/api';
 import {
   type AuditEntry,
@@ -17,6 +18,7 @@ import {
 } from '../lib/settings';
 
 const HISTORY_TAB = 'history';
+const CONNECTIONS_TAB = 'connections';
 
 const SOURCE_STYLES: Record<string, string> = {
   environment: 'bg-amber-100 text-amber-800',
@@ -313,7 +315,11 @@ export default function SettingsPage() {
         {payload && (
           <>
             <nav className="flex flex-wrap gap-2" aria-label="Settings sections">
-              {[...groups, { id: HISTORY_TAB, title: 'History' }].map((g) => (
+              {[
+                { id: CONNECTIONS_TAB, title: 'Connections' },
+                ...groups,
+                { id: HISTORY_TAB, title: 'History' },
+              ].map((g) => (
                 <button
                   key={g.id}
                   type="button"
@@ -330,7 +336,9 @@ export default function SettingsPage() {
             </nav>
 
             <section className="bg-white rounded-lg shadow-sm border p-4 sm:p-6">
-              {activeTab === HISTORY_TAB ? (
+              {activeTab === CONNECTIONS_TAB ? (
+                <BrokerConnections />
+              ) : activeTab === HISTORY_TAB ? (
                 <History />
               ) : (
                 <>

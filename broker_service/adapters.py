@@ -46,6 +46,7 @@ from connections import (
     load_connections,
 )
 from observability import get_logger
+from probes import result_for as probe_result
 
 logger = get_logger(__name__)
 
@@ -475,6 +476,8 @@ def provider_health() -> Dict[str, Any]:
             "account_info_from": (
                 f"oanda:{conn.account_info_from}" if conn.account_info_from else None
             ),
+            # Last connectivity check (probes.py); None until the first one.
+            "check": probe_result(conn.label),
         }
         for conn in _connections.values()
     }
