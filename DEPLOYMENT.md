@@ -396,8 +396,8 @@ chmod +x tradingapp.sh
 
 > `tradingapp.sh config` / `env` **merge** into `.env`: `SERVER_IP` and
 > the `CORS_ORIGINS` URL derived from it are updated in place, and every other key (ports, Postgres/Redis
-> credentials, and anything you've hand-added like `POSTGRES_HOST`,
-> `API_TOKEN`, `BACKFILL_ENABLED`) is filled in only if missing — a
+> credentials, and anything you've hand-added like `POSTGRES_HOST` or
+> `BACKFILL_ENABLED`) is filled in only if missing — a
 > hand-edited `.env` survives a re-run. There is no broker prompt and no
 > broker key is written: brokers are added in the app (see
 > [Adding brokers](#adding-brokers)) and checked there, never by `deploy` or `test`, so a broker that
@@ -463,11 +463,10 @@ POSTGRES_PASSWORD=<rotate-me>
 POSTGRES_DB=tradingapp
 POSTGRES_SSL=true
 
-# Secrets (generate each with: openssl rand -hex 32)
-APP_PASSWORD=<your login password>
-SESSION_SECRET=<rotate-me>
-API_TOKEN=<rotate-me>
+# Secrets (generate each with: openssl rand -hex 32). The login password
+# and API tokens are not here: they are set in the app.
 BROKER_SERVICE_TOKEN=<rotate-me>
+SETTINGS_ENCRYPTION_KEY=<rotate-me>
 REDIS_PASSWORD=<rotate-me>
 ```
 
@@ -579,19 +578,31 @@ code at startup; read it with:
 ./tradingapp.sh setup-code
 ```
 
-The same keys in `.env` still work and take precedence over the page:
+`./tradingapp.sh config` and `install/install.sh` no longer put a login
+password, API token or session key in `.env`. The same keys still work there
+and take precedence over the page:
 
 ```bash
 APP_PASSWORD=<12+ characters>          # the one user's login
 SESSION_SECRET=$(openssl rand -hex 32) # signs session cookies
 API_TOKEN=$(openssl rand -hex 32)      # scripts and curl, alongside page tokens
-BROKER_SERVICE_TOKEN=$(openssl rand -hex 32)
 ```
 
-`./tradingapp.sh config` currently still generates `APP_PASSWORD`,
-`SESSION_SECRET` and `API_TOKEN` when they are missing and prints the login
-password once. Remove them from `.env` and redeploy to manage them on the page
-instead.
+**An existing install** can move them, and every setting the page manages,
+out of `.env` with:
+
+```bash
+./tradingapp.sh settings-import   # stores them in the app, then offers to delete the lines
+./tradingapp.sh redeploy
+```
+
+The same password, tokens, MFA secret and session key are stored, so nobody is
+signed out and scripts keep working. The lines are removed only after a
+backup (`.env.bak.<time>`, which holds secrets: delete it once you are happy).
+Anything that cannot be stored is listed and left in `.env`;
+`LIVE_TRADING_ENABLED` always stays, as the ceiling described in
+[Enabling live trading](#enabling-live-trading). Run it after a deploy: a key
+added to `.env` since then is left alone until the backend has loaded it.
 
 **Locked out?** Set `APP_PASSWORD` (or `ORDER_MFA_SECRET`, if the authenticator
 is lost) in `.env` and `./tradingapp.sh redeploy`. The `.env` value wins, so

@@ -822,11 +822,14 @@ place, put the §10.1 values back before the next `redeploy`.
 Generate the secrets first:
 
 ```bash
-openssl rand -hex 32   # API_TOKEN (scripts and curl)
-openssl rand -hex 32   # SESSION_SECRET (signs browser login sessions)
 openssl rand -hex 32   # BROKER_SERVICE_TOKEN (backend → broker service)
+openssl rand -hex 32   # SETTINGS_ENCRYPTION_KEY (encrypts secrets saved in the app)
 openssl rand -hex 32   # REDIS_PASSWORD
 ```
+
+The login password and the API token for scripts are not in `.env`: the
+first visit to the app asks you to choose a password (with the code from
+`./tradingapp.sh setup-code`), and API tokens are made on Settings > Security.
 
 Then `nano .env` so the important keys read:
 
@@ -837,12 +840,10 @@ TZ=UTC
 SERVER_IP=10.7.3.20
 CORS_ORIGINS=http://10.7.3.20:3000            # exact browser origin(s), never *
 
-# --- Auth -----------------------------------------------------------
-APP_PASSWORD=<your browser login password, 12+ characters>
-SESSION_SECRET=<a 64-char hex>
-API_TOKEN=<a different 64-char hex>
-BROKER_SERVICE_TOKEN=<a third 64-char hex>
-REDIS_PASSWORD=<a fourth 64-char hex>
+# --- Secrets --------------------------------------------------------
+BROKER_SERVICE_TOKEN=<a 64-char hex>
+SETTINGS_ENCRYPTION_KEY=<a different 64-char hex>
+REDIS_PASSWORD=<a third 64-char hex>
 
 # --- Database (CT 120) ----------------------------------------------
 POSTGRES_HOST=10.7.3.21
@@ -932,14 +933,15 @@ curl -fs http://10.7.3.20:4000/api/database/health | jq
 # Broker service → IB Gateway (loopback only: run this inside CT 110)
 curl -fs http://127.0.0.1:8000/health | jq
 
-# An authenticated route — proves API_TOKEN matches.
-# .env is not sourced into your shell automatically; pull it in first.
-set -a && . /opt/tradingapp/.env && set +a
+# An authenticated route — proves a token works. Make an API token on
+# Settings > Security first (it is shown once) and paste it here.
+API_TOKEN=<your API token>
 curl -fs -H "Authorization: Bearer $API_TOKEN" \
   http://10.7.3.20:4000/api/orders/config | jq
 ```
 
-Finally open `http://10.7.3.20:3000` in a browser and confirm a chart renders
+Finally open `http://10.7.3.20:3000` in a browser, choose the login password
+(the setup code is printed by `./tradingapp.sh setup-code`), and confirm a chart renders
 with live data. `./tradingapp.sh verify-timestamps` checks the timezone chain
 end to end if bars land on the wrong day or year.
 
@@ -1476,7 +1478,7 @@ su - tradingapp
 git clone https://github.com/41agent41/tradingapp.git /opt/tradingapp
 cd /opt/tradingapp && chmod +x tradingapp.sh
 ./tradingapp.sh setup            # no broker questions; answer "n" to "Deploy now?"
-nano .env                        # APP_PASSWORD, CORS_ORIGINS, secrets
+nano .env                        # CORS_ORIGINS, database, secrets
 chmod 600 .env
 ./tradingapp.sh deploy --with-db # bundled TimescaleDB, schema applied automatically
 ./tradingapp.sh test
@@ -1509,7 +1511,8 @@ keeping.
 - [ ] Non-root `tradingapp` user created with sudo + docker group
 - [ ] Repo cloned to `/opt/tradingapp`, `tradingapp.sh` executable
 - [ ] `.env` complete — no placeholders, `chmod 600`, copy stored offline
-- [ ] `APP_PASSWORD`, `SESSION_SECRET`, `API_TOKEN`, `BROKER_SERVICE_TOKEN` freshly generated
+- [ ] `BROKER_SERVICE_TOKEN`, `SETTINGS_ENCRYPTION_KEY`, `REDIS_PASSWORD` freshly generated
+- [ ] Login password chosen on the first-run screen (`./tradingapp.sh setup-code`)
 - [ ] `CORS_ORIGINS` is the real browser origin, not `*`
 - [ ] `LIVE_TRADING_ENABLED=false` for the first deploy
 - [ ] `./tradingapp.sh deploy` completed, `test` all green

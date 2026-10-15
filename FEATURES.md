@@ -595,9 +595,11 @@ when the IB service is unreachable, `504` on IB timeouts.
 ### Authentication & CORS
 
 - **Login + API token** (`backend/src/middleware/auth.ts`): the browser signs
-  in at `/login` with `APP_PASSWORD` and gets an HttpOnly session cookie
-  (signed with `SESSION_SECRET`, lifetime `SESSION_TTL_HOURS`); scripts send
-  `Authorization: Bearer <API_TOKEN>` (or `X-API-Token`). Nothing secret is
+  in at `/login` with the password set on the first-run screen (or
+  `APP_PASSWORD`) and gets an HttpOnly session cookie (signed with the stored
+  session key or `SESSION_SECRET`, lifetime `SESSION_TTL_HOURS`); scripts send
+  `Authorization: Bearer <token>` (or `X-API-Token`) with an API token from
+  Settings > Security or `API_TOKEN`. Nothing secret is
   compiled into the frontend. Every route except health, `/metrics` and the
   login routes needs one of the two; comparisons run through
   `crypto.timingSafeEqual`.
@@ -622,9 +624,11 @@ when the IB service is unreachable, `504` on IB timeouts.
 - **Whitelisted `/api/settings`**: only allow-listed, non-credential
   environment variables are returned, with deny patterns that strip
   anything matching `*_SECRET`, `*_PASSWORD`, `*_TOKEN`, `*_KEY`, etc.
-- **Dev escape hatch**: outside production, leaving both `API_TOKEN` and
-  `APP_PASSWORD` empty (or `CORS_ORIGINS=*`) prints a loud startup warning and accepts unauthenticated / any-origin
-  requests — convenient locally, never for production.
+- **Dev escape hatch**: outside production, with no login password and no
+  API token anywhere (or `CORS_ORIGINS=*`), the backend prints a loud startup
+  warning and accepts unauthenticated / any-origin requests — convenient
+  locally, never for production. In production the same state shows the
+  first-run setup screen instead.
 
 ### Redis caching
 

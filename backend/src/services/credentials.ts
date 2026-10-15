@@ -539,6 +539,84 @@ export class CredentialStore {
     await this.load();
   }
 
+  // --- Importing from .env --------------------------------------------------
+  //
+  // `settings import` moves values that are in .env today into the store, so
+  // they can be deleted from .env without anyone noticing: the same password,
+  // the same tokens (scripts keep working), the same MFA secret and the same
+  // session key (browsers stay signed in). Each returns false when the store
+  // already holds that value, so a re-run changes nothing. The caller builds
+  // the store without those keys in its env; otherwise .env would still win.
+
+  async importPassword(password: string, ctx: ChangeContext): Promise<boolean> {
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      throw new CredentialError(
+        `APP_PASSWORD is shorter than ${MIN_PASSWORD_LENGTH} characters; choose a new one on the Security tab instead.`,
+        400
+      );
+    }
+    if (this.passwordHash && verifyPasswordHash(password, this.passwordHash)) return false;
+    await this.requireDb().query(
+      `INSERT INTO auth_credentials (id, kind, hash, created_by)
+       VALUES ('password', 'password', $1, $2)
+       ON CONFLICT (id) DO UPDATE
+         SET hash = EXCLUDED.hash, created_at = NOW(), created_by = EXCLUDED.created_by`,
+      [hashPassword(password), ctx.actor]
+    );
+    await this.audit('password', 'set', '(imported from .env)', ctx);
+    await this.load();
+    return true;
+  }
+
+  async importToken(
+    kind: TokenKind,
+    token: string,
+    label: string,
+    ctx: ChangeContext
+  ): Promise<boolean> {
+    const digest = sha256(token);
+    if (this.tokens.some((t) => t.kind === kind && sameHex(digest, t.hash))) return false;
+    const id = `tok_${crypto.randomBytes(8).toString('hex')}`;
+    const prefix = token.slice(0, 4);
+    await this.requireDb().query(
+      `INSERT INTO auth_credentials (id, kind, label, prefix, hash, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [id, kind, label.slice(0, 64), prefix, digest, ctx.actor]
+    );
+    await this.audit(`${kind}_token`, 'set', `${label} (${prefix}…)`, ctx);
+    await this.load();
+    return true;
+  }
+
+  async importMfa(secret: string, ctx: ChangeContext): Promise<boolean> {
+    if (this.mfa === secret) return false;
+    const key = this.requireKey('the MFA secret');
+    await this.requireDb().query(
+      `INSERT INTO auth_credentials (id, kind, ciphertext, created_by)
+       VALUES ('mfa', 'mfa', $1, $2)
+       ON CONFLICT (id) DO UPDATE
+         SET ciphertext = EXCLUDED.ciphertext, created_at = NOW(), created_by = EXCLUDED.created_by`,
+      [sealSecret(secret, key), ctx.actor]
+    );
+    await this.audit('mfa', 'set', '(imported from .env)', ctx);
+    await this.load();
+    return true;
+  }
+
+  async importSessionSecret(secret: string, ctx: ChangeContext): Promise<boolean> {
+    if (this.storedSessionSecret === secret) return false;
+    const key = this.requireKey('the session key');
+    await this.requireDb().query(
+      `INSERT INTO auth_credentials (id, kind, ciphertext, created_by)
+       VALUES ('session_secret', 'session_secret', $1, $2)
+       ON CONFLICT (id) DO UPDATE SET ciphertext = EXCLUDED.ciphertext, created_at = NOW()`,
+      [sealSecret(secret, key), ctx.actor]
+    );
+    await this.audit('session_secret', 'set', '(imported from .env)', ctx);
+    await this.load();
+    return true;
+  }
+
   /** Whether the stored credentials have been read at least once. */
   isLoaded(): boolean {
     return this.loaded;
