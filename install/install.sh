@@ -281,8 +281,8 @@ phase_repo() {
         local remote
         remote=$(as_user git remote get-url origin)
         [[ $remote == "$REPO_URL" ]] || fail 1 "$DIR is a checkout of $remote, not $REPO_URL"
-        # The deployment guides `chmod +x tradingapp.sh`, which git would
-        # otherwise count as a local change.
+        # A checkout made with older guides has `chmod +x tradingapp.sh`,
+        # which git would otherwise count as a local change.
         as_user git config core.fileMode false
         if [[ -n $(as_user git status --porcelain --untracked-files=no) ]]; then
             fail 1 "$DIR has local changes to tracked files; commit or discard them by hand first (git -C $DIR status)"
@@ -358,12 +358,20 @@ check() {
 
 http_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$@" || true; }
 
-# One value from the database, as the backend sees it. Bundled only; an
-# external database is the operator's.
+# One value from the database the backend uses: the bundled container, or
+# the external database through a throwaway psql container.
 db_value() {
-    [[ -f $DIR/.tradingapp.with-db ]] || return 0
-    compose exec -T postgres psql -X -q -t -A -U "$(env_get POSTGRES_USER)" -d "$(env_get POSTGRES_DB)" \
-        -c "$1" </dev/null 2>/dev/null || true
+    if [[ -f $DIR/.tradingapp.with-db ]]; then
+        compose exec -T postgres psql -X -q -t -A -U "$(env_get POSTGRES_USER)" -d "$(env_get POSTGRES_DB)" \
+            -c "$1" </dev/null 2>/dev/null || true
+        return 0
+    fi
+    local sslmode=disable
+    [[ $(lower "$(env_get POSTGRES_SSL)") == true ]] && sslmode=require
+    docker run --rm --network host -e PGPASSWORD="$(env_get POSTGRES_PASSWORD)" postgres:17-alpine \
+        psql -X -q -t -A -c "$1" \
+        "host=$(env_get POSTGRES_HOST) port=$(env_get POSTGRES_PORT) user=$(env_get POSTGRES_USER) dbname=$(env_get POSTGRES_DB) sslmode=$sslmode" \
+        </dev/null 2>/dev/null || true
 }
 
 # The broker service token: in .env on an older install, otherwise in the

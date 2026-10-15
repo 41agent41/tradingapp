@@ -14,8 +14,9 @@
 #
 # Secrets come from the environment, never from arguments (which other users
 # can read in the process list):
-#   MT5_BRIDGE_SECRET   required on first install: the value the app host's
-#                       installer generated for this connection's secret_env
+#   MT5_BRIDGE_SECRET   required on first install: a random value (openssl
+#                       rand -hex 32). The same value goes in the app, as the
+#                       connection's Bridge secret (Settings > Connections).
 #   MT5_LOGIN, MT5_PASSWORD, MT5_SERVER
 #                       optional: the DEMO account the operator gives you. With
 #                       them the sidecar logs the terminal in on start.
@@ -157,7 +158,7 @@ do_install() {
     install -d -m 750 -o root -g "$MT5_USER" "$ENV_DIR"
     [[ -f $ENV_FILE ]] || install -m 640 -o root -g "$MT5_USER" /dev/null "$ENV_FILE"
     local secret=${MT5_BRIDGE_SECRET:-$(env_get MT5_BRIDGE_SECRET)}
-    [[ ${#secret} -ge 24 ]] || fail 2 "MT5_BRIDGE_SECRET is missing or shorter than 24 characters; export the value from the app host's .env (the connection's secret_env)"
+    [[ ${#secret} -ge 24 ]] || fail 2 "MT5_BRIDGE_SECRET is missing or shorter than 24 characters; export a random one (openssl rand -hex 32) and enter the same value as the connection's Bridge secret in the app"
     env_set MT5_BRIDGE_SECRET "$secret"
     env_set MT5_SIDECAR_HOST 0.0.0.0
     env_set MT5_SIDECAR_PORT "$PORT"

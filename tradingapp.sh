@@ -156,6 +156,11 @@ declare -A ANS=()
 load_answers() {
     local file="$1" line key val
     [[ -f $file ]] || { print_error "Answers file $file not found."; exit 2; }
+    # It can hold the database password and the encryption key.
+    if [[ -n $(find "$file" -perm /077 2>/dev/null) ]]; then
+        print_error "$file can be read by other users; run: chmod 600 $file"
+        exit 2
+    fi
     while IFS= read -r line || [[ -n $line ]]; do
         line=${line%$'\r'}
         [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
