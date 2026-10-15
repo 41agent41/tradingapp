@@ -53,6 +53,7 @@ import { credentials } from './services/credentials.js';
 import { announceSetupCode } from './services/setupCode.js';
 import { isLiveTradingEnabled, liveTradingSafeguardsMissing } from './services/orderTypes.js';
 import { StartupGate } from './services/startupGate.js';
+import { originAllowed, trustedProxies } from './services/network.js';
 
 // Refuse to start on an unsafe configuration (open API, default secrets, live
 // trading without MFA, an unimplemented kill-switch action). See the module.
@@ -72,36 +73,12 @@ const BROKER_SERVICE_TOKEN = (process.env.BROKER_SERVICE_TOKEN || '').trim();
 // ---------------------------------------------------------------------------
 // CORS
 // ---------------------------------------------------------------------------
-// `CORS_ORIGINS` is a comma-separated list of origins that the backend
-// will accept browser requests from. Setting `CORS_ORIGINS=*` is
-// supported for development but discouraged in production.
-//
-// Previously: `app.use(cors())` accepted any origin — see GAP_ANALYSIS.md
-// §3.7.
-const rawOrigins = (process.env.CORS_ORIGINS || '').trim();
-const ALLOWED_ORIGINS: string[] = rawOrigins
-  .split(',')
-  .map((o) => o.trim())
-  .filter(Boolean);
-
-const allowAnyOrigin = ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes('*');
-
-if (allowAnyOrigin) {
-  console.warn(
-    '[cors] CORS_ORIGINS is empty or wildcard ("*") — every origin will be ' +
-      'accepted. Set CORS_ORIGINS to a comma-separated list of trusted ' +
-      'origins (e.g. https://app.example.com).'
-  );
-} else {
-  console.log(`[cors] allowed origins: ${ALLOWED_ORIGINS.join(', ')}`);
-}
-
+// Which origins are accepted is set on the Settings page (Network) and read
+// on every request; see services/network.ts. Empty accepts any origin.
 const corsOptions: CorsOptions = {
   origin: (origin, callback) => {
     // Allow same-origin / curl / server-to-server (no Origin header)
-    if (!origin) return callback(null, true);
-    if (allowAnyOrigin) return callback(null, true);
-    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    if (originAllowed(origin)) return callback(null, true);
     return callback(new Error(`Origin ${origin} not allowed by CORS`));
   },
   credentials: true,
@@ -127,7 +104,7 @@ const io = new SocketIOServer(server, {
   cors: {
     // Reflect the origin rather than '*': browsers refuse a credentialed
     // (cookie-carrying) request answered with a wildcard.
-    origin: allowAnyOrigin ? true : ALLOWED_ORIGINS,
+    origin: (origin, callback) => callback(null, originAllowed(origin)),
     methods: ['GET', 'POST'],
     credentials: true,
   },
@@ -135,14 +112,12 @@ const io = new SocketIOServer(server, {
 
 // The frontend server forwards the browser's /api and /socket.io requests
 // (frontend/proxy.js) and passes the browser's address in X-Forwarded-For.
-// That header is believed only from the addresses listed in TRUST_PROXY
-// (compose sets the frontend container's), so a caller reaching this port
+// That header is believed only from the frontend container and the proxies
+// listed in TRUST_PROXY (services/network.ts), so a caller reaching this port
 // directly cannot pick the address that login lockout and the audit log see.
-const TRUST_PROXY = (process.env.TRUST_PROXY || '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
-if (TRUST_PROXY.length > 0) app.set('trust proxy', TRUST_PROXY);
+const applyTrustProxy = () => app.set('trust proxy', trustedProxies());
+applyTrustProxy();
+configService.subscribe(['TRUST_PROXY'], applyTrustProxy);
 
 app.use(cors(corsOptions));
 // JSON body parser. The default 100kb limit is fine for everything except

@@ -161,3 +161,32 @@ def test_status_and_test_routes(registry, monkeypatch):
     assert after["connections"][1]["check"]["status"] == "connected"
 
     assert client.post("/connections/mt5:nope/test").status_code == 404
+
+
+def test_probe_loop_skips_probing_while_the_interval_is_zero(monkeypatch):
+    import asyncio
+
+    import app_settings
+    import probes
+
+    monkeypatch.delenv("BROKER_PROBE_INTERVAL_SECONDS", raising=False)
+    calls = []
+    sleeps = []
+    monkeypatch.setattr(probes, "probe_all", lambda: calls.append(1))
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 1:
+            app_settings.apply({"BROKER_PROBE_INTERVAL_SECONDS": "7"})
+        else:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(probes.asyncio, "sleep", fake_sleep)
+    app_settings.apply({"BROKER_PROBE_INTERVAL_SECONDS": "0"})
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(probes.probe_loop())
+    finally:
+        app_settings.reset()
+    assert calls == [1]
+    assert sleeps == [probes._PAUSED_RECHECK_SECONDS, 7]

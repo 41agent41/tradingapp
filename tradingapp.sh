@@ -306,13 +306,11 @@ HEADER
     fi
 
     env_set .env SERVER_IP "$SERVER_IP"
-    env_set .env CORS_ORIGINS "http://$SERVER_IP:3000"
 
     env_set_default .env NODE_ENV "production"
     env_set_default .env FRONTEND_PORT "3000"
     env_set_default .env BACKEND_PORT "4000"
     env_set_default .env BROKER_SERVICE_PORT "8000"
-    env_set_default .env IB_TIMEOUT "30"
     env_set_default .env POSTGRES_USER "tradingapp"
     env_set_default .env POSTGRES_DB "tradingapp"
     env_set_default .env REDIS_HOST "redis"

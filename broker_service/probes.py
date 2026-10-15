@@ -15,19 +15,19 @@ with its message.
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any, Dict, Optional
 
+import app_settings
 from observability import get_logger
 
 logger = get_logger(__name__)
 
-# How often the background loop probes every connection. 0 turns it off;
-# on-demand tests still work.
-PROBE_INTERVAL_SECONDS = int(os.getenv("BROKER_PROBE_INTERVAL_SECONDS", "60") or "0")
+# While probing is paused (interval 0), how often to look whether it was
+# turned back on. On-demand tests work either way.
+_PAUSED_RECHECK_SECONDS = 60
 
 CONNECTED = "connected"
 UNREACHABLE = "unreachable"
@@ -94,10 +94,16 @@ def reset() -> None:
 
 
 async def probe_loop() -> None:
-    """Probe every connection now and then every PROBE_INTERVAL_SECONDS."""
+    """Probe every connection now and then every BROKER_PROBE_INTERVAL_SECONDS.
+
+    The interval is read on every pass, so a change on the Settings page takes
+    effect after the current wait. 0 pauses probing (checked once a minute).
+    """
     while True:
-        try:
-            await asyncio.to_thread(probe_all)
-        except Exception as exc:  # noqa: BLE001 — the loop must survive
-            logger.error("broker_probe_loop_error", error=_error_text(exc))
-        await asyncio.sleep(PROBE_INTERVAL_SECONDS)
+        interval = app_settings.probe_interval_seconds()
+        if interval > 0:
+            try:
+                await asyncio.to_thread(probe_all)
+            except Exception as exc:  # noqa: BLE001 — the loop must survive
+                logger.error("broker_probe_loop_error", error=_error_text(exc))
+        await asyncio.sleep(interval or _PAUSED_RECHECK_SECONDS)

@@ -5,10 +5,10 @@ services:
     environment:
       - PORT=${BACKEND_PORT:-4000}
       - NODE_ENV=${NODE_ENV:-production}
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
-      # The frontend container forwards the browser's API calls; believe the
-      # client address it passes on, and no one else's.
-      - TRUST_PROXY=${TRUST_PROXY:-172.20.0.3}
+      # The frontend container forwards the browser's API calls; the backend
+      # believes the client address it passes on. Other proxies (TRUST_PROXY)
+      # and browser origins (CORS_ORIGINS) are set on Settings > Network.
+      - FRONTEND_PROXY_ADDRESS=172.20.0.3
       - BROKER_SERVICE_URL=http://172.20.0.10:8000
       - POSTGRES_HOST=${POSTGRES_HOST:-localhost}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
@@ -77,7 +77,6 @@ services:
       - IB_HOST=${IB_HOST:-}
       - IB_PORT=${IB_PORT:-4002}
       - IB_CLIENT_ID=${IB_CLIENT_ID:-1}
-      - IB_TIMEOUT=${IB_TIMEOUT:-30}
       - IB_CORS_ORIGINS=${IB_CORS_ORIGINS:-http://localhost:3000}
       # Timezone configuration for consistent timestamp handling
       - TZ=UTC

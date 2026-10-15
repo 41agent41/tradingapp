@@ -8,9 +8,10 @@
  * `/health` is not the one last sent (it restarted, or a send was lost).
  *
  * The same push carries the settings the broker service enforces itself (the
- * live-trading gate, the default broker, the base currency and the IB status
- * wait), so a change on the Settings page reaches it too. Until the first push
- * it knows only `.env`, so live orders fail closed.
+ * live-trading gate, the default broker, the base currency, the IB status
+ * wait and the broker-check and price-poll intervals), so a change on the
+ * Settings page reaches it too. Until the first push it knows only `.env`, so
+ * live orders fail closed.
  *
  * The revision is an HMAC of the set under a key made fresh per process, so
  * it changes whenever the set does without exposing anything about the
@@ -41,6 +42,8 @@ export const BROKER_SETTING_KEYS = [
   'DEFAULT_BROKER',
   'PORTFOLIO_BASE_CURRENCY',
   'ORDER_PLACE_WAIT_SECONDS',
+  'BROKER_PROBE_INTERVAL_SECONDS',
+  'STREAM_POLL_SECONDS',
   // Live trading is only in effect with the trader role and MFA set up.
   'TRADING_TOKENS',
   'ORDER_MFA_SECRET',
@@ -51,7 +54,13 @@ export function brokerSettings(): Record<string, string> {
     // The backend's own decision, safeguards included, so the two never differ.
     LIVE_TRADING_ENABLED: isLiveTradingEnabled() ? 'true' : 'false',
   };
-  for (const key of ['DEFAULT_BROKER', 'PORTFOLIO_BASE_CURRENCY', 'ORDER_PLACE_WAIT_SECONDS']) {
+  for (const key of [
+    'DEFAULT_BROKER',
+    'PORTFOLIO_BASE_CURRENCY',
+    'ORDER_PLACE_WAIT_SECONDS',
+    'BROKER_PROBE_INTERVAL_SECONDS',
+    'STREAM_POLL_SECONDS',
+  ]) {
     const value = configService.get(key);
     if (value !== undefined) out[key] = value;
   }
