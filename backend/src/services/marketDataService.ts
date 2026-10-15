@@ -18,6 +18,8 @@ export interface CandlestickBar {
 export interface Contract {
   /** Execution/data venue (B1). Broker-scoped catalogue; defaults to the priority broker. */
   broker?: string;
+  /** Account on that broker (C-0); 'default' when not given. */
+  brokerAccount?: string;
   symbol: string;
   secType: string;
   exchange?: string;
@@ -42,6 +44,8 @@ export interface CollectionConfig {
   autoCollect: boolean;
   collectionIntervalMinutes: number;
   retentionDays: number;
+  broker: string;
+  brokerAccount: string;
   symbol: string;
   secType: string;
   exchange: string | null;
@@ -60,35 +64,71 @@ export interface DailyQualityMetric {
 
 // Market Data Service Class
 export class MarketDataService {
-  // Get or create contract in database
+  /**
+   * The id of a contract, created on first sight.
+   *
+   * A plain `INSERT ... ON CONFLICT` cannot do this: the key
+   * (`contracts_connection_key`) includes `expiry`, `strike` and `right`, which
+   * are NULL for every stock, FX pair and CFD, and Postgres never treats two
+   * NULLs as a conflict. Every store would add another row for the same
+   * instrument and scatter its bars across them. So the row is looked up with
+   * `IS NOT DISTINCT FROM`, under a transaction-scoped lock on the key so two
+   * concurrent first stores cannot both insert.
+   */
   async getOrCreateContract(contract: Contract): Promise<number> {
-    const query = `
-      INSERT INTO contracts (broker, symbol, sec_type, exchange, currency, multiplier, expiry, strike, right, local_symbol, contract_id)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-      ON CONFLICT (broker, symbol, sec_type, exchange, currency, expiry, strike, right)
-      DO UPDATE SET
-        local_symbol = EXCLUDED.local_symbol,
-        contract_id = EXCLUDED.contract_id,
-        updated_at = NOW()
-      RETURNING id
-    `;
-
-    const params = [
+    const key = [
       contract.broker || defaultBroker(),
+      contract.brokerAccount || 'default',
       contract.symbol,
       contract.secType,
       contract.exchange || null,
       contract.currency || 'USD',
-      contract.multiplier || null,
       contract.expiry ? new Date(contract.expiry) : null,
       contract.strike || null,
       contract.right || null,
+    ];
+    const details = [
+      contract.multiplier || null,
       contract.localSymbol || null,
       contract.contractId || null,
     ];
 
-    const result = await dbService.query(query, params);
-    return result.rows[0].id;
+    return dbService.transaction(async (client: PoolClient) => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [JSON.stringify(key)]);
+
+      const found = await client.query(
+        `SELECT id FROM contracts
+          WHERE broker = $1 AND broker_account = $2 AND symbol = $3 AND sec_type = $4
+            AND exchange IS NOT DISTINCT FROM $5 AND currency IS NOT DISTINCT FROM $6
+            AND expiry IS NOT DISTINCT FROM $7 AND strike IS NOT DISTINCT FROM $8
+            AND "right" IS NOT DISTINCT FROM $9
+          ORDER BY id
+          LIMIT 1`,
+        key
+      );
+      if (found.rows.length > 0) {
+        const id = found.rows[0].id;
+        await client.query(
+          `UPDATE contracts
+              SET multiplier = COALESCE($2, multiplier),
+                  local_symbol = COALESCE($3, local_symbol),
+                  contract_id = COALESCE($4, contract_id),
+                  updated_at = NOW()
+            WHERE id = $1`,
+          [id, ...details]
+        );
+        return id;
+      }
+
+      const inserted = await client.query(
+        `INSERT INTO contracts (broker, broker_account, symbol, sec_type, exchange, currency,
+                                expiry, strike, "right", multiplier, local_symbol, contract_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         RETURNING id`,
+        [...key, ...details]
+      );
+      return inserted.rows[0].id;
+    });
   }
 
   // Store candlestick data
@@ -116,7 +156,7 @@ export class MarketDataService {
               volume = EXCLUDED.volume,
               wap = EXCLUDED.wap,
               count = EXCLUDED.count
-            RETURNING id
+            RETURNING (xmax = 0) AS inserted
           `;
 
           const params = [
@@ -132,14 +172,19 @@ export class MarketDataService {
             bar.count || null,
           ];
 
+          // A savepoint per bar: without it one bad bar aborts the
+          // transaction, every later bar fails with it, and nothing commits.
+          await client.query('SAVEPOINT bar');
           const result = await client.query(query, params);
+          await client.query('RELEASE SAVEPOINT bar');
 
-          if (result.rowCount === 1) {
+          if (result.rows[0]?.inserted) {
             inserted++;
           } else {
             updated++;
           }
         } catch (error) {
+          await client.query('ROLLBACK TO SAVEPOINT bar').catch(() => undefined);
           logger.error({ err: String(error) }, 'error storing candlestick bar');
           errors++;
         }
@@ -160,7 +205,8 @@ export class MarketDataService {
     symbol: string,
     timeframe: string,
     startDate: Date,
-    endDate: Date
+    endDate: Date,
+    broker?: string
   ): Promise<CandlestickBar[]> {
     const query = `
       SELECT
@@ -178,10 +224,12 @@ export class MarketDataService {
         AND cd.timeframe = $2
         AND cd.timestamp >= $3
         AND cd.timestamp <= $4
+        AND ($5::text IS NULL OR c.broker = $5)
       ORDER BY cd.timestamp ASC
     `;
 
-    const params = [symbol, timeframe, startDate, endDate];
+    // Without a broker every venue's bars for the symbol would interleave.
+    const params = [symbol, timeframe, startDate, endDate, broker ?? null];
     const result = await dbService.query(query, params);
 
     return result.rows.map((row) => ({
@@ -200,7 +248,8 @@ export class MarketDataService {
   async getLatestData(
     symbol: string,
     timeframe: string,
-    limit: number = 100
+    limit: number = 100,
+    broker?: string
   ): Promise<CandlestickBar[]> {
     const query = `
       SELECT 
@@ -215,11 +264,12 @@ export class MarketDataService {
       FROM candlestick_data cd
       JOIN contracts c ON cd.contract_id = c.id
       WHERE c.symbol = $1 AND cd.timeframe = $2
+        AND ($4::text IS NULL OR c.broker = $4)
       ORDER BY cd.timestamp DESC
       LIMIT $3
     `;
 
-    const params = [symbol, timeframe, limit];
+    const params = [symbol, timeframe, limit, broker ?? null];
     const result = await dbService.query(query, params);
 
     return result.rows.reverse().map((row) => ({
@@ -365,6 +415,8 @@ export class MarketDataService {
         dcc.auto_collect,
         dcc.collection_interval_minutes,
         dcc.retention_days,
+        c.broker,
+        c.broker_account,
         c.symbol,
         c.sec_type,
         c.exchange,
@@ -383,6 +435,8 @@ export class MarketDataService {
       autoCollect: row.auto_collect,
       collectionIntervalMinutes: Number(row.collection_interval_minutes ?? 5),
       retentionDays: Number(row.retention_days ?? 365),
+      broker: row.broker,
+      brokerAccount: row.broker_account,
       symbol: row.symbol,
       secType: row.sec_type,
       exchange: row.exchange,
@@ -586,6 +640,7 @@ export class MarketDataService {
 
   // Upload historical data to database
   async uploadHistoricalData(data: {
+    broker?: string;
     symbol: string;
     timeframe: string;
     bars: any[];
@@ -594,12 +649,13 @@ export class MarketDataService {
     exchange: string;
     currency: string;
   }): Promise<{ uploaded_count: number; skipped_count: number }> {
-    const { symbol, timeframe, bars, secType, exchange, currency } = data;
+    const { broker, symbol, timeframe, bars, secType, exchange, currency } = data;
 
-    logger.info({ symbol, timeframe, bars: bars.length }, 'uploading bars to database');
+    logger.info({ broker, symbol, timeframe, bars: bars.length }, 'uploading bars to database');
 
-    // Get or create contract
+    // Get or create contract, under the broker the bars came from
     const contractId = await this.getOrCreateContract({
+      broker,
       symbol,
       secType,
       exchange,

@@ -24,6 +24,22 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    # A real database for the tests whose SQL must meet Postgres
+    # (tests/*.db.test.ts); everything else fakes it.
+    services:
+      postgres:
+        image: timescale/timescaledb:2.17.2-pg16
+        env:
+          POSTGRES_USER: tradingapp
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: tradingapp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tradingapp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
 
@@ -48,6 +64,20 @@ jobs:
 
       - name: Tests (jest + supertest)
         run: npm test
+
+      - name: Database tests (TimescaleDB)
+        env:
+          DB_TESTS: '1'
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_USER: tradingapp
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: tradingapp
+          PGPASSWORD: ci-password
+        run: |
+          psql -X -q -v ON_ERROR_STOP=1 -h localhost -U tradingapp -d tradingapp \
+            -f src/database/timescaledb-schema.sql > /dev/null
+          npx jest tests/marketDataStorage.db.test.ts
 
       - name: Build
         run: npm run build
