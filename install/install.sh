@@ -6,6 +6,12 @@
 # phase is idempotent: re-running it checks what is already in place and only
 # does what is missing, so it is also how an install is upgraded or repaired.
 #
+# This script does what needs root (packages, Docker, the deploy user, the
+# checkout, the boot unit). Everything about the app itself is done by
+# `tradingapp.sh install`, run as the deploy user, so an unattended install
+# and a hand install end up the same. Brokers are not in the answers: they are
+# added in the app (Settings > Connections), which checks each one.
+#
 # Written to be driven by an agent following AGENT_INSTALL_RUNBOOK.md. It never
 # invents an operator credential, and it never turns live trading on.
 #
@@ -16,9 +22,9 @@
 #   docker     install Docker (fuse-overlayfs first on ZFS), hello-world gate
 #   user       create the unprivileged deploy user
 #   repo       clone or fast-forward the repository
-#   env        write .env: fill placeholders, apply answers, generate secrets
-#   schema     apply the canonical schema (idempotent) and check its keys
-#   deploy     build and start the stack, wait until healthy
+#   env        write .env (the database and the encryption key, nothing else)
+#   schema     nothing to do: the backend migrates its database at startup
+#   deploy     build and start the stack, wait until ready, store settings
 #   verify     run every acceptance check, write the report
 #   service    install the systemd unit that starts the stack on boot
 #   all        every phase above
@@ -36,9 +42,15 @@ LOG_DIR=/var/log/tradingapp-install
 REPORT_FILE=$LOG_DIR/report.txt
 
 declare -A ANS=()
-WORK_FILE=''
-# A half-written .env copy holds secrets; never leave it behind.
-trap '[[ -n $WORK_FILE ]] && rm -f "$WORK_FILE"' EXIT
+ANSWERS_COPY=''
+# The deploy user's copy of the answers holds secrets; never leave it behind.
+trap '[[ -n $ANSWERS_COPY ]] && rm -f "$ANSWERS_COPY"' EXIT
+
+# Broker keys. tradingapp.sh refuses them too; checked here first so the
+# message comes before anything is installed.
+BROKER_KEYS=(BROKER_CONNECTIONS BROKER_CONNECTIONS_FILE IB_HOST IB_PORT IB_CLIENT_ID
+    MT5_BRIDGE_URL MT5_BRIDGE_SECRET MT5_ACCOUNT_INFO_SOURCE ALPACA_API_KEY ALPACA_API_SECRET
+    ALPACA_PAPER OANDA_API_TOKEN OANDA_ACCOUNT_ID OANDA_ENVIRONMENT)
 
 log() { printf '[install] %s\n' "$*"; }
 warn() { printf '[install] WARNING: %s\n' "$*" >&2; }
@@ -93,45 +105,13 @@ settings() {
     ENV_FILE=$DIR/.env
 }
 
-# ---------------------------------------------------------------------------
-# .env helpers (same merge semantics as tradingapp.sh: one key, one line)
-# ---------------------------------------------------------------------------
-# Value as written, surrounding quotes removed. Last definition wins, as in
-# Docker Compose.
+# Value in .env as written, surrounding quotes removed. Last definition wins,
+# as in Docker Compose.
 env_get() {
     local v
     v=$(grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d'=' -f2-) || true
     if [[ $v =~ ^\'(.*)\'$ ]] || [[ $v =~ ^\"(.*)\"$ ]]; then v=${BASH_REMATCH[1]}; fi
     printf '%s' "$v"
-}
-
-# Upsert KEY=value. Plain values are written bare; anything else in single
-# quotes, which both Compose and `source` read literally.
-env_set() {
-    local key=$1 value=$2 line tmp
-    if [[ $value == *"'"* ]]; then
-        fail 2 "$key: values containing a single quote are not supported"
-    fi
-    if [[ $value =~ ^[A-Za-z0-9_./:,@+=-]*$ ]]; then
-        line="$key=$value"
-    else
-        line="$key='$value'"
-    fi
-    tmp=$(mktemp "$ENV_FILE.XXXXXX")
-    awk -v k="$key" -v l="$line" '
-        index($0, k"=") == 1 { if (!done) print l; done=1; next }
-        { print }
-        END { if (!done) print l }
-    ' "$ENV_FILE" >"$tmp"
-    cat "$tmp" >"$ENV_FILE"
-    rm -f "$tmp"
-}
-
-gen_hex() { openssl rand -hex 32; }
-
-is_placeholder() {
-    local v=$1
-    [[ -z $v || $v == CHANGE_ME || $v == *YOUR_* ]]
 }
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
@@ -140,73 +120,50 @@ lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 # Safety: nothing in the answers may enable live trading
 # ---------------------------------------------------------------------------
 check_answers_safe() {
-    local v
+    local v k brokers=()
     v=$(lower "$(ans LIVE_TRADING_ENABLED false)")
     [[ $v == false ]] || fail 3 "LIVE_TRADING_ENABLED must be false: this installer only installs paper. Live is a human decision (DEPLOYMENT.md § Enabling live trading)."
     v=$(lower "$(ans SYSTEMATIC_EXECUTION_ENABLED false)")
     [[ $v == false ]] || fail 3 "SYSTEMATIC_EXECUTION_ENABLED must be false at install; it is turned on later, on paper, by PAPER_DEPLOYMENT_RUNBOOK.md step 20."
-    v=$(lower "$(ans ALPACA_PAPER true)")
-    [[ $v == true ]] || fail 3 "ALPACA_PAPER must be true."
-    v=$(lower "$(ans OANDA_ENVIRONMENT practice)")
-    [[ $v == practice ]] || fail 3 "OANDA_ENVIRONMENT must be practice."
-    v=$(ans IB_PORT 4002)
-    if [[ $v == 4001 || $v == 7496 ]]; then
-        fail 3 "IB_PORT=$v is IB's live socket. Use the paper socket (4002 Gateway, 7497 TWS)."
-    fi
     v=$(lower "$(ans KILL_SWITCH_ACTION notify)")
     case $v in notify | halt | flatten) ;; *) fail 2 "KILL_SWITCH_ACTION must be notify, halt or flatten" ;; esac
-    if [[ -n $(ans BROKER_CONNECTIONS) && -n $(ans MT5_BRIDGE_URL) ]]; then
-        fail 2 "Set BROKER_CONNECTIONS or MT5_BRIDGE_URL, not both (the app refuses that combination)."
-    fi
+    for k in "${BROKER_KEYS[@]}"; do [[ -n ${ANS[$k]+x} ]] && brokers+=("$k"); done
+    ((${#brokers[@]} == 0)) || fail 2 "the answers set broker keys (${brokers[*]}). Brokers are added in the app (Settings > Connections), where each is tested as it is saved; remove these lines."
     [[ -z $(ans INSTALL_ALLOW_EXISTING_LIVE) ]] || [[ $(ans INSTALL_ALLOW_EXISTING_LIVE) == yes ]] ||
         fail 2 "INSTALL_ALLOW_EXISTING_LIVE must be yes or absent"
 }
 
-# Prints "conn <id> <platform> <account_mode> <url>" and
-# "ref <id> <field> <ENV_NAME>" per connection. Fails on invalid JSON.
-manifest_lines() {
-    MANIFEST=$1 python3 - <<'PY'
-import json, os, sys
-try:
-    data = json.loads(os.environ["MANIFEST"])
-except ValueError as exc:
-    sys.exit(f"BROKER_CONNECTIONS is not valid JSON: {exc}")
-if not isinstance(data, list) or not all(isinstance(c, dict) for c in data):
-    sys.exit("BROKER_CONNECTIONS must be a JSON list of objects")
-for c in data:
-    cid = str(c.get("id", "")) or "?"
-    print("conn", cid, c.get("platform", "?"), c.get("account_mode", "?"), c.get("url", "-"))
-    for field in ("secret_env", "key_env", "secret_key_env", "token_env", "account_env"):
-        if c.get(field):
-            print("ref", cid, field, c[field])
-PY
-}
-
-check_manifest_safe() {
-    local manifest=$1 kind id platform mode _url
-    [[ -n $manifest ]] || return 0
-    local lines
-    lines=$(manifest_lines "$manifest") || fail 2 "BROKER_CONNECTIONS could not be parsed"
-    while read -r kind id platform mode _url; do
-        [[ $kind == conn ]] || continue
-        [[ $mode == paper ]] || fail 3 "connection $id ($platform) has account_mode=$mode; every connection must be paper at install."
-    done <<<"$lines"
-}
-
 # ---------------------------------------------------------------------------
-# Running things as the deploy user, and Compose
+# Running things as the deploy user
 # ---------------------------------------------------------------------------
 as_user() { (cd "$DIR" && runuser -u "$APP_USER" -- "$@"); }
 
-compose_files() {
-    COMPOSE=(docker compose -f docker-compose.yml)
-    [[ $DB_MODE == bundled ]] && COMPOSE+=(-f docker-compose.db.yml)
-    return 0
+# tradingapp.sh as the deploy user, with a copy of the answers it can read.
+# INSTALL_* lines are this script's own and stay out of the copy, apart from
+# INSTALL_DB_MODE.
+tradingapp() {
+    if [[ -z $ANSWERS_COPY ]]; then
+        ANSWERS_COPY=$(mktemp /tmp/tradingapp-answers.XXXXXX)
+        local key
+        for key in "${!ANS[@]}"; do
+            [[ $key == INSTALL_* && $key != INSTALL_DB_MODE ]] && continue
+            printf '%s=%s\n' "$key" "${ANS[$key]}"
+        done >"$ANSWERS_COPY"
+        chmod 600 "$ANSWERS_COPY"
+        chown "$APP_USER" "$ANSWERS_COPY"
+    fi
+    local db_flag=()
+    [[ $DB_MODE == external ]] && db_flag=(--external-db)
+    as_user env INSTALL_TIMEOUT="$HEALTH_TIMEOUT" bash ./tradingapp.sh \
+        --non-interactive --answers "$ANSWERS_COPY" "${db_flag[@]}" "$@"
 }
 
+# Compose as the deploy user, with the bundled database's file layered in
+# when this host runs it (as tradingapp.sh does).
 compose() {
-    compose_files
-    as_user "${COMPOSE[@]}" "$@"
+    local files=(-f docker-compose.yml)
+    [[ -f $DIR/.tradingapp.with-db ]] && files+=(-f docker-compose.db.yml)
+    as_user docker compose "${files[@]}" "$@"
 }
 
 server_ip_detect() {
@@ -349,226 +306,43 @@ phase_repo() {
 }
 
 phase_env() {
-    [[ -f $DIR/.env.example ]] || fail 1 "$DIR/.env.example missing; run the repo phase first"
-    check_answers_safe
-    check_manifest_safe "$(ans BROKER_CONNECTIONS)"
-
-    # Work on a copy and put it in place only once every step has passed, so
-    # a run that stops on a missing input leaves .env exactly as it was.
-    local real=$ENV_FILE work=$DIR/.env.install-work
-    WORK_FILE=$work
-    if [[ -f $real ]]; then
-        install -m 600 "$real" "$work"
-    else
-        log "env: creating .env from .env.example"
-        install -m 600 "$DIR/.env.example" "$work"
-    fi
-    ENV_FILE=$work
+    [[ -f $DIR/tradingapp.sh ]] || fail 1 "$DIR/tradingapp.sh missing; run the repo phase first"
 
     # An install a human has since moved to live is theirs; do not touch it
     # unless the operator said so in the answers.
     if [[ $(lower "$(env_get LIVE_TRADING_ENABLED)") == true && $(ans INSTALL_ALLOW_EXISTING_LIVE) != yes ]]; then
         fail 3 ".env already has LIVE_TRADING_ENABLED=true. A human enabled live trading here; the operator must set INSTALL_ALLOW_EXISTING_LIVE=yes in the answers before this installer touches it."
     fi
-
-    # 1. Address-derived keys. Filled when still a placeholder, or when they
-    #    still hold the value derived from the previous SERVER_IP (so a new
-    #    SERVER_IP carries them along). A hand-set value (an https URL behind
-    #    nginx) is left alone.
-    local old_ip new_ip key cur
-    old_ip=$(env_get SERVER_IP)
-    new_ip=$(ans SERVER_IP)
-    if [[ -z $new_ip ]]; then
-        if is_placeholder "$old_ip"; then new_ip=$(server_ip_detect); else new_ip=$old_ip; fi
-    fi
-    [[ -n $new_ip ]] || fail 2 "could not determine SERVER_IP; set it in the answers"
-    env_set SERVER_IP "$new_ip"
-    declare -A derived=(
-        [IB_CORS_ORIGINS]="http://%s:3000"
-    )
-    for key in "${!derived[@]}"; do
-        [[ -n $(ans "$key") ]] && continue
-        cur=$(env_get "$key")
-        # shellcheck disable=SC2059
-        if is_placeholder "$cur" || [[ $cur == "$(printf "${derived[$key]}" "$old_ip")" ]]; then
-            # shellcheck disable=SC2059
-            env_set "$key" "$(printf "${derived[$key]}" "$new_ip")"
-        fi
-    done
-
-    # 2. Database.
-    if [[ $DB_MODE == bundled ]]; then
-        # docker-compose.db.yml points the backend at the bundled database;
-        # write the same values so .env tells the truth.
-        env_set POSTGRES_HOST 172.20.0.20
-        env_set POSTGRES_PORT 5432
-        env_set POSTGRES_SSL false
-    else
-        for key in POSTGRES_HOST POSTGRES_PASSWORD; do
-            if [[ -z $(ans "$key") ]] && is_placeholder "$(env_get "$key")"; then
-                fail 2 "INSTALL_DB_MODE=external needs $key in the answers"
-            fi
-        done
-    fi
     if [[ -f $DIR/.tradingapp.with-db && $DB_MODE == external ]]; then
         fail 1 "this host runs the bundled database (.tradingapp.with-db). Moving to an external one is a data migration; do it by hand (PROXMOX_DEPLOYMENT.md §5)."
     fi
 
-    # 3. Every app key from the answers, verbatim.
-    for key in "${!ANS[@]}"; do
-        [[ $key == INSTALL_* ]] && continue
-        env_set "$key" "${ANS[$key]}"
-    done
-
-    # 4. IB host: a placeholder left in place is a misleading value. Without
-    #    IB in the answers, leave it empty: IB is optional, and the broker
-    #    service registers it only when IB_HOST names a gateway.
-    if is_placeholder "$(env_get IB_HOST)"; then
-        env_set IB_HOST ""
-    fi
-
-    # 5. Internal secrets: generated once, never rotated by a re-run. The
-    #    login password, API token and session key are not generated: the
-    #    operator sets the password on the app's first-run screen, and the
-    #    rest is kept in the app (Settings > Security). A template value left
-    #    for one of those is emptied; a real one (from the answers, or a
-    #    previous install) keeps working and wins over the app.
-    local generated=()
-    for key in BROKER_SERVICE_TOKEN REDIS_PASSWORD SETTINGS_ENCRYPTION_KEY; do
-        if is_placeholder "$(env_get "$key")"; then
-            env_set "$key" "$(gen_hex)"
-            generated+=("$key")
-        fi
-    done
-    if [[ $DB_MODE == bundled ]] && is_placeholder "$(env_get POSTGRES_PASSWORD)"; then
-        env_set POSTGRES_PASSWORD "$(gen_hex)"
-        generated+=(POSTGRES_PASSWORD)
-    fi
-    for key in APP_PASSWORD SESSION_SECRET API_TOKEN; do
-        if [[ -n $(env_get "$key") ]] && is_placeholder "$(env_get "$key")"; then
-            env_set "$key" ""
-        fi
-    done
-
-    # 6. Broker credentials referenced by the manifest. A sidecar secret is
-    #    internal (the same value goes on the sidecar), so it is generated.
-    #    A cloud broker's keys are the operator's and must be supplied.
-    local manifest kind id field name missing=()
-    manifest=$(env_get BROKER_CONNECTIONS)
-    if [[ -n $manifest ]]; then
-        check_manifest_safe "$manifest"
-        while read -r kind id field name; do
-            [[ $kind == ref ]] || continue
-            [[ -n $(env_get "$name") ]] && continue
-            if [[ $field == secret_env ]]; then
-                env_set "$name" "$(gen_hex)"
-                generated+=("$name")
-            else
-                missing+=("$name (for connection $id)")
-            fi
-        done < <(manifest_lines "$manifest")
-    fi
-    if [[ -n $(env_get MT5_BRIDGE_URL) ]] && [[ -z $(env_get MT5_BRIDGE_SECRET) ]]; then
-        env_set MT5_BRIDGE_SECRET "$(gen_hex)"
-        generated+=(MT5_BRIDGE_SECRET)
-    fi
-    ((${#missing[@]} == 0)) || fail 2 "broker credentials missing from the answers: ${missing[*]}"
-
-    # 7. Nothing may still be a template value.
-    local leftovers
-    leftovers=$(grep -E '^[A-Z][A-Z0-9_]*=' "$ENV_FILE" | grep -E "=(['\"]?)(CHANGE_ME|.*YOUR_[A-Z_]+)" | cut -d= -f1 | sort -u | tr '\n' ' ') || true
-    [[ -z $leftovers ]] || fail 2 "still template values in .env: $leftovers"
-
-    ENV_FILE=$real
-    [[ -f $real ]] || install -m 600 /dev/null "$real"
-    cat "$work" >"$real"
-    rm -f "$work"
-    chmod 600 "$real"
-    chown "$APP_USER:$APP_USER" "$real"
-    if ((${#generated[@]})); then
-        log "env: generated ${generated[*]}"
-    fi
-    if [[ -n $(env_get APP_PASSWORD) ]]; then
-        log "env: the browser login password is APP_PASSWORD in $ENV_FILE (not printed here)"
-    else
-        log "env: no login password in .env; the operator chooses one on the app's first-run screen"
-    fi
-    log "env: ok (mode $(env_get LIVE_TRADING_ENABLED | tr '[:upper:]' '[:lower:]' | sed 's/^true$/LIVE/; s/^false$/paper/; s/^$/paper/'))"
-}
-
-wait_postgres_healthy() {
-    local cid state i
-    for ((i = 0; i < 60; i++)); do
-        cid=$(compose ps -q postgres)
-        state=$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || true)
-        # The image's first-run init serves the socket only; TCP answers once
-        # the init scripts (which apply the schema) have finished.
-        if [[ $state == healthy ]] && compose exec -T postgres pg_isready -q -h 127.0.0.1 >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 5
-    done
-    fail 1 "the bundled database did not become healthy (docker compose logs postgres)"
-}
-
-# psql with the schema on stdin, against the configured database.
-run_psql() {
-    local user db
-    user=$(env_get POSTGRES_USER)
-    db=$(env_get POSTGRES_DB)
-    if [[ $DB_MODE == bundled ]]; then
-        compose exec -T postgres psql -X -q -v ON_ERROR_STOP=1 -U "${user:-tradingapp}" -d "${db:-tradingapp}" "$@"
-    else
-        local sslmode=disable
-        [[ $(lower "$(env_get POSTGRES_SSL)") == true ]] && sslmode=require
-        docker run --rm -i --network host -e PGPASSWORD="$(env_get POSTGRES_PASSWORD)" postgres:17-alpine \
-            psql -X -q -v ON_ERROR_STOP=1 \
-            "host=$(env_get POSTGRES_HOST) port=$(env_get POSTGRES_PORT) user=${user:-tradingapp} dbname=${db:-tradingapp} sslmode=$sslmode" "$@"
-    fi
+    tradingapp install --env-only || fail 1 "tradingapp.sh install --env-only failed (output above)"
+    [[ -f $ENV_FILE ]] || fail 1 "$ENV_FILE was not written"
+    chmod 600 "$ENV_FILE"
+    chown "$APP_USER:$APP_USER" "$ENV_FILE"
+    log "env: ok ($DB_MODE database)"
 }
 
 phase_schema() {
-    local schema=$DIR/backend/src/database/timescaledb-schema.sql
-    [[ -f $schema ]] || fail 1 "$schema missing"
-    if [[ $DB_MODE == bundled ]]; then
-        touch "$DIR/.tradingapp.with-db"
-        chown "$APP_USER:$APP_USER" "$DIR/.tradingapp.with-db"
-        log "schema: starting the bundled database"
-        compose up -d postgres
-        wait_postgres_healthy
-    fi
-    log "schema: applying timescaledb-schema.sql (idempotent)"
-    run_psql <"$schema" >/dev/null || fail 1 "applying the schema failed (output above)"
-    local constraint
-    constraint=$(run_psql -t -A -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'order_executions'::regclass AND contype = 'u';" </dev/null)
-    [[ $constraint == *"UNIQUE (broker, broker_account, exec_id)"* ]] ||
-        fail 1 "order_executions lacks UNIQUE (broker, broker_account, exec_id); got: ${constraint:-nothing}"
-    log "schema: ok"
+    log "schema: nothing to do; the backend applies its migrations when it starts (deploy waits for that)"
 }
 
 backend_port() { local p; p=$(env_get BACKEND_PORT); printf '%s' "${p:-4000}"; }
 frontend_port() { local p; p=$(env_get FRONTEND_PORT); printf '%s' "${p:-3000}"; }
+broker_service_port() { local p; p=$(env_get BROKER_SERVICE_PORT); printf '%s' "${p:-8000}"; }
 
 phase_deploy() {
-    log "deploy: building and starting the stack (the first build takes several minutes)"
-    compose up -d --build --remove-orphans
-    log "deploy: waiting for the backend to report healthy (up to ${HEALTH_TIMEOUT}s)"
-    local deadline=$((SECONDS + HEALTH_TIMEOUT)) code
-    while ((SECONDS < deadline)); do
-        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$(backend_port)/api/health" || true)
-        if [[ $code == 200 ]]; then
-            log "deploy: backend healthy"
-            return 0
-        fi
-        if compose logs --no-color --tail 200 backend 2>/dev/null | grep -q 'refusing to start'; then
-            compose logs --no-color --tail 200 backend | grep 'refusing to start' | sort -u >&2
-            fail 1 "the backend refused its configuration (lines above name the key)"
-        fi
-        sleep 10
-    done
-    compose ps >&2 || true
-    compose logs --no-color --tail 60 backend >&2 || true
-    fail 1 "the backend was not healthy after ${HEALTH_TIMEOUT}s"
+    log "deploy: building and starting the stack (the first build takes several minutes; up to ${HEALTH_TIMEOUT}s)"
+    # The same command as a hand install. On a host that already has .env it
+    # only adds what is missing, then builds, starts, waits until the backend
+    # is ready, and stores any app settings from the answers in the app.
+    tradingapp install || {
+        compose ps >&2 || true
+        compose logs --no-color --tail 60 backend >&2 || true
+        fail 1 "deploy failed (output above)"
+    }
+    log "deploy: ok"
 }
 
 # ---------------------------------------------------------------------------
@@ -584,26 +358,44 @@ check() {
 
 http_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$@" || true; }
 
+# One value from the database, as the backend sees it. Bundled only; an
+# external database is the operator's.
+db_value() {
+    [[ -f $DIR/.tradingapp.with-db ]] || return 0
+    compose exec -T postgres psql -X -q -t -A -U "$(env_get POSTGRES_USER)" -d "$(env_get POSTGRES_DB)" \
+        -c "$1" </dev/null 2>/dev/null || true
+}
+
+# The broker service token: in .env on an older install, otherwise in the
+# internal secrets volume.
+broker_service_token() {
+    local t
+    t=$(env_get BROKER_SERVICE_TOKEN)
+    [[ -n $t ]] || t=$(compose exec -T backend cat /run/tradingapp/broker_service_token 2>/dev/null || true)
+    printf '%s' "$t"
+}
+
 phase_verify() {
     mkdir -p "$LOG_DIR"
     : >"$REPORT_FILE"
     {
         echo "# TradingApp install report"
         echo "date: $(date -u +%FT%TZ)"
-        echo "host: $(hostname) ($(env_get SERVER_IP))"
+        echo "host: $(hostname) ($(ans SERVER_IP "$(server_ip_detect)"))"
         echo "commit: $(as_user git rev-parse --short HEAD)"
         echo "db_mode: $DB_MODE"
     } >>"$REPORT_FILE"
-    local bp fp api_token bst running svc code body
+    local bp fp bsp api_token bst running svc code body
     bp=$(backend_port)
     fp=$(frontend_port)
+    bsp=$(broker_service_port)
     api_token=$(env_get API_TOKEN)
-    bst=$(env_get BROKER_SERVICE_TOKEN)
+    bst=$(broker_service_token)
 
     # V1 containers
     running=$(compose ps --status running --services 2>/dev/null | sort | tr '\n' ' ')
     local want=(backend broker_service frontend redis) missing=()
-    [[ $DB_MODE == bundled ]] && want+=(postgres)
+    [[ -f $DIR/.tradingapp.with-db ]] && want+=(postgres)
     for svc in "${want[@]}"; do [[ " $running " == *" $svc "* ]] || missing+=("$svc"); done
     if ((${#missing[@]})); then check V1 FAIL "not running: ${missing[*]}"; else check V1 PASS "running: $running"; fi
 
@@ -620,7 +412,7 @@ phase_verify() {
     [[ $code == 200 ]] && check V3 PASS "/api/database/health 200" || check V3 FAIL "/api/database/health $code"
 
     # V4 broker service, loopback only
-    code=$(http_code "http://127.0.0.1:$(env_get BROKER_SERVICE_PORT | sed 's/^$/8000/')/health")
+    code=$(http_code "http://127.0.0.1:$bsp/health")
     [[ $code == 200 ]] && check V4 PASS "broker service /health 200" || check V4 FAIL "broker service /health $code"
 
     # V5 frontend
@@ -649,13 +441,12 @@ phase_verify() {
         log "verify: no login password yet. The first visit asks for a setup code: ./tradingapp.sh setup-code (as $APP_USER, in $DIR)"
     fi
 
-    # V7 the broker service refuses calls without its shared secret
-    local bsp
-    bsp=$(env_get BROKER_SERVICE_PORT)
-    bsp=${bsp:-8000}
+    # V7 the broker service refuses calls without its token
     noauth=$(http_code "http://127.0.0.1:$bsp/providers")
     withauth=$(http_code -H "X-Broker-Service-Token: $bst" "http://127.0.0.1:$bsp/providers")
-    if [[ $noauth == 401 && $withauth == 200 ]]; then
+    if [[ -z $bst ]]; then
+        check V7 FAIL "broker service token not found (internal secrets volume or .env)"
+    elif [[ $noauth == 401 && $withauth == 200 ]]; then
         check V7 PASS "broker service: no token 401, token 200"
     else
         check V7 FAIL "broker service: no token $noauth (want 401), token $withauth (want 200)"
@@ -670,27 +461,31 @@ phase_verify() {
         check V8 FAIL "broker service published as '${exposed:-?}', expected 127.0.0.1"
     fi
 
-    # V9 schema
-    local constraint
-    constraint=$(run_psql -t -A -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'order_executions'::regclass AND contype = 'u';" </dev/null 2>/dev/null || true)
-    [[ $constraint == *"UNIQUE (broker, broker_account, exec_id)"* ]] &&
-        check V9 PASS "order_executions keyed on (broker, broker_account, exec_id)" ||
-        check V9 FAIL "order_executions unique key: ${constraint:-unreadable}"
+    # V9 database migrated and opened by the encryption key
+    body=$(curl -s --max-time 15 "http://127.0.0.1:$bp/api/health/ready" || true)
+    if [[ $(jq -r '.ready // false' <<<"$body" 2>/dev/null) == true ]]; then
+        check V9 PASS "ready: schema up to date, encryption key matches"
+    elif [[ -z $body ]]; then
+        check V9 FAIL "no answer from /api/health/ready"
+    else
+        check V9 FAIL "not ready: $(jq -r '"\(.state // "?"): \(.detail // "")"' <<<"$body" 2>/dev/null || echo "no answer")"
+    fi
 
     # V10 startup log clean
     local refusals
     refusals=$(compose logs --no-color backend 2>/dev/null | grep -c 'refusing to start' || true)
     ((refusals == 0)) && check V10 PASS "no startup refusals in the backend log" || check V10 FAIL "$refusals startup refusals in the backend log"
 
-    # V11 paper mode and safety rails
-    local live sysexec ks
+    # V11 paper mode: neither .env nor the app's settings turn live trading on
+    local live app_live
     live=$(lower "$(env_get LIVE_TRADING_ENABLED)")
-    sysexec=$(lower "$(env_get SYSTEMATIC_EXECUTION_ENABLED)")
-    ks=$(lower "$(env_get KILL_SWITCH_ACTION)")
-    if [[ $live != true ]]; then
-        check V11 PASS "paper: LIVE_TRADING_ENABLED=${live:-false}, SYSTEMATIC_EXECUTION_ENABLED=${sysexec:-false}, KILL_SWITCH_ACTION=${ks:-notify}"
+    app_live=$(lower "$(db_value "SELECT value FROM app_settings WHERE key = 'LIVE_TRADING_ENABLED'")")
+    if [[ $live == true ]]; then
+        check V11 FAIL "LIVE_TRADING_ENABLED=true in .env on this host"
+    elif [[ $app_live == true && -z $live ]]; then
+        check V11 FAIL "live trading is turned on in the app's settings"
     else
-        check V11 FAIL "LIVE_TRADING_ENABLED=true on this host"
+        check V11 PASS "paper (live trading off in .env and the app)"
     fi
 
     # V12 .env locked down
@@ -699,72 +494,26 @@ phase_verify() {
     owner=$(stat -c '%U' "$ENV_FILE")
     [[ $mode == 600 && $owner == "$APP_USER" ]] && check V12 PASS ".env mode 600, owner $owner" || check V12 FAIL ".env mode $mode owner $owner"
 
-    # V13 broker connections the app sees (only when some are configured)
-    local providers
+    # V13 broker connections: added in the app, which checks each one. A
+    # fresh install has none; any that exist must be paper.
+    local providers count live_conns
     providers=$(curl -s --max-time 20 -H "X-Broker-Service-Token: $bst" "http://127.0.0.1:$bsp/providers" || true)
-    if [[ -n $(env_get BROKER_CONNECTIONS) ]]; then
-        local perr
-        perr=$(jq -r '.error // empty' <<<"$providers" 2>/dev/null || echo "no answer from /providers")
-        local absent=() kind id plat _m _u
-        while read -r kind id plat _m _u; do
-            [[ $kind == conn ]] || continue
-            jq -e --arg l "$plat:$id" '.connections[$l].account_mode == "paper"' <<<"$providers" >/dev/null 2>&1 ||
-                absent+=("$plat:$id")
-        done < <(manifest_lines "$(env_get BROKER_CONNECTIONS)")
-        if [[ -n $perr ]]; then
-            check V13 FAIL "manifest error: $perr"
-        elif ((${#absent[@]})); then
-            check V13 FAIL "not registered as paper by the broker service: ${absent[*]}"
+    count=$(jq -r '.connections // {} | length' <<<"$providers" 2>/dev/null || echo "")
+    if [[ -z $count ]]; then
+        check V13 FAIL "broker service /providers did not answer"
+    elif ((count == 0)); then
+        check V13 SKIP "no broker connections yet (add them under Settings > Connections)"
+    else
+        live_conns=$(jq -r '.connections | to_entries | map(select(.value.account_mode != "paper")) | map(.key) | join(" ")' <<<"$providers")
+        if [[ -n $live_conns ]]; then
+            check V13 FAIL "connections not in paper mode: $live_conns"
         else
-            check V13 PASS "connections: $(jq -c '.connections | to_entries | map({id: .key, mode: .value.account_mode, broker: .value.broker, data: .value.market_data})' <<<"$providers" 2>/dev/null)"
+            check V13 PASS "connections (paper): $(jq -r '.connections | keys | join(" ")' <<<"$providers")"
         fi
-    else
-        check V13 SKIP "no BROKER_CONNECTIONS configured"
     fi
-
-    # V14 MT5 sidecars reachable from this host and refusing the unauthenticated
-    local manifest kind id _p _m url secret_name secret
-    manifest=$(env_get BROKER_CONNECTIONS)
-    if [[ -n $manifest ]] && grep -q '"mt5"' <<<"$manifest"; then
-        declare -A sec=()
-        while read -r kind id field name; do
-            [[ $kind == ref && $field == secret_env ]] && sec[$id]=$name
-        done < <(manifest_lines "$manifest")
-        while read -r kind id _p _m url; do
-            [[ $kind == conn && $_p == mt5 ]] || continue
-            secret_name=${sec[$id]:-}
-            secret=$(env_get "$secret_name")
-            body=$(curl -s --max-time 15 -H "X-MT5-Bridge-Secret: $secret" "$url/health" || true)
-            noauth=$(http_code "$url/health")
-            local st
-            st=$(jq -r '.status // empty' <<<"$body" 2>/dev/null || true)
-            if [[ $st == ok && $noauth == 401 && $(jq -r '.account_type' <<<"$body") == demo ]]; then
-                check V14 PASS "mt5 $id: ok, demo account $(jq -r '.login' <<<"$body"), unauthenticated 401"
-            elif [[ $st == trading_disabled ]]; then
-                check V14 FAIL "mt5 $id: Algo Trading is off in the terminal (operator: turn it on)"
-            elif [[ $st == ok ]]; then
-                check V14 FAIL "mt5 $id: account_type $(jq -r '.account_type' <<<"$body") / unauthenticated $noauth (want demo / 401)"
-            else
-                check V14 FAIL "mt5 $id at $url: ${body:-no answer}"
-            fi
-        done < <(manifest_lines "$manifest")
-    else
-        check V14 SKIP "no MT5 connections"
-    fi
-
-    # V15 IB Gateway socket reachable, when IB is configured
-    local ibh ibp
-    ibh=$(env_get IB_HOST)
-    ibp=$(env_get IB_PORT)
-    if [[ -n $ibh && $ibh != host.docker.internal ]]; then
-        if timeout 5 bash -c "echo >/dev/tcp/$ibh/${ibp:-4002}" 2>/dev/null; then
-            check V15 PASS "IB Gateway $ibh:${ibp:-4002} accepts connections"
-        else
-            check V15 FAIL "IB Gateway $ibh:${ibp:-4002} not reachable"
-        fi
-    else
-        check V15 SKIP "IB Gateway not configured"
-    fi
+    # V14 and V15 (MT5 sidecars, IB Gateway reachability) are gone: the app
+    # checks every connection itself and shows its state on Settings >
+    # Connections, and a broker that is down is not an install failure.
 
     # V16 dead-man's switch
     local hb hbon health

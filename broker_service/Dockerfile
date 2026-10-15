@@ -72,9 +72,10 @@ ENV TZ=UTC
 ENV IB_TIMEZONE=UTC
 ENV EXPECTED_TIMESTAMP_FORMAT=unix_seconds
 ENV DATA_TIMEZONE=UTC
+ENV IB_FORMAT_DATE=2
 
-# IB configuration will come from docker-compose environment variables
-# ENV IB_HOST, IB_PORT, IB_CLIENT_ID set by docker-compose
+# Brokers are added in the app (Settings > Connections), which sends them
+# here; nothing about a broker is set in the image or by compose.
 ENV IB_LOG_LEVEL=INFO
 
 # Run the improved application

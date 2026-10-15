@@ -1,33 +1,34 @@
 # TradingApp installer answers. Copy to /etc/tradingapp/install.answers on
 # the app host and `chmod 600` it: the installer refuses a file other users can
-# read, because it holds credentials.
+# read, because it can hold credentials.
 #
 #   install -d -m 700 /etc/tradingapp
 #   install -m 600 install/install.answers.example /etc/tradingapp/install.answers
 #
 # Format: KEY=VALUE, one per line, `#` comments. Values may be wrapped in
-# single or double quotes; a value cannot contain a single quote. The file is
-# parsed, never executed.
+# single or double quotes. The file is parsed, never executed.
 #
-# Two kinds of key:
-#   INSTALL_*  settings for the installer itself
-#   anything else is written verbatim into the app's .env (see .env.example
-#   for every key and what it does). Leave a key out to keep .env's value.
+# A fresh install needs nothing here at all: every line is optional.
 #
-# What the installer fills in by itself, so do NOT invent values for these:
-#   BROKER_SERVICE_TOKEN, SETTINGS_ENCRYPTION_KEY, REDIS_PASSWORD, and
-#   POSTGRES_PASSWORD with the bundled database: random, generated once.
-#   The login password, API tokens and trading tokens are not in .env at all:
-#   the app asks for a password on first visit (with the setup code from
-#   `./tradingapp.sh setup-code`), and the rest is on Settings > Security.
-#   SERVER_IP and the URLs derived from it: detected.
-#   The secret of every MT5 connection in BROKER_CONNECTIONS: generated, then
-#   copied onto the sidecar (AGENT_INSTALL_RUNBOOK.md, Phase B2).
+# Three kinds of key:
+#   INSTALL_*   settings for the installer itself
+#   POSTGRES_*  the database (only for INSTALL_DB_MODE=external); these, and
+#               SETTINGS_ENCRYPTION_KEY, are all .env holds
+#   anything else is an app setting (as on the Settings page). It is stored
+#   in the app's database once the stack is up, and not left in .env.
 #
-# What it refuses (exit code 3): anything that would let an order reach a
-# real-money account. LIVE_TRADING_ENABLED and SYSTEMATIC_EXECUTION_ENABLED
-# must stay false, ALPACA_PAPER true, OANDA_ENVIRONMENT practice, IB_PORT not
-# a live socket, and every BROKER_CONNECTIONS entry account_mode "paper".
+# What the installer makes by itself, so do NOT invent values for these: the
+# encryption key, the bundled database's password, and the broker service
+# token and Redis password (kept in a Docker volume, not in .env). The login
+# password is chosen on the app's first-run screen, with the setup code from
+# `./tradingapp.sh setup-code`.
+#
+# Brokers are NOT set here. They are added in the app (Settings >
+# Connections), which tests each one as it is saved. The installer refuses
+# broker keys (IB_HOST, BROKER_CONNECTIONS, OANDA_*, ALPACA_*, MT5_*).
+#
+# What it refuses (exit code 3): LIVE_TRADING_ENABLED or
+# SYSTEMATIC_EXECUTION_ENABLED set to anything but false.
 
 # ---------------------------------------------------------------------------
 # Installer settings (defaults shown)
@@ -41,26 +42,15 @@
 #           of PROXMOX_DEPLOYMENT.md §5. Needs POSTGRES_HOST and
 #           POSTGRES_PASSWORD below, and the role, database and timescaledb
 #           extension created there first (§5.3).
-INSTALL_DB_MODE=bundled
-# Seconds to wait for the stack to report healthy after a build.
+#INSTALL_DB_MODE=bundled
+# Seconds to wait for the stack to report ready after a build.
 #INSTALL_HEALTH_TIMEOUT=900
 # Only the operator may set this: lets a re-run touch a host where a human has
-# since turned LIVE_TRADING_ENABLED on. The installer still never turns it on.
+# since turned LIVE_TRADING_ENABLED on in .env. The installer never turns it on.
 #INSTALL_ALLOW_EXISTING_LIVE=yes
-
-# ---------------------------------------------------------------------------
-# Host (optional: detected from the default route when left out)
-# ---------------------------------------------------------------------------
+# This host's address, when the default route does not give the right one
+# (only used for the preflight check and the report).
 #SERVER_IP=10.7.3.20
-# Behind nginx/TLS (PROXMOX_DEPLOYMENT.md §10), set the public origin instead:
-#CORS_ORIGINS=https://trading.example.com
-
-# ---------------------------------------------------------------------------
-# Browser login (optional). Leave it out to choose the password in the app.
-# Set here, it is written to .env and always wins over the app, so it cannot
-# be changed on the Security tab until it is removed from .env again.
-# ---------------------------------------------------------------------------
-#APP_PASSWORD=
 
 # ---------------------------------------------------------------------------
 # External database (INSTALL_DB_MODE=external only)
@@ -73,38 +63,23 @@ INSTALL_DB_MODE=bundled
 # false on a private bridge, true when the database requires TLS.
 #POSTGRES_SSL=false
 
-# ---------------------------------------------------------------------------
-# Brokers (all optional; with none the app runs with no venue)
-# ---------------------------------------------------------------------------
-# IB Gateway logged in to a PAPER account (PROXMOX_DEPLOYMENT.md §6).
-#IB_HOST=10.7.3.22
-#IB_PORT=4002
-
-# MT5 / Alpaca / OANDA connections, one JSON line. Every account_mode must be
-# "paper". Secrets are named, not inlined: an MT5 secret_env is generated for
-# you; Alpaca key_env/secret_key_env and OANDA token_env/account_env must be
-# given below with the values the operator supplies.
-#BROKER_CONNECTIONS='[{"id":"broker-a-demo","platform":"mt5","url":"http://10.7.3.23:9100","secret_env":"MT5_SECRET_A","account_mode":"paper","currency":"USD","default":true}]'
-#PORTFOLIO_BASE_CURRENCY=USD
-#DEFAULT_BROKER=mt5
-
-# Alpaca paper keys / OANDA practice token, from the operator:
-#ALPACA_KEY_A=
-#ALPACA_SECRET_A=
-#OANDA_TOKEN_A=
-#OANDA_ACCOUNT_A=
+# A rebuild that keeps an existing database needs the key it was opened with
+# (`./tradingapp.sh backup-key` on the old host). Leave out on a fresh install.
+#SETTINGS_ENCRYPTION_KEY=
 
 # ---------------------------------------------------------------------------
+# App settings (optional; each can be set on the Settings page instead)
+# ---------------------------------------------------------------------------
+# Behind nginx/TLS (PROXMOX_DEPLOYMENT.md §10), the public origin:
+#CORS_ORIGINS=https://trading.example.com
+
 # Alerting and the dead-man's switch (from the operator; strongly recommended)
-# ---------------------------------------------------------------------------
 #TELEGRAM_BOT_TOKEN=
 #TELEGRAM_CHAT_ID=
 #HEARTBEAT_URL=https://hc-ping.com/<uuid>
 #HEARTBEAT_FAIL_URL=https://hc-ping.com/<uuid>/fail
 
-# ---------------------------------------------------------------------------
-# Paper-stage switches (safe to set at install; see PAPER_DEPLOYMENT_RUNBOOK.md)
-# ---------------------------------------------------------------------------
+# Paper-stage switches (see PAPER_DEPLOYMENT_RUNBOOK.md)
 #EXECUTIONS_SYNC_ENABLED=false
 #SYSTEMATIC_ENABLED=false
 #KILL_SWITCH_ACTION=notify

@@ -1,10 +1,53 @@
+# Internal secrets (the broker service token and the Redis password) are not
+# in .env: the one-shot `secrets` service generates them into the
+# `internal_secrets` volume on first start, and the services that need them
+# read them from there (`./tradingapp.sh rotate-internal-secrets` replaces
+# them). A value set in .env still wins, so an older install keeps working.
+
+x-internal-secrets: &internal-secrets
+  - internal_secrets:/run/tradingapp:ro
+
 services:
+  secrets:
+    image: alpine:3.20
+    restart: "no"
+    network_mode: none
+    environment:
+      - ROTATE=${ROTATE_INTERNAL_SECRETS:-}
+    volumes:
+      - internal_secrets:/run/tradingapp
+    command:
+      - /bin/sh
+      - -c
+      - |
+        umask 022
+        for name in broker_service_token redis_password; do
+          file=/run/tradingapp/$$name
+          if [ -n "$$ROTATE" ] || [ ! -s "$$file" ]; then
+            head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$$file.new"
+            mv "$$file.new" "$$file"
+            echo "generated $$name"
+          fi
+        done
+
   backend:
     build: ./backend
     env_file: .env
+    # Reads the internal secrets before starting (a value in .env wins).
+    entrypoint: &read-internal-secrets
+      - /bin/sh
+      - -c
+      - |
+        BROKER_SERVICE_TOKEN="$${BROKER_SERVICE_TOKEN:-$$(cat /run/tradingapp/broker_service_token)}"
+        REDIS_PASSWORD="$${REDIS_PASSWORD:-$$(cat /run/tradingapp/redis_password)}"
+        export BROKER_SERVICE_TOKEN REDIS_PASSWORD
+        exec "$$@"
+      - --
+    command: ["npm", "start"]
+    volumes: *internal-secrets
     environment:
       - PORT=${BACKEND_PORT:-4000}
-      - NODE_ENV=${NODE_ENV:-production}
+      - NODE_ENV=production
       # The frontend container forwards the browser's API calls; the backend
       # believes the client address it passes on. Other proxies (TRUST_PROXY)
       # and browser origins (CORS_ORIGINS) are set on Settings > Network.
@@ -17,8 +60,7 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-tradingapp}
       - POSTGRES_SSL=${POSTGRES_SSL:-false}
       - REDIS_HOST=172.20.0.30
-      - REDIS_PORT=${REDIS_PORT:-6379}
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_PORT=6379
       # Login, script tokens and the session key are set in the app (first-run
       # screen, then Settings > Security). Set in .env they win over the app,
       # which is the way back in if the password is forgotten. Empty here
@@ -26,16 +68,18 @@ services:
       - SESSION_SECRET=${SESSION_SECRET:-}
       - APP_PASSWORD=${APP_PASSWORD:-}
       - API_TOKEN=${API_TOKEN:-}
-      # Shared secret the backend sends to the broker service.
-      - BROKER_SERVICE_TOKEN=${BROKER_SERVICE_TOKEN:-}
-      # Schedulers, cache, streaming, alerts and the heartbeat are set on the
-      # Settings page. A value in .env (passed in by env_file) still wins and
-      # shows there as locked, so these are deliberately not defaulted here.
+      # Everything else is set on the Settings page. A value in .env (passed
+      # in by env_file) still wins and shows there as locked, so nothing is
+      # defaulted here.
     ports:
       - "${BACKEND_PORT:-4000}:${BACKEND_PORT:-4000}"
     depends_on:
-      - broker_service
-      - redis
+      secrets:
+        condition: service_completed_successfully
+      broker_service:
+        condition: service_started
+      redis:
+        condition: service_started
     # Healthy once its database is reachable, migrated and opened by the
     # encryption key (the backend waits for it; see services/startupGate.ts).
     # Brokers and Redis do not count, so an outage there never reads as down.
@@ -49,45 +93,46 @@ services:
       tradingapp-network:
         ipv4_address: 172.20.0.5
     restart: unless-stopped
-      
+
   frontend:
-    build: 
+    build:
       context: ./frontend
       args:
-        - NODE_ENV=${NODE_ENV:-production}
+        - NODE_ENV=production
     # No env_file: the frontend needs none of .env's secrets. The page calls
     # the API on its own address and the frontend server forwards it here.
     environment:
       - PORT=${FRONTEND_PORT:-3000}
-      - NODE_ENV=${NODE_ENV:-production}
+      - NODE_ENV=production
       - BACKEND_INTERNAL_URL=http://172.20.0.5:${BACKEND_PORT:-4000}
     ports:
       - "${FRONTEND_PORT:-3000}:${FRONTEND_PORT:-3000}"
+    # Not gated on the backend being healthy: while the backend waits for its
+    # database, the page is what says so.
     depends_on:
       - backend
     networks:
       tradingapp-network:
         ipv4_address: 172.20.0.3
     restart: unless-stopped
-      
+
   broker_service:
     build: ./broker_service
+    # Brokers are added in the app (Settings > Connections). A broker line
+    # such as IB_HOST in .env still defines a connection, and wins for its
+    # broker.
     env_file: .env
+    entrypoint: *read-internal-secrets
+    command: ["python", "main.py"]
+    volumes: *internal-secrets
     environment:
-      - IB_HOST=${IB_HOST:-}
-      - IB_PORT=${IB_PORT:-4002}
-      - IB_CLIENT_ID=${IB_CLIENT_ID:-1}
-      - IB_CORS_ORIGINS=${IB_CORS_ORIGINS:-http://localhost:3000}
-      # Timezone configuration for consistent timestamp handling
       - TZ=UTC
-      - IB_TIMEZONE=${IB_TIMEZONE:-UTC}
-      - EXPECTED_TIMESTAMP_FORMAT=${EXPECTED_TIMESTAMP_FORMAT:-unix_seconds}
-      - DATA_TIMEZONE=${DATA_TIMEZONE:-UTC}
-      - IB_FORMAT_DATE=${IB_FORMAT_DATE:-2}
-      - BROKER_SERVICE_TOKEN=${BROKER_SERVICE_TOKEN:-}
+    depends_on:
+      secrets:
+        condition: service_completed_successfully
     # The broker service can place orders, and only the backend should call
     # it. It is published on the host's loopback only (for `tradingapp.sh
-    # test`), never on the LAN, and every call needs BROKER_SERVICE_TOKEN.
+    # test`), never on the LAN, and every call needs the service token.
     ports:
       - "127.0.0.1:${BROKER_SERVICE_PORT:-8000}:8000"
     networks:
@@ -96,20 +141,30 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-      
 
-      
   redis:
     image: redis:7-alpine
-    restart: unless-stopped
-    # Not published on the host: only containers on this network use it.
-    # An empty REDIS_PASSWORD disables auth (development only).
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-}"]
+    # Not published on the host: only containers on this network use it. The
+    # password comes from the internal secrets volume (or REDIS_PASSWORD in
+    # .env, which wins); the image's own entrypoint then drops to its user.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        exec docker-entrypoint.sh redis-server --requirepass "$${REDIS_PASSWORD:-$$(cat /run/tradingapp/redis_password)}"
+    volumes: *internal-secrets
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    depends_on:
+      secrets:
+        condition: service_completed_successfully
     networks:
       tradingapp-network:
         ipv4_address: 172.20.0.30
+    restart: unless-stopped
 
-
+volumes:
+  internal_secrets:
 
 networks:
   tradingapp-network:
@@ -117,4 +172,4 @@ networks:
     ipam:
       config:
         - subnet: 172.20.0.0/16
-          gateway: 172.20.0.1 
+          gateway: 172.20.0.1
