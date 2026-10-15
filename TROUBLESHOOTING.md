@@ -161,11 +161,12 @@ worth acting on, for example auto-execution with no `HEARTBEAT_URL`.
 
 ### Browser shows a login page, or scripts get 401
 
-The browser now signs in with `APP_PASSWORD` and holds a session cookie;
+The browser signs in with the login password and holds a session cookie;
 nothing secret is built into the frontend. Scripts and `curl` send
-`Authorization: Bearer $API_TOKEN`. If `NEXT_PUBLIC_API_TOKEN` is still in
-`.env`, remove it, and rotate `API_TOKEN` if it ever held that value: it was
-readable in the web page.
+`Authorization: Bearer <token>` with an API token from Settings > Security
+(or `API_TOKEN` in `.env`). If `NEXT_PUBLIC_API_TOKEN` is still in `.env`,
+remove it, and rotate `API_TOKEN` if it ever held that value: it was readable
+in the web page.
 
 ### Frontend can't reach the backend
 

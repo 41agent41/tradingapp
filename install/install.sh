@@ -128,8 +128,6 @@ env_set() {
 }
 
 gen_hex() { openssl rand -hex 32; }
-# A login password a person can type: 20 URL-safe characters.
-gen_password() { openssl rand -base64 15 | tr '+/' '-_'; }
 
 is_placeholder() {
     local v=$1
@@ -430,9 +428,14 @@ phase_env() {
         env_set IB_HOST ""
     fi
 
-    # 5. Internal secrets: generated once, never rotated by a re-run.
+    # 5. Internal secrets: generated once, never rotated by a re-run. The
+    #    login password, API token and session key are not generated: the
+    #    operator sets the password on the app's first-run screen, and the
+    #    rest is kept in the app (Settings > Security). A template value left
+    #    for one of those is emptied; a real one (from the answers, or a
+    #    previous install) keeps working and wins over the app.
     local generated=()
-    for key in SESSION_SECRET API_TOKEN BROKER_SERVICE_TOKEN REDIS_PASSWORD SETTINGS_ENCRYPTION_KEY; do
+    for key in BROKER_SERVICE_TOKEN REDIS_PASSWORD SETTINGS_ENCRYPTION_KEY; do
         if is_placeholder "$(env_get "$key")"; then
             env_set "$key" "$(gen_hex)"
             generated+=("$key")
@@ -442,10 +445,11 @@ phase_env() {
         env_set POSTGRES_PASSWORD "$(gen_hex)"
         generated+=(POSTGRES_PASSWORD)
     fi
-    if is_placeholder "$(env_get APP_PASSWORD)"; then
-        env_set APP_PASSWORD "$(gen_password)"
-        generated+=(APP_PASSWORD)
-    fi
+    for key in APP_PASSWORD SESSION_SECRET API_TOKEN; do
+        if [[ -n $(env_get "$key") ]] && is_placeholder "$(env_get "$key")"; then
+            env_set "$key" ""
+        fi
+    done
 
     # 6. Broker credentials referenced by the manifest. A sidecar secret is
     #    internal (the same value goes on the sidecar), so it is generated.
@@ -485,8 +489,10 @@ phase_env() {
     if ((${#generated[@]})); then
         log "env: generated ${generated[*]}"
     fi
-    if [[ " ${generated[*]} " == *" APP_PASSWORD "* ]]; then
+    if [[ -n $(env_get APP_PASSWORD) ]]; then
         log "env: the browser login password is APP_PASSWORD in $ENV_FILE (not printed here)"
+    else
+        log "env: no login password in .env; the operator chooses one on the app's first-run screen"
     fi
     log "env: ok (mode $(env_get LIVE_TRADING_ENABLED | tr '[:upper:]' '[:lower:]' | sed 's/^true$/LIVE/; s/^false$/paper/; s/^$/paper/'))"
 }
@@ -622,14 +628,26 @@ phase_verify() {
     code=$(http_code "http://127.0.0.1:$fp/")
     [[ $code =~ ^(200|307|308)$ ]] && check V5 PASS "frontend $code" || check V5 FAIL "frontend $code"
 
-    # V6 authentication: refused without a credential, accepted with API_TOKEN
-    local noauth withauth
+    # V6 authentication: refused without a credential, and accepted with
+    # API_TOKEN when .env has one. Without one, tokens live in the app and
+    # there is nothing here to sign in with.
+    local noauth withauth setup
     noauth=$(http_code "http://127.0.0.1:$bp/api/orders/config")
-    withauth=$(http_code -H "Authorization: Bearer $api_token" "http://127.0.0.1:$bp/api/orders/config")
-    if [[ $noauth == 401 && $withauth == 200 ]]; then
-        check V6 PASS "no credential 401, API_TOKEN 200"
+    if [[ -n $api_token ]]; then
+        withauth=$(http_code -H "Authorization: Bearer $api_token" "http://127.0.0.1:$bp/api/orders/config")
+        if [[ $noauth == 401 && $withauth == 200 ]]; then
+            check V6 PASS "no credential 401, API_TOKEN 200"
+        else
+            check V6 FAIL "no credential $noauth (want 401), API_TOKEN $withauth (want 200)"
+        fi
+    elif [[ $noauth == 401 ]]; then
+        check V6 PASS "no credential 401 (no API_TOKEN in .env; tokens are made in the app)"
     else
-        check V6 FAIL "no credential $noauth (want 401), API_TOKEN $withauth (want 200)"
+        check V6 FAIL "no credential $noauth (want 401)"
+    fi
+    setup=$(curl -s --max-time 15 "http://127.0.0.1:$bp/api/auth/session" | jq -r '.setup_required // false' 2>/dev/null || true)
+    if [[ $setup == true ]]; then
+        log "verify: no login password yet. The first visit asks for a setup code: ./tradingapp.sh setup-code (as $APP_USER, in $DIR)"
     fi
 
     # V7 the broker service refuses calls without its shared secret

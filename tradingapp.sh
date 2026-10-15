@@ -88,6 +88,16 @@ env_set() {
     mv "$tmp" "$file"
 }
 
+# Empties a key still holding the CHANGE_ME placeholder. For secrets that
+# have moved into the app: an empty value means "managed on the page".
+env_clear_placeholder() {
+    local file="$1" key="$2" current
+    current=$(grep -E "^${key}=" "$file" 2>/dev/null | tail -n1 | cut -d'=' -f2-)
+    if [[ "$current" == "CHANGE_ME" ]]; then
+        env_set "$file" "$key" ""
+    fi
+}
+
 # Same as env_set, but only writes the key if it is not already present —
 # for defaults the user may have hand-tuned (ports, Postgres/Redis
 # credentials) that `config`/`env` shouldn't silently reset.
@@ -145,6 +155,7 @@ show_usage() {
     echo "  status      - Check service status"
     echo "  logs        - View service logs"
     echo "  setup-code  - Show the code for the first-run setup screen"
+    echo "  settings-import - Move settings and logins from .env into the app"
     echo ""
     echo "Troubleshooting:"
 echo "  test        - Check the app's services are up"
@@ -305,24 +316,23 @@ HEADER
     env_set_default .env REDIS_HOST "redis"
     env_set_default .env REDIS_PORT "6379"
 
-    # Secrets. Generated once and then left alone. The backend refuses to
-    # start in production with any of these missing or left as defaults.
+    # Secrets the services need before anyone can sign in. Generated once and
+    # then left alone. The login password, API tokens and the session key are
+    # not among them: they are set in the app (first-run screen, then
+    # Settings > Security). A value already in .env keeps working and wins.
     local generated
     generated=$(
         env_set_secret .env POSTGRES_PASSWORD
         env_set_secret .env REDIS_PASSWORD
-        env_set_secret .env SESSION_SECRET
-        env_set_secret .env API_TOKEN
         env_set_secret .env BROKER_SERVICE_TOKEN
         env_set_secret .env SETTINGS_ENCRYPTION_KEY
-        env_set_secret .env APP_PASSWORD
     )
     if [[ -n "$generated" ]]; then
         print_info "Generated new secrets in .env: $(echo $generated | tr '\n' ' ')"
     fi
-    if echo "$generated" | grep -q '^APP_PASSWORD$'; then
-        print_warning "Your login password (APP_PASSWORD in .env) is: $(grep -E '^APP_PASSWORD=' .env | cut -d'=' -f2-)"
-    fi
+    env_clear_placeholder .env APP_PASSWORD
+    env_clear_placeholder .env SESSION_SECRET
+    env_clear_placeholder .env API_TOKEN
 
     print_status "Environment configured:"
     print_info "  Server IP: $SERVER_IP"
@@ -459,10 +469,66 @@ show_access_info() {
     echo "  Backend:    http://$server_ip:4000"
     echo "  Broker service: loopback only (http://127.0.0.1:8000 on this host)"
     echo ""
+    if ! grep -qE '^APP_PASSWORD=.+' .env 2>/dev/null; then
+        echo "First sign-in:"
+        echo "  Open the frontend. If it asks for a setup code, run: $0 setup-code"
+        echo ""
+    fi
     echo "Management:"
     echo "  Check status: $0 status"
     echo "  View logs:    $0 logs"
     echo "  Test system:  $0 test"
+}
+
+# Moves what .env sets into the app (the backend stores it), then deletes
+# those lines from .env after a backup, so the Settings page manages them.
+# Keys the app still needs from .env (database, ports, the encryption key,
+# brokers) are never touched.
+settings_import() {
+    if [[ ! -f .env ]]; then
+        print_error "No .env here."
+        return 1
+    fi
+    if [[ -z "$(compose_cmd ps -q backend 2>/dev/null)" ]]; then
+        print_error "The backend is not running. Start it first: $0 start"
+        return 1
+    fi
+    local keys output imported
+    keys=$(grep -oE '^[A-Z][A-Z0-9_]*=' .env | tr -d '=' | sort -u | tr '\n' ' ')
+    # shellcheck disable=SC2086
+    output=$(compose_cmd exec -T backend node dist/cli/importSettings.js $keys 2>/dev/null) || true
+    if ! echo "$output" | grep -qE '^(IMPORTED|KEPT) '; then
+        print_error "The import did not run: $(echo "$output" | grep -E '^ERROR ' | sed 's/^ERROR //' | tail -1)"
+        print_info "Check the backend is up to date ($0 redeploy) and can reach the database."
+        return 1
+    fi
+    echo "$output" | grep -E '^KEPT ' | while read -r _ key reason; do
+        print_warning "  $key stays in .env: $reason"
+    done
+    imported=$(echo "$output" | grep -E '^IMPORTED ' | awk '{print $2}')
+    if [[ -z "$imported" ]]; then
+        print_info "Nothing to move: .env holds nothing the app manages."
+        return 0
+    fi
+    print_status "Stored in the app: $(echo $imported | tr '\n' ' ')"
+    if [[ "${NON_INTERACTIVE:-0}" != "1" ]]; then
+        read -r -p "Delete these lines from .env (a backup is kept)? [y/N] " answer
+        if [[ ! "$answer" =~ ^[Yy] ]]; then
+            print_info "Left .env as it is. Values in .env keep winning over the app until removed."
+            return 0
+        fi
+    fi
+    local backup tmp pattern
+    backup=".env.bak.$(date +%Y%m%d%H%M%S)"
+    cp -p .env "$backup"
+    chmod 600 "$backup"
+    pattern="^($(echo $imported | tr ' ' '|'))="
+    tmp=$(mktemp)
+    grep -vE "$pattern" .env > "$tmp" || true
+    cat "$tmp" > .env
+    rm -f "$tmp"
+    print_status "Removed them from .env (backup: $backup; it holds secrets, delete it once you are happy)."
+    print_info "Apply with: $0 redeploy. They are then managed in Settings."
 }
 
 run_diagnostics() {
@@ -627,7 +693,7 @@ set -- "${GLOBAL_ARGS[@]}"
 # Commands that talk to Docker first make sure this shell can (re-running
 # under `sg docker` straight after setup, when the new group is not active).
 case "${1:-}" in
-    deploy|redeploy|start|stop|restart|status|logs|setup-code|fix|clean)
+    deploy|redeploy|start|stop|restart|status|logs|setup-code|settings-import|fix|clean)
         mapfile -t _flags < <(global_flag_args)
         ensure_docker_access "$@" "${_flags[@]}"
         ;;
@@ -707,6 +773,9 @@ case "${1:-}" in
             print_info "No setup code in the backend log: the login password is already set."
             print_info "Locked out? Set APP_PASSWORD in .env and run '$0 redeploy'; it takes precedence."
         fi
+        ;;
+    "settings-import")
+        settings_import
         ;;
     "test")
         test_deployment

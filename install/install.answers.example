@@ -15,9 +15,11 @@
 #   for every key and what it does). Leave a key out to keep .env's value.
 #
 # What the installer fills in by itself, so do NOT invent values for these:
-#   SESSION_SECRET, API_TOKEN, BROKER_SERVICE_TOKEN, REDIS_PASSWORD, and
+#   BROKER_SERVICE_TOKEN, SETTINGS_ENCRYPTION_KEY, REDIS_PASSWORD, and
 #   POSTGRES_PASSWORD with the bundled database: random, generated once.
-#   APP_PASSWORD: generated if you leave it out (read it from .env afterwards).
+#   The login password, API tokens and trading tokens are not in .env at all:
+#   the app asks for a password on first visit (with the setup code from
+#   `./tradingapp.sh setup-code`), and the rest is on Settings > Security.
 #   SERVER_IP and the URLs derived from it: detected.
 #   The secret of every MT5 connection in BROKER_CONNECTIONS: generated, then
 #   copied onto the sidecar (AGENT_INSTALL_RUNBOOK.md, Phase B2).
@@ -54,7 +56,9 @@ INSTALL_DB_MODE=bundled
 #CORS_ORIGINS=https://trading.example.com
 
 # ---------------------------------------------------------------------------
-# Browser login (optional: generated when left out)
+# Browser login (optional). Leave it out to choose the password in the app.
+# Set here, it is written to .env and always wins over the app, so it cannot
+# be changed on the Security tab until it is removed from .env again.
 # ---------------------------------------------------------------------------
 #APP_PASSWORD=
 

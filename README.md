@@ -190,7 +190,9 @@ no separate Jesse install, database or exchange drivers.
 - **Login**: the browser signs in with a password and gets an HttpOnly
   session cookie; scripts use API tokens. The password, tokens and MFA are
   managed in Settings > Security, with a first-run setup screen on a fresh
-  install (`APP_PASSWORD` and `API_TOKEN` in `.env` still work). Nothing secret is compiled into
+  install; none of them are in `.env` (set there they still work and win,
+  and `./tradingapp.sh settings-import` moves an older `.env` into the app).
+  Nothing secret is compiled into
   the frontend. The broker service is loopback-only and requires
   `BROKER_SERVICE_TOKEN`. Production refuses to start with default secrets.
 - **Live trading guard rails**: live trading is turned on in Settings >

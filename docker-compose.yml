@@ -19,10 +19,10 @@ services:
       - REDIS_HOST=172.20.0.30
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-      # Browser login: APP_PASSWORD, with sessions signed by SESSION_SECRET.
-      # API_TOKEN is for scripts (Authorization: Bearer). With NODE_ENV=
-      # production the backend refuses to start without them, or with
-      # template values. No defaults here on purpose.
+      # Login, script tokens and the session key are set in the app (first-run
+      # screen, then Settings > Security). Set in .env they win over the app,
+      # which is the way back in if the password is forgotten. Empty here
+      # means "managed in the app"; no defaults on purpose.
       - SESSION_SECRET=${SESSION_SECRET:-}
       - APP_PASSWORD=${APP_PASSWORD:-}
       - API_TOKEN=${API_TOKEN:-}
