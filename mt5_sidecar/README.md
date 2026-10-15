@@ -51,7 +51,7 @@ the process environment take precedence over the file.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MT5_BRIDGE_SECRET` | none | Shared secret; the same value the app's connection uses |
+| `MT5_BRIDGE_SECRET` | none | Shared secret; the same value as the connection's Bridge secret in the app |
 | `MT5_SIDECAR_HOST` / `_PORT` | `127.0.0.1` / `9100` | Listen address |
 | `MT5_TERMINAL_PATH` | none | `terminal64.exe` to attach to, and launch if it is not running |
 | `MT5_PORTABLE` | `false` | Start the terminal in portable mode (one install folder per account) |
@@ -61,8 +61,12 @@ the process environment take precedence over the file.
 | `MT5_DEVIATION_POINTS` | `20` | Slippage accepted on market orders |
 | `MT5_ALLOW_REAL` | `false` | Allow orders on a real-money account |
 
+Pick the secret yourself, for example with `openssl rand -hex 32`. Nothing
+generates it for you, and it does not go in the app's `.env`. See
+[Connecting the app](#connecting-the-app).
+
 In the terminal: turn **Algo Trading** on (`/health` reports
-`trading_disabled` while it is off), and raise **Tools → Options → Charts →
+`trading_disabled` while it is off), and raise **Tools > Options > Charts >
 Max bars in chart** if you need long histories.
 
 ## Windows
@@ -130,6 +134,21 @@ journalctl -u mt5-sidecar@broker-a -f
 ```
 
 Each account gets its own prefix (`/var/lib/mt5/<name>`), env file and port.
+That env file is the sidecar's own configuration on the sidecar host. It
+has nothing to do with the app's `.env`.
+
+## Connecting the app
+
+Add the account in the app, on Settings > Connections, as an MT5 connection:
+
+- **Bridge URL**: the sidecar's address as the app host sees it, such as
+  `http://10.0.0.20:9100`.
+- **Bridge secret**: the same value as `MT5_BRIDGE_SECRET` on the sidecar.
+- **Server timezone** (optional): the trade server's time zone.
+
+The app tests the connection when you save it, and keeps checking it on a
+timer. The secret is stored encrypted in the app's database. For two
+accounts, add two connections, one per sidecar.
 
 ## Checking it
 
@@ -144,9 +163,11 @@ curl -H "$H" "http://SIDECAR:9100/quote?symbol=EURUSD"
 date -u +%s                                       # compare with the quote's time
 ```
 
-The quote's `time` should be within a few seconds of `date -u +%s` while the
-market is open. If it is off by whole hours, `MT5_SERVER_TZ` is wrong. Then
-follow steps 5 to 9 of `PAPER_DEPLOYMENT_RUNBOOK.md`.
+`$SECRET` is the value of `MT5_BRIDGE_SECRET`. The quote's `time` should be
+within a few seconds of `date -u +%s` while the market is open. If it is off
+by whole hours, `MT5_SERVER_TZ` is wrong. Then add the connection in the app
+(above) and follow
+[`PAPER_DEPLOYMENT_RUNBOOK.md`](../PAPER_DEPLOYMENT_RUNBOOK.md).
 
 ## Development
 

@@ -1,177 +1,184 @@
 # TradingApp Troubleshooting Guide
 
-Practical fixes for the most common deployment and runtime problems. All
-operational commands route through `./tradingapp.sh` — this repo does **not**
-ship `deploy-tradingapp.sh`, `fix-ib-connection.sh`, `fix-ib-config.sh` or
-`diagnose-connection.sh`; if you see those names in older notes, ignore
-them.
+Fixes for common deployment and runtime problems. Every operational command
+goes through `./tradingapp.sh`. Setup and day-to-day running are in
+[DEPLOYMENT.md](DEPLOYMENT.md).
 
-## Table of Contents
+## Contents
 
-1. [First-Response Commands](#first-response-commands)
-2. [Common Issues](#common-issues)
-3. [Service-Specific Issues](#service-specific-issues)
-4. [Network & CORS](#network--cors)
-5. [IB Gateway Connection](#ib-gateway-connection)
-6. [Docker & Containers](#docker--containers)
-7. [Database](#database)
-8. [Systematic trading & alerts](#systematic-trading--alerts)
-9. [Development Issues](#development-issues)
-10. [Performance](#performance)
-11. [Emergency Recovery](#emergency-recovery)
-12. [Reporting Issues](#reporting-issues)
+1. [First-response commands](#first-response-commands)
+2. [Backend says waiting for the database, migration failed or key mismatch](#backend-says-waiting-for-the-database-migration-failed-or-key-mismatch)
+3. [Common issues](#common-issues)
+4. [Brokers](#brokers)
+5. [Service-specific issues](#service-specific-issues)
+6. [Network and CORS](#network-and-cors)
+7. [Docker and containers](#docker-and-containers)
+8. [Database](#database)
+9. [Systematic trading and alerts](#systematic-trading-and-alerts)
+10. [Real-time streaming](#real-time-streaming)
+11. [Development issues](#development-issues)
+12. [Performance](#performance)
+13. [Emergency recovery](#emergency-recovery)
+14. [Reporting issues](#reporting-issues)
 
-## First-Response Commands
+## First-response commands
 
 ```bash
-# Quick status (containers + ports)
-./tradingapp.sh status
-
-# Comprehensive health check (frontend / backend / IB service / IB Gateway)
-./tradingapp.sh test
-
-# Deep diagnostics (Docker info, env, network, services)
-./tradingapp.sh diagnose
-
-# Auto-repair (regenerates .env if missing, rebuilds, retests)
-./tradingapp.sh fix
-
-# Logs
-./tradingapp.sh logs            # last 20 lines per service
+./tradingapp.sh status          # containers and ports
+./tradingapp.sh test            # do the services answer?
+./tradingapp.sh doctor          # Docker, .env, containers, database, schema, key, brokers
+./tradingapp.sh logs            # recent lines per service
 ./tradingapp.sh logs follow     # stream all services
-
-# Timestamp/timezone check (wrong-year bars, shifted hours)
-./tradingapp.sh verify-timestamps
+./tradingapp.sh fix             # stop, deploy and check again
 ```
 
-If you need an IB Gateway configuration walk-through with values from your
-current `.env`:
+`./tradingapp.sh install` is safe to re-run and repairs most host problems:
+it completes `.env`, removes obsolete lines and waits for the backend.
+
+## Backend says waiting for the database, migration failed or key mismatch
+
+The backend does nothing else until its database is reachable, migrated and
+opened by the encryption key. Until then `/api/health/ready` and every other
+API route answer 503 with the state, and the page shows it.
 
 ```bash
-./tradingapp.sh ib-help
+./tradingapp.sh doctor
+curl -s http://127.0.0.1:4000/api/health/ready | jq
+docker compose logs --tail=100 backend
 ```
 
-## Common Issues
+| State | What it means | What to do |
+|---|---|---|
+| `waiting_for_database` | The backend cannot reach PostgreSQL. It retries forever (every 1 to 30 seconds), so it recovers on its own once the database is up. | Bundled: `./tradingapp.sh status` and `./tradingapp.sh logs`. External: check the host, port, password and `POSTGRES_SSL` in `.env`, and that the app host can reach it (see [Database](#database)). |
+| `migrating` | The schema is being created or updated. | Wait. A first install or a large migration can take a few minutes. |
+| `migration_failed` | A migration failed. It does not retry by itself. The detail carries the database error. | Fix the cause (often permissions: the database user must own the database). Run `./tradingapp.sh migrate` to apply what is pending and see any error. Once it succeeds, run `./tradingapp.sh restart` so the backend leaves this state. |
+| `key_mismatch` | `SETTINGS_ENCRYPTION_KEY` in `.env` does not open the secrets in this database. | Put the saved key back in `.env` (from `./tradingapp.sh backup-key` on the old host) and run `./tradingapp.sh deploy`. If the key is lost, see below. |
+
+The key is lost and cannot be found:
+
+1. Run `./tradingapp.sh forget-secrets`.
+2. Type FORGET. It clears every secret sealed with the old key: broker
+   credentials, secret settings, the MFA secret and the session key.
+   Connections and settings stay.
+3. Sign in again and re-enter the secrets on the Settings page (Connections,
+   Alerts and safety, Security).
+
+Do not generate a new key on a database that already has secrets. `install`
+never replaces an existing key for that reason.
+
+Install waits up to 900 seconds for readiness and stops early on
+`migration_failed` or `key_mismatch`. On a slow host, raise the wait with
+`INSTALL_TIMEOUT=1800 ./tradingapp.sh install`.
+
+## Common issues
 
 ### "Don't run this script as root"
 
-**Symptoms:** `./tradingapp.sh setup` prints
-`Don't run this script as root. Use a user with sudo privileges.` and exits.
-Typical on a fresh LXC container or VPS where you are logged in as `root` and
-cloned into `/root/tradingapp`.
-
-**Fix:** create a sudo user, switch to it, and clone again in its home
-directory:
+`./tradingapp.sh` refuses to run as root. Create a sudo user and clone again
+in its home directory:
 
 ```bash
 # As root
-apt update && apt install -y sudo git
-adduser tradingapp                  # set a password when prompted
+apt update && apt install -y sudo git curl
+adduser tradingapp
 usermod -aG sudo tradingapp
-getent group docker && usermod -aG docker tradingapp   # if Docker is already installed
 su - tradingapp
 
 # As tradingapp
 cd ~
 git clone https://github.com/41agent41/tradingapp.git
-cd tradingapp && chmod +x tradingapp.sh
-./tradingapp.sh setup
+cd tradingapp
+./tradingapp.sh install
 ```
 
-The old `/root/tradingapp` checkout can be removed (`exit` back to root, then
-`rm -rf /root/tradingapp`). Don't work around the check with `sudo -u` from
-root or by editing the script: Docker group membership, file ownership of
-`.env` and the checkout all assume a normal user. See
-[DEPLOYMENT.md → User account](DEPLOYMENT.md#user-account-do-not-install-as-root).
+Remove the old `/root/tradingapp` checkout afterwards. Do not work around the
+check with `sudo -u` from root: Docker group membership and the ownership of
+`.env` assume a normal user. See
+[DEPLOYMENT.md](DEPLOYMENT.md#1-prepare-the-host).
 
-### "Docker is not running" or "docker group membership is not active" right after setup
+### "Docker is not running" or "docker group membership is not active"
 
-`setup` adds you to the `docker` group, but a shell keeps the groups it
-logged in with. `deploy` (and `start`, `stop`, `status`, `logs` and the
-other Docker commands) notice this and re-run themselves under
-`sg docker`, so no logout is needed. If you still see the message:
+Install adds you to the `docker` group. The Docker commands notice that the
+current shell does not have the group yet and re-run themselves under
+`sg docker`. If you still see the message:
 
 ```bash
 newgrp docker          # or log out and back in
 ./tradingapp.sh deploy
 ```
 
-"Docker is installed but not running" means the daemon itself is down:
+"Docker is installed but not running" means the daemon is down:
 `sudo systemctl start docker`.
-
-### Deploy no longer tests the IB Gateway
-
-Brokers are optional and are checked inside the app once it is running, so
-`deploy` and `test` never ping or port-test a broker, and a broker that is
-down does not fail a deploy. To check IB reachability by hand, see
-[IB Gateway Connection](#ib-gateway-connection).
 
 ### Services won't start
 
-**Symptoms:** Containers exit immediately or `docker compose up` reports
-port binding errors.
+Containers exit at once, or compose reports a port binding error.
 
 ```bash
-# Inspect port usage
 sudo ss -ltnp | grep -E ':(3000|4000|8000)'
-
-# Stop anything competing for the port (examples)
-sudo systemctl stop nginx
-sudo systemctl stop apache2
-
-# Clean restart
-./tradingapp.sh stop
-./tradingapp.sh clean
-./tradingapp.sh deploy
 ```
+
+Stop whatever holds the port, or move the app with `FRONTEND_PORT`,
+`BACKEND_PORT` or `BROKER_SERVICE_PORT` in `.env`, then
+`./tradingapp.sh deploy`.
 
 ### Backend refuses to start
 
-**Symptoms:** the backend container exits at once; its log has one or more
-`refusing to start: …` lines.
+The backend container exits at once and its log has `refusing to start: ...`
+lines.
 
 ```bash
 docker compose logs backend | grep -E 'refusing to start|\[startup\]'
 ```
 
-Each line names the key to fix:
+Each line names the key:
 
-- A secret that "is still a template or default value" or "is shorter than
-  N characters" (production only). Run `./tradingapp.sh config` to generate
-  missing secrets, or set fresh values by hand (`openssl rand -hex 32`).
-- **`BROKER_SERVICE_TOKEN …`**: it must be set, and the same value on the
-  backend and the broker service (both read `.env`).
+- **`... is still a template or default value`** or **`is shorter than N
+  characters`**: a secret pinned in `.env` is weak. Remove the line to manage
+  it in the app, or set a fresh value (`openssl rand -hex 32`).
+- **`BROKER_SERVICE_TOKEN ...`**: the internal token is missing or weak. It is
+  normally generated into the `internal_secrets` volume. If an old `.env` still
+  has a `BROKER_SERVICE_TOKEN` line, run `./tradingapp.sh install` to remove
+  it, or `./tradingapp.sh rotate-internal-secrets` to make a new one.
 - **`POSTGRES_PASSWORD is empty or a known default`**: change it in the
   database and in `.env` together.
-- **`KILL_SWITCH_ACTION=… is not an action`**: use `notify`, `halt` or
+- **`KILL_SWITCH_ACTION=... is not an action`**: use `notify`, `halt` or
   `flatten`.
-- **`TRADING_DAY_TIMEZONE=… is not a valid IANA time zone`**: use a name such
+- **`TRADING_DAY_TIMEZONE=... is not a valid IANA time zone`**: use a name such
   as `Europe/Athens`, not an offset.
-- **`PROP_RULES__<CONNECTION> …`**: the JSON is invalid or a rule is out of
-  range; the message says which field. The examples in `.env.example` parse.
+- **`PROP_RULES__<CONNECTION> ...`**: the JSON is invalid or a rule is out of
+  range. The message names the field.
 - **`HEARTBEAT_URL must be an http(s) URL`** (or `HEARTBEAT_FAIL_URL`).
-One look-alike does not stop the process: **`refusing to start: unsafe
-schema for multi-connection`** means more than one connection is configured
-on the old fills schema, so the backend runs with the strategy runner and
-fills poller switched off. Apply `backend/src/database/timescaledb-schema.sql`
-(see [Database](#database)) and restart.
 
-Warnings (`[startup] …` without "refusing") do not stop the backend but are
-worth acting on, for example auto-execution with no `HEARTBEAT_URL`.
+The last four are usually pinned in `.env`. The same settings can be managed
+on the Settings page instead, which checks them when you save.
+
+`refusing to start: unsafe schema for multi-connection` does not stop the
+process. It means more than one connection exists on an old fills schema, so
+the strategy runner and fills poller stay off. Run `./tradingapp.sh migrate`,
+then `./tradingapp.sh restart`.
+
+Lines with `[startup]` but no "refusing" are warnings. The backend runs, but
+they are worth acting on, for example auto-execution with no heartbeat URL.
 
 ### Browser shows a login page, or scripts get 401
 
-The browser signs in with the login password and holds a session cookie;
-nothing secret is built into the frontend. Scripts and `curl` send
-`Authorization: Bearer <token>` with an API token from Settings > Security
-(or `API_TOKEN` in `.env`). If `NEXT_PUBLIC_API_TOKEN` is still in `.env`,
-remove it, and rotate `API_TOKEN` if it ever held that value: it was readable
-in the web page.
+The browser signs in with the login password. Scripts send
+`Authorization: Bearer <token>` with an API token from Settings > Security.
+If `NEXT_PUBLIC_API_TOKEN` is still in `.env`, remove it, and rotate any API
+token that ever held that value: it was readable in the web page.
+
+The login page asks for a setup code when no password is set yet. Run
+`./tradingapp.sh setup-code` on the server.
+
+Forgot the password, or lost the authenticator: set `APP_PASSWORD` (or
+`ORDER_MFA_SECRET`) in `.env` and run `./tradingapp.sh deploy`. The `.env`
+value wins. Sign in, set a new one on the Security tab, then remove the line
+and deploy again.
 
 ### Frontend can't reach the backend
 
-**Symptoms:** Network errors in the browser console, blank charts, CORS
-warnings.
+Network errors in the browser console, or blank charts.
 
 ```bash
 curl -fs http://<server-ip>:3000/api/health      # through the frontend
@@ -181,99 +188,108 @@ docker compose logs frontend | grep -i 'backend unavailable'
 
 The browser calls the API on the frontend's own address, and the frontend
 forwards it to the backend. If the first command fails and the second works,
-the frontend cannot reach the backend: check `BACKEND_INTERNAL_URL` in
-`docker-compose.yml` matches `BACKEND_PORT`. A CORS error now only affects
-pages on another site calling the backend directly; list their origins in
-`CORS_ORIGINS`.
-
-### Market-data search returns nothing
-
-**Symptoms:** Empty results, "Failed to search for contracts" toasts.
-
-```bash
-curl -s -X POST http://<server-ip>:8000/contract/search \
-  -H 'Content-Type: application/json' \
-  -d '{"symbol":"AAPL","secType":"STK","exchange":"SMART"}'
-
-curl -fs http://<server-ip>:8000/health
-docker compose restart broker_service
-```
-
-If the IB service answers but the search is empty, the most likely causes
-are: IB Gateway not logged in, market-data subscription missing for the
-requested asset, or the server IP not in IB Gateway's trusted list.
+check `BACKEND_INTERNAL_URL` in `docker-compose.yml` matches `BACKEND_PORT`.
+If the backend answers 503, see
+[the readiness states](#backend-says-waiting-for-the-database-migration-failed-or-key-mismatch).
 
 ### Charts not loading
 
 ```bash
-./tradingapp.sh logs               # look for frontend errors
-docker compose build --no-cache frontend
-./tradingapp.sh restart
+./tradingapp.sh logs
+./tradingapp.sh redeploy
 ```
 
-### Wrong years / timezone in historical bars
+### Wrong years or shifted hours in bars
 
-If chart timestamps land on the wrong year (e.g. `57554`) or bars look
-shifted by several hours, run the dedicated timestamp/timezone check —
-it exercises the full chain (frontend → backend → IB service → IB
-Gateway) and the IB service's `/timezone-info` endpoint directly:
+Bars are stored in UTC. If times look shifted:
+
+1. Run `./tradingapp.sh doctor` and check the broker state.
+2. For IB, run the Gateway host in UTC. The broker service reads IB times as
+   `IB_TIMEZONE`, which defaults to UTC.
+3. Compare a bar from `/api/market-data/history` with the broker's own chart
+   for the same bar.
+
+## Brokers
+
+Brokers are added and tested in the app, under Settings > Connections. Deploy
+and `test` never test a broker, so a broker that is down never fails a
+deploy. Each connection has a Test button, and the app re-checks every
+`BROKER_PROBE_INTERVAL_SECONDS` (Settings > Schedulers and data).
+
+| Symptom | Cause and fix |
+|---|---|
+| Requests for a broker return 501 | No connection for it. Add one on Settings > Connections. |
+| Requests return 503 | The broker is unreachable from the app host. For Alpaca and OANDA, check outbound HTTPS. For MT5, check the sidecar host is up, the terminal is logged in and the app host can reach the sidecar URL. |
+| Connection shows "overridden" | A broker line in `.env` (for example `IB_HOST`) wins over the app. Delete it when you are ready and run `./tradingapp.sh deploy`. |
+| MT5 sidecar rejects requests | The secret on the connection does not match `MT5_BRIDGE_SECRET` in the sidecar's `sidecar.env`. |
+
+### IB Gateway
+
+Check reachability from the app host:
 
 ```bash
-./tradingapp.sh verify-timestamps
+nc -zv <gateway-ip> 4002
 ```
 
-This wraps `verify_timestamp_config.sh` (repo root); see its output for
-whether `IB_FORMAT_DATE` and `TZ=UTC` are set correctly on each hop.
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `Connection refused` | Gateway not running, or wrong port | Start IB Gateway. Check the port on the connection matches the gateway's socket port. |
+| Timeout or host unreachable | Firewall between the hosts | Open the port on both hosts and check routing. |
+| Connects, then disconnects | Client id already in use | Give the connection an unused client id. |
+| Connects but no market data | Missing subscription, or live data on a paper account | Subscribe in IB Account Management, or test with a symbol you have data for. |
 
-## Service-Specific Issues
+In IB Gateway or TWS, `File > Global Configuration > API > Settings`:
+
+- Enable ActiveX and Socket Clients.
+- Set the socket port (4002 paper, 4001 live).
+- Add the app host's IP to Trusted IPs.
+- Untick "Read-Only API" if you will place orders.
+- Apply, then restart IB Gateway.
+
+### Market-data search returns nothing
+
+If the connection tests fine but searches are empty, the likely causes are an
+IB Gateway that is not logged in, a missing market-data subscription, or the
+app host's IP missing from Trusted IPs.
+
+```bash
+docker compose logs --tail=100 broker_service
+docker compose restart broker_service
+```
+
+## Service-specific issues
 
 ### Frontend
 
 ```bash
-# Rebuild without cache
 docker compose build --no-cache frontend
-
-# Inspect Next.js build inside the container
-docker compose exec frontend npm run build
+./tradingapp.sh restart
 ```
-
-Environment variables that affect the build must start with `NEXT_PUBLIC_`
-and must be present **at build time** — change `.env`, then redeploy with
-`./tradingapp.sh redeploy`.
 
 ### Backend
 
 ```bash
-# Logs
 docker compose logs --tail=200 backend
-
-# Health
 curl -fs http://<server-ip>:4000/api/health
-
-# Database health (probes the external Postgres connection)
+curl -fs http://<server-ip>:4000/api/health/ready
 curl -fs http://<server-ip>:4000/api/database/health
 ```
 
-### IB Service
+### Broker service
 
 ```bash
 docker compose logs --tail=200 broker_service
-
-# Verify the IB Python client is installed
+curl -fs http://127.0.0.1:8000/health          # loopback only
 docker compose exec broker_service python -c "import ibapi, fastapi; print('ok')"
-
-# Force a rebuild (clears cached wheels)
 docker compose build --no-cache broker_service
 ```
 
-## Network & CORS
+## Network and CORS
 
-### Inter-container connectivity
+### Between containers
 
 ```bash
-docker compose exec backend curl -fs http://broker_service:8000/health
-docker compose exec backend ping -c1 broker_service
-docker network ls
+docker compose exec backend wget -qO- http://172.20.0.10:8000/health
 docker network inspect tradingapp_tradingapp-network
 ```
 
@@ -282,144 +298,120 @@ docker network inspect tradingapp_tradingapp-network
 ```bash
 sudo ufw status
 sudo ufw allow 3000
-sudo ufw allow 4000
-sudo ufw allow 8000
 ```
 
-When using a reverse proxy (see `DEPLOYMENT.md`) keep these ports closed
-externally and only allow `80/443`.
+Behind a reverse proxy, allow only 80 and 443. Never open 8000: the broker
+service is published on loopback only. See
+[DEPLOYMENT.md](DEPLOYMENT.md#reverse-proxy-tls-and-firewall).
 
-## IB Gateway Connection
+### CORS errors, or the wrong visitor address in logs
 
-### Reachability
+`CORS_ORIGINS` and `TRUST_PROXY` are on Settings > Network and apply at once.
+A CORS error only affects pages on another site calling the API from a
+browser; list their exact origins in `CORS_ORIGINS`. Behind nginx, set
+`TRUST_PROXY` to the address nginx reaches the frontend from (usually
+`172.20.0.1`) so login lockout and the settings history see the visitor's
+address.
 
-```bash
-ping -c1 $IB_HOST
-nc -zv $IB_HOST $IB_PORT
-./tradingapp.sh test
-```
-
-### Common causes
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `Connection refused` | IB Gateway not running, wrong port | Launch IB Gateway; confirm `IB_PORT` matches the gateway's socket port |
-| `Timeout` / `Host unreachable` | Firewall between server and gateway | Open the IB port on both hosts; verify routing |
-| Connects then disconnects | `IB_CLIENT_ID` already in use | Pick an unused client id (1, 2, 3, …) and update `.env` |
-| Connects but no market data | Missing market-data subscription, or live data on a paper account | Subscribe in IB Account Management, or test with a symbol you do have data for |
-
-After any change in `.env`, redeploy:
-
-```bash
-./tradingapp.sh redeploy
-```
-
-### IB Gateway API settings
-
-In IB Gateway / TWS: `File → Global Configuration → API → Settings`
-
-- ✅ Enable ActiveX and Socket Clients
-- ✅ Socket port matches `IB_PORT` in `.env`
-- ✅ Master API client ID matches `IB_CLIENT_ID`
-- ✅ Add the trading server's IP to **Trusted IPs**
-- ✅ Uncheck "Read-Only API" if you ever intend to place orders
-- 💾 Apply, OK, restart IB Gateway
-
-## Docker & Containers
+## Docker and containers
 
 ### Build failures
 
 ```bash
-docker system prune -a -f
+docker system prune -f
 docker compose build --no-cache
 sudo systemctl status docker
 ```
 
-### Unexpected exit codes
+### Exit codes
 
 | Code | Meaning |
 |---|---|
 | `0` | Clean exit |
-| `1` | General error — check the service's logs |
+| `1` | General error. Check the service's logs. |
 | `125` | Docker daemon problem |
 | `126` | Container command not executable |
 | `127` | Container command not found |
 
-```bash
-docker compose ps
-docker compose logs <service>
-docker compose exec <service> ps aux
-```
-
-### Volume / permissions
+### Permissions
 
 ```bash
-docker compose config           # confirm mounts
-sudo chown -R "$USER":"$USER" . # fix host permissions
-docker compose down -v          # rebuild volumes
-docker compose up -d
+sudo chown -R "$USER":"$USER" .
+chmod 600 .env
 ```
+
+Do not run `docker compose down -v` to "fix" volumes. It deletes the bundled
+database and the internal secrets. Use `./tradingapp.sh clean`, which keeps
+them.
 
 ## Database
 
-The Docker compose file does **not** provision Postgres — the backend
-connects to an external instance configured via `POSTGRES_*` env vars.
+The bundled database (the default) runs in the `postgres` container. An
+external one is set with `--external-db`. The backend creates and migrates
+the schema itself; there is nothing to apply by hand.
 
 ```bash
-# Reachability from inside the backend container
+./tradingapp.sh doctor           # database, schema and key as the backend sees them
+./tradingapp.sh migrate          # schema state; applies anything pending
+```
+
+Reachability of an external database from inside the backend container:
+
+```bash
 docker compose exec backend node -e "
   const net = require('net');
   const s = net.connect(parseInt(process.env.POSTGRES_PORT||'5432'), process.env.POSTGRES_HOST);
   s.on('connect', () => { console.log('reachable'); s.end(); });
   s.on('error', err => { console.error('unreachable:', err.message); process.exit(1); });
 "
-
-# Apply / re-apply the canonical TimescaleDB schema
-psql "host=$POSTGRES_HOST user=$POSTGRES_USER dbname=$POSTGRES_DB sslmode=require" \
-  -f backend/src/database/timescaledb-schema.sql
 ```
 
-If `/api/database/health` returns `unhealthy`:
+If `/api/database/health` reports unhealthy:
 
-1. Confirm credentials in `.env` match the actual database.
-2. Confirm `POSTGRES_SSL` matches what the server requires.
-3. Confirm the user owns the `contracts`, `candlestick_data`,
-   `tick_data`, `data_collection_sessions`, `data_collection_config`
-   and `data_quality_metrics` tables.
-4. Apply the schema as shown above.
+1. Check the credentials in `.env` match the database.
+2. Check `POSTGRES_SSL` matches what the server requires.
+3. Check the database user owns the database, so migrations can create and
+   alter tables.
+4. Run `./tradingapp.sh migrate` and read its output.
 
-## Systematic trading & alerts
+## Systematic trading and alerts
 
 The [paper runbook](PAPER_DEPLOYMENT_RUNBOOK.md) is the step-by-step check
-for all of this; the [Fleet panel](FEATURES.md#systematic-trading-rule-driven-auto-execution)
+for all of this. The [Fleet panel](FEATURES.md#systematic-trading-rule-driven-auto-execution)
 on `/systematic` shows each connection's limits and halt state.
 
-| Symptom | Cause / fix |
+| Symptom | Cause and fix |
 |---|---|
 | Entry signals recorded but no orders | `SYSTEMATIC_EXECUTION_ENABLED` is off (signal-only), or a limit is refusing entries. The signal's reason says which: "Daily loss limit reached", "prop daily loss buffer reached", "news blackout", the weekend cutoff, or the connection is halted. |
-| Run won't start or deploy: promotion gate | `GET /api/strategies/definitions/:id/promotion` lists what is missing (a backtest from the holdout date, enough trades, a paper record for live). `PROMOTION_PAPER_GATE=off` skips the paper check for smoke tests only. |
-| Entries refused with "news rule cannot be checked" | The backend could not fetch `NEWS_CALENDAR_URL` for `NEWS_CALENDAR_MAX_AGE_HOURS`. Check outbound HTTPS from the app host. |
-| Connection shows halted | A critical kill-switch trigger with `KILL_SWITCH_ACTION=halt` or `flatten`, or an operator flatten. Fix the cause (the alert names it), then **Resume entries** on its Fleet card. A halt survives restarts. |
-| "FLATTEN INCOMPLETE" alert | A close at market failed. Close the remaining position in the terminal by hand, then resume. |
-| Daily figures roll over at the wrong time | Set `TRADING_DAY_TIMEZONE` to the broker's (or prop firm's) server zone. |
+| Run won't start or deploy: promotion gate | `GET /api/strategies/definitions/:id/promotion` lists what is missing (a backtest from the holdout date, enough trades, a paper record for live). `PROMOTION_PAPER_GATE=off` skips the paper check, for smoke tests only. |
+| Entries refused with "news rule cannot be checked" | The backend could not fetch the news calendar for `NEWS_CALENDAR_MAX_AGE_HOURS`. Check outbound HTTPS from the app host. |
+| Connection shows halted | A critical kill-switch trigger with `KILL_SWITCH_ACTION` set to `halt` or `flatten`, or an operator flatten. Fix the cause (the alert names it), then **Resume entries** on its Fleet card. A halt survives restarts. |
+| "FLATTEN INCOMPLETE" alert | A close at market failed. Close the rest of the position in the terminal by hand, then resume. |
+| Daily figures roll over at the wrong time | Set `TRADING_DAY_TIMEZONE` (Settings > Risk) to the broker's or prop firm's server zone. |
 | Drawdown stays high after a withdrawal | Reset the high-water mark from the connection's Fleet card. |
-| No Telegram messages | Check `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (message the bot first, then read `getUpdates`). Repeats of the same alert are suppressed for `ALERT_DEDUPE_SECONDS`. |
-| Heartbeat monitor never turns green | `/api/health` shows `heartbeat.last_result`. Check `HEARTBEAT_URL` and outbound HTTPS from the app host. |
-| `connection breaker open — skipping its runs` | That connection's sidecar or terminal is not answering. Other connections keep running; it is retried after the cooldown. |
+| No Telegram messages | Check the bot token and chat id on Settings > Alerts and safety (message the bot first, then read `getUpdates`). Repeats of the same alert are suppressed for `ALERT_DEDUPE_SECONDS`. |
+| Heartbeat monitor never turns green | `/api/health` shows `heartbeat.last_result`. Check the heartbeat URL and outbound HTTPS from the app host. |
+| Log line `connection breaker open` | That connection's sidecar or terminal is not answering. Other connections keep running; it is retried after the cooldown. |
 
-## Development Issues
+## Real-time streaming
 
-### TypeScript errors
+The chart price stops updating but historical bars still load.
 
 ```bash
-cat frontend/tsconfig.json
-cd frontend && npm install --save-dev @types/node @types/react
-cd frontend && npx tsc --noEmit
+curl -fs http://<server-ip>:4000/api/health | jq .services.streaming
+curl -fs http://127.0.0.1:8000/market-data/stream/status | jq
 ```
 
-### Hot reload not working
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `services.streaming.connected: false` | Backend can't reach Redis | `docker compose logs backend redis`, then `docker compose restart redis`. |
+| Stream status `connected: true` but `subscriptions: []` | No browser has subscribed | Reload the chart page and check the browser console for Socket.IO errors. |
+| Ticks published, browser sees nothing | Session expired at the Socket.IO handshake | Sign in again. |
+| Want to skip streaming | | Turn off Live streaming on Settings > Schedulers and data. Charts fall back to one-off REST calls. |
 
-Local Next.js dev runs outside Docker:
+## Development issues
+
+Local development runs outside Docker:
 
 ```bash
 cd frontend && npm run dev
@@ -427,118 +419,71 @@ cd backend  && npm run dev
 cd broker_service && uvicorn main:app --reload --host 0.0.0.0
 ```
 
-Inside Docker the production images do not enable hot reload — make code
-changes and `./tradingapp.sh redeploy`.
-
-## Real-time streaming
-
-The chart price stops updating but historical bars still load. Walk
-through these in order:
-
-```bash
-# Is the bridge connected to Redis?
-curl -fs http://<server-ip>:4000/api/health | jq .services.streaming
-
-# Per-symbol refcounts and tick counters from the publisher side
-curl -fs http://<server-ip>:8000/market-data/stream/status | jq
-
-# Inspect what the publisher is actually sending (tail the channel)
-docker compose exec redis redis-cli psubscribe 'marketdata:tick:*'
-```
-
-Likely causes:
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `services.streaming.connected: false` | Backend can't reach Redis | `docker compose logs backend` for the error; confirm `REDIS_HOST` / `REDIS_PORT`; restart Redis |
-| Stream status `connected: true` but `subscriptions: []` | No client has called `subscribe-market-data` | Reload the chart page; check the browser console for Socket.IO errors |
-| Bridge connected, IB shows tick counts > 0, browser sees nothing | Auth header dropped at the Socket.IO handshake | Log in again (the session may have expired); check `CORS_ORIGINS` lists the exact browser origin |
-| Browser sees ticks but the chart's "current price" is zero | Symbol mismatch (frontend asks for `MSFT`, IB service is publishing `aapl`) | The hook upper-cases symbols automatically; check that the page passes the symbol you expect |
-| Want to skip the streaming pipeline | Set `STREAMING_ENABLED=false` on the backend and redeploy. The chart will fall back to REST seeding (no live updates). |
+Type check the frontend with `cd frontend && npx tsc --noEmit`. The Docker
+images do not hot-reload: change the code and run `./tradingapp.sh redeploy`.
 
 ## Performance
 
 ```bash
-# Live resource usage
 docker stats
-
-# Per-container snapshot
 docker compose top
 ```
 
-### Slow chart loading
+- Slow charts: shorten the period (for example `3M` instead of `1Y`) and
+  check the size of `/api/market-data/history` responses in the browser's
+  developer tools.
+- High CPU: look for tight error loops with
+  `docker compose logs | grep -i error`, then restart that service.
 
-- Reduce the period (e.g. `3M` instead of `1Y`) while debugging.
-- Check the response size from `/api/market-data/history` and confirm IB
-  isn't returning back-fill rate-limited data.
-- Inspect browser devtools for slow XHRs.
-
-### High CPU
-
-```bash
-docker compose logs | grep -i error    # tight error loops?
-docker compose restart <service>
-```
-
-## Emergency Recovery
+## Emergency recovery
 
 ```bash
-# Full reset and rebuild
-./tradingapp.sh stop
-./tradingapp.sh clean
-./tradingapp.sh deploy
-
-# Even more aggressive
-docker system prune -a -f
-docker volume prune -f
-./tradingapp.sh deploy
+./tradingapp.sh fix              # stop, deploy, check
+./tradingapp.sh clean            # remove containers and images; keeps the database
+./tradingapp.sh install          # rebuild and wait for ready
 ```
 
-### Configuration recovery
+`clean --include-database` also deletes the bundled database and the
+internal secrets, after you type DELETE. Take a backup first (see
+[DEPLOYMENT.md](DEPLOYMENT.md#database-backups)).
+
+If `.env` is lost or damaged, do not copy `.env.example`. Restore it from a
+backup, or recreate it:
+
+1. Run `./tradingapp.sh install --env-only`.
+2. Put back the original `POSTGRES_PASSWORD` and `SETTINGS_ENCRYPTION_KEY`.
+   Install generates new ones only when they are missing, and the existing
+   database needs the old values.
+3. Run `./tradingapp.sh install`.
+
+## Reporting issues
+
+Collect:
 
 ```bash
-cp .env.example .env
-$EDITOR .env
-./tradingapp.sh redeploy
+./tradingapp.sh doctor    > diagnostics.txt 2>&1
+docker compose version   >> diagnostics.txt
+uname -a                 >> diagnostics.txt
+df -h                    >> diagnostics.txt
+free -h                  >> diagnostics.txt
 ```
 
-## Reporting Issues
+Include the OS version, `diagnostics.txt`, the exact steps, and the
+`.env` key names only. Never paste its values.
 
-Before opening an issue, please collect:
-
-```bash
-./tradingapp.sh diagnose > diagnostics.txt 2>&1
-docker --version          >> diagnostics.txt
-docker compose version    >> diagnostics.txt
-uname -a                  >> diagnostics.txt
-df -h                     >> diagnostics.txt
-free -h                   >> diagnostics.txt
-```
-
-And include:
-
-- OS and kernel version
-- Output of `diagnostics.txt`
-- Exact reproduction steps
-- Anonymised `.env` (strip secrets!)
-
-### Quick reference: error messages
+### Error messages
 
 | Message | Most likely cause |
 |---|---|
-| `Connection refused` | Service not running, port closed, firewall |
-| `No such file or directory` | Mount path wrong, file missing in image |
-| `Permission denied` | Host file owned by root, or user not in `docker` group |
-| `Port already in use` | Another process bound to 3000 / 4000 / 8000 |
-| `Module not found` | `npm install` / `pip install` failed during build |
-| `CORS error` | `CORS_ORIGINS` does not include the frontend's origin |
-| `[startup] refusing to start: …` | Unsafe or unreadable setting; see [Backend refuses to start](#backend-refuses-to-start) |
-| `401` from the API | Not logged in, or the script's API token is wrong |
-| Login page asks for a setup code | No password is set yet. Run `./tradingapp.sh setup-code` on the server for the code |
-| Forgot the password or lost the authenticator | Set `APP_PASSWORD` (or `ORDER_MFA_SECRET`) in `.env` and `./tradingapp.sh redeploy`; the `.env` value wins, then reset it on the Security tab |
+| 503 with `waiting_for_database`, `migration_failed` or `key_mismatch` | See [the readiness states](#backend-says-waiting-for-the-database-migration-failed-or-key-mismatch). |
+| `Connection refused` | Service not running, port closed, or firewall |
+| `Permission denied` | Host file owned by root, or user not in the `docker` group |
+| `Port already in use` | Another process holds 3000, 4000 or 8000 |
+| `Module not found` | `npm install` or `pip install` failed during the build |
+| `CORS error` | `CORS_ORIGINS` on Settings > Network does not include the calling page's origin |
+| `[startup] refusing to start: ...` | See [Backend refuses to start](#backend-refuses-to-start). |
+| `401` from the API | Not signed in, or the script's API token is wrong |
+| Login page asks for a setup code | No password yet. Run `./tradingapp.sh setup-code`. |
 
----
-
-If the issue persists after `./tradingapp.sh fix`, see
-[`GAP_ANALYSIS.md`](GAP_ANALYSIS.md) for known limitations and planned
-improvements.
+Known limitations and planned work are in
+[GAP_ANALYSIS.md](docs/plans/GAP_ANALYSIS.md).

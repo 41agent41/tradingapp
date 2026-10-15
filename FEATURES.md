@@ -4,8 +4,15 @@ This document describes what TradingApp does **today** and what is on the
 **roadmap**. The two are kept in separate sections so the available
 capabilities never get conflated with aspirational plans.
 
+It is the home for feature detail. [`README.md`](README.md) is the operating
+guide: how to commission, upgrade and run the app. Most features are switched
+on and tuned on the app's Settings page (tabs: Connections, Trading, Risk,
+Alerts and safety, Strategies, Schedulers and data, Security, Network,
+History). Each setting is named below by its key, which the page shows. A
+key can still be pinned in `.env`, and then wins and shows as locked.
+
 > The full gap analysis and prioritised roadmap live in
-> [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md). The list below is a more accessible
+> [`GAP_ANALYSIS.md`](docs/plans/GAP_ANALYSIS.md). The list below is a more accessible
 > summary aimed at end users.
 
 ---
@@ -19,6 +26,7 @@ capabilities never get conflated with aspirational plans.
    - [Real-time streaming pipeline](#real-time-streaming-pipeline)
    - [Technical indicators](#technical-indicators)
    - [Backtesting](#backtesting)
+   - [Jesse algo framework (embedded)](#jesse-algo-framework-embedded)
    - [Historical data download](#historical-data-download)
    - [Automated data collection & retention](#automated-data-collection--retention)
    - [Fills, positions & realised P&L](#fills-positions--realised-pl)
@@ -32,6 +40,8 @@ capabilities never get conflated with aspirational plans.
    - [Authentication & CORS](#authentication--cors)
    - [Redis caching](#redis-caching)
    - [Interactive Brokers integration](#interactive-brokers-integration)
+   - [Performance](#performance)
+   - [Settings page and Getting started](#settings-page-and-getting-started)
    - [Deployment & operations](#deployment--operations)
    - [Testing, linting & CI](#testing-linting--ci)
 2. [Planned / Roadmap](#planned--roadmap)
@@ -49,7 +59,7 @@ contracts through Interactive Brokers:
 - **Security types** validated by the backend:
   `STK`, `OPT`, `FUT`, `CASH`, `BOND`, `CFD`, `CMDTY`, `CRYPTO`, `WAR`,
   `FUND`, `IND`, `BAG`.
-- **Exchanges**: any exchange IB exposes — including `SMART`, US exchanges
+- **Exchanges**: any exchange IB exposes, including `SMART`, US exchanges
   (`NYSE`, `NASDAQ`, …) and the Australian exchanges configured under the
   exchange-driven filters.
 - **Currency** filter (USD, AUD, EUR, etc., as IB returns them).
@@ -61,6 +71,17 @@ contracts through Interactive Brokers:
 Contracts returned are persisted into the `contracts` table so they don't
 have to be re-resolved.
 
+Other brokers search their own catalogues through the same panel and API
+(`source=oanda`, `mt5`, `alpaca`). Typical instruments:
+
+| Asset class | Examples | Where |
+|---|---|---|
+| Stocks and ETFs | MSFT, AAPL, SPY | IB, Alpaca |
+| Options | MSFT calls and puts | IB, Alpaca |
+| Futures | ES, NQ, YM | IB |
+| Forex | EUR.USD, GBP.USD | OANDA, MT5, IB |
+| CFDs | indices, metals | OANDA, MT5 |
+
 ### Historical charts
 
 A TradingView **lightweight-charts** candlestick chart with volume bars,
@@ -70,10 +91,10 @@ served from the `/historical` and per-symbol pages.
   `4hour`, `8hour`, `1day`.
 - **Periods shipped:** `1D`, `5D`, `1M`, `3M`, `6M`, `1Y`, plus a
   `CUSTOM` start/end date range.
-- **Data source:** backend reads from the external Postgres first
-  (`use_database=true`, the default) and falls back to live IB requests if
-  the rows aren't cached.
-- **Interactions:** zoom, pan, crosshair, auto-fit — all built into
+- **Data source:** backend reads from the database first
+  (`use_database=true`, the default) and falls back to a live request to the
+  broker if the rows aren't stored.
+- **Interactions:** zoom, pan, crosshair, auto-fit, all built into
   `lightweight-charts`.
 
 ### Real-time MSFT view
@@ -82,7 +103,7 @@ A dedicated `/msft` page implements the `.cursorrules` brief: an MSFT chart
 that you can switch across the 5m / 15m / 30m / 1h / 4h / 8h / 1d
 timeframes with up to 12 months of history.
 
-The page now consumes a true real-time tick stream: the IB service
+The page now consumes a true real-time tick stream: the broker service
 calls `reqMktData` on IB Gateway and publishes every tick to Redis,
 the backend forwards each tick into a Socket.IO room, and the page's
 `useRealtimeStream` hook updates the price display as ticks arrive.
@@ -113,9 +134,9 @@ IB Gateway ──reqMktData──▶ broker_service ──redis.publish──▶
 - **Refcounting & cleanup:** both sides refcount per symbol, so multiple
   browsers on one symbol create a single IB subscription; on disconnect the
   bridge `releaseSocket()`s and `cancelMktData`s anything that hits zero.
-- **Controls:** set `STREAMING_ENABLED=false` to disable the bridge (charts
+- **Controls:** turn `STREAMING_ENABLED` off (Settings > Schedulers and data) to disable the bridge (charts
   fall back to one-shot REST seeding). Health is reported under
-  `services.streaming` in `/api/health` and at the IB service's
+  `services.streaming` in `/api/health` and at the broker service's
   `GET /market-data/stream/status`.
 
 ### Technical indicators
@@ -128,7 +149,7 @@ IB Gateway ──reqMktData──▶ broker_service ──redis.publish──▶
 - **Volume:** OBV, Volume SMA, VWAP
 
 These are exposed via `GET /api/market-data/indicators` (backend) and
-`GET /indicators/available` (IB service). The frontend
+`GET /indicators/available` (broker service). The frontend
 `IndicatorSelector` and `TechnicalIndicatorsFilter` components let users
 toggle them on the chart.
 
@@ -142,11 +163,11 @@ sample strategies:
 
 Reachable two ways:
 
-plus every **saved rule-set** authored in the `/systematic` rule builder — see
+plus every **saved rule-set** authored in the `/systematic` rule builder. See
 [Systematic trading](#systematic-trading-rule-driven-auto-execution).
 
 - **API:** `GET /backtesting/strategies` and `POST /backtesting/run` on the
-  IB service, or the validating backend proxy at `GET /api/backtesting/strategies`
+  broker service, or the validating backend proxy at `GET /api/backtesting/strategies`
   and `POST /api/backtesting/run` (`backend/src/routes/backtesting.ts`).
   The run endpoint takes exactly one of `strategy`, `definition_id` or
   `rule_set`, plus optional `sec_type` / `exchange` / `currency` / `source`
@@ -164,10 +185,53 @@ feeds the panel; `GET /api/backtesting/runs/:id` returns the full record.
 A SHA-256 `params_hash` over the canonical input lets the UI deduplicate
 identical re-runs.
 
+### Jesse algo framework (embedded)
+
+A port of the [Jesse](https://jesse.trade) strategy model lives in
+`broker_service/jesse/`. Strategies are written the way Jesse users expect,
+and run against the app's own data, backtester and live runner. There is no
+separate Jesse install, database or exchange driver.
+
+- **Authoring:** subclass `jesse.strategies.Strategy` in
+  `broker_service/jesse_strategies/` and implement `should_long()`,
+  `should_short()`, `go_long()`, `go_short()` and `should_cancel_entry()`,
+  plus the optional hooks (`update_position()`, `before()`, `after()`,
+  `on_open_position()` and the rest). Order intent is declared through
+  `self.buy`, `self.sell`, `self.stop_loss` and `self.take_profit`.
+  `self.candles`, `self.get_candles(tf)`, `self.position`, `self.balance`,
+  `self.vars`, `self.hp` and `self.log()` behave as in Jesse.
+  `hyperparameters()` declares tunables.
+- **Indicators and utils:** `jesse.indicators as ta` (`ta.sma`, `ta.ema`,
+  `ta.rsi`, `ta.macd`, `ta.bollinger_bands`, `ta.atr`, `ta.adx`,
+  `ta.supertrend`, `ta.vwap` and more, all with `sequential=` and
+  `source_type=`), and `jesse.utils` (`size_to_qty`, `risk_to_qty`,
+  `crossed` and more). Indicator results are memoised per candle history, so
+  a bar-by-bar backtest stays linear in the number of bars.
+- **Backtest:** `BacktestEngine` hands these strategies to the Jesse
+  simulator. Results are mapped into the shared `BacktestResults` payload,
+  and the full Jesse metric set (`sharpe_ratio`, `sortino_ratio`,
+  `calmar_ratio`, `omega_ratio`, `expectancy`, `kelly_criterion` and more)
+  is returned under `results.metrics`. Higher-timeframe context from
+  `get_candles()` is resampled from the base bars without look-ahead.
+- **Live:** `/strategies/evaluate` accepts
+  `{"engine": "jesse", "strategy": "SMACrossover", "hyperparameters": {...}}`
+  as a rule-set. The evaluator replays the bars to rebuild strategy state,
+  syncs the simulated position to the venue's, and returns the same
+  `signal` / `stop_price` / `trail` contract the `StrategyRunner` already
+  executes. The code that was backtested is the code that runs live.
+- **Catalogue and UI:** strategies register as `jesse_<snake_case>`
+  (`jesse_sma_crossover`, `jesse_rsi_mean_reversion`,
+  `jesse_bollinger_breakout`, `jesse_msft_trend_follower`) and appear on
+  `/backtest` with an engine badge and an editable hyperparameter panel.
+  `GET /jesse/strategies`, `GET /jesse/indicators` and `POST /jesse/backtest`
+  (caller-supplied bars, no broker needed) on the broker service support
+  authoring.
+- **Tests:** `broker_service/tests/test_jesse_*.py`.
+
 ### Historical data download
 
-A `/download` page lets you pull historical OHLCV bars from IB and persist
-them into the external Postgres. See [`DOWNLOAD_FEATURE.md`](DOWNLOAD_FEATURE.md)
+A `/download` page lets you pull historical OHLCV bars from a broker and
+persist them into the database. See [`DOWNLOAD_FEATURE.md`](DOWNLOAD_FEATURE.md)
 for the full walk-through.
 
 - Choose market / exchange / security type / symbol / currency.
@@ -186,12 +250,16 @@ for the full walk-through.
 Beyond the manual *Download* page, the backend can keep the database
 topped up and pruned on its own:
 
-- **Scheduled backfill (opt-in).** With `BACKFILL_ENABLED=true`, the
-  backend periodically reads every enabled `auto_collect` row from the
-  `data_collection_config` table, fetches the recent `BACKFILL_PERIOD`
-  window from the IB service and upserts it — respecting each row's
-  `collection_interval_minutes` so slow-moving data isn't refetched every
-  tick. Progress is visible under `services.backfill` in `/api/health`.
+- **What to collect.** Settings > Schedulers and data has a table of
+  instruments and timeframes: which are fetched and stored, how often, and
+  how long they are kept. It writes the `data_collection_config` table
+  (API: `GET`/`POST /api/market-data/collection`,
+  `PUT`/`DELETE /api/market-data/collection/:id`). There is no SQL to run.
+- **Scheduled backfill (opt-in).** With `BACKFILL_ENABLED` on (same tab),
+  the backend fetches each enabled entry when its newest bar is older than
+  its collection interval, over the recent `BACKFILL_PERIOD` window, from
+  the entry's broker, and upserts it. Progress is visible under
+  `services.backfill` in `/api/health`.
 - **Data-quality metrics.** Every store path (manual upload, the
   `/history` cache-on-fetch and the backfill worker) records per-day
   total / missing / duplicate / invalid bar counts and a quality score
@@ -202,16 +270,16 @@ topped up and pruned on its own:
   actual number removed (per config). This complements TimescaleDB's own
   chunk-dropping retention policy.
 
-See [`DEPLOYMENT.md`](DEPLOYMENT.md#data-collection--retention-phase-5) for
-how to populate `data_collection_config` and tune the scheduler.
+The "Getting started" checklist on the Settings page counts this step done
+once at least one entry is collected and the backfill scheduler is on.
 
 ### Fills, positions & realised P&L
 
 `order_audit` records what the app *asked* a venue to trade. That is not the
-same as what traded — a partial fill, a rejection that lands after the
+same as what traded: a partial fill, a rejection that lands after the
 acknowledgement, and any trade placed outside the app all leave the two
-disagreeing, silently. With `EXECUTIONS_SYNC_ENABLED=true` the backend closes
-that gap:
+disagreeing, silently. With `EXECUTIONS_SYNC_ENABLED` on (Settings >
+Schedulers and data) the backend closes that gap:
 
 - **The fills feed.** `GET /account/executions` on the broker service reports
   each venue's own execution reports, normalised to one shape (IB via
@@ -221,13 +289,13 @@ that gap:
 - **Idempotent by design.** Every poll re-reads an overlapping window, because
   a fill can be reported late and IB delivers a fill's commission on a callback
   separate from the fill itself. Rows upsert on `(broker, exec_id)`, so
-  re-delivery updates rather than duplicates — and a late commission can fill a
+  re-delivery updates rather than duplicates, and a late commission can fill a
   blank without a later poll ever erasing one already recorded.
 - **Attribution.** Each fill is linked back through the venue's order id to its
   `order_audit` row and, from there, to the `strategy_run` that caused it. A
   fill polled before its order id was recorded is picked up by a re-link pass
   on the next tick. A fill with *no* order of ours behind it stays unattributed
-  on purpose — a manual trade is real exposure and belongs in the position.
+  on purpose: a manual trade is real exposure and belongs in the position.
 - **Realised P&L.** Computed on an average-cost basis with commissions
   subtracted at the time they are charged, handling partial exits and
   reversals through flat. Exposed at `GET /api/account/pnl`, and consumed by a
@@ -237,12 +305,12 @@ that gap:
   flat and a strategy could re-enter a position it already holds; submitted
   orders can't see a partial fill and drop a partially-filled-then-cancelled
   order entirely. Every fill counts whatever became of its order, and every
-  live order contributes only its *unfilled remainder* — so an order moves
+  live order contributes only its *unfilled remainder*, so an order moves
   from "in flight" to "filled" without ever being double-counted or briefly
   invisible. Scoped to a run it is that run's own ledger (a second run on the
   same symbol can't change its pyramiding); unscoped it is account exposure at
   the venue, which is what `ORDER_MAX_POSITION` caps.
-- **Reconciliation.** Per-run attribution can drift from the account — a manual
+- **Reconciliation.** Per-run attribution can drift from the account: a manual
   trade belongs to no run. `GET /api/account/reconciliation?broker=` compares
   the app's recorded net against the venue's reported positions per symbol and
   flags every mismatch, so the drift is visible rather than silent.
@@ -257,28 +325,28 @@ frontend. All of them are **venue-scoped**: pass `?broker=` (default `ib`)
 and each venue's payload is normalised to one shape, so the frontend never
 sees a raw broker response.
 
-- `GET /api/account/summary` — balances and key metrics. Also the source of
+- `GET /api/account/summary`: balances and key metrics. Also the source of
   the equity that `pct_equity` position sizing reads.
-- `GET /api/account/positions` — current positions.
-- `GET /api/account/orders` — orders still working at the venue.
-- `GET /api/account/all` — all of the above in one call.
-- `GET /api/account/connection` — IB connection state.
+- `GET /api/account/positions`: current positions.
+- `GET /api/account/orders`: orders still working at the venue.
+- `GET /api/account/all`: all of the above in one call.
+- `GET /api/account/connection`: IB connection state.
 
 Two further endpoints read the local **fills** store rather than the venue:
 
-- `GET /api/account/executions` — recorded fills, filterable by
+- `GET /api/account/executions`: recorded fills, filterable by
   `broker` / `symbol` / `account_mode` / `run_id`. Each row carries its
-  attribution (`order_audit_id`, `run_id`) — something a raw venue payload
+  attribution (`order_audit_id`, `run_id`), something a raw venue payload
   has no idea about. `?fresh=true` reads live from the venue instead.
-- `GET /api/account/pnl` — realised P&L and per-symbol breakdown over those
+- `GET /api/account/pnl`: realised P&L and per-symbol breakdown over those
   fills (defaults to today, the window a run's `max_daily_loss` is measured
   over).
-- `GET /api/account/reconciliation` — the app's recorded net position per
+- `GET /api/account/reconciliation`: the app's recorded net position per
   symbol against the venue's, with a `matched` flag per row.
 
 > These endpoints are read-only. The write path lives under `/api/orders/*`
-> and requires `LIVE_TRADING_ENABLED=true` for any live order — see the
-> *Order management* section below.
+> and requires `LIVE_TRADING_ENABLED` (Settings > Trading) for any live
+> order. See the *Order management* section below.
 
 ### Watchlist
 
@@ -288,26 +356,26 @@ broker/backtest workflow:
 - **Page:** `/watchlist`, plus a quick-access tile on the home page.
 - **Component:** [`Watchlist`](frontend/app/components/Watchlist.tsx),
   backed by the [`useWatchlist`](frontend/app/lib/useWatchlist.ts) hook.
-- **Backend:** `GET /api/watchlist` (list), `POST /api/watchlist` (add —
+- **Backend:** `GET /api/watchlist` (list), `POST /api/watchlist` (add,
   idempotent: adding an already-watched contract returns the existing
   row instead of erroring), `DELETE /api/watchlist/:id` (remove),
   persisted in the `watchlist_items` table
   ([`WatchlistRepository`](backend/src/services/watchlistRepository.ts)).
 - **Live quotes:** each row polls the existing (Redis-cached)
-  `GET /api/market-data/realtime` endpoint every 15s — no new IB traffic
+  `GET /api/market-data/realtime` endpoint every 15s, so no new IB traffic
   or streaming subscription is introduced by adding a symbol here.
 - Symbols are broker-scoped (`broker`/`sec_type`/`exchange`/`currency`,
   defaulting to `ib`/`STK`/`SMART`/`USD`) so the same ticker on two
   venues can be tracked as separate rows.
 - **Price alerts (in-app only):** set an "above" or "below" target price
   on any watchlist row. There is no server-side price watcher or external
-  delivery channel — the row already polls its quote every 15s, so the
+  delivery channel. The row already polls its quote every 15s, so the
   frontend itself compares each active alert against that quote and flips
   it to `triggered` the moment it crosses
   (`POST /api/alerts/:id/trigger`). Triggered alerts persist in the
-  `price_alerts` table (`PriceAlertRepository`) — mounted at
+  `price_alerts` table (`PriceAlertRepository`), mounted at
   `/api/alerts` (`GET`/`POST /api/alerts`, `POST /api/alerts/:id/trigger`,
-  `POST /api/alerts/:id/dismiss`, `DELETE /api/alerts/:id`) — so they
+  `POST /api/alerts/:id/dismiss`, `DELETE /api/alerts/:id`), so they
   survive a refresh and show up in a banner at the top of the page (with
   a **Dismiss** button) even in a second tab. A **Enable browser
   notifications** control (Web `Notification` API, permission-gated) adds
@@ -318,7 +386,7 @@ broker/backtest workflow:
 
 ### Order management
 
-Place, cancel and modify orders against IB Gateway from the UI:
+Place, cancel and modify orders against any connected broker from the UI:
 
 - **Components:** [`OrderTicket`](frontend/app/components/OrderTicket.tsx)
   and [`OrderBlotter`](frontend/app/components/OrderBlotter.tsx).
@@ -331,7 +399,7 @@ Place, cancel and modify orders against IB Gateway from the UI:
   `DELETE /api/orders/:id` (cancel), `PUT /api/orders/:id` (modify),
   `GET /api/orders/audit` (blotter feed), `GET /api/orders/config`
   (surface the gate + enums to the UI).
-- **Audit log:** every attempt — paper or live — writes a row to
+- **Audit log:** every attempt, paper or live, writes a row to
   `order_audit` with the input set, the IB order id once known, the
   `X-Request-Id`, status transitions and raw IB response. The
   backend refuses to forward an order if the audit insert fails.
@@ -342,9 +410,16 @@ Place, cancel and modify orders against IB Gateway from the UI:
   regardless. The Live option is also greyed out in the UI when the
   config probe reports the gate as off, and a confirmation modal
   protects every live submission.
+- **Live trading switch:** `LIVE_TRADING_ENABLED` on Settings > Trading.
+  Turning it on needs a trading token and order MFA set up on Settings >
+  Security, a token and code on the page, and typing LIVE. Turning trading
+  off or tightening a limit needs only the login. `LIVE_TRADING_ENABLED=false`
+  pinned in `.env` keeps it off regardless.
 - **Fat-finger caps:** `ORDER_MAX_QUANTITY` (default 100k) and
-  `ORDER_MAX_PRICE` (default $1M) are enforced by the validator.
-- **Position-limit guard (opt-in):** set `ORDER_MAX_POSITION` > 0 to cap
+  `ORDER_MAX_PRICE` (default $1M), on Settings > Risk, are enforced by the
+  validator.
+- **Position-limit guard (opt-in):** set `ORDER_MAX_POSITION` > 0 (Settings >
+  Risk) to cap
   the net signed exposure per `(broker, symbol, account_mode)` implied by the
   audit log. A create whose projected net would breach the cap is
   rejected with HTTP 422 before any broker call. Only orders within
@@ -355,8 +430,8 @@ Place, cancel and modify orders against IB Gateway from the UI:
 ### Systematic trading (rule-driven auto-execution)
 
 Evaluate declarative criteria against live bars and place orders
-automatically — paper-first, staged behind gates. See the
-[Systematic Trading roadmap](SYSTEMATIC_TRADING_ROADMAP.md) for the full design.
+automatically: paper-first, staged behind gates. See the
+[Systematic Trading roadmap](docs/plans/SYSTEMATIC_TRADING_ROADMAP.md) for the full design.
 
 - **Rule-driven strategies:** a strategy is one declarative rule-set (entry /
   exit conditions, sessions, multi-timeframe operands, position-aware fields,
@@ -366,7 +441,7 @@ automatically — paper-first, staged behind gates. See the
 - **Definitions & runs:** create/list rule-sets and start/stop runs through
   `/api/strategies/*`; each run pins a definition to a broker + `account_mode`.
 - **Backtest before you deploy:** a saved definition can be backtested without
-  being re-keyed — the `/backtest` strategy picker lists *Saved rule-sets*
+  being re-keyed: the `/backtest` strategy picker lists *Saved rule-sets*
   above the built-in strategies, and every row of the definitions list on
   `/systematic` has a **Backtest** link. Under the hood
   `POST /api/backtesting/run` accepts exactly one of `strategy` (a built-in
@@ -379,20 +454,20 @@ automatically — paper-first, staged behind gates. See the
   rather than always from IB.
 - **Position-aware rules are simulated, not just carried:** the backtest engine
   evaluates rules bar-by-bar against its running position and entry price, so
-  `position.size`, `position.avg_price` and `position.unrealized_pct` — stops,
-  pyramiding caps, scale-out thresholds — behave in a backtest the way they
+  `position.size`, `position.avg_price` and `position.unrealized_pct` (stops,
+  pyramiding caps, scale-out thresholds) behave in a backtest the way they
   behave live. Live, the average entry price comes from the venue's reported
   average cost, so an unrealised-loss stop actually fires.
 - **Sizing and partial exits are simulated too:** the backtester resolves the
   definition's `sizing` block (`fixed` / `notional` / `pct_equity`) instead of
   going all-in, and drives its `scale_out` rungs per bar against the open
-  trade — each rung firing at most once per trade. A strategy sized at 100
+  trade, each rung firing at most once per trade. A strategy sized at 100
   shares with "take half off at +3%" therefore produces the same trade
   sequence in backtest as it does live. A strategy that declares no sizing
   keeps the original all-in behaviour, so the built-in strategies are
   unchanged.
 - **Sizing is in the venue's own units.** "Buy 1" is one share on IB or Alpaca,
-  one unit of the base currency on OANDA, and one *lot* on MT5 — which at a
+  one unit of the base currency on OANDA, and one *lot* on MT5, which at a
   standard contract size controls 100,000 units. The venue supplies an
   instrument spec (`GET /instrument/spec`) with its `contract_size`,
   `size_step` and `min_size`; notional and percent-of-equity sizing divide by
@@ -400,7 +475,8 @@ automatically — paper-first, staged behind gates. See the
   was asked for) and are refused below the minimum. The live sizer and the
   backtester share these semantics, so an FX strategy backtests at the size it
   would actually trade.
-- **Live signal runner:** an opt-in backend timer (`SYSTEMATIC_ENABLED=true`)
+- **Live signal runner:** an opt-in backend timer (`SYSTEMATIC_ENABLED`,
+  Settings > Trading)
   evaluates every running strategy on its closed-bar cadence, persists each
   decision to `strategy_signals` (one per bar) and fans it out on the
   `strategy:<runId>` Socket.IO room. Only **closed** bars are evaluated: the
@@ -410,7 +486,9 @@ automatically — paper-first, staged behind gates. See the
   run or deploying needs a backtest of that definition from its holdout start
   date with enough trades, positive expectancy and a bounded drawdown; a live
   run additionally needs a paper run of the same definition lasting
-  `PROMOTION_MIN_PAPER_DAYS` with a comparable drawdown.
+  `PROMOTION_MIN_PAPER_DAYS` with a comparable drawdown. Both are on
+  Settings > Strategies, where `PROMOTION_PAPER_GATE=off` skips the paper
+  check for smoke tests (live is always gated).
   `GET /api/strategies/definitions/:id/promotion` explains what is missing.
 - **Staged deploy across accounts:** `POST /api/strategies/definitions/:id/deploy`
   starts one run per target connection as a group; the canary leg must
@@ -422,9 +500,10 @@ automatically — paper-first, staged behind gates. See the
   venue fills without its stop is closed at once. Trailing stops move only in
   the protective direction, at most once per bar. `risk_pct` sizing uses the
   venue's tick value and refuses rather than approximating when it is missing.
-- **Gated auto-execution:** with `SYSTEMATIC_EXECUTION_ENABLED=true` an
+- **Gated auto-execution:** with `SYSTEMATIC_EXECUTION_ENABLED` on (Settings >
+  Trading) an
   actionable signal is turned into an order through the **same** audited
-  `/api/orders` path — inheriting the live gate, `order_audit`, the fat-finger
+  `/api/orders` path, inheriting the live gate, `order_audit`, the fat-finger
   caps and the position-limit guard. Engine-level guards on top: a per-run kill
   switch, per-run `max_orders_per_day` + a global `SYSTEMATIC_MAX_ORDERS_PER_DAY`
   backstop, a per-run `max_daily_loss` measured against **realised P&L from
@@ -433,9 +512,9 @@ automatically — paper-first, staged behind gates. See the
   gates default **off**; live (vs paper) auto-trading additionally needs
   `LIVE_TRADING_ENABLED`.
 
-  `max_daily_loss` gates **entries only** — blocking an exit would strand the
+  `max_daily_loss` gates **entries only**: blocking an exit would strand the
   position in the trade that caused the loss. It needs the fills feed
-  (`EXECUTIONS_SYNC_ENABLED=true`); with the feed off, a declared cap fails
+  (`EXECUTIONS_SYNC_ENABLED`); with the feed off, a declared cap fails
   *closed* rather than trading against a limit it cannot evaluate.
 - **Monitoring UI (`/systematic`):** a rule builder, a definitions list (start a
   run), a run dashboard (status, last-eval, per-run **Stop**) and a per-run
@@ -452,19 +531,22 @@ automatically — paper-first, staged behind gates. See the
 
 Account-level controls that sit on top of each run's own caps. All of them
 stop **new entries** only: exits and stop management keep running, so a limit
-never strands an open position. Configuration lives in
-[`.env.example`](.env.example); the
+never strands an open position. The fleet-wide settings are on Settings >
+Risk and Settings > Alerts and safety. Per-connection limits and prop-firm
+rules are on each connection's own form under Settings > Connections. The
 [paper runbook](PAPER_DEPLOYMENT_RUNBOOK.md) rehearses each one.
 
 - **Connection limits:** `CONNECTION_MAX_ORDERS_PER_DAY` and
   `CONNECTION_MAX_DAILY_LOSS` (realised P&L from fills), plus
   `CONNECTION_MAX_DAILY_EQUITY_LOSS` and `CONNECTION_MAX_DRAWDOWN`, which
   measure equity (balance plus floating P&L) against the trading day's start
-  and the high-water mark. Each can be overridden per connection with a
-  `__<CONNECTION>` suffix. `TRADING_DAY_TIMEZONE` sets when the day rolls
-  over; `PORTFOLIO_MAX_DAILY_LOSS` is a fleet-wide backstop.
-- **Prop-firm rules:** `PROP_RULES__<CONNECTION>` holds a firm's rules as
-  JSON. Daily loss (balance, equity or the higher basis) and max loss (static
+  and the high-water mark. These are fleet-wide caps on Settings > Risk.
+  Each connection can set its own on its form. Order of precedence: a
+  `CONNECTION_MAX_*__<CONNECTION>` line in `.env`, then the connection's own
+  limit, then the fleet-wide cap. `TRADING_DAY_TIMEZONE` sets when the day
+  rolls over; `PORTFOLIO_MAX_DAILY_LOSS` is a fleet-wide backstop.
+- **Prop-firm rules:** a firm's rules as JSON, entered on the connection's
+  form (a `PROP_RULES__<CONNECTION>` line in `.env` still wins). Daily loss (balance, equity or the higher basis) and max loss (static
   or trailing) are computed the firm's way, and entries stop `buffer_pct`
   short of the firm's own limit. Optional schedule rules: a `news_blackout`
   around high-impact releases for either currency of the pair (from
@@ -479,7 +561,8 @@ never strands an open position. Configuration lives in
   `flatten` (halt, then close every position on the connection at market).
   **Close all positions** on a Fleet card does the flatten by hand under any
   setting.
-- **Telegram alerts:** set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+- **Telegram alerts:** set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` on
+  Settings > Alerts and safety.
   Alerts are deduplicated (`ALERT_DEDUPE_SECONDS`), rate-limited
   (`ALERT_MAX_PER_HOUR`) and send a resolved message when the condition
   clears.
@@ -496,8 +579,23 @@ never strands an open position. Configuration lives in
 
 ### Multi-broker: Interactive Brokers, MetaTrader (MT5), Alpaca, OANDA
 
-The IB Gateway is no longer hard-wired — a venue-agnostic adapter seam lets
-other brokers plug in without touching the routes.
+A venue-agnostic adapter seam lets each broker plug in without touching the
+routes. [`broker_service/ADDING_A_BROKER.md`](broker_service/ADDING_A_BROKER.md)
+describes adding another.
+
+- **Connections in the app:** brokers are added on Settings > Connections,
+  one connection per account, in priority order OANDA, then MT5, then IB,
+  then Alpaca (the order can be changed there). Each connection has a name,
+  a mode (`paper` or `live`), a currency, the broker's own fields and
+  optional risk limits and prop-firm rules. Credentials are stored
+  encrypted in the database. Each connection is tested when saved, and the
+  app keeps checking it on a timer (`BROKER_PROBE_INTERVAL_SECONDS` on
+  Settings > Schedulers and data; 0 pauses it). The last result shows on the
+  connection and in the header health badge. A broker that is down never
+  stops the app.
+- **How they reach the broker service:** the backend sends the full set,
+  secrets decrypted, to the broker service (`PUT /connections/managed`)
+  after every change and whenever the broker service restarts.
 
 - **Adapter registry** ([`broker_service/adapters.py`](broker_service/adapters.py)):
   `MarketDataAdapter` / `BrokerAdapter` protocols keyed by provider. A request's
@@ -505,7 +603,7 @@ other brokers plug in without touching the routes.
   defaulting to `ib`; an unknown provider → 400, a recognised-but-unconfigured
   one → 501. `source=ib` / `broker=ib` behaviour is byte-for-byte unchanged.
 - **Broker-scoped instruments:** contract catalogues, positions and the
-  net-exposure cap are keyed per broker — no cross-broker symbol reconciliation,
+  net-exposure cap are keyed per broker: no cross-broker symbol reconciliation,
   and a strategy run targets exactly one venue.
 - **MetaTrader (MT5) via sidecar:** `MetaTrader5` is Windows-only, so MT5 runs as
   a small HTTP service next to the terminal, on Windows or on Linux under Wine.
@@ -513,30 +611,25 @@ other brokers plug in without touching the routes.
   the shared secret, attaches the stop with the entry and echoes back the stop
   the terminal recorded. The Linux
   [`MT5Adapter`](broker_service/mt5_adapter.py) is a thin client pointed at
-  `MT5_BRIDGE_URL`, implementing both **data** (search / bars / quotes / ticks,
-  normalised to the app's shapes) and **execution** (place / cancel / modify /
-  positions / account, with the same validation + live gate as IB). When
-  `MT5_BRIDGE_URL` is set, `source=mt5` / `broker=mt5` become available;
-  otherwise MT5 is a recognised-but-unavailable provider. When
-  `MT5_BRIDGE_SECRET` is also set, every request to the sidecar carries an
-  `X-MT5-Bridge-Secret` header — the sidecar itself must enforce it, since the
-  bridge contract otherwise has no auth story; `broker_service` logs a startup
-  warning if the URL is configured without the secret.
-- **Several accounts per platform:** the `BROKER_CONNECTIONS` manifest (or
-  `BROKER_CONNECTIONS_FILE`) lists each account with its venue, currency and
-  `account_mode`. The mode is binding: a live order to a paper connection is
-  refused with a 409. Requests address a connection as
-  `broker=mt5&account=<id>`, and canonical symbols resolve to each broker's
-  own (`symbol_map` overrides). An MT5 connection can read its balance and
-  positions from an OANDA account (`account_info_from`) while orders still go
-  through the sidecar.
-- **Alpaca and OANDA — cloud REST, no sidecar host.** Unlike MT5, both are
+  the connection's Bridge URL, implementing both **data** (search, bars,
+  quotes, ticks, normalised to the app's shapes) and **execution** (place,
+  cancel, modify, positions, account, with the same validation and live gate
+  as IB). Every request carries the connection's Bridge secret in an
+  `X-MT5-Bridge-Secret` header, and the sidecar refuses requests without it.
+  The operator picks the secret and sets the same value on the sidecar
+  (`MT5_BRIDGE_SECRET`) and in the app's connection form.
+- **Several accounts per platform:** add one connection per account. Its
+  mode is binding: a live order to a paper connection is refused with a 409.
+  Requests address a connection as `broker=mt5&account=<name>`, and canonical
+  symbols resolve to each broker's own. An MT5 connection defined in a `.env` manifest can
+  read its balance and positions from an OANDA account (`account_info_from`)
+  while orders still go through the sidecar.
+- **Alpaca and OANDA: cloud REST, no sidecar host.** Unlike MT5, both are
   reachable directly over HTTPS, so
   [`AlpacaAdapter`](broker_service/alpaca_adapter.py) and
   [`OANDAAdapter`](broker_service/oanda_adapter.py) run in-process in
-  `broker_service` — gated by API credentials
-  (`ALPACA_API_KEY`/`ALPACA_API_SECRET`, `OANDA_API_TOKEN`/`OANDA_ACCOUNT_ID`)
-  instead of a bridge URL. Both implement the same data + execution surface as
+  `broker_service`. Their connections take API credentials (Alpaca: API key
+  and secret; OANDA: account id and token) instead of a bridge URL. Both implement the same data + execution surface as
   MT5. OANDA has a native 8-hour candle (unlike MT5) so every app timeframe
   maps cleanly; `STP_LMT` orders aren't representable on OANDA and are
   rejected with a 400. OANDA entries carry their stop loss and take profit
@@ -544,12 +637,20 @@ other brokers plug in without touching the routes.
 - **Provider health:** the broker service exposes `/providers` (and folds
   provider status into `/health`) so operators can see which venues are
   registered.
+- **`.env` connections (legacy):** a `BROKER_CONNECTIONS` manifest or the old
+  single-account variables (`IB_HOST`, `MT5_BRIDGE_URL`, `OANDA_API_TOKEN`,
+  `ALPACA_API_KEY` and so on) in `.env` still define connections, and for
+  that broker they win over the app's (shown as overridden). Only a
+  manifest can carry a per-connection `symbol_map` or `account_info_from`
+  today. `./tradingapp.sh install` keeps such lines and reports them. New
+  installs should not use them.
 
 ### REST & WebSocket API
 
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/api/health` | GET | Backend, DB, broker service health summary |
+| `/api/health/ready` | GET | 200 once the database is reachable, migrated and opened by the encryption key; otherwise 503 with the reason |
 | `/api/database/health` | GET | Postgres connection probe |
 | `/api/market-data/search` | POST | Contract search |
 | `/api/market-data/search/advanced` | POST | Contract search with derivatives filters |
@@ -559,9 +660,14 @@ other brokers plug in without touching the routes.
 | `/api/market-data/upload` | POST | Persist downloaded bars to Postgres |
 | `/api/market-data/database/stats` | GET | Per-symbol storage statistics |
 | `/api/market-data/database/clean` | POST | Run retention cleanup |
-| `/api/settings` | GET | Allow-listed, non-credential environment variables (see [Authentication & CORS](#authentication--cors)) |
+| `/api/settings` | GET | Every Settings-page setting, its value (secrets only as set or not) and where it comes from |
+| `/api/settings/:key` | PUT·DELETE | Store a setting, or return it to its default (audited) |
+| `/api/settings/checklist` | GET | The Getting started checklist |
+| `/api/brokers/connections` | GET·POST | List / add broker connections |
+| `/api/brokers/connections/:id` | PUT·DELETE | Edit / remove a connection |
+| `/api/market-data/collection` | GET·POST | Data collection entries (`data_collection_config`) |
 | `/api/backtesting/strategies` | GET | Available backtest strategies (cached 1h) |
-| `/api/backtesting/run` | POST | Run a backtest — by `strategy` key, saved `definition_id` or inline `rule_set` |
+| `/api/backtesting/run` | POST | Run a backtest: by `strategy` key, saved `definition_id` or inline `rule_set` |
 | `/api/backtesting/runs` | GET | List persisted runs (filterable, paginated) |
 | `/api/backtesting/runs/:id` | GET | Full record for a persisted run |
 | `/api/export/parquet` | POST | Convert `{ columns, rows }` to a Parquet download |
@@ -578,7 +684,8 @@ other brokers plug in without touching the routes.
 | `/metrics` | GET | Prometheus scrape endpoint (backend) |
 
 Market-data reads (`/api/market-data/*`) and orders accept a `source=` /
-`broker=` parameter (`ib` \| `mt5`, default `ib`) selecting the venue.
+`broker=` parameter (`ib`, `mt5`, `oanda`, `alpaca`) selecting the venue,
+plus `account=` to pick a connection.
 
 Socket.IO is mounted on the backend at the default path and its handshake
 is authenticated (see [Authentication & CORS](#authentication--cors)).
@@ -590,7 +697,7 @@ tick out to that room. The full pipeline is described under
 
 All endpoints return JSON. Errors carry an `error`, `message` and
 `timestamp` payload. Common HTTP statuses are `400` for validation, `503`
-when the IB service is unreachable, `504` on IB timeouts.
+when the broker service is unreachable, `504` on IB timeouts.
 
 ### Authentication & CORS
 
@@ -607,12 +714,17 @@ when the IB service is unreachable, `504` on IB timeouts.
   from `auth.token`, the `Authorization` header or a `?token=` query
   parameter.
 - **Broker service lock-down**: the broker service listens on loopback only
-  and rejects any call without `BROKER_SERVICE_TOKEN`, which the backend
-  attaches.
-- **Trader role and order MFA**: `TRADING_TOKENS` requires an
-  `X-Trading-Token` on order-mutating requests, and `ORDER_MFA_SECRET`
-  requires a TOTP `X-MFA-Code`. Both are required when
-  `LIVE_TRADING_ENABLED=true`.
+  and rejects any call without the broker service token, which the backend
+  attaches. The token and the Redis password are not in `.env`: a one-shot
+  `secrets` service generates them into the `internal_secrets` Docker volume
+  on first start, and `./tradingapp.sh rotate-internal-secrets` replaces
+  them.
+- **Trader role and order MFA**: once a trading token exists (made on
+  Settings > Security, or `TRADING_TOKENS` in `.env`), order-mutating
+  requests need an `X-Trading-Token`. Once order MFA is enrolled (Settings >
+  Security, or `ORDER_MFA_SECRET`), they need a TOTP `X-MFA-Code`. Both are
+  required for live trading, and for changing a setting that loosens a
+  gate or raises a cap.
 - **Startup checks**: the backend refuses to start on an unsafe
   configuration and logs the key at fault: in production, an open API,
   template secrets or a default database password; always, live trading
@@ -620,13 +732,16 @@ when the IB service is unreachable, `504` on IB timeouts.
   (`KILL_SWITCH_ACTION`, `TRADING_DAY_TIMEZONE`, `PROP_RULES__*`, heartbeat
   URLs).
 - **Strict CORS**: origins are validated against `CORS_ORIGINS` instead of a
-  blanket wildcard.
-- **Whitelisted `/api/settings`**: only allow-listed, non-credential
-  environment variables are returned, with deny patterns that strip
-  anything matching `*_SECRET`, `*_PASSWORD`, `*_TOKEN`, `*_KEY`, etc.
+  blanket wildcard. It and `TRUST_PROXY` are on Settings > Network; behind
+  nginx, set the public origin there.
+- **Settings API**: `/api/settings` lists only registered settings. Secret
+  values are never returned, only whether they are set, and they are stored
+  encrypted with `SETTINGS_ENCRYPTION_KEY`. Bootstrap values (database,
+  encryption key, internal secrets, ports) are not registered, so they are
+  neither listed nor writable. Every change is recorded (Settings > History).
 - **Dev escape hatch**: outside production, with no login password and no
   API token anywhere (or `CORS_ORIGINS=*`), the backend prints a loud startup
-  warning and accepts unauthenticated / any-origin requests — convenient
+  warning and accepts unauthenticated / any-origin requests. Convenient
   locally, never for production. In production the same state shows the
   first-run setup screen instead.
 
@@ -635,37 +750,86 @@ when the IB service is unreachable, `504` on IB timeouts.
 The bundled Redis container is wired into the backend
 (`backend/src/services/cache.ts`) as a read-through cache:
 
-- `/api/market-data/realtime` — `CACHE_TTL_REALTIME` seconds (default `2`).
-- `/api/market-data/indicators/available` — long-lived, refreshed through
+- `/api/market-data/realtime`: `CACHE_TTL_REALTIME` seconds (default `2`).
+- `/api/market-data/indicators/available`: long-lived, refreshed through
   the cache wrapper.
 
-A Redis outage degrades to a cache miss — every endpoint keeps working.
-Cache health surfaces in `/api/health` under `services.cache`. Set
-`REDIS_ENABLED=false` to bypass caching entirely.
+A Redis outage degrades to a cache miss: every endpoint keeps working.
+Cache health surfaces in `/api/health` under `services.cache`. Turn
+`REDIS_ENABLED` off (Settings > Schedulers and data) to bypass caching entirely.
 
 ### Interactive Brokers integration
 
 - Built on the official Interactive Brokers TWS API (`ibapi`).
-- A **single synchronous IB client** keeps the integration simple and
-  reliable — this was an explicit simplification (see `README.md`).
+- A **single synchronous IB client** keeps the integration simple.
 - Auto-reconnect logic in `broker_service/main.py` re-establishes the socket if
   IB Gateway drops the connection.
-- Configurable IB host, port, client id and timeout via `.env`.
-- UTC timezone enforcement throughout the IB service so timestamps round-
+- IB is added as a connection on Settings > Connections (Gateway host, Port,
+  Client ID).
+- UTC timezone enforcement throughout the broker service so timestamps round-
   trip cleanly to lightweight-charts.
+
+### Performance
+
+- **Database-first reads.** Chart history reads stored bars first and asks
+  the broker only for what is missing, so repeat loads are fast and avoid
+  broker rate limits.
+- **TimescaleDB.** Bars and ticks live in hypertables (time-chunked), with a
+  daily continuous aggregate and retention policies that drop old chunks.
+- **Redis cache.** The busiest read endpoints go through a read-through
+  cache that degrades to a miss when Redis is down.
+- **Streaming, not polling.** Live ticks are pushed over Socket.IO, with one
+  broker subscription per symbol however many browsers watch it.
+- **Linear backtests.** Jesse indicator results are memoised per candle
+  history, so a bar-by-bar backtest stays linear in the number of bars.
+
+### Settings page and Getting started
+
+- **Settings page** (`/settings`): every runtime setting, grouped into
+  tabs: Connections, Trading, Risk, Alerts and safety, Strategies,
+  Schedulers and data, Security, Network, History. Each shows its key, its
+  value and where the value comes from. Changes are stored in the database
+  and audited. A setting that loosens a gate or raises a cap needs the
+  trader role and MFA, like placing an order; the safer direction does
+  not.
+- **Pinning in `.env`:** any setting can still be set in `.env` by its key.
+  It then wins and shows as locked. `./tradingapp.sh settings-import` moves
+  such lines into the app.
+- **Getting started checklist:** at the top of the Settings page, computed
+  from state: login password set, a trading token and order MFA, a broker
+  connection added, instruments chosen for data collection with the
+  backfill scheduler on, and alerts (Telegram and the heartbeat URL).
+- **First sign-in:** with no login password set, the backend prints a
+  one-time setup code at startup (`./tradingapp.sh setup-code` shows it).
+  The first visit asks for it, then for the password. `APP_PASSWORD` in
+  `.env` is the way back in if the password is lost.
 
 ### Deployment & operations
 
-- Docker Compose stack: `frontend`, `backend`, `broker_service`, `redis`.
-- One unified management script: `./tradingapp.sh`
-  (`setup`, `deploy`, `redeploy`, `config`, `env`, `start`, `stop`,
-  `restart`, `status`, `logs`, `test`, `diagnose`, `fix`, `ib-help`,
-  `clean`).
+- Docker Compose stack: `frontend`, `backend`, `broker_service`, `redis`,
+  and by default a bundled TimescaleDB (`docker-compose.db.yml`, data in
+  the `tradingapp_pgdata` volume). An external PostgreSQL with TimescaleDB
+  works too (`--external-db`).
+- **One command to commission:** `./tradingapp.sh install` installs Docker if
+  needed, writes `.env` (seven keys: the `POSTGRES_*` connection and
+  `SETTINGS_ENCRYPTION_KEY`), builds and starts the stack, waits until the
+  backend is ready, and prints the address and setup code. Re-running it is
+  how you upgrade or repair. It never replaces an existing password or key.
+- **The database comes first:** the backend waits for its database, applies
+  the schema and migrations, checks the encryption key, and only then starts
+  everything else. Until then every API route answers 503 with the reason
+  (`waiting_for_database`, `migrating`, `migration_failed`, `key_mismatch`)
+  and the page shows it. See
+  [`backend/src/database/README.md`](backend/src/database/README.md).
+- **Management script** `./tradingapp.sh`: `install`; `deploy`, `redeploy`,
+  `start`, `stop`, `restart`, `status`, `logs [follow]`, `setup-code`;
+  `doctor`, `test`, `migrate`, `settings-import`, `backup-key`,
+  `rotate-internal-secrets`, `forget-secrets`, `fix`, and
+  `clean [--include-database]`.
+- **Unattended install:** `install/install.sh` with an answers file. See
+  [`AGENT_INSTALL_RUNBOOK.md`](AGENT_INSTALL_RUNBOOK.md).
 - The MT5 sidecar ([`mt5_sidecar/`](mt5_sidecar/README.md)) with a Task
   Scheduler launcher for Windows and a systemd unit for Linux under Wine.
-- Optional bundled TimescaleDB via the `--with-db` flag (layers
-  `docker-compose.db.yml` and applies `timescaledb-schema.sql` on first
-  run). Without it, the backend points at an external Postgres.
 - See [`DEPLOYMENT.md`](DEPLOYMENT.md) for the full reference.
 
 ### Testing, linting & CI
@@ -673,7 +837,7 @@ Cache health surfaces in `/api/health` under `services.cache`. Set
 - **Backend:** ESLint + Prettier + Jest/Supertest
   (`npm run lint` / `format:check` / `type-check` / `test`).
 - **Frontend:** ESLint + Prettier + Vitest (`apiFetch` test suite).
-- **IB service:** Ruff + Black + pytest (indicator math + streaming tests
+- **Broker service:** Ruff + Black + pytest (indicator math + streaming tests
   under `broker_service/tests/`).
 - **MT5 sidecar:** Ruff + Black + pytest against a fake `MetaTrader5`
   module, plus a contract test running `MT5Adapter` against the sidecar.
@@ -691,11 +855,10 @@ Cache health surfaces in `/api/health` under `services.cache`. Set
 
 The items below are described in the existing documentation set or
 implied by the codebase but are **not yet implemented**. They are the
-forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
+forward-looking work tracked in [`GAP_ANALYSIS.md`](docs/plans/GAP_ANALYSIS.md).
 
 > **Recently shipped (no longer roadmap).** Bearer-token auth, strict CORS,
-> the whitelisted `/api/settings`, Redis caching, the `--with-db`
-> TimescaleDB override, the real-time streaming pipeline, the scheduled
+> the settings API, Redis caching, the bundled TimescaleDB, the real-time streaming pipeline, the scheduled
 > backfill worker, `data_quality_metrics` population, real
 > `clean_old_data()` counts and the `/backtest` UI all landed in Phases 2–5
 > and now live under [Currently Available](#currently-available).
@@ -724,14 +887,12 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > split into [`models.py`](broker_service/models.py), [`ib_client.py`](broker_service/ib_client.py),
 > [`ib_helpers.py`](broker_service/ib_helpers.py) and
 > [`bars_processing.py`](broker_service/bars_processing.py) (2,700 → 1,840
-> LoC); opt-in IB connection pool
-> ([`broker_service/ib_pool.py`](broker_service/ib_pool.py), parameterised by
-> `IB_CLIENT_POOL_SIZE`); shared `<Chart>` primitive +
+> LoC); shared `<Chart>` primitive +
 > [`useHistoricalData`](frontend/app/lib/useHistoricalData.ts) hook
 > (HistoricalChart now delegates to them); test breadth expanded across
 > all three services.
 >
-> **Also recently shipped (Tier 4 item 9 — order management).**
+> **Also recently shipped (Tier 4 item 9: order management).**
 > Full place / cancel / modify path gated by `LIVE_TRADING_ENABLED`,
 > with [`OrderTicket`](frontend/app/components/OrderTicket.tsx) /
 > [`OrderBlotter`](frontend/app/components/OrderBlotter.tsx)
@@ -739,7 +900,7 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > backend validation + `order_audit` persistence and IB-service routes
 > mirroring the gate.
 >
-> **Also recently shipped (Systematic Trading & Multi-Broker roadmap —
+> **Also recently shipped (Systematic Trading & Multi-Broker roadmap,
 > all phases).** Rule-driven strategies (backtest == live), a live signal
 > runner, gated paper auto-execution with a full risk layer, the
 > `/systematic` monitoring UI, the broker abstraction, MetaTrader (MT5) data
@@ -748,7 +909,7 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > [Systematic trading](#systematic-trading-rule-driven-auto-execution) and
 > [Multi-broker: IB + MetaTrader + Alpaca + OANDA](#multi-broker-interactive-brokers-metatrader-mt5-alpaca-oanda).
 > The full design lives in
-> [`SYSTEMATIC_TRADING_ROADMAP.md`](SYSTEMATIC_TRADING_ROADMAP.md).
+> [`SYSTEMATIC_TRADING_ROADMAP.md`](docs/plans/SYSTEMATIC_TRADING_ROADMAP.md).
 >
 > **Also recently shipped (watchlist + in-app price alerts).** A flat,
 > broker-scoped watchlist (`watchlist_items` table, `/api/watchlist`
@@ -756,7 +917,7 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > existing `/api/market-data/realtime` endpoint, plus in-app-only price
 > alerts (`price_alerts` table, `/api/alerts` CRUD, a triggered-alerts
 > banner and an optional browser Notification) evaluated client-side
-> against that same polled quote — see [Watchlist](#watchlist).
+> against that same polled quote. See [Watchlist](#watchlist).
 > Email/SMS/webhook delivery remain open.
 >
 > **Also recently shipped (production hardening and risk controls).**
@@ -769,18 +930,18 @@ forward-looking work tracked in [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
 > [Systematic trading](#systematic-trading-rule-driven-auto-execution) and
 > [Risk controls](#risk-controls-kill-switch--alerting).
 
-### Systematic trading — open follow-ons
+### Systematic trading: open follow-ons
 
 The authoring loop (build a rule-set → backtest it → deploy it live on any
-instrument or venue) ships today. What remains, in priority order — see
-[`SYSTEMATIC_TRADING_ROADMAP.md`](SYSTEMATIC_TRADING_ROADMAP.md) §9:
+instrument or venue) ships today. What remains, in priority order. See
+[`SYSTEMATIC_TRADING_ROADMAP.md`](docs/plans/SYSTEMATIC_TRADING_ROADMAP.md) §9:
 
 - **Intrabar fills.** The backtester fills at the bar close; live fills happen
   at the market. Sessions, multi-timeframe operands, position-aware rules,
   sizing and scale-outs now share one code path between the two engines, so
   this is the main remaining source of backtest↔live drift.
 - **Futures / options contract multipliers on IB.** The IB instrument spec is
-  the whole-share constant — right for the equity path the app trades, but a
+  the whole-share constant: right for the equity path the app trades, but a
   futures contract's multiplier would need `reqContractDetails`.
 
 ### Authentication, authorisation & secrets (advanced)
@@ -788,7 +949,7 @@ instrument or venue) ships today. What remains, in priority order — see
 - Per-user accounts and finer-grained roles. A single login, the trader
   role (`TRADING_TOKENS`), order MFA and the `order_audit` log ship today.
 
-### Observability — open follow-ons
+### Observability: open follow-ons
 
 The first two observability passes have shipped (`pino` / `structlog` /
 `/metrics` / `X-Request-Id` / Grafana dashboard / service-layer log
@@ -798,15 +959,13 @@ sweep), and the Prometheus alerting rules now ship in
 dashboard's metrics). What is still open:
 
 - Route handlers in `backend/src/routes/marketData/*` still use
-  `console.*` for one-line per-call logging — covered by the
+  `console.*` for one-line per-call logging. It is covered by the
   observability middleware's structured "request completed" entry, but
   worth converting on a touch-as-you-go basis.
 
 ### Frontend UX
 
-- Loading skeletons on the chart pages.
-- Parquet export from the DataFrame viewer (CSV and JSON ship today).
-- Price-alert delivery beyond the browser tab (email/SMS/webhook) — in-app
+- Price-alert delivery beyond the browser tab (email/SMS/webhook). In-app
   price alerts with browser notifications have shipped, see
   [Watchlist](#watchlist). Trading and risk alerts already go to Telegram
   ([Risk controls](#risk-controls-kill-switch--alerting)).
@@ -821,25 +980,13 @@ on `master` have **shipped** (see
 - Frontend component tests (React Testing Library) beyond the current
   `apiFetch` suite.
 - Backend route/integration coverage beyond the initial validation tests.
-- ✅ IB-service tests around the historical-data assembly path — a
+- Done: IB-service tests around the historical-data assembly path: a
   `FakeIBApp` stand-in for `EClient`/`EWrapper`
   ([`broker_service/tests/test_market_data_history_route.py`](broker_service/tests/test_market_data_history_route.py))
   exercises `GET /market-data/history` end-to-end (contract-qualification,
   the period vs. date-range branches, the 404/503 failure paths, and the
   hand-off into `bars_processing`) without a real IB Gateway, network
   call or background thread.
-
-### Refactors
-
-- Split the ~2,700-line `broker_service/main.py` into `routes/`, `ib_client/`,
-  `cache/` and `models/`. (The equivalent backend split has shipped —
-  `backend/src/routes/marketData.ts` is now the 6-file
-  `routes/marketData/` package.)
-- Collapse the four overlapping chart components
-  (`HistoricalChart`, `TradingChart`, `EnhancedTradingChart`,
-  `MSFTRealtimeChart`) into one configurable `<Chart>` component.
-- Connection-pool the IB client across a `clientId` range to support
-  parallel requests.
 
 ---
 
@@ -863,8 +1010,9 @@ on `master` have **shipped** (see
 4. Click **Download from IB API**, review the DataFrame preview.
 5. Click **Load to PostgreSQL**; the backend upserts the bars and reports
    inserted / updated counts.
-6. Future chart loads will read from the database (faster, no IB rate
-   limits) until you redeploy with `use_database=false`.
+6. Future chart loads read from the database (faster, no broker rate
+   limits). To keep the bars topped up automatically, add the instrument on
+   Settings > Schedulers and data instead.
 
 ### Workflow: run a backtest
 
@@ -876,20 +1024,19 @@ From the UI:
    click **Run backtest**.
 4. Review the metrics summary, equity-curve chart and trade-list table.
 
-Or hit the API directly:
+Or call the backend API with an API token from Settings > Security:
 
 ```bash
-curl -s http://<server-ip>:8000/backtesting/strategies | jq
+curl -s -H "Authorization: Bearer $TOKEN" http://<server-ip>:4000/api/backtesting/strategies | jq
 
-curl -s -X POST 'http://<server-ip>:8000/backtesting/run' \
-  --data-urlencode 'symbol=MSFT' \
-  --data-urlencode 'strategy=ma_crossover' \
-  --data-urlencode 'timeframe=1day'
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"symbol":"MSFT","strategy":"ma_crossover","timeframe":"1day"}' \
+  http://<server-ip>:4000/api/backtesting/run
 ```
 
 ---
 
 If you spot a feature here that should be in *Available* but isn't, or
 vice-versa, please open an issue. Keeping this split honest is ongoing
-hygiene — the current gap list and roadmap live in
-[`GAP_ANALYSIS.md`](GAP_ANALYSIS.md).
+hygiene. The current gap list and roadmap live in
+[`GAP_ANALYSIS.md`](docs/plans/GAP_ANALYSIS.md).
