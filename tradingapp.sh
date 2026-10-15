@@ -397,6 +397,20 @@ HEADER
     if is_placeholder "$(env_get POSTGRES_USER)"; then env_set POSTGRES_USER tradingapp; fi
     if is_placeholder "$(env_get POSTGRES_DB)"; then env_set POSTGRES_DB tradingapp; fi
 
+    # An existing external database was set up with a key; a new one would
+    # not open its secrets (the backend stops on that), so ask for it.
+    if [[ $DB_MODE == external ]] && is_placeholder "$(env_get SETTINGS_ENCRYPTION_KEY)" && interactive; then
+        echo "  If this database was used by an earlier install, paste the encryption key"
+        echo "  from that install ($0 backup-key printed it). Leave empty for a new database."
+        ask value "Encryption key" secret
+        if [[ -n $value ]]; then
+            if [[ ! $value =~ ^[0-9a-fA-F]{64}$ && ! $value =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
+                print_error "That is not an encryption key (64 hex characters, or base64 of 32 bytes)."
+                exit 2
+            fi
+            env_set SETTINGS_ENCRYPTION_KEY "$value"
+        fi
+    fi
     if is_placeholder "$(env_get SETTINGS_ENCRYPTION_KEY)"; then
         env_set SETTINGS_ENCRYPTION_KEY "$(gen_secret)"
         generated+=(SETTINGS_ENCRYPTION_KEY)
