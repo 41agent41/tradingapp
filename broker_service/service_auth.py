@@ -40,7 +40,8 @@ def attach_service_auth(app: FastAPI) -> None:
     if not expected_token():
         logger.warning(
             "BROKER_SERVICE_TOKEN is not set: the broker service accepts "
-            "unauthenticated requests, including orders. Set it in .env."
+            "unauthenticated requests, including orders. docker-compose.yml "
+            "provides it from the internal_secrets volume."
         )
 
     @app.middleware("http")

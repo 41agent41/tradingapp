@@ -141,7 +141,7 @@ groups:
             IB-service p95 request latency is {{ printf "%.2f" $value }}s
             (threshold 2s) over a sustained 10m window. The single synchronous
             IB client serialises requests — sustained high latency may mean it
-            is saturated (consider IB_CLIENT_POOL_SIZE >= 2).
+            is saturated.
 
       - alert: IBServiceNoTraffic
         # The IB service is up (scraped) but has served zero non-infra

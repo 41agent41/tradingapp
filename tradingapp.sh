@@ -397,7 +397,11 @@ HEADER
             fi
         done
         if is_placeholder "$(env_get POSTGRES_PORT)"; then env_set POSTGRES_PORT 5432; fi
-        if is_placeholder "$(env_get POSTGRES_SSL)"; then env_set POSTGRES_SSL false; fi
+        if is_placeholder "$(env_get POSTGRES_SSL)"; then
+            value=n
+            if interactive; then ask value "Does the database require TLS? [y/N]"; fi
+            if [[ $value =~ ^[Yy] ]]; then env_set POSTGRES_SSL true; else env_set POSTGRES_SSL false; fi
+        fi
     fi
     if is_placeholder "$(env_get POSTGRES_USER)"; then env_set POSTGRES_USER tradingapp; fi
     if is_placeholder "$(env_get POSTGRES_DB)"; then env_set POSTGRES_DB tradingapp; fi

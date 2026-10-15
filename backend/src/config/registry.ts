@@ -9,9 +9,10 @@
  *
  * Not here, on purpose:
  *   - Bootstrap values the backend needs before it can reach the database, or
- *     that Docker reads before any process starts: the POSTGRES_* connection,
- *     SETTINGS_ENCRYPTION_KEY, BROKER_SERVICE_TOKEN, REDIS_PASSWORD, the ports,
- *     NODE_ENV, TZ, LOG_LEVEL. These stay in `.env`.
+ *     that Docker reads before any process starts: the POSTGRES_* connection
+ *     and SETTINGS_ENCRYPTION_KEY (in `.env`), the ports, NODE_ENV, TZ,
+ *     LOG_LEVEL, and BROKER_SERVICE_TOKEN and REDIS_PASSWORD (generated into
+ *     the internal_secrets volume; see docker-compose.yml).
  *   - Per-connection caps and prop rules, which are columns on the connection
  *     (`broker_connections.limits` / `prop_rules`, the Connections tab), and
  *     the connections' own secrets.
