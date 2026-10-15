@@ -4,10 +4,8 @@
  * The rest of the suite fakes the database, which is how contract storage
  * stayed broken unnoticed: the SQL never met Postgres. These tests run only
  * with DB_TESTS=1 and the POSTGRES_* variables pointing at a scratch database
- * that already has `timescaledb-schema.sql` applied (CI applies it with psql,
- * because its continuous aggregate cannot be created inside the single
- * transaction a multi-statement query from `pg` runs in). Otherwise they are
- * skipped.
+ * whose schema is current (CI runs `node dist/cli/migrate.js` first).
+ * Otherwise they are skipped.
  */
 import { dbService } from '../src/services/database.js';
 import { marketDataService, type CandlestickBar } from '../src/services/marketDataService.js';

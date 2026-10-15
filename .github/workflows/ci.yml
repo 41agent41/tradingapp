@@ -65,6 +65,12 @@ jobs:
       - name: Tests (jest + supertest)
         run: npm test
 
+      - name: Build
+        run: npm run build
+
+      # The schema is built the way the backend builds it at startup (the
+      # migrate CLI runs the same code), then the tests whose SQL must meet
+      # Postgres run against it.
       - name: Database tests (TimescaleDB)
         env:
           DB_TESTS: '1'
@@ -73,14 +79,10 @@ jobs:
           POSTGRES_USER: tradingapp
           POSTGRES_PASSWORD: ci-password
           POSTGRES_DB: tradingapp
-          PGPASSWORD: ci-password
+          SETTINGS_ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000001'
         run: |
-          psql -X -q -v ON_ERROR_STOP=1 -h localhost -U tradingapp -d tradingapp \
-            -f src/database/timescaledb-schema.sql > /dev/null
-          npx jest tests/marketDataStorage.db.test.ts
-
-      - name: Build
-        run: npm run build
+          node dist/cli/migrate.js
+          npx jest --runInBand tests/marketDataStorage.db.test.ts tests/startup.db.test.ts
 
   # --------------------------------------------------------------------
   # Frontend (Next.js + React)

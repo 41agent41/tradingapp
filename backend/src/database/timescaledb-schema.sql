@@ -222,7 +222,13 @@ SELECT
     AVG(wap) AS day_avg_wap,
     SUM(count) AS day_trade_count
 FROM candlestick_data
-GROUP BY contract_id, timeframe, day;
+GROUP BY contract_id, timeframe, day
+-- WITH NO DATA so the whole file can run as one statement batch: the backend
+-- applies it in a single query at startup, and filling a continuous aggregate
+-- (the default WITH DATA) cannot run inside the transaction such a batch is.
+-- The backend refreshes it once when it is first created; the policy below
+-- keeps it current after that.
+WITH NO DATA;
 
 -- Add refresh policy for continuous aggregates (only if not exists)
 DO $$

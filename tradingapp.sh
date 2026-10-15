@@ -155,6 +155,8 @@ show_usage() {
     echo "  status      - Check service status"
     echo "  logs        - View service logs"
     echo "  setup-code  - Show the code for the first-run setup screen"
+    echo "  migrate     - Bring the database schema up to date and check the key"
+    echo "  forget-secrets - Clear secrets sealed with a lost encryption key"
     echo "  settings-import - Move settings and logins from .env into the app"
     echo ""
     echo "Troubleshooting:"
@@ -345,6 +347,60 @@ HEADER
     print_info "  OANDA, MT5, IB or Alpaca under Connections. Each is checked as soon as you save it."
 }
 
+# The backend's readiness (database reachable, migrated, key checked), as
+# "<http code> <state> <detail>" from /api/health/ready on this host.
+backend_readiness() {
+    local port body code
+    port=$(grep -E '^BACKEND_PORT=' .env 2>/dev/null | tail -n1 | cut -d'=' -f2-)
+    body=$(curl -s --max-time 5 -w '\n%{http_code}' "http://127.0.0.1:${port:-4000}/api/health/ready" 2>/dev/null) || true
+    code=$(echo "$body" | tail -n1)
+    body=$(echo "$body" | sed '$d')
+    if command -v python3 &> /dev/null && [[ -n "$body" ]]; then
+        echo "$code $(echo "$body" | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin); print(d.get("state", "?"), d.get("detail") or "")
+except Exception:
+    print("?")' 2>/dev/null)"
+    else
+        echo "${code:-000} ?"
+    fi
+}
+
+# Waits until the backend reports ready, printing what it is waiting for.
+# Returns 1 on a state that will not clear by itself, or after the timeout.
+wait_for_backend_ready() {
+    local timeout="${1:-300}" deadline last="" line code state detail
+    deadline=$((SECONDS + timeout))
+    while ((SECONDS < deadline)); do
+        line=$(backend_readiness)
+        code=${line%% *}
+        state=$(echo "$line" | awk '{print $2}')
+        detail=$(echo "$line" | cut -d' ' -f3-)
+        if [[ "$code" == "200" ]]; then
+            print_status "Backend ready (database reachable and up to date)"
+            return 0
+        fi
+        case "$state" in
+            migration_failed|key_mismatch)
+                print_error "The backend will not start: $detail"
+                return 1
+                ;;
+        esac
+        if [[ "$state" != "$last" ]]; then
+            case "$state" in
+                waiting_for_database) print_info "Waiting for the database: $detail" ;;
+                migrating) print_info "Updating the database schema..." ;;
+                *) print_info "Waiting for the backend to start..." ;;
+            esac
+            last="$state"
+        fi
+        sleep 3
+    done
+    print_error "The backend was not ready after ${timeout}s (last state: ${last:-no answer})."
+    print_info "Check: $0 logs"
+    return 1
+}
+
 deploy_application() {
     print_info "Deploying TradingApp..."
 
@@ -362,9 +418,8 @@ deploy_application() {
     print_info "Building and starting services..."
     compose_cmd up --build -d
 
-    # Wait for services to be ready
-    print_info "Waiting for services to start..."
-    sleep 10
+    # The backend waits for the database and migrates it before it is ready.
+    wait_for_backend_ready 300 || return 1
 
     # Verify TWS API installation
     print_info "Verifying TWS API installation..."
@@ -409,12 +464,16 @@ test_deployment() {
         success=false
     fi
 
-    # Database, as the backend sees it. A warning only: the app starts and
-    # reports itself degraded without it, and the fix is in .env, not here.
-    if curl -s -f http://${SERVER_IP:-localhost}:4000/api/database/health > /dev/null; then
-        print_status "Database is connected"
+    # The database, as the backend sees it: reachable, migrated and opened by
+    # the encryption key. The app does not start without it.
+    local ready
+    ready=$(backend_readiness)
+    if [[ "${ready%% *}" == "200" ]]; then
+        print_status "Database is connected and up to date"
     else
-        print_warning "Backend cannot reach the database (check POSTGRES_* in .env, or deploy --with-db)"
+        print_error "Backend not ready: $(echo "$ready" | cut -d' ' -f2-)"
+        print_info "  (check POSTGRES_* in .env, or deploy --with-db; '$0 migrate' shows the schema state)"
+        success=false
     fi
 
     # Brokers are deliberately not tested here: the app checks its own
@@ -585,8 +644,7 @@ fix_issues() {
     compose_cmd up --build -d
     
     # Fix 3: Wait and test
-    print_info "Waiting for services to stabilize..."
-    sleep 15
+    wait_for_backend_ready 300 || true
     
     # Fix 4: Test everything
     test_deployment
@@ -693,7 +751,7 @@ set -- "${GLOBAL_ARGS[@]}"
 # Commands that talk to Docker first make sure this shell can (re-running
 # under `sg docker` straight after setup, when the new group is not active).
 case "${1:-}" in
-    deploy|redeploy|start|stop|restart|status|logs|setup-code|settings-import|fix|clean)
+    deploy|redeploy|start|stop|restart|status|logs|setup-code|settings-import|migrate|forget-secrets|fix|clean)
         mapfile -t _flags < <(global_flag_args)
         ensure_docker_access "$@" "${_flags[@]}"
         ;;
@@ -776,6 +834,35 @@ case "${1:-}" in
         ;;
     "settings-import")
         settings_import
+        ;;
+    "migrate")
+        # The backend does this itself at startup; this shows the state and
+        # applies anything pending without a restart.
+        if [[ -z "$(compose_cmd ps -q backend 2>/dev/null)" ]]; then
+            print_error "The backend is not running. Start it first: $0 start"
+            exit 1
+        fi
+        compose_cmd exec -T backend node dist/cli/migrate.js
+        ;;
+    "forget-secrets")
+        print_warning "Use this only when SETTINGS_ENCRYPTION_KEY is lost. It clears every secret"
+        print_warning "sealed with it: broker connection credentials, secret settings, the MFA secret"
+        print_warning "and the session key. Connections and settings stay; enter the secrets again."
+        answer="n"
+        if [[ "${NON_INTERACTIVE:-0}" != "1" ]]; then
+            read -r -p "Type FORGET to continue: " answer
+        fi
+        if [[ "$answer" != "FORGET" ]]; then
+            print_info "Nothing changed."
+            exit 0
+        fi
+        if [[ -z "$(compose_cmd ps -q backend 2>/dev/null)" ]]; then
+            print_error "The backend is not running. Start it first: $0 start"
+            exit 1
+        fi
+        compose_cmd exec -T backend node dist/cli/forgetSecrets.js
+        compose_cmd restart backend
+        wait_for_backend_ready 300
         ;;
     "test")
         test_deployment

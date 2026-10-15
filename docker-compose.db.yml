@@ -12,8 +12,9 @@
 #   # Or via the management script
 #   ./tradingapp.sh deploy --with-db
 #
-# The canonical schema in backend/src/database/timescaledb-schema.sql is
-# applied automatically on the first run via /docker-entrypoint-initdb.d/.
+# The backend creates and updates the schema itself when it starts
+# (backend/src/services/migrations.ts), so this database needs nothing but the
+# credentials below.
 
 services:
   postgres:
@@ -30,9 +31,6 @@ services:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - tradingapp_pgdata:/var/lib/postgresql/data
-      # Schema is applied on first init only. To re-apply, remove the
-      # volume and restart the service.
-      - ./backend/src/database/timescaledb-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     networks:
       tradingapp-network:
         ipv4_address: 172.20.0.20

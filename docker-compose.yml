@@ -36,6 +36,15 @@ services:
     depends_on:
       - broker_service
       - redis
+    # Healthy once its database is reachable, migrated and opened by the
+    # encryption key (the backend waits for it; see services/startupGate.ts).
+    # Brokers and Redis do not count, so an outage there never reads as down.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:$${PORT}/api/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     networks:
       tradingapp-network:
         ipv4_address: 172.20.0.5

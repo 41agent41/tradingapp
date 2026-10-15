@@ -67,19 +67,29 @@ applies this schema automatically on first run. See
 
 ## Applying the Schema
 
-```bash
-# Create the database (skip if already created)
-createdb -h "$POSTGRES_HOST" -U "$POSTGRES_USER" "$POSTGRES_DB"
+The backend does it. On every start it waits for the database, then applies
+whatever is pending before it serves anything else
+(`backend/src/services/migrations.ts`):
 
-# Apply the canonical schema
+- `timescaledb-schema.sql`, the baseline, whenever its content has changed.
+  Every statement in it is idempotent (`IF NOT EXISTS`, guarded `DO $$`
+  blocks), so a fresh database is built from it and an older one is carried
+  forward by it.
+- `migrations/NNN_name.sql`, once each, in order, each in a transaction. Put
+  changes that are not naturally idempotent here.
+
+What was applied is recorded in `schema_migrations`. The database itself only
+needs to exist, with the `timescaledb` extension available and a role that
+owns it. `./tradingapp.sh migrate` shows the state and applies anything
+pending without a restart.
+
+Applying the baseline by hand still works (it is the same idempotent file):
+
+```bash
 psql "host=$POSTGRES_HOST port=$POSTGRES_PORT user=$POSTGRES_USER \
       dbname=$POSTGRES_DB sslmode=require" \
   -f backend/src/database/timescaledb-schema.sql
 ```
-
-The script is idempotent — every `CREATE TABLE`, `CREATE INDEX`, hypertable
-conversion and policy registration is guarded with `IF NOT EXISTS` /
-`DO $$ ... $$` blocks, so you can re-run it safely.
 
 ### Migrating an existing plain-Postgres deployment
 
