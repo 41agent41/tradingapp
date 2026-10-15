@@ -24,9 +24,13 @@
  *    live IB requests on a timer.
  *  - **Period-based, upsert-driven.** Each run fetches the most recent
  *    `BACKFILL_PERIOD` window and upserts it. Existing bars update, new bars
- *    insert, and holes inside the window self-heal — without the date-range
- *    edge cases of the IB history endpoint. Deep historical gaps are still a
- *    Download-page job.
+ *    insert, and holes inside the window self-heal.
+ *  - **Deep history.** An entry with a `history_start` is also walked back to
+ *    that date, a date-range chunk at a time (about HISTORY_CHUNK_BARS bars,
+ *    up to HISTORY_CHUNKS_PER_RUN per run). Its cursor, `backfilled_to`, is
+ *    saved after each chunk, so a gap with no bars (a weekend, the broker's
+ *    own limit) is passed over and a restart carries on where it stopped. A
+ *    chunk that fails leaves the cursor where it was, to be retried.
  *  - **Per-row cadence.** A config row is skipped when its newest stored bar
  *    is younger than its `collection_interval_minutes`, so a fast global
  *    tick does not hammer IB for slow-moving daily data.
@@ -80,6 +84,37 @@ export interface RawBar {
   count?: number;
 }
 
+/** Bars per deep-history chunk, and chunks per entry per run. */
+export const HISTORY_CHUNK_BARS = 20_000;
+export const HISTORY_CHUNKS_PER_RUN = 5;
+const DAY_MS = 86_400_000;
+const TIMEFRAME_SECONDS: Record<string, number> = {
+  '1min': 60,
+  '5min': 300,
+  '15min': 900,
+  '30min': 1800,
+  '1hour': 3600,
+  '4hour': 14_400,
+  '8hour': 28_800,
+  '1day': 86_400,
+  '1week': 604_800,
+  '1month': 2_592_000,
+};
+
+/** Whole days a chunk of HISTORY_CHUNK_BARS bars spans, from 1 to 365. */
+export function historyChunkDays(timeframe: string): number {
+  const seconds = TIMEFRAME_SECONDS[timeframe] ?? 3600;
+  return Math.min(365, Math.max(1, Math.floor((HISTORY_CHUNK_BARS * seconds) / 86_400)));
+}
+
+function utcDay(ms: number): number {
+  return Math.floor(ms / DAY_MS) * DAY_MS;
+}
+
+function isoDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
 export interface HistoryRequest {
   /** The broker the contract belongs to, so its bars come from that broker. */
   broker: string;
@@ -91,6 +126,9 @@ export interface HistoryRequest {
   secType: string;
   exchange?: string;
   currency?: string;
+  /** A date range (YYYY-MM-DD, end exclusive) instead of the period. */
+  startDate?: string;
+  endDate?: string;
 }
 
 export interface StoreResult {
@@ -106,6 +144,8 @@ export interface StoreResult {
 export interface BackfillDeps {
   listConfigs(): Promise<CollectionConfig[]>;
   getLatestStoredTimestamp(contractId: number, timeframe: string): Promise<Date | null>;
+  getOldestStoredTimestamp(contractId: number, timeframe: string): Promise<Date | null>;
+  setBackfilledTo(contractId: number, timeframe: string, to: Date): Promise<void>;
   fetchHistory(req: HistoryRequest): Promise<RawBar[]>;
   storeCandlestickData(
     contractId: number,
@@ -136,6 +176,10 @@ function defaultDeps(): BackfillDeps {
     listConfigs: () => marketDataService.getActiveCollectionConfigs({ autoCollectOnly: true }),
     getLatestStoredTimestamp: (contractId, timeframe) =>
       marketDataService.getLatestStoredTimestamp(contractId, timeframe),
+    getOldestStoredTimestamp: (contractId, timeframe) =>
+      marketDataService.getOldestStoredTimestamp(contractId, timeframe),
+    setBackfilledTo: (contractId, timeframe, to) =>
+      marketDataService.setBackfilledTo(contractId, timeframe, to),
     fetchHistory: async (req) => {
       const response = await axios.get(`${BROKER_SERVICE_URL}/market-data/history`, {
         params: {
@@ -146,12 +190,16 @@ function defaultDeps(): BackfillDeps {
           account: req.brokerAccount === 'default' ? undefined : req.brokerAccount,
           symbol: req.symbol,
           timeframe: req.timeframe,
-          period: req.period,
+          // A date range replaces the period (the IB path refuses both).
+          period: req.startDate ? 'CUSTOM' : req.period,
+          start_date: req.startDate,
+          end_date: req.endDate,
           secType: req.secType,
           exchange: req.exchange,
           currency: req.currency,
         },
-        timeout: 60000,
+        // A deep-history chunk is several paged requests at the broker.
+        timeout: req.startDate ? 300_000 : 60_000,
         headers: { Connection: 'close' },
       });
       const bars = Array.isArray(response.data?.bars) ? response.data.bars : [];
@@ -175,6 +223,19 @@ function defaultDeps(): BackfillDeps {
     endSession: (sessionId, status, recordsCollected, errorMessage) =>
       marketDataService.endDataCollectionSession(sessionId, status, recordsCollected, errorMessage),
     now: () => Date.now(),
+  };
+}
+
+function toCandle(b: RawBar): CandlestickBar {
+  return {
+    timestamp: new Date(b.timestamp * 1000),
+    open: b.open,
+    high: b.high,
+    low: b.low,
+    close: b.close,
+    volume: b.volume,
+    wap: b.wap,
+    count: b.count,
   };
 }
 
@@ -288,6 +349,76 @@ export class BackfillScheduler {
   }
 
   private async backfillOne(cfg: CollectionConfig): Promise<void> {
+    await this.recentOne(cfg);
+    if (cfg.historyStart) await this.historyOne(cfg, cfg.historyStart);
+  }
+
+  /** Walks one entry back towards its history start, chunk by chunk. */
+  private async historyOne(cfg: CollectionConfig, historyStart: Date): Promise<void> {
+    const target = utcDay(historyStart.getTime());
+    let cursor = cfg.backfilledTo?.getTime() ?? null;
+    if (cursor === null) {
+      const oldest = await this.deps
+        .getOldestStoredTimestamp(cfg.contractId, cfg.timeframe)
+        .catch(() => null);
+      cursor = oldest ? oldest.getTime() : this.deps.now();
+    }
+    const span = historyChunkDays(cfg.timeframe) * DAY_MS;
+    for (let i = 0; i < HISTORY_CHUNKS_PER_RUN && cursor > target; i++) {
+      // Overlaps the oldest day (upserts dedupe), but never ends in the future:
+      // brokers refuse that, and the recent top-up covers today.
+      const end = Math.min(utcDay(cursor) + DAY_MS, utcDay(this.deps.now()));
+      const start = Math.max(target, end - DAY_MS - span);
+      try {
+        const rawBars = await this.deps.fetchHistory({
+          broker: cfg.broker,
+          brokerAccount: cfg.brokerAccount,
+          symbol: cfg.symbol,
+          timeframe: cfg.timeframe,
+          period: this.period,
+          secType: cfg.secType,
+          exchange: cfg.exchange || undefined,
+          currency: cfg.currency || undefined,
+          startDate: isoDay(start),
+          endDate: isoDay(end),
+        });
+        const bars = rawBars.map(toCandle);
+        const result = bars.length
+          ? await this.deps.storeCandlestickData(cfg.contractId, cfg.timeframe, bars)
+          : { inserted: 0, updated: 0, errors: 0 };
+        this.barsStored += result.inserted + result.updated;
+        await this.deps.setBackfilledTo(cfg.contractId, cfg.timeframe, new Date(start));
+        cursor = start;
+        logger.info(
+          {
+            symbol: cfg.symbol,
+            timeframe: cfg.timeframe,
+            from: isoDay(start),
+            to: isoDay(end),
+            bars: bars.length,
+            done: start <= target,
+          },
+          'backfill history chunk'
+        );
+      } catch (err) {
+        this.errors++;
+        this.lastError = err instanceof Error ? err.message : String(err);
+        logger.error(
+          {
+            symbol: cfg.symbol,
+            timeframe: cfg.timeframe,
+            from: isoDay(start),
+            err: this.lastError,
+          },
+          'backfill history chunk failed'
+        );
+        return;
+      }
+    }
+  }
+
+  /** Tops up an entry's recent bars, unless they are fresher than its interval. */
+  private async recentOne(cfg: CollectionConfig): Promise<void> {
     // Respect per-row cadence: skip if data is fresher than the configured
     // collection interval.
     try {
@@ -328,16 +459,7 @@ export class BackfillScheduler {
         currency: cfg.currency || undefined,
       });
 
-      const bars: CandlestickBar[] = rawBars.map((b) => ({
-        timestamp: new Date(b.timestamp * 1000),
-        open: b.open,
-        high: b.high,
-        low: b.low,
-        close: b.close,
-        volume: b.volume,
-        wap: b.wap,
-        count: b.count,
-      }));
+      const bars: CandlestickBar[] = rawBars.map(toCandle);
 
       const result = await this.deps.storeCandlestickData(cfg.contractId, cfg.timeframe, bars);
       const stored = result.inserted + result.updated;

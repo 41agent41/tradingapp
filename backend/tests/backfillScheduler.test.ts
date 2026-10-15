@@ -7,7 +7,10 @@
  */
 import {
   BackfillScheduler,
+  HISTORY_CHUNKS_PER_RUN,
+  historyChunkDays,
   type BackfillDeps,
+  type HistoryRequest,
   type RawBar,
 } from '../src/services/backfillScheduler.js';
 import type { CollectionConfig } from '../src/services/marketDataService.js';
@@ -28,6 +31,8 @@ function config(overrides: Partial<CollectionConfig> = {}): CollectionConfig {
     secType: 'STK',
     exchange: 'SMART',
     currency: 'USD',
+    historyStart: null,
+    backfilledTo: null,
     ...overrides,
   };
 }
@@ -41,6 +46,8 @@ function makeDeps(overrides: Partial<BackfillDeps> = {}): BackfillDeps {
   return {
     listConfigs: jest.fn().mockResolvedValue([config()]),
     getLatestStoredTimestamp: jest.fn().mockResolvedValue(null),
+    getOldestStoredTimestamp: jest.fn().mockResolvedValue(null),
+    setBackfilledTo: jest.fn().mockResolvedValue(undefined),
     fetchHistory: jest.fn().mockResolvedValue(sampleRawBars),
     storeCandlestickData: jest.fn().mockResolvedValue({ inserted: 2, updated: 0, errors: 0 }),
     recordDataQuality: jest.fn().mockResolvedValue(undefined),
@@ -217,5 +224,117 @@ describe('BackfillScheduler lifecycle', () => {
       bars_stored: 0,
       errors: 0,
     });
+  });
+});
+
+describe('deep history', () => {
+  const day = (iso: string) => new Date(`${iso}T00:00:00Z`);
+  const historyCalls = (deps: BackfillDeps) =>
+    (deps.fetchHistory as jest.Mock).mock.calls
+      .map(([req]) => req as HistoryRequest)
+      .filter((req) => req.startDate);
+
+  it('sizes a chunk to about 20000 bars, from one day to a year', () => {
+    expect(historyChunkDays('5min')).toBe(69);
+    expect(historyChunkDays('1min')).toBe(13);
+    expect(historyChunkDays('1day')).toBe(365);
+  });
+
+  it('does nothing without a history start', async () => {
+    const deps = makeDeps();
+    await makeScheduler(deps).runOnce();
+    expect(historyCalls(deps)).toHaveLength(0);
+    expect(deps.setBackfilledTo).not.toHaveBeenCalled();
+  });
+
+  it('walks back from the oldest stored bar in date-range chunks, saving the cursor', async () => {
+    const deps = makeDeps({
+      listConfigs: jest
+        .fn()
+        .mockResolvedValue([config({ timeframe: '5min', historyStart: day('2025-01-01') })]),
+      getOldestStoredTimestamp: jest.fn().mockResolvedValue(new Date('2026-01-05T13:00:00Z')),
+    });
+    await makeScheduler(deps).runOnce();
+
+    const calls = historyCalls(deps);
+    expect(calls).toHaveLength(HISTORY_CHUNKS_PER_RUN);
+    expect(calls[0]).toMatchObject({ startDate: '2025-10-28', endDate: '2026-01-06' });
+    // Each chunk ends on the day the previous one started.
+    for (let i = 1; i < calls.length; i++) {
+      expect(calls[i].endDate! > calls[i].startDate!).toBe(true);
+      expect(day(calls[i].endDate!).getTime()).toBe(
+        day(calls[i - 1].startDate!).getTime() + 86_400_000
+      );
+    }
+    expect(deps.setBackfilledTo).toHaveBeenLastCalledWith(
+      1,
+      '5min',
+      day(calls[calls.length - 1].startDate!)
+    );
+  });
+
+  it('stops at the history start and resumes from the saved cursor', async () => {
+    const deps = makeDeps({
+      listConfigs: jest.fn().mockResolvedValue([
+        config({
+          timeframe: '1day',
+          historyStart: day('2025-06-01'),
+          backfilledTo: day('2025-09-01'),
+        }),
+      ]),
+    });
+    await makeScheduler(deps).runOnce();
+    const calls = historyCalls(deps);
+    expect(calls).toEqual([
+      expect.objectContaining({ startDate: '2025-06-01', endDate: '2025-09-02', period: '5D' }),
+    ]);
+    expect(deps.getOldestStoredTimestamp).not.toHaveBeenCalled();
+    expect(deps.setBackfilledTo).toHaveBeenCalledWith(1, '1day', day('2025-06-01'));
+  });
+
+  it('is finished once the cursor reaches the history start', async () => {
+    const deps = makeDeps({
+      listConfigs: jest
+        .fn()
+        .mockResolvedValue([
+          config({ historyStart: day('2025-06-01'), backfilledTo: day('2025-06-01') }),
+        ]),
+    });
+    await makeScheduler(deps).runOnce();
+    expect(historyCalls(deps)).toHaveLength(0);
+  });
+
+  it('passes over a chunk with no bars, and keeps the cursor when a chunk fails', async () => {
+    const fetchHistory = jest
+      .fn()
+      .mockResolvedValueOnce(sampleRawBars) // the recent top-up
+      .mockResolvedValueOnce([]) // a gap
+      .mockRejectedValueOnce(new Error('broker said no'));
+    const deps = makeDeps({
+      fetchHistory,
+      listConfigs: jest
+        .fn()
+        .mockResolvedValue([config({ timeframe: '5min', historyStart: day('2025-01-01') })]),
+      getOldestStoredTimestamp: jest.fn().mockResolvedValue(day('2026-01-05')),
+    });
+    const scheduler = makeScheduler(deps);
+    await scheduler.runOnce();
+
+    expect(fetchHistory).toHaveBeenCalledTimes(3);
+    // The empty chunk still moved the cursor; the failed one did not.
+    expect(deps.setBackfilledTo).toHaveBeenCalledTimes(1);
+    expect(scheduler.status().last_error).toBe('broker said no');
+  });
+
+  it('never asks for a range that ends in the future', async () => {
+    const deps = makeDeps({
+      listConfigs: jest
+        .fn()
+        .mockResolvedValue([config({ timeframe: '1hour', historyStart: day('2025-12-01') })]),
+    });
+    await makeScheduler(deps).runOnce();
+    const [first] = historyCalls(deps);
+    expect(first.endDate).toBe('2026-01-10');
+    expect(first.startDate).toBe('2025-12-01');
   });
 });

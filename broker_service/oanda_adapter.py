@@ -101,15 +101,35 @@ _LIVE_BASE = "https://api-fxtrade.oanda.com"
 _PRACTICE_STREAM_BASE = "https://stream-fxpractice.oanda.com"
 _LIVE_STREAM_BASE = "https://stream-fxtrade.oanda.com"
 
-# Rough candle budget per app period (OANDA caps a single request at 5000).
-_PERIOD_TO_COUNT = {
-    "1D": 400,
-    "1W": 2000,
-    "1M": 5000,
-    "3M": 5000,
-    "6M": 5000,
-    "1Y": 5000,
+# OANDA returns at most 5000 candles per request; longer spans are paged.
+_MAX_CANDLES_PER_REQUEST = 5000
+_GRANULARITY_SECONDS = {
+    "M1": 60,
+    "M5": 300,
+    "M15": 900,
+    "M30": 1800,
+    "H1": 3600,
+    "H4": 14400,
+    "H8": 28800,
+    "D": 86400,
 }
+# How far back an app period reaches.
+_PERIOD_TO_DAYS = {
+    "1D": 1,
+    "5D": 5,
+    "1W": 7,
+    "1M": 31,
+    "3M": 92,
+    "6M": 183,
+    "1Y": 366,
+    "2Y": 731,
+    "5Y": 1827,
+}
+# Page limits. A period (a chart) is capped so a long period on a short
+# timeframe stays quick; an explicit date range (the backfill walking back,
+# a download) may page much further.
+_MAX_PERIOD_PAGES = 10
+_MAX_RANGE_PAGES = 200
 
 _FX_PAIR_RE = re.compile(r"^([A-Z]{3})[._/]?([A-Z]{3})$")
 
@@ -117,6 +137,19 @@ _FX_PAIR_RE = re.compile(r"^([A-Z]{3})[._/]?([A-Z]{3})$")
 # fetch is one request per page. Capped so a wide window degrades into "the
 # most recent N pages" instead of an unbounded fan-out at the venue.
 _MAX_TRANSACTION_PAGES = 10
+
+
+def _parse_oanda_time(value: str) -> datetime:
+    """OANDA's RFC 3339 time (nanosecond precision) as an aware datetime."""
+    text = str(value).replace("Z", "")
+    if "." in text:
+        head, frac = text.split(".", 1)
+        text = f"{head}.{frac[:6]}"
+    return datetime.fromisoformat(text).replace(tzinfo=UTC)
+
+
+def _oanda_time(moment: datetime) -> str:
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _to_instrument(symbol: str) -> str:
@@ -250,22 +283,14 @@ class OANDAAdapter:
     ) -> HistoricalDataResponse:
         granularity = self._map_timeframe(timeframe)
         instrument = _to_instrument(symbol)
-        params: Dict[str, Any] = {"granularity": granularity, "price": "M"}
-        if start_date and end_date:
-            params["from"] = f"{start_date}T00:00:00Z"
-            params["to"] = f"{end_date}T00:00:00Z"
-        else:
-            params["count"] = _PERIOD_TO_COUNT.get(period, 5000)
-
-        payload = self._get(self._account_path(f"/instruments/{instrument}/candles"), params)
-        raw_candles = payload.get("candles", []) if isinstance(payload, dict) else []
+        raw_candles = self._candles(instrument, granularity, period, start_date, end_date)
 
         rows = []
         for c in raw_candles:
             if not c.get("complete", True):
                 continue
             mid = c.get("mid", {})
-            ts = datetime.fromisoformat(str(c["time"]).replace("Z", "+00:00")).timestamp()
+            ts = _parse_oanda_time(c["time"]).timestamp()
             rows.append(
                 {
                     "timestamp": ts,
@@ -287,6 +312,61 @@ class OANDAAdapter:
             count=len(bars),
             last_updated=datetime.now(UTC).isoformat(),
         )
+
+    def _candles(
+        self,
+        instrument: str,
+        granularity: str,
+        period: str,
+        start_date: Optional[str],
+        end_date: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        """The raw candles for a period or a date range, paged past OANDA's
+        5000-per-request cap by walking back from the end. Oldest first.
+
+        A period returns at least the most recent 5000 candles (as a single
+        request always did) and pages further back only while that falls
+        short of the period. A range returns exactly the candles inside it."""
+        path = self._account_path(f"/instruments/{instrument}/candles")
+        base: Dict[str, Any] = {"granularity": granularity, "price": "M"}
+        step = _GRANULARITY_SECONDS.get(granularity, 60)
+
+        if start_date and end_date:
+            start = datetime.fromisoformat(f"{start_date}T00:00:00+00:00")
+            end = datetime.fromisoformat(f"{end_date}T00:00:00+00:00")
+            if (end - start).total_seconds() / step <= _MAX_CANDLES_PER_REQUEST:
+                payload = self._get(
+                    path,
+                    {**base, "from": f"{start_date}T00:00:00Z", "to": f"{end_date}T00:00:00Z"},
+                )
+                return payload.get("candles", []) if isinstance(payload, dict) else []
+            first: Dict[str, Any] = {"to": _oanda_time(end)}
+            max_pages = _MAX_RANGE_PAGES
+        else:
+            days = _PERIOD_TO_DAYS.get(period, 366)
+            start = datetime.now(UTC) - timedelta(days=days)
+            first = {}
+            max_pages = _MAX_PERIOD_PAGES
+
+        by_time: Dict[str, Dict[str, Any]] = {}
+        cursor_params = first
+        for _ in range(max_pages):
+            payload = self._get(path, {**base, **cursor_params, "count": _MAX_CANDLES_PER_REQUEST})
+            page = payload.get("candles", []) if isinstance(payload, dict) else []
+            new = [c for c in page if c.get("time") not in by_time]
+            for c in new:
+                by_time[c["time"]] = c
+            if len(page) < _MAX_CANDLES_PER_REQUEST or not new:
+                break
+            earliest = min(_parse_oanda_time(c["time"]) for c in page)
+            if earliest <= start:
+                break
+            cursor_params = {"to": _oanda_time(earliest)}
+        candles = list(by_time.values())
+        if start_date and end_date:
+            candles = [c for c in candles if start <= _parse_oanda_time(c["time"]) < end]
+        candles.sort(key=lambda c: _parse_oanda_time(c["time"]))
+        return candles
 
     def _with_indicators(
         self, rows: List[Dict[str, Any]], indicators: Optional[List[str]]

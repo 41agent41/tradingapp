@@ -68,14 +68,25 @@ _TRADING_LIVE_BASE = "https://api.alpaca.markets"
 _DATA_BASE = "https://data.alpaca.markets"
 
 # Rough bar budget per app period.
-_PERIOD_TO_LIMIT = {
-    "1D": 400,
-    "1W": 2000,
-    "1M": 6000,
-    "3M": 12000,
-    "6M": 20000,
-    "1Y": 40000,
+# Alpaca returns at most 10000 bars per request; longer spans follow
+# next_page_token.
+_MAX_BARS_PER_REQUEST = 10000
+# How far back an app period reaches.
+_PERIOD_TO_DAYS = {
+    "1D": 1,
+    "5D": 5,
+    "1W": 7,
+    "1M": 31,
+    "3M": 92,
+    "6M": 183,
+    "1Y": 366,
+    "2Y": 731,
+    "5Y": 1827,
 }
+# A period (a chart) is capped so it stays quick and keeps the most recent
+# bars; an explicit date range (the backfill, a download) may page further.
+_MAX_PERIOD_PAGES = 5
+_MAX_RANGE_PAGES = 200
 
 
 class AlpacaAdapter:
@@ -178,15 +189,36 @@ class AlpacaAdapter:
         account_mode: str = "paper",
     ) -> HistoricalDataResponse:
         alpaca_tf = self._map_timeframe(timeframe)
-        params: Dict[str, Any] = {"timeframe": alpaca_tf, "adjustment": "raw"}
+        params: Dict[str, Any] = {
+            "timeframe": alpaca_tf,
+            "adjustment": "raw",
+            "limit": _MAX_BARS_PER_REQUEST,
+        }
         if start_date and end_date:
             params["start"] = start_date
             params["end"] = end_date
+            max_pages = _MAX_RANGE_PAGES
         else:
-            params["limit"] = _PERIOD_TO_LIMIT.get(period, 40000)
+            # Without a start Alpaca answers from the start of today, so a
+            # period is a start date. Newest first, so a capped period keeps
+            # the most recent bars.
+            days = _PERIOD_TO_DAYS.get(period, 366)
+            params["start"] = (datetime.now(UTC) - timedelta(days=days)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            params["sort"] = "desc"
+            max_pages = _MAX_PERIOD_PAGES
 
-        payload = self._data_get(f"/v2/stocks/{symbol.upper()}/bars", params)
-        raw_bars = payload.get("bars", []) if isinstance(payload, dict) else []
+        raw_bars: List[Dict[str, Any]] = []
+        for _ in range(max_pages):
+            payload = self._data_get(f"/v2/stocks/{symbol.upper()}/bars", params)
+            if not isinstance(payload, dict):
+                break
+            raw_bars.extend(payload.get("bars") or [])
+            token = payload.get("next_page_token")
+            if not token:
+                break
+            params = {**params, "page_token": token}
 
         rows = []
         for b in raw_bars:

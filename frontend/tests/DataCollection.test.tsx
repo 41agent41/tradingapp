@@ -5,7 +5,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import DataCollection from '../app/components/DataCollection';
+import DataCollection, { historyProgress } from '../app/components/DataCollection';
 
 const ENTRY = {
   id: 3,
@@ -21,6 +21,9 @@ const ENTRY = {
   collection_interval_minutes: 5,
   retention_days: 365,
   latest_bar: null,
+  history_start: null,
+  oldest_bar: null,
+  backfilled_to: null,
 };
 
 function mockApi(entries = [ENTRY]) {
@@ -81,6 +84,37 @@ describe('DataCollection', () => {
     await waitFor(() => expect(writes).toHaveLength(2));
     expect(writes[1].method).toBe('DELETE');
     await waitFor(() => expect(screen.getByText(/stored bars are kept/)).toBeInTheDocument());
+  });
+
+  it('sends the history start date with a new entry', async () => {
+    const writes = mockApi();
+    render(<DataCollection />);
+    await screen.findByText('EUR_USD');
+    fireEvent.change(screen.getByLabelText('Symbol *'), { target: { value: 'EUR_USD' } });
+    fireEvent.change(screen.getByLabelText('History from'), { target: { value: '2025-01-01' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].body).toMatchObject({ history_start: '2025-01-01' });
+  });
+
+  it('shows how far the walk back to the history start has got', () => {
+    expect(historyProgress(ENTRY)).toBe('recent only');
+    const deep = { ...ENTRY, history_start: '2025-01-01' };
+    expect(historyProgress(deep)).toBe('from 2025-01-01: starting');
+    expect(
+      historyProgress({
+        ...deep,
+        oldest_bar: '2025-06-03T00:00:00.000Z',
+        backfilled_to: '2025-06-01T00:00:00.000Z',
+      })
+    ).toBe('from 2025-01-01: back to 2025-06-03 so far');
+    expect(
+      historyProgress({
+        ...deep,
+        oldest_bar: '2025-01-02T00:00:00.000Z',
+        backfilled_to: '2025-01-01T00:00:00.000Z',
+      })
+    ).toBe('from 2025-01-01: complete (oldest bar 2025-01-02)');
   });
 
   it('says when nothing is collected yet', async () => {

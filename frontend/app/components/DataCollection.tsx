@@ -8,8 +8,9 @@ import { apiFetch } from '../lib/api';
  * Settings > Schedulers and data: which instruments the app collects bars for
  * on its own. The backfill scheduler fetches each enabled entry's recent bars
  * whenever its newest stored bar is older than the entry's interval, and keeps
- * them for its retention period. Removing an entry stops collection; bars
- * already stored stay.
+ * them for its retention period. With "History from" set it also walks back
+ * to that date, a chunk at a time, for backtests. Removing an entry stops
+ * collection; bars already stored stay.
  */
 
 export type CollectionEntry = {
@@ -26,6 +27,9 @@ export type CollectionEntry = {
   collection_interval_minutes: number;
   retention_days: number;
   latest_bar: string | null;
+  history_start: string | null;
+  oldest_bar: string | null;
+  backfilled_to: string | null;
 };
 
 type Payload = { entries: CollectionEntry[]; brokers: string[]; timeframes: string[] };
@@ -44,6 +48,7 @@ const EMPTY = {
   timeframe: '1hour',
   collection_interval_minutes: '60',
   retention_days: '365',
+  history_start: '',
 };
 
 async function readJson(r: Response) {
@@ -55,6 +60,16 @@ async function readJson(r: Response) {
 
 function newest(latest: string | null): string {
   return latest ? new Date(latest).toLocaleString() : 'none yet';
+}
+
+/** How far the walk back to the history start has got. */
+export function historyProgress(e: CollectionEntry): string {
+  if (!e.history_start) return 'recent only';
+  const oldest = e.oldest_bar ? e.oldest_bar.slice(0, 10) : null;
+  if (e.backfilled_to && e.backfilled_to.slice(0, 10) <= e.history_start) {
+    return `from ${e.history_start}: complete${oldest ? ` (oldest bar ${oldest})` : ''}`;
+  }
+  return `from ${e.history_start}: ${oldest ? `back to ${oldest} so far` : 'starting'}`;
 }
 
 export default function DataCollection() {
@@ -105,6 +120,7 @@ export default function DataCollection() {
         ...form,
         collection_interval_minutes: form.collection_interval_minutes || undefined,
         retention_days: form.retention_days || undefined,
+        history_start: form.history_start || undefined,
       },
       `${form.symbol.toUpperCase()} ${form.timeframe} added.`
     );
@@ -119,7 +135,8 @@ export default function DataCollection() {
         <h2 className="text-base font-semibold text-gray-900">Data collection</h2>
         <p className="text-sm text-gray-600">
           Instruments whose bars are fetched and stored automatically while the backfill scheduler
-          is on (below). Each is fetched when its newest bar is older than its interval.
+          is on (below). Each is fetched when its newest bar is older than its interval. Set History
+          from to also collect older bars back to that date (up to two years), for backtests.
         </p>
       </div>
 
@@ -150,6 +167,7 @@ export default function DataCollection() {
                 <th className="py-1 pr-3">Every (min)</th>
                 <th className="py-1 pr-3">Keep (days)</th>
                 <th className="py-1 pr-3">Newest bar</th>
+                <th className="py-1 pr-3">History</th>
                 <th className="py-1 pr-3">Collect</th>
                 <th className="py-1" />
               </tr>
@@ -166,6 +184,7 @@ export default function DataCollection() {
                   <td className="py-1 pr-3">{e.collection_interval_minutes}</td>
                   <td className="py-1 pr-3">{e.retention_days}</td>
                   <td className="py-1 pr-3">{newest(e.latest_bar)}</td>
+                  <td className="py-1 pr-3">{historyProgress(e)}</td>
                   <td className="py-1 pr-3">
                     <input
                       type="checkbox"
@@ -278,6 +297,15 @@ export default function DataCollection() {
                 min={1}
                 value={form.retention_days}
                 onChange={(e) => set({ retention_days: e.target.value })}
+              />
+            </label>
+            <label className="text-sm text-gray-700">
+              History from
+              <input
+                className={INPUT}
+                type="date"
+                value={form.history_start}
+                onChange={(e) => set({ history_start: e.target.value })}
               />
             </label>
             <label className="text-sm text-gray-700">

@@ -50,7 +50,7 @@ describe('CollectionConfigRepository.add', () => {
       })
     );
     const insert = query.mock.calls.find(([sql]) => sql.includes('INSERT'));
-    expect(insert?.[1]).toEqual([9, '1hour', null, null, 60, null]);
+    expect(insert?.[1]).toEqual([9, '1hour', null, null, 60, null, false, null]);
   });
 
   it.each([
@@ -60,10 +60,47 @@ describe('CollectionConfigRepository.add', () => {
     [{ broker: 'ib', symbol: 'MSFT', timeframe: '1day', sec_type: 'XYZ' }, /sec_type/],
     [{ broker: 'ib', symbol: 'MSFT', timeframe: '1day', retention_days: 0 }, /retention_days/],
     [{ broker: 'ib', symbol: 'MSFT', timeframe: '1day', enabled: 'yes' }, /true or false/],
+    [
+      { broker: 'oanda', symbol: 'EUR_USD', timeframe: '5min', history_start: '1/2/24' },
+      /YYYY-MM-DD/,
+    ],
+    [
+      { broker: 'oanda', symbol: 'EUR_USD', timeframe: '5min', history_start: '2999-01-01' },
+      /past/,
+    ],
+    [
+      { broker: 'oanda', symbol: 'EUR_USD', timeframe: '5min', history_start: '2000-01-01' },
+      /730 days/,
+    ],
   ])('refuses %j', async (input, message) => {
     const { repo, contracts } = repoWith();
     await expect(repo.add(input)).rejects.toThrow(message);
     expect(contracts.getOrCreateContract).not.toHaveBeenCalled();
+  });
+});
+
+describe('history_start', () => {
+  const recent = new Date(Date.now() - 300 * 86_400_000).toISOString().slice(0, 10);
+
+  it('is saved on add, and replaces the old one when added again', async () => {
+    const { repo, query } = repoWith();
+    await repo.add({
+      broker: 'oanda',
+      symbol: 'EUR_USD',
+      timeframe: '5min',
+      history_start: recent,
+    });
+    const insert = query.mock.calls.find(([sql]) => sql.includes('INSERT'));
+    expect(insert?.[1]?.slice(-2)).toEqual([true, recent]);
+  });
+
+  it('is cleared by an empty value and left alone when absent', async () => {
+    const { repo, query } = repoWith();
+    await repo.update(3, { history_start: '' });
+    await repo.update(3, { retention_days: 30 });
+    const updates = query.mock.calls.filter(([sql]) => sql.includes('UPDATE'));
+    expect(updates[0][1]?.slice(-2)).toEqual([true, null]);
+    expect(updates[1][1]?.slice(-2)).toEqual([false, null]);
   });
 });
 

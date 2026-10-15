@@ -5,8 +5,10 @@
  * Each row is one instrument at one broker (its contract) and one timeframe.
  * With `auto_collect` on, the backfill scheduler fetches its recent bars
  * whenever the newest stored bar is older than `collection_interval_minutes`;
- * `retention_days` is how long its raw bars are kept. A disabled row is kept
- * but ignored by both.
+ * `retention_days` is how long its raw bars are kept. With `history_start`
+ * set, the scheduler also walks back to that date a chunk at a time, and bars
+ * from it on are kept whatever the retention. A disabled row is kept but
+ * ignored by both.
  */
 import type { Querier } from './backtestRunRepository.js';
 import type { Contract } from './marketDataService.js';
@@ -28,6 +30,12 @@ export interface CollectionRow {
   collection_interval_minutes: number;
   retention_days: number;
   latest_bar: string | null;
+  /** Deep history: the date to collect back to, YYYY-MM-DD, or null. */
+  history_start: string | null;
+  /** The oldest stored bar. */
+  oldest_bar: string | null;
+  /** How far back the scheduler has asked the broker so far. */
+  backfilled_to: string | null;
   updated_at: string | null;
 }
 
@@ -40,6 +48,10 @@ export class CollectionConfigError extends Error {
   }
 }
 
+/** How far back history may go: TimescaleDB drops bars older than two years
+ *  (the retention policy in timescaledb-schema.sql). */
+export const MAX_HISTORY_DAYS = 730;
+
 /** Timeframes the scheduler can fetch as bars (ticks are streamed, not backfilled). */
 export const COLLECTION_TIMEFRAMES = VALID_TIMEFRAMES.filter((t) => t !== 'tick');
 
@@ -47,8 +59,11 @@ const SELECT = `
   SELECT dcc.id, dcc.contract_id, c.broker, c.broker_account AS account, c.symbol, c.sec_type,
          c.exchange, c.currency, dcc.timeframe, dcc.enabled, dcc.auto_collect,
          dcc.collection_interval_minutes, dcc.retention_days, dcc.updated_at,
+         to_char(dcc.history_start, 'YYYY-MM-DD') AS history_start, dcc.backfilled_to,
          (SELECT MAX(cd.timestamp) FROM candlestick_data cd
-           WHERE cd.contract_id = dcc.contract_id AND cd.timeframe = dcc.timeframe) AS latest_bar
+           WHERE cd.contract_id = dcc.contract_id AND cd.timeframe = dcc.timeframe) AS latest_bar,
+         (SELECT MIN(cd.timestamp) FROM candlestick_data cd
+           WHERE cd.contract_id = dcc.contract_id AND cd.timeframe = dcc.timeframe) AS oldest_bar
     FROM data_collection_config dcc
     JOIN contracts c ON c.id = dcc.contract_id`;
 
@@ -68,6 +83,9 @@ function toRow(r: any): CollectionRow {
     collection_interval_minutes: Number(r.collection_interval_minutes ?? 5),
     retention_days: Number(r.retention_days ?? 365),
     latest_bar: r.latest_bar ? new Date(r.latest_bar).toISOString() : null,
+    history_start: r.history_start ?? null,
+    oldest_bar: r.oldest_bar ? new Date(r.oldest_bar).toISOString() : null,
+    backfilled_to: r.backfilled_to ? new Date(r.backfilled_to).toISOString() : null,
     updated_at: r.updated_at ? new Date(r.updated_at).toISOString() : null,
   };
 }
@@ -91,8 +109,32 @@ function flag(value: unknown, name: string): boolean | undefined {
   throw new CollectionConfigError(`${name} must be true or false.`);
 }
 
-function options(input: Record<string, unknown>) {
+/**
+ * A history start date: '' or null clears it (undefined leaves it as is).
+ * Must be in the past and within MAX_HISTORY_DAYS.
+ */
+function historyStart(value: unknown, now: Date): string | null | undefined {
+  if (value === undefined) return undefined;
+  const raw = text(value);
+  if (!raw) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw) || Number.isNaN(Date.parse(`${raw}T00:00:00Z`))) {
+    throw new CollectionConfigError('history_start must be a date, YYYY-MM-DD.');
+  }
+  const day = new Date(`${raw}T00:00:00Z`).getTime();
+  if (day >= now.getTime()) {
+    throw new CollectionConfigError('history_start must be in the past.');
+  }
+  if (now.getTime() - day > MAX_HISTORY_DAYS * 86_400_000) {
+    throw new CollectionConfigError(
+      `history_start can go back at most ${MAX_HISTORY_DAYS} days: the database keeps two years of bars.`
+    );
+  }
+  return raw;
+}
+
+function options(input: Record<string, unknown>, now = new Date()) {
   return {
+    historyStart: historyStart(input.history_start, now),
     enabled: flag(input.enabled, 'enabled'),
     autoCollect: flag(input.auto_collect, 'auto_collect'),
     interval: wholeNumber(
@@ -163,14 +205,17 @@ export class CollectionConfigRepository {
     });
     const { rows } = await this.db.query(
       `INSERT INTO data_collection_config
-         (contract_id, timeframe, enabled, auto_collect, collection_interval_minutes, retention_days)
-       VALUES ($1, $2, COALESCE($3, true), COALESCE($4, true), COALESCE($5, 5), COALESCE($6, 365))
+         (contract_id, timeframe, enabled, auto_collect, collection_interval_minutes, retention_days,
+          history_start)
+       VALUES ($1, $2, COALESCE($3, true), COALESCE($4, true), COALESCE($5, 5), COALESCE($6, 365),
+               $8::date)
        ON CONFLICT (contract_id, timeframe) DO UPDATE
           SET enabled = COALESCE($3, data_collection_config.enabled),
               auto_collect = COALESCE($4, data_collection_config.auto_collect),
               collection_interval_minutes =
                 COALESCE($5, data_collection_config.collection_interval_minutes),
-              retention_days = COALESCE($6, data_collection_config.retention_days)
+              retention_days = COALESCE($6, data_collection_config.retention_days),
+              history_start = CASE WHEN $7 THEN $8::date ELSE data_collection_config.history_start END
        RETURNING id`,
       [
         contractId,
@@ -179,6 +224,8 @@ export class CollectionConfigRepository {
         opts.autoCollect ?? null,
         opts.interval ?? null,
         opts.retention ?? null,
+        opts.historyStart !== undefined,
+        opts.historyStart ?? null,
       ]
     );
     return this.get(Number(rows[0].id));
@@ -193,7 +240,8 @@ export class CollectionConfigRepository {
           SET enabled = COALESCE($2, enabled),
               auto_collect = COALESCE($3, auto_collect),
               collection_interval_minutes = COALESCE($4, collection_interval_minutes),
-              retention_days = COALESCE($5, retention_days)
+              retention_days = COALESCE($5, retention_days),
+              history_start = CASE WHEN $6 THEN $7::date ELSE history_start END
         WHERE id = $1`,
       [
         id,
@@ -201,6 +249,8 @@ export class CollectionConfigRepository {
         opts.autoCollect ?? null,
         opts.interval ?? null,
         opts.retention ?? null,
+        opts.historyStart !== undefined,
+        opts.historyStart ?? null,
       ]
     );
     return this.get(id);

@@ -127,8 +127,47 @@ def test_historical_bars_date_range_sets_custom_period(alpaca):
     _method, _url, _headers, params, _json = FakeClient.calls[0]
     assert params["timeframe"] == "1Hour"
     assert params["start"] == "2024-01-01" and params["end"] == "2024-02-01"
-    assert "limit" not in params
+    assert params["limit"] == 10000
     assert resp.period == "CUSTOM"
+
+
+def _paged_bars(pages):
+    """A fake Alpaca serving `pages` (lists of bar timestamps) one per
+    request, linked by next_page_token."""
+
+    def handler(method, url, params, json):
+        index = int(params.get("page_token") or 0)
+        body = {
+            "bars": [{"t": t, "o": 1, "h": 1, "l": 1, "c": 1, "v": 1} for t in pages[index]],
+            "next_page_token": str(index + 1) if index + 1 < len(pages) else None,
+        }
+        return FakeResponse(body)
+
+    return handler
+
+
+def test_historical_bars_range_follows_page_tokens(alpaca):
+    FakeClient.handler = _paged_bars(
+        [["2024-01-02T14:30:00Z"], ["2024-01-03T14:30:00Z"], ["2024-01-04T14:30:00Z"]]
+    )
+    resp = _adapter(alpaca).historical_bars(
+        "AAPL", "1day", "1Y", start_date="2024-01-01", end_date="2024-02-01"
+    )
+    assert resp.count == 3
+    assert [c[3].get("page_token") for c in FakeClient.calls] == [None, "1", "2"]
+    assert resp.bars[0].timestamp < resp.bars[-1].timestamp
+
+
+def test_historical_bars_period_has_a_start_newest_first_and_a_page_cap(alpaca):
+    pages = [[f"2024-01-{d:02d}T14:30:00Z"] for d in range(28, 0, -1)]
+    FakeClient.handler = _paged_bars(pages)
+    resp = _adapter(alpaca).historical_bars("AAPL", "1day", "1M")
+    params = FakeClient.calls[0][3]
+    assert params["sort"] == "desc" and "start" in params
+    assert len(FakeClient.calls) == alpaca._MAX_PERIOD_PAGES
+    # The newest bars are kept, returned oldest first.
+    assert resp.count == alpaca._MAX_PERIOD_PAGES
+    assert resp.bars[-1].timestamp > resp.bars[0].timestamp
 
 
 def test_historical_bars_computes_requested_indicators(alpaca):
