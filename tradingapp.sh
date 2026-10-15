@@ -37,7 +37,7 @@ ENV_KEYS=(POSTGRES_HOST POSTGRES_PORT POSTGRES_USER POSTGRES_PASSWORD POSTGRES_D
 # generated into the internal secrets volume, detected at run time, or
 # constants. `install` removes them (after a backup).
 OBSOLETE_KEYS=(SERVER_IP NODE_ENV REDIS_HOST REDIS_PORT BROKER_SERVICE_TOKEN REDIS_PASSWORD
-    IB_CORS_ORIGINS IB_TIMEOUT IB_CLIENT_POOL_SIZE IB_TIMEZONE DATA_TIMEZONE
+    IB_CORS_ORIGINS IB_TIMEOUT IB_CLIENT_POOL_SIZE DATA_TIMEZONE
     EXPECTED_TIMESTAMP_FORMAT IB_FORMAT_DATE TZ NEXT_PUBLIC_API_URL)
 
 # Broker keys. Brokers are added in the app (Settings > Connections), where
@@ -823,6 +823,7 @@ Commission:
                       bundled one (asks for its host and password)
       --answers FILE  take answers from FILE (KEY=VALUE lines) instead of asking
       --non-interactive  never prompt
+      --env-only      write .env and stop
 
 Run:
   deploy              Build and start, then wait until ready
@@ -899,7 +900,8 @@ case "${1:-}" in
         print_status "Services stopped"
         ;;
     restart)
-        compose_cmd restart
+        # Recreated rather than restarted, so a change to .env takes effect.
+        compose_cmd up -d --force-recreate
         print_status "Services restarted"
         ;;
     status)
@@ -934,7 +936,14 @@ case "${1:-}" in
             print_error "The backend is not running. Start it first: $0 start"
             exit 1
         fi
-        compose_cmd exec -T backend node dist/cli/migrate.js
+        compose_cmd exec -T backend node dist/cli/migrate.js || exit 1
+        # A backend that stopped on a failed migration stays stopped until it
+        # starts again.
+        if [[ "$(backend_readiness | awk '{print $2}')" == "migration_failed" ]]; then
+            print_info "Restarting the backend, which stopped on the failed migration..."
+            compose_cmd restart backend >/dev/null
+            wait_for_backend_ready 300 || exit 1
+        fi
         ;;
     forget-secrets)
         print_warning "Use this only when SETTINGS_ENCRYPTION_KEY is lost. It clears every secret"
