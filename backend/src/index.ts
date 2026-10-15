@@ -5,6 +5,7 @@ import { Server as SocketIOServer } from 'socket.io';
 import marketDataRoutes from './routes/marketData.js';
 import accountRoutes from './routes/account.js';
 import settingsRoutes from './routes/settings.js';
+import securityRoutes from './routes/security.js';
 import backtestingRoutes from './routes/backtesting.js';
 import exportRoutes from './routes/export.js';
 import ordersRoutes from './routes/orders.js';
@@ -48,6 +49,9 @@ import { brokersFromHealth, defaultBrokerProblem } from './services/brokerStatus
 import brokersRoutes from './routes/brokers.js';
 import { brokerSync } from './services/brokerConnectionsRuntime.js';
 import { BROKER_SETTING_KEYS } from './services/brokerSync.js';
+import { credentials } from './services/credentials.js';
+import { announceSetupCode } from './services/setupCode.js';
+import { isLiveTradingEnabled, liveTradingSafeguardsMissing } from './services/orderTypes.js';
 
 // Refuse to start on an unsafe configuration (open API, default secrets, live
 // trading without MFA, an unimplemented kill-switch action). See the module.
@@ -265,6 +269,7 @@ app.get('/api/database/health', async (_req, res) => {
 app.use('/api/market-data', marketDataRoutes);
 app.use('/api/account', accountRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/security', securityRoutes);
 app.use('/api/backtesting', backtestingRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/orders', ordersRoutes);
@@ -516,6 +521,15 @@ server.listen(PORT, '0.0.0.0', () => {
   configService.attach(dbService);
   const settingsLoaded = configService.start();
 
+  // The login password, tokens and MFA secret managed on the Security tab.
+  // With no password anywhere, print the first-run setup code.
+  credentials.attach(dbService);
+  const credentialsLoaded = credentials.start().then(() => {
+    if (!credentials.hasPassword()) announceSetupCode();
+  });
+  // The broker service follows the live gate, which needs the safeguards.
+  credentials.onChange(() => void brokerSync.check());
+
   // Broker connections added on the Settings page, sent to the broker service.
   brokerSync.start();
 
@@ -563,6 +577,17 @@ server.listen(PORT, '0.0.0.0', () => {
     // values now and on every change, not only on the next background check.
     void brokerSync.check();
     configService.subscribe(BROKER_SETTING_KEYS, () => void brokerSync.check());
+    void credentialsLoaded.then(() => {
+      if (
+        (configService.get('LIVE_TRADING_ENABLED') ?? '').toLowerCase() === 'true' &&
+        !isLiveTradingEnabled()
+      ) {
+        logger.warn(
+          { missing: liveTradingSafeguardsMissing() },
+          'live trading is switched on but stays closed until a trading token and order MFA are set up'
+        );
+      }
+    });
   });
 
   // Multi-connection on a pre-C-0 schema silently drops colliding fills, so

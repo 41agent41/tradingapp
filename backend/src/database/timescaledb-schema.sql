@@ -915,6 +915,22 @@ CREATE INDEX IF NOT EXISTS idx_settings_audit_key_time
 -- are sealed together in `ciphertext` under SETTINGS_ENCRYPTION_KEY; `.env`
 -- still wins per platform. The backend also creates this table on first use
 -- (backend/src/services/brokerConnections.ts) for installs that predate it.
+-- Login password, API and trading tokens, the order MFA secret and the
+-- session signing key, managed on the Security tab (services/credentials.ts).
+-- The password and tokens are stored only as hashes; the MFA secret and the
+-- session key are sealed under SETTINGS_ENCRYPTION_KEY.
+CREATE TABLE IF NOT EXISTS auth_credentials (
+    id VARCHAR(32) PRIMARY KEY,          -- 'password', 'mfa', 'session_secret' or a token id
+    kind VARCHAR(16) NOT NULL,           -- password | mfa | session_secret | api | trading
+    label VARCHAR(64),
+    prefix VARCHAR(16),
+    hash TEXT,
+    ciphertext TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by VARCHAR(64),
+    last_used_at TIMESTAMPTZ
+);
+
 CREATE TABLE IF NOT EXISTS broker_connections (
     id BIGSERIAL PRIMARY KEY,
     platform VARCHAR(16) NOT NULL,

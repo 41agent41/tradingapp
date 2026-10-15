@@ -55,15 +55,9 @@ export function checkStartupConfig(env: Env = process.env): StartupCheckResult {
   const warnings: string[] = [];
   const production = val(env, 'NODE_ENV') === 'production';
 
-  // --- Live trading needs the trader role and MFA (S4) -------------------
-  if (val(env, 'LIVE_TRADING_ENABLED').toLowerCase() === 'true') {
-    if (!val(env, 'TRADING_TOKENS')) {
-      errors.push('LIVE_TRADING_ENABLED=true requires TRADING_TOKENS (the trader role).');
-    }
-    if (!val(env, 'ORDER_MFA_SECRET')) {
-      errors.push('LIVE_TRADING_ENABLED=true requires ORDER_MFA_SECRET (order MFA).');
-    }
-  }
+  // (Live trading needs the trader role and MFA, S4. Both can now be set up
+  // on the Security tab, so the live gate itself checks for them on every
+  // order and stays closed without them, rather than this refusing to start.)
 
   // --- Kill switch: an unknown action would silently fall back to notify ---
   const action = val(env, 'KILL_SWITCH_ACTION').toLowerCase();
@@ -129,11 +123,11 @@ export function checkStartupConfig(env: Env = process.env): StartupCheckResult {
   if (!production) return { errors, warnings };
 
   // --- Authentication (S2) ------------------------------------------------
+  // The password and tokens can be left out of .env and set in the app: with
+  // none, the API refuses every request until the first-run setup is done.
+  // A value that is in .env must still be a real one.
   const apiToken = val(env, 'API_TOKEN');
   const appPassword = val(env, 'APP_PASSWORD');
-  if (!apiToken && !appPassword) {
-    errors.push('Set APP_PASSWORD (browser login) and/or API_TOKEN: the API would be open.');
-  }
   if (apiToken) {
     const problem = weakSecret(apiToken, 24);
     if (problem) errors.push(`API_TOKEN ${problem}.`);
@@ -141,8 +135,15 @@ export function checkStartupConfig(env: Env = process.env): StartupCheckResult {
   if (appPassword) {
     const problem = weakSecret(appPassword, 12);
     if (problem) errors.push(`APP_PASSWORD ${problem}.`);
-    const sessionProblem = weakSecret(val(env, 'SESSION_SECRET'), 32);
+  }
+  const sessionSecret = val(env, 'SESSION_SECRET');
+  if (sessionSecret) {
+    const sessionProblem = weakSecret(sessionSecret, 32);
     if (sessionProblem) errors.push(`SESSION_SECRET ${sessionProblem} (it signs login sessions).`);
+  } else if (!val(env, 'SETTINGS_ENCRYPTION_KEY')) {
+    warnings.push(
+      'Neither SESSION_SECRET nor SETTINGS_ENCRYPTION_KEY is set: logins will not survive a restart.'
+    );
   }
 
   // --- Broker service shared secret (S1) ----------------------------------

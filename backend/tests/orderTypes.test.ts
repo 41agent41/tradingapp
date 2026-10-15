@@ -3,6 +3,7 @@
  * code in the orders flow that runs on every request, so it deserves
  * tight coverage.
  */
+import { withSafeguards } from './helpers/totp.js';
 import {
   validateOrder,
   isLiveTradingEnabled,
@@ -231,6 +232,7 @@ describe('isLiveTradingEnabled', () => {
     expect(isLiveTradingEnabled()).toBe(false);
   });
   it('is true only for the exact case-insensitive string "true"', () => {
+    withSafeguards();
     process.env.LIVE_TRADING_ENABLED = 'true';
     expect(isLiveTradingEnabled()).toBe(true);
     process.env.LIVE_TRADING_ENABLED = 'TRUE';
@@ -239,6 +241,16 @@ describe('isLiveTradingEnabled', () => {
     expect(isLiveTradingEnabled()).toBe(false);
     process.env.LIVE_TRADING_ENABLED = 'yes';
     expect(isLiveTradingEnabled()).toBe(false);
+    delete process.env.TRADING_TOKENS;
+    delete process.env.ORDER_MFA_SECRET;
+  });
+
+  it('stays closed without the trader role and MFA, even when switched on', () => {
+    process.env.LIVE_TRADING_ENABLED = 'true';
+    withSafeguards();
+    delete process.env.ORDER_MFA_SECRET;
+    expect(isLiveTradingEnabled()).toBe(false);
+    delete process.env.TRADING_TOKENS;
   });
 });
 

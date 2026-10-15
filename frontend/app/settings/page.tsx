@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
 import BackToHome from '../components/BackToHome';
 import BrokerConnections from '../components/BrokerConnections';
+import SecurityPanel from '../components/SecurityPanel';
 import { apiFetch } from '../lib/api';
 import {
   type AuditEntry,
@@ -22,6 +23,7 @@ import {
 
 const HISTORY_TAB = 'history';
 const CONNECTIONS_TAB = 'connections';
+const SECURITY_TAB = 'security';
 
 const SOURCE_STYLES: Record<string, string> = {
   environment: 'bg-amber-100 text-amber-800',
@@ -386,6 +388,11 @@ export default function SettingsPage() {
                 <History />
               ) : (
                 <>
+                  {activeTab === SECURITY_TAB && (
+                    <div className="mb-6 pb-6 border-b">
+                      <SecurityPanel />
+                    </div>
+                  )}
                   {needsStepUp && (
                     <div className="mb-4 p-3 bg-gray-50 border rounded-md">
                       <p className="text-sm text-gray-700 mb-2">

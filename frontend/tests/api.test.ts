@@ -153,6 +153,22 @@ describe('apiFetch', () => {
     vi.unstubAllGlobals();
   });
 
+  it('does not redirect on a 401 about the MFA code', async () => {
+    process.env.NEXT_PUBLIC_API_URL = 'https://api.test';
+    global.fetch = vi.fn(
+      async () => new Response('{}', { status: 401, headers: { 'X-Step-Up-Required': 'mfa' } })
+    ) as unknown as typeof fetch;
+    const assign = vi.fn();
+    vi.stubGlobal('window', { location: { pathname: '/settings', search: '', assign } });
+
+    const mod = await import('../app/lib/api');
+    const res = await mod.apiFetch('/api/settings/ORDER_MAX_QUANTITY', { method: 'PUT' });
+
+    expect(res.status).toBe(401);
+    expect(assign).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
   it('attaches a generated X-Request-Id when the caller did not supply one', async () => {
     process.env.NEXT_PUBLIC_API_URL = 'https://api.test';
     const fetchMock = mockFetch();

@@ -222,6 +222,8 @@ describe('BrokerSync', () => {
       const { db } = fakeDb();
       const store = new BrokerConnectionStore(db, {});
       process.env.LIVE_TRADING_ENABLED = 'true';
+      process.env.TRADING_TOKENS = 'trader-token-1';
+      process.env.ORDER_MFA_SECRET = 'JBSWY3DPEHPK3PXP';
       process.env.DEFAULT_BROKER = 'oanda';
       const live = await buildPayload(store);
       expect(live.settings).toEqual({ LIVE_TRADING_ENABLED: 'true', DEFAULT_BROKER: 'oanda' });

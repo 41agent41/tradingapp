@@ -1,9 +1,9 @@
 import type { Request, Response, NextFunction } from 'express';
 
+import { credentials } from '../services/credentials.js';
 import {
   isLoginConfigured,
   readCookie,
-  safeEqual,
   SESSION_COOKIE,
   verifySession,
 } from '../services/session.js';
@@ -15,13 +15,14 @@ import {
  *
  *   - a session cookie issued by `POST /api/auth/login` (the browser; see
  *     `services/session.ts`), or
- *   - `API_TOKEN`, sent as `Authorization: Bearer <token>` or `x-api-token`
- *     (scripts and curl). It is never shipped to the browser.
+ *   - an API token, sent as `Authorization: Bearer <token>` or `x-api-token`
+ *     (scripts and curl): `API_TOKEN` in `.env`, or one created on the
+ *     Security tab. It is never shipped to the browser.
  *
- * Auth is "configured" when `API_TOKEN` is set or login is configured
- * (`APP_PASSWORD` + `SESSION_SECRET`). When neither is, the middleware lets
- * everything through with a loud warning; `startupChecks.ts` refuses to
- * start that way in production, so only local development runs open.
+ * Auth is "configured" once there is a login password or an API token. Until
+ * then a production backend refuses every request but the first-run setup
+ * (`/api/auth/setup`), so whoever installs it sets the password before anyone
+ * can use it; only local development runs open, with a loud warning.
  *
  * Paths in `OPEN_PATHS` skip the check: liveness probes, the scrape endpoint
  * and the login routes themselves.
@@ -35,16 +36,17 @@ export const OPEN_PATHS = new Set<string>([
   '/api/auth/login',
   '/api/auth/logout',
   '/api/auth/session',
+  '/api/auth/setup',
 ]);
 
 let warned = false;
 
-function apiToken(): string {
-  return (process.env.API_TOKEN || '').trim();
+export function isAuthConfigured(): boolean {
+  return credentials.hasTokens('api') || isLoginConfigured();
 }
 
-export function isAuthConfigured(): boolean {
-  return apiToken().length > 0 || isLoginConfigured();
+function production(): boolean {
+  return process.env.NODE_ENV === 'production';
 }
 
 function extractToken(req: Request): string | null {
@@ -64,28 +66,41 @@ export function isAuthenticated(
   headers: Record<string, string | string[] | undefined>,
   bearer: string | null
 ): boolean {
-  const expected = apiToken();
-  if (expected && bearer && safeEqual(bearer, expected)) return true;
+  if (bearer && credentials.matchToken('api', bearer)) return true;
   return verifySession(readCookie(headers['cookie'], SESSION_COOKIE));
 }
 
+/** Decided per request, so setting the first password takes effect at once. */
 export function createAuthMiddleware() {
-  if (!isAuthConfigured()) {
-    if (!warned) {
-      console.warn(
-        '[auth] neither API_TOKEN nor APP_PASSWORD is set: backend routes are ' +
-          'UNAUTHENTICATED. This is refused in production.'
-      );
-      warned = true;
-    }
-    return (_req: Request, _res: Response, next: NextFunction) => next();
-  }
-
-  console.log('[auth] authentication enforced (session cookie or API token)');
-
   return (req: Request, res: Response, next: NextFunction) => {
     if (OPEN_PATHS.has(req.path) || req.method === 'OPTIONS') {
       return next();
+    }
+    if (!isAuthConfigured()) {
+      if (!production()) {
+        if (!warned) {
+          console.warn(
+            '[auth] no login password or API token is set: backend routes are ' +
+              'UNAUTHENTICATED. Production refuses them until the first-run setup is done.'
+          );
+          warned = true;
+        }
+        return next();
+      }
+      if (!credentials.isLoaded()) {
+        // A stored password may not have been read yet; never guess.
+        return res.status(503).json({
+          error: 'Starting',
+          message: 'The backend is still reading its settings. Try again in a moment.',
+          timestamp: new Date().toISOString(),
+        });
+      }
+      return res.status(401).json({
+        error: 'Setup required',
+        message: 'Choose a login password on the setup screen first.',
+        setup_required: true,
+        timestamp: new Date().toISOString(),
+      });
     }
     if (isAuthenticated(req.headers, extractToken(req))) {
       return next();
@@ -109,7 +124,7 @@ export function checkSocketAuth(
   headers: Record<string, string | string[] | undefined>,
   query: Record<string, unknown>
 ): Error | null {
-  if (!isAuthConfigured()) return null; // disabled; see the startup warning
+  if (!isAuthConfigured() && !production()) return null; // see the startup warning
 
   const fromAuth =
     typeof authPayload === 'object' &&

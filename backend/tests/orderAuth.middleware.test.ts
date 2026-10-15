@@ -23,6 +23,10 @@ function mockRes() {
     (res as any).body = body;
     return res;
   }) as any;
+  res.set = jest.fn((name: string, value: string) => {
+    (res as any).headers = { ...((res as any).headers ?? {}), [name]: value };
+    return res;
+  }) as any;
   return res;
 }
 
@@ -95,6 +99,8 @@ describe('orderAuth — MFA (TOTP)', () => {
     const res = mockRes();
     orderAuth(mockReq({ 'x-mfa-code': '000000' }), res, next);
     expect(res.status).toHaveBeenCalledWith(401);
+    // Marked as a step-up failure, so the page does not treat it as a lost login.
+    expect((res as any).headers).toEqual({ 'X-Step-Up-Required': 'mfa' });
     expect(next).not.toHaveBeenCalled();
   });
 

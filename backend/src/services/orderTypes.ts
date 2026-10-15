@@ -20,6 +20,7 @@ export type AccountMode = (typeof ACCOUNT_MODES)[number];
 
 import { configService } from '../config/configService.js';
 import { BROKERS, type Broker } from './brokers.js';
+import { credentials } from './credentials.js';
 
 export { BROKERS };
 export type { Broker };
@@ -380,11 +381,9 @@ export function validateOrder(
  */
 export function isLiveTradingEnabled(): boolean {
   if ((setting('LIVE_TRADING_ENABLED') ?? 'false').toLowerCase() !== 'true') return false;
-  // Set in .env, the startup check already refuses to run without the trader
-  // role and MFA. Set on the Settings page, the save refuses too, but either
-  // could be removed later; then the gate closes rather than leave live
-  // orders protected by the browser password alone.
-  if (configService.source('LIVE_TRADING_ENABLED') === 'environment') return true;
+  // Turning it on needs the trader role and MFA, but either can be removed
+  // later (on the Security tab or in .env); then the gate closes rather than
+  // leave live orders protected by the browser password alone.
   return liveTradingSafeguardsMissing().length === 0;
 }
 
@@ -395,10 +394,8 @@ export function isLiveTradingEnabled(): boolean {
  */
 export function liveTradingSafeguardsMissing(): string[] {
   const missing: string[] = [];
-  if (!(setting('TRADING_TOKENS') || '').split(',').some((t) => t.trim())) {
-    missing.push('a trading token');
-  }
-  if (!(setting('ORDER_MFA_SECRET') || '').trim()) missing.push('an order MFA secret');
+  if (!credentials.hasTokens('trading')) missing.push('a trading token');
+  if (!credentials.mfaSecret()) missing.push('an order MFA secret');
   return missing;
 }
 

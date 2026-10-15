@@ -2,13 +2,16 @@
  * Minimal RFC 6238 TOTP verification (dependency-free).
  *
  * Used to add a second factor to order-mutating endpoints. The shared secret
- * lives in `ORDER_MFA_SECRET` (base32, as emitted by authenticator apps).
+ * is `ORDER_MFA_SECRET` or one enrolled on the Security tab (base32, as
+ * emitted by authenticator apps).
  * We intentionally implement this with Node's `crypto` rather than pull in a
  * dependency — the algorithm is small and the codebase pins its deps.
  *
  * SHA-1 / 30-second step / 6 digits are the authenticator-app defaults.
  */
 import crypto from 'crypto';
+
+import { credentials } from './credentials.js';
 
 const STEP_SECONDS = 30;
 const DIGITS = 6;
@@ -90,7 +93,7 @@ export function verifyTotp(secret: string, code: string, window = DEFAULT_WINDOW
   return false;
 }
 
-/** True when order-endpoint MFA is configured (an `ORDER_MFA_SECRET` is set). */
+/** True when order-endpoint MFA is configured (`ORDER_MFA_SECRET`, or enrolled in the app). */
 export function isMfaConfigured(): boolean {
-  return (process.env.ORDER_MFA_SECRET || '').trim().length > 0;
+  return credentials.mfaSecret().length > 0;
 }

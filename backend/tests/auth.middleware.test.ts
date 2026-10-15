@@ -1,8 +1,8 @@
 /**
  * Auth middleware unit tests.
  *
- * The middleware reads `process.env.API_TOKEN` at construction time, so
- * each test sets the env var before calling `createAuthMiddleware()`.
+ * The middleware reads the credentials on every request, so each block sets
+ * the environment before its tests run.
  */
 import express from 'express';
 import request from 'supertest';
@@ -10,15 +10,16 @@ import { checkSocketAuth, createAuthMiddleware } from '../src/middleware/auth.js
 import authRoutes from '../src/routes/auth.js';
 import { issueSession, SESSION_COOKIE } from '../src/services/session.js';
 
-function buildApp(token: string | undefined) {
-  delete process.env.APP_PASSWORD;
-  delete process.env.SESSION_SECRET;
-  if (token === undefined) {
-    delete process.env.API_TOKEN;
-  } else {
-    process.env.API_TOKEN = token;
-  }
+function useToken(token: string | undefined) {
+  beforeEach(() => {
+    delete process.env.APP_PASSWORD;
+    delete process.env.SESSION_SECRET;
+    if (token === undefined) delete process.env.API_TOKEN;
+    else process.env.API_TOKEN = token;
+  });
+}
 
+function buildApp() {
   const app = express();
   app.use(express.json());
   app.use(createAuthMiddleware());
@@ -30,7 +31,8 @@ function buildApp(token: string | undefined) {
 
 describe('createAuthMiddleware', () => {
   describe('when API_TOKEN is unset', () => {
-    const app = buildApp(undefined);
+    useToken(undefined);
+    const app = buildApp();
 
     it('lets unauthenticated requests through', async () => {
       const r = await request(app).get('/api/protected');
@@ -41,7 +43,8 @@ describe('createAuthMiddleware', () => {
 
   describe('when API_TOKEN is set', () => {
     const TOKEN = 'super-secret-test-token-1234567890';
-    const app = buildApp(TOKEN);
+    useToken(TOKEN);
+    const app = buildApp();
 
     it('still allows /api/health without a token', async () => {
       const r = await request(app).get('/api/health');

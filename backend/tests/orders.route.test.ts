@@ -37,6 +37,7 @@ jest.mock('../src/services/executionRepository.js', () => {
 
 import axios from 'axios';
 import ordersRouter from '../src/routes/orders.js';
+import { stepUpHeaders, withSafeguards } from './helpers/totp.js';
 
 const axiosMock = axios as jest.Mocked<typeof axios>;
 const auditMock = jest.requireMock('../src/services/orderAuditRepository.js') as {
@@ -64,6 +65,8 @@ beforeEach(() => {
   jest.clearAllMocks();
   delete process.env.LIVE_TRADING_ENABLED;
   delete process.env.ORDER_MAX_POSITION;
+  delete process.env.TRADING_TOKENS;
+  delete process.env.ORDER_MFA_SECRET;
 });
 
 describe('POST /api/orders — gate + validation', () => {
@@ -109,10 +112,12 @@ describe('POST /api/orders — gate + validation', () => {
 
   it('lets a live order through when LIVE_TRADING_ENABLED=true', async () => {
     process.env.LIVE_TRADING_ENABLED = 'true';
+    // Live trading only opens with the trader role and MFA set up.
+    withSafeguards();
     auditMock.__mocks.create.mockResolvedValueOnce({ id: 8 });
     axiosMock.post.mockResolvedValueOnce({ data: { order_id: 43, status: 'submitted' } });
 
-    const res = await request(buildApp()).post('/api/orders').send({
+    const res = await request(buildApp()).post('/api/orders').set(stepUpHeaders()).send({
       symbol: 'MSFT',
       action: 'SELL',
       quantity: 1,
