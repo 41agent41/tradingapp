@@ -6,6 +6,7 @@ import BackToHome from '../components/BackToHome';
 import BrokerConnections from '../components/BrokerConnections';
 import SecurityPanel from '../components/SecurityPanel';
 import DataCollection from '../components/DataCollection';
+import GettingStarted from '../components/GettingStarted';
 import { apiFetch } from '../lib/api';
 import {
   type AuditEntry,
@@ -340,6 +341,7 @@ export default function SettingsPage() {
 
         {payload && (
           <>
+            <GettingStarted onOpen={setTab} refreshKey={activeTab} />
             <nav className="flex flex-wrap gap-2" aria-label="Settings sections">
               {[
                 { id: CONNECTIONS_TAB, title: 'Connections' },

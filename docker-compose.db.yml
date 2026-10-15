@@ -1,16 +1,8 @@
-# Optional Docker Compose override that brings up a local TimescaleDB
-# instance and wires the backend at it.
-#
-# Use this for development or self-hosted deployments where you don't have
-# an external Postgres. Production deployments should keep using an
-# externally-managed database (Timescale Cloud, RDS, etc.) and NOT enable
-# this override.
-#
-#   # Bring up the full stack including the database
-#   docker compose -f docker-compose.yml -f docker-compose.db.yml up -d
-#
-#   # Or via the management script
-#   ./tradingapp.sh deploy --with-db
+# The bundled database: TimescaleDB as a container on this host, the default
+# for a new install. `./tradingapp.sh install` layers this file in (and keeps
+# doing so while .tradingapp.with-db exists); with --external-db it is not
+# used. Its data lives in the tradingapp_pgdata volume, which `clean` keeps
+# unless --include-database is given.
 #
 # The backend creates and updates the schema itself when it starts
 # (backend/src/services/migrations.ts), so this database needs nothing but the
@@ -18,7 +10,7 @@
 
 services:
   postgres:
-    image: timescale/timescaledb:latest-pg15
+    image: timescale/timescaledb:2.17.2-pg15
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-tradingapp}

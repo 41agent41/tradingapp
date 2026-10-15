@@ -109,7 +109,7 @@ export function checkStartupConfig(env: Env = process.env): StartupCheckResult {
   } else if (production) {
     warnings.push(
       'SETTINGS_ENCRYPTION_KEY is not set: secrets cannot be saved from the Settings page. ' +
-        'Run ./tradingapp.sh config to generate one.'
+        'Run ./tradingapp.sh install to generate one.'
     );
   }
 
