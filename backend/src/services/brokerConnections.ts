@@ -11,6 +11,11 @@
  * still wins there, per platform: a platform configured in `.env` ignores the
  * rows for it here, which the page shows as "overridden by .env".
  *
+ * Each row also carries the connection's own risk caps (`limits`) and, for a
+ * funded account, its prop firm's rules (`prop_rules`); accountLimits.ts
+ * reads them, with `CONNECTION_MAX_*__<CONN>` / `PROP_RULES__<CONN>` in
+ * `.env` still winning when set.
+ *
  * Every write is audited in `settings_audit` under `broker_connection:<label>`,
  * with secrets recorded only as "(secret)".
  */
@@ -19,6 +24,7 @@ import { encryptionKey, openSecret, sealSecret } from '../config/secretBox.js';
 import { logger } from './logger.js';
 
 import { BROKER_PRIORITY, type Broker } from './orderTypes.js';
+import { parsePropRules } from './propRules.js';
 
 /** Every supported broker, in priority order (services/orderTypes.ts). */
 export const PLATFORMS: readonly Broker[] = BROKER_PRIORITY;
@@ -36,9 +42,28 @@ export const PLATFORM_FIELDS: Record<
   alpaca: { settings: [], required: ['api_key', 'api_secret'], secrets: ['api_key', 'api_secret'] },
 };
 
+/** The caps a connection can carry, all amounts in its currency but the first. */
+export const LIMIT_FIELDS = [
+  'max_orders_per_day',
+  'max_daily_loss',
+  'max_daily_equity_loss',
+  'max_drawdown',
+] as const;
+export type LimitField = (typeof LIMIT_FIELDS)[number];
+export type StoredLimits = Partial<Record<LimitField, number>>;
+
+/** What a connection row says about its own limits. */
+export interface StoredConnectionLimits {
+  limits: StoredLimits;
+  /** The prop firm's rules as entered (PROP_RULES JSON), or null. */
+  prop_rules: Record<string, unknown> | null;
+}
+
 const ACCOUNT_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const INTEGER_SETTINGS = new Set(['port', 'client_id']);
 const SECRET_MARK = '(secret)';
+const COLUMNS = `id, platform, account, account_mode, currency, is_default, settings, limits,
+  prop_rules, ciphertext, updated_at, updated_by`;
 
 export interface BrokerConnectionView {
   id: number;
@@ -49,6 +74,8 @@ export interface BrokerConnectionView {
   currency: string;
   is_default: boolean;
   settings: Record<string, string>;
+  limits: StoredLimits;
+  prop_rules: Record<string, unknown> | null;
   /** Which secrets are stored (never their values). */
   secrets_set: Record<string, boolean>;
   /** Set when the stored secrets cannot be decrypted (key changed or lost). */
@@ -64,6 +91,10 @@ export interface BrokerConnectionInput {
   currency?: unknown;
   is_default?: unknown;
   settings?: unknown;
+  /** Caps by name; null or '' clears one. Omitted keeps the stored set. */
+  limits?: unknown;
+  /** PROP_RULES JSON (object or string); null or '' clears it. */
+  prop_rules?: unknown;
   /** Omitted or empty secrets keep the stored value on an update. */
   secrets?: unknown;
 }
@@ -91,6 +122,8 @@ interface Row {
   currency: string;
   is_default: boolean;
   settings: Record<string, string> | null;
+  limits?: StoredLimits | null;
+  prop_rules?: Record<string, unknown> | null;
   ciphertext: string | null;
   updated_at: string | Date | null;
   updated_by: string | null;
@@ -105,6 +138,8 @@ CREATE TABLE IF NOT EXISTS broker_connections (
     currency VARCHAR(8) NOT NULL DEFAULT 'USD',
     is_default BOOLEAN NOT NULL DEFAULT FALSE,
     settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+    limits JSONB NOT NULL DEFAULT '{}'::jsonb,
+    prop_rules JSONB,
     ciphertext TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -128,6 +163,67 @@ function stringMap(value: unknown, what: string): Record<string, string> {
     if (t) out[k] = t;
   }
   return out;
+}
+
+function parseLimits(value: unknown, existing: StoredLimits): StoredLimits {
+  if (value === undefined) return { ...existing };
+  if (value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new BrokerConnectionError('limits must be an object.', 400);
+  }
+  const given = value as Record<string, unknown>;
+  const unknownKeys = Object.keys(given).filter(
+    (k) => !(LIMIT_FIELDS as readonly string[]).includes(k)
+  );
+  if (unknownKeys.length) {
+    throw new BrokerConnectionError(
+      `Unknown limit: ${unknownKeys.join(', ')}. Limits are ${LIMIT_FIELDS.join(', ')}.`,
+      400
+    );
+  }
+  const out: StoredLimits = { ...existing };
+  for (const name of LIMIT_FIELDS) {
+    if (!(name in given)) continue;
+    const raw = given[name];
+    if (raw === null || raw === undefined || text(raw) === '' || Number(raw) === 0) {
+      delete out[name];
+      continue;
+    }
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) {
+      throw new BrokerConnectionError(`${name} must be a positive number, or empty for none.`, 400);
+    }
+    if (name === 'max_orders_per_day' && !Number.isInteger(n)) {
+      throw new BrokerConnectionError('max_orders_per_day must be a whole number.', 400);
+    }
+    out[name] = n;
+  }
+  return out;
+}
+
+function parseStoredPropRules(
+  value: unknown,
+  existing: Record<string, unknown> | null
+): Record<string, unknown> | null {
+  if (value === undefined) return existing;
+  if (value === null || text(value) === '') return null;
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      throw new BrokerConnectionError('Prop rules are not valid JSON.', 400);
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new BrokerConnectionError('Prop rules must be a JSON object.', 400);
+  }
+  try {
+    parsePropRules(JSON.stringify(parsed));
+  } catch (err) {
+    throw new BrokerConnectionError(`Prop rules ${(err as Error).message}.`, 400);
+  }
+  return parsed as Record<string, unknown>;
 }
 
 export class BrokerConnectionStore {
@@ -178,6 +274,8 @@ export class BrokerConnectionStore {
       currency: row.currency,
       is_default: row.is_default,
       settings: row.settings ?? {},
+      limits: row.limits ?? {},
+      prop_rules: row.prop_rules ?? null,
       secrets_set: Object.fromEntries(names.map((n) => [n, Boolean(secrets[n])])),
       secret_error: error,
       updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : null,
@@ -188,9 +286,7 @@ export class BrokerConnectionStore {
   private async rows(): Promise<Row[]> {
     await this.ensureTable();
     const { rows } = await this.db.query(
-      `SELECT id, platform, account, account_mode, currency, is_default, settings, ciphertext,
-              updated_at, updated_by
-         FROM broker_connections ORDER BY platform, account`
+      `SELECT ${COLUMNS} FROM broker_connections ORDER BY platform, account`
     );
     return rows as Row[];
   }
@@ -202,9 +298,7 @@ export class BrokerConnectionStore {
   private async row(id: number): Promise<Row> {
     await this.ensureTable();
     const { rows } = await this.db.query(
-      `SELECT id, platform, account, account_mode, currency, is_default, settings, ciphertext,
-              updated_at, updated_by
-         FROM broker_connections WHERE id = $1`,
+      `SELECT ${COLUMNS} FROM broker_connections WHERE id = $1`,
       [id]
     );
     if (!rows[0]) throw new BrokerConnectionError('No such connection.', 404);
@@ -284,6 +378,8 @@ export class BrokerConnectionStore {
       ciphertext = sealSecret(JSON.stringify(secrets), key);
     }
     const secretsChanged = Object.keys(newSecrets).some((n) => fields.secrets.includes(n));
+    const limits = parseLimits(input.limits, existing?.row.limits ?? {});
+    const propRules = parseStoredPropRules(input.prop_rules, existing?.row.prop_rules ?? null);
     return {
       platform,
       account,
@@ -291,6 +387,8 @@ export class BrokerConnectionStore {
       currency,
       isDefault,
       settings,
+      limits,
+      propRules,
       ciphertext,
       secretsChanged,
     };
@@ -319,13 +417,17 @@ export class BrokerConnectionStore {
     currency: string;
     isDefault: boolean;
     settings: Record<string, string>;
+    limits?: StoredLimits;
+    propRules?: Record<string, unknown> | null;
     secretsChanged?: boolean;
   }): string {
     const parts = [
       `mode=${v.accountMode}`,
       `currency=${v.currency}`,
       ...Object.entries(v.settings).map(([k, val]) => `${k}=${val}`),
+      ...Object.entries(v.limits ?? {}).map(([k, val]) => `${k}=${val}`),
     ];
+    if (v.propRules) parts.push(`prop_rules=${JSON.stringify(v.propRules)}`);
     if (v.isDefault) parts.push('default');
     if (v.secretsChanged) parts.push(`credentials=${SECRET_MARK}`);
     return parts.join(' ');
@@ -346,10 +448,10 @@ export class BrokerConnectionStore {
     try {
       const { rows } = await this.db.query(
         `INSERT INTO broker_connections
-           (platform, account, account_mode, currency, is_default, settings, ciphertext, updated_by)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
-         RETURNING id, platform, account, account_mode, currency, is_default, settings, ciphertext,
-                   updated_at, updated_by`,
+           (platform, account, account_mode, currency, is_default, settings, limits, prop_rules,
+            ciphertext, updated_by)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10)
+         RETURNING ${COLUMNS}`,
         [
           v.platform,
           v.account,
@@ -357,6 +459,8 @@ export class BrokerConnectionStore {
           v.currency,
           v.isDefault,
           JSON.stringify(v.settings),
+          JSON.stringify(v.limits),
+          v.propRules ? JSON.stringify(v.propRules) : null,
           v.ciphertext,
           ctx.actor,
         ]
@@ -391,16 +495,18 @@ export class BrokerConnectionStore {
     const { rows } = await this.db.query(
       `UPDATE broker_connections
           SET account_mode = $2, currency = $3, is_default = $4, settings = $5::jsonb,
-              ciphertext = $6, updated_at = NOW(), updated_by = $7
+              limits = $6::jsonb, prop_rules = $7::jsonb, ciphertext = $8, updated_at = NOW(),
+              updated_by = $9
         WHERE id = $1
-        RETURNING id, platform, account, account_mode, currency, is_default, settings, ciphertext,
-                  updated_at, updated_by`,
+        RETURNING ${COLUMNS}`,
       [
         id,
         v.accountMode,
         v.currency,
         v.isDefault,
         JSON.stringify(v.settings),
+        JSON.stringify(v.limits),
+        v.propRules ? JSON.stringify(v.propRules) : null,
         v.ciphertext,
         ctx.actor,
       ]
@@ -415,6 +521,8 @@ export class BrokerConnectionStore {
         currency: row.currency,
         isDefault: row.is_default,
         settings: row.settings ?? {},
+        limits: row.limits ?? {},
+        propRules: row.prop_rules ?? null,
       }),
       this.describe(v),
       ctx
@@ -426,6 +534,20 @@ export class BrokerConnectionStore {
     const row = await this.row(id);
     await this.db.query(`DELETE FROM broker_connections WHERE id = $1`, [id]);
     await this.audit(`${row.platform}:${row.account}`, 'delete', null, null, ctx);
+  }
+
+  /**
+   * A connection's own caps and prop rules, or null when it was not added in
+   * the app (a `.env` connection keeps its limits in `.env`).
+   */
+  async limitsFor(platform: string, account: string): Promise<StoredConnectionLimits | null> {
+    await this.ensureTable();
+    const { rows } = await this.db.query(
+      `SELECT limits, prop_rules FROM broker_connections WHERE platform = $1 AND account = $2`,
+      [platform, account]
+    );
+    if (!rows[0]) return null;
+    return { limits: rows[0].limits ?? {}, prop_rules: rows[0].prop_rules ?? null };
   }
 
   /**

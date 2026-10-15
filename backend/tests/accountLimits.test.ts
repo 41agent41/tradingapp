@@ -3,6 +3,7 @@
  */
 import {
   connectionLimitsFor,
+  loadConnectionLimits,
   evaluateAccountLimits,
   hasEquityLimits,
   tradingDay,
@@ -54,6 +55,50 @@ describe('connectionLimitsFor', () => {
         CONNECTION_MAX_DAILY_EQUITY_LOSS: 'lots',
       })
     ).toBeNull();
+  });
+});
+
+describe("a connection's own limits (Settings > Connections)", () => {
+  const conn = { broker: 'oanda', brokerAccount: 'practice' };
+  const stored = {
+    limits: { max_drawdown: 800, max_orders_per_day: 10 },
+    prop_rules: { firm: 'FTMO 10k', initial_balance: 10_000, max_loss: { pct: 10 } },
+  };
+
+  it('win over the fleet-wide cap and lose to .env for this connection', () => {
+    expect(
+      connectionLimitsFor(
+        conn,
+        {
+          CONNECTION_MAX_DRAWDOWN: '1000',
+          CONNECTION_MAX_ORDERS_PER_DAY__OANDA_PRACTICE: '3',
+          CONNECTION_MAX_DAILY_LOSS: '200',
+        },
+        stored
+      )
+    ).toMatchObject({
+      max_drawdown: 800,
+      max_orders_per_day: 3,
+      max_daily_loss: 200,
+      prop: expect.objectContaining({ firm: 'FTMO 10k' }),
+    });
+  });
+
+  it('give way to PROP_RULES in .env', () => {
+    const env = {
+      PROP_RULES__OANDA_PRACTICE:
+        '{"firm":"env firm","initial_balance":5000,"max_loss":{"pct":10}}',
+    };
+    expect(connectionLimitsFor(conn, env, stored)?.prop?.firm).toBe('env firm');
+  });
+
+  it('are read from the store, and a read failure throws so entries fail closed', async () => {
+    const store = { limitsFor: jest.fn(async () => stored) };
+    expect(await loadConnectionLimits(conn, store, {})).toMatchObject({ max_drawdown: 800 });
+    expect(store.limitsFor).toHaveBeenCalledWith('oanda', 'practice');
+
+    const broken = { limitsFor: jest.fn(async () => Promise.reject(new Error('db down'))) };
+    await expect(loadConnectionLimits(conn, broken, {})).rejects.toThrow('db down');
   });
 });
 

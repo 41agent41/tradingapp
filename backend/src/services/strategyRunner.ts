@@ -35,7 +35,7 @@ import { configService } from '../config/configService.js';
 import { type EnvLike, definedOnly, readBool, readInt } from '../config/read.js';
 import { applyTrail } from './stopManager.js';
 import {
-  connectionLimitsFor,
+  loadConnectionLimits,
   evaluateAccountLimits,
   tradingDay,
   tradingDayTimeZone,
@@ -420,7 +420,7 @@ function defaultDeps(
     // connection and what sizes it accepts.
     instrumentSpec: (connection, symbol) => venueInstrumentSpec(connection, symbol),
     // C-4 account- and fleet-level caps.
-    connectionLimits: async (connection) => connectionLimitsFor(connection),
+    connectionLimits: (connection) => loadConnectionLimits(connection),
     countOrdersTodayForConnection: (connection) =>
       repo.countActedSignalsTodayForConnection(connection.broker, connection.brokerAccount),
     realisedPnlTodayForConnection: async (connection) =>
@@ -690,7 +690,7 @@ function defaultDeps(
     sendAlert: (alert) => notifier.notify(alert),
     resolveAlert: (key, message) => notifier.resolve(key, message),
     trackEquity: (connection) => trackEquity(connection),
-    connectionLimits: async (connection) => connectionLimitsFor(connection),
+    connectionLimits: (connection) => loadConnectionLimits(connection),
     haltConnection: async (connection, cause) => {
       const { created } = await repo.haltConnection({
         broker: connection.broker,

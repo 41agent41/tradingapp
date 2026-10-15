@@ -20,8 +20,18 @@ function fakeDb() {
       return { rows: [] };
     }
     if (s.startsWith('INSERT INTO broker_connections')) {
-      const [platform, account, account_mode, currency, is_default, settings, ciphertext, by] =
-        params;
+      const [
+        platform,
+        account,
+        account_mode,
+        currency,
+        is_default,
+        settings,
+        limits,
+        prop_rules,
+        ciphertext,
+        by,
+      ] = params;
       if (rows.some((r) => r.platform === platform && r.account === account)) {
         throw Object.assign(new Error('duplicate'), { code: '23505' });
       }
@@ -33,6 +43,8 @@ function fakeDb() {
         currency,
         is_default,
         settings: JSON.parse(settings),
+        limits: JSON.parse(limits),
+        prop_rules: prop_rules ? JSON.parse(prop_rules) : null,
         ciphertext,
         updated_at: new Date(),
         updated_by: by,
@@ -53,8 +65,10 @@ function fakeDb() {
         currency: params[2],
         is_default: params[3],
         settings: JSON.parse(params[4]),
-        ciphertext: params[5],
-        updated_by: params[6],
+        limits: JSON.parse(params[5]),
+        prop_rules: params[6] ? JSON.parse(params[6]) : null,
+        ciphertext: params[7],
+        updated_by: params[8],
       });
       return { rows: [row] };
     }
@@ -64,6 +78,9 @@ function fakeDb() {
         1
       );
       return { rows: [] };
+    }
+    if (s.includes('WHERE platform = $1 AND account = $2')) {
+      return { rows: rows.filter((r) => r.platform === params[0] && r.account === params[1]) };
     }
     if (s.includes('WHERE id = $1')) return { rows: rows.filter((r) => r.id === params[0]) };
     if (s.startsWith('SELECT')) return { rows: [...rows] };
@@ -170,6 +187,47 @@ describe('BrokerConnectionStore', () => {
     await store.remove(created.id, ctx);
     expect(await store.list()).toEqual([]);
     await expect(store.remove(created.id, ctx)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("stores a connection's own limits and prop rules, and keeps them across updates", async () => {
+    const { db, audit } = fakeDb();
+    const store = new BrokerConnectionStore(db, { SETTINGS_ENCRYPTION_KEY: KEY });
+    const prop = { firm: 'FTMO', initial_balance: 100000, daily_loss: { pct: 5 } };
+    const created = await store.create(
+      { ...OANDA, limits: { max_drawdown: '2000', max_orders_per_day: 20 }, prop_rules: prop },
+      ctx
+    );
+    expect(created.limits).toEqual({ max_drawdown: 2000, max_orders_per_day: 20 });
+    expect(created.prop_rules).toEqual(prop);
+    expect(audit[0][3]).toContain('max_drawdown=2000');
+
+    // An update that leaves them out keeps them; clearing one leaves the rest.
+    await store.update(created.id, { account_mode: 'live' }, ctx);
+    expect(await store.limitsFor('oanda', 'practice')).toEqual({
+      limits: { max_drawdown: 2000, max_orders_per_day: 20 },
+      prop_rules: prop,
+    });
+    const cleared = await store.update(
+      created.id,
+      { limits: { max_drawdown: '' }, prop_rules: null },
+      ctx
+    );
+    expect(cleared.limits).toEqual({ max_orders_per_day: 20 });
+    expect(cleared.prop_rules).toBeNull();
+    expect(await store.limitsFor('oanda', 'nope')).toBeNull();
+  });
+
+  it.each([
+    [{ limits: { max_drawdown: -1 } }, /positive number/],
+    [{ limits: { max_orders_per_day: 2.5 } }, /whole number/],
+    [{ limits: { max_leverage: 3 } }, /Unknown limit/],
+    [{ limits: [] }, /must be an object/],
+    [{ prop_rules: '{nope' }, /not valid JSON/],
+    [{ prop_rules: { firm: 'x' } }, /initial_balance/],
+  ])('rejects the limits %j', async (extra, message) => {
+    const { db } = fakeDb();
+    const store = new BrokerConnectionStore(db, { SETTINGS_ENCRYPTION_KEY: KEY });
+    await expect(store.create({ ...OANDA, ...extra } as any, ctx)).rejects.toThrow(message);
   });
 
   it('leaves out a row whose secrets cannot be decrypted', async () => {

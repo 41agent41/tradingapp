@@ -20,7 +20,12 @@ jest.mock('../src/config/configService.js', () => {
   return {
     __esModule: true,
     SettingWriteError: actual.SettingWriteError,
-    configService: { get: jest.fn(), source: jest.fn(() => 'unset'), set: jest.fn() },
+    configService: {
+      get: jest.fn(),
+      source: jest.fn(() => 'unset'),
+      set: jest.fn(),
+      asEnv: jest.fn(() => ({})),
+    },
   };
 });
 

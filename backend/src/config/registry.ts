@@ -12,9 +12,9 @@
  *     that Docker reads before any process starts: the POSTGRES_* connection,
  *     SETTINGS_ENCRYPTION_KEY, BROKER_SERVICE_TOKEN, REDIS_PASSWORD, the ports,
  *     NODE_ENV, TZ, LOG_LEVEL. These stay in `.env`.
- *   - Per-connection families (`CONNECTION_MAX_*__<CONN>`, `PROP_RULES__<CONN>`)
- *     and the connection manifest's secrets, which move to their own tables
- *     with the Connections tab.
+ *   - Per-connection caps and prop rules, which are columns on the connection
+ *     (`broker_connections.limits` / `prop_rules`, the Connections tab), and
+ *     the connections' own secrets.
  *   - The MT5 sidecar's settings, which live on its Windows host.
  *
  * `editable` marks the settings whose consumers already read through
@@ -239,7 +239,7 @@ export const SETTINGS: readonly SettingDef[] = [
     stepUp: true,
     safer: 'lower',
     editable: true,
-    help: 'Applies to every connection unless the connection sets its own.',
+    help: 'Applies to every connection unless it sets its own on the Connections tab.',
   },
   {
     key: 'CONNECTION_MAX_DAILY_LOSS',

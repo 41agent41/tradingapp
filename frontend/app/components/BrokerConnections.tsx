@@ -9,6 +9,7 @@ import {
   type StoredConnection,
   type StoredPayload,
   BROKERS_BY_PRIORITY,
+  LIMIT_FORM,
   PLATFORM_FORM,
   checkSummary,
   saveMessage,
@@ -144,6 +145,38 @@ function ConnectionForm({
           </label>
         ))}
       </div>
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium text-gray-700">Risk limits</legend>
+        <p className="text-xs text-gray-500">
+          In {form.currency || 'the account currency'}. Empty uses the cap on the Risk tab. New
+          entries stop once one is reached; exits always go through.
+        </p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {LIMIT_FORM.map((limit) => (
+            <label key={limit.name} className="text-sm text-gray-700">
+              {limit.label}
+              <input
+                className={INPUT}
+                type="number"
+                min={0}
+                step={limit.name === 'max_orders_per_day' ? 1 : 'any'}
+                value={form.limits[limit.name] ?? ''}
+                onChange={(e) => set({ limits: { ...form.limits, [limit.name]: e.target.value } })}
+              />
+            </label>
+          ))}
+        </div>
+        <label className="block text-sm text-gray-700">
+          Prop firm rules (JSON, funded accounts only)
+          <textarea
+            className={`${INPUT} font-mono`}
+            rows={form.prop_rules ? 6 : 2}
+            value={form.prop_rules}
+            placeholder='{"firm": "FTMO 100k", "initial_balance": 100000, "daily_loss": {"pct": 5}, "max_loss": {"pct": 10}}'
+            onChange={(e) => set({ prop_rules: e.target.value })}
+          />
+        </label>
+      </fieldset>
       <label className="flex items-center gap-2 text-sm text-gray-700">
         <input
           type="checkbox"

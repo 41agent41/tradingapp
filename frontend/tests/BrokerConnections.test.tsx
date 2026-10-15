@@ -148,9 +148,30 @@ describe('helpers', () => {
       currency: 'USD',
       is_default: true,
       settings: { account_id: '101-1' },
+      limits: {
+        max_orders_per_day: '',
+        max_daily_loss: '',
+        max_daily_equity_loss: '',
+        max_drawdown: '',
+      },
+      prop_rules: null,
     });
     expect(requestBody({ ...form, values: { token: 't' } }).secrets).toEqual({ token: 't' });
     expect(formFromStored(STORED_ALPACA as any).values).toEqual({});
+  });
+
+  it("round-trips a connection's own limits and prop rules", () => {
+    const stored = {
+      ...STORED_ALPACA,
+      limits: { max_drawdown: 2000 },
+      prop_rules: { firm: 'FTMO', initial_balance: 10000 },
+    };
+    const form = formFromStored(stored as any);
+    expect(form.limits).toEqual({ max_drawdown: '2000' });
+    const body = requestBody({ ...form, limits: { ...form.limits, max_daily_loss: ' 300 ' } });
+    expect(body.limits).toMatchObject({ max_drawdown: '2000', max_daily_loss: '300' });
+    expect(JSON.parse(body.prop_rules as string)).toEqual(stored.prop_rules);
+    expect(requestBody({ ...form, prop_rules: '  ' }).prop_rules).toBeNull();
   });
 });
 

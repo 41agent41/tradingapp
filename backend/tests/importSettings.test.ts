@@ -132,3 +132,55 @@ describe('importFromEnv', () => {
     ]);
   });
 });
+
+describe('importFromEnv, per-connection limits', () => {
+  function connections() {
+    const list = [
+      {
+        id: 7,
+        platform: 'mt5',
+        account: 'ftmo',
+        limits: {} as Record<string, number>,
+        prop_rules: null as unknown,
+      },
+    ];
+    const update = jest.fn(async (id: number, input: any) => {
+      const c = list.find((x) => x.id === id)!;
+      if (input.limits) {
+        for (const [k, v] of Object.entries(input.limits)) c.limits[k] = Number(v);
+      }
+      if (input.prop_rules !== undefined) c.prop_rules = JSON.parse(input.prop_rules);
+      return c as any;
+    });
+    return { store: { list: jest.fn(async () => list as any), update }, update, list };
+  }
+
+  const prop = '{"firm":"FTMO","initial_balance":10000,"max_loss":{"pct":10}}';
+  const env = {
+    CONNECTION_MAX_DRAWDOWN__MT5_FTMO: '900',
+    PROP_RULES__MT5_FTMO: prop,
+    CONNECTION_MAX_DAILY_LOSS__IB_DEFAULT: '100',
+  };
+
+  it("moves caps and prop rules onto the app's connection, once", async () => {
+    const { db } = fakeDb();
+    const { store, update, list } = connections();
+    const result = await importFromEnv(Object.keys(env), env, db, store);
+
+    expect(result.imported.sort()).toEqual(
+      ['CONNECTION_MAX_DRAWDOWN__MT5_FTMO', 'PROP_RULES__MT5_FTMO'].sort()
+    );
+    expect(result.kept).toEqual([
+      {
+        key: 'CONNECTION_MAX_DAILY_LOSS__IB_DEFAULT',
+        reason: expect.stringMatching(/defined in .env/),
+      },
+    ]);
+    expect(list[0].limits).toEqual({ max_drawdown: 900 });
+    expect(list[0].prop_rules).toEqual(JSON.parse(prop));
+
+    update.mockClear();
+    await importFromEnv(Object.keys(env), env, db, store);
+    expect(update).not.toHaveBeenCalled();
+  });
+});
