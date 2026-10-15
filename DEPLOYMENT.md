@@ -479,6 +479,14 @@ interval, and upserts the bars, so gaps inside the window fill themselves.
 `BACKFILL_INTERVAL_MINUTES` sets how often it runs and `BACKFILL_PERIOD` how
 far back each fetch reaches.
 
+Deep history, for backtests: set **History from** on an entry (up to two
+years back). Each pass then also walks back towards that date in chunks of
+about 20,000 bars, up to five chunks per entry per pass, so a year of
+5-minute bars arrives in two passes. The History column shows how far it has
+got. OANDA and Alpaca requests are paged past their per-request limits; MT5
+answers a date range in one request. Bars from the history start on are kept
+whatever the entry's retention.
+
 Retention:
 
 - TimescaleDB policies in the schema drop `candlestick_data` chunks older

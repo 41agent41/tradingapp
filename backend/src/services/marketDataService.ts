@@ -50,6 +50,10 @@ export interface CollectionConfig {
   secType: string;
   exchange: string | null;
   currency: string | null;
+  /** The date to collect back to (deep history), or null for recent bars only. */
+  historyStart: Date | null;
+  /** How far back the scheduler has asked the broker so far. */
+  backfilledTo: Date | null;
 }
 
 /** Per-UTC-day data-quality counts derived from a batch of stored bars. */
@@ -63,6 +67,9 @@ export interface DailyQualityMetric {
 }
 
 // Market Data Service Class
+/** Bars per INSERT when storing. */
+const STORE_BATCH_SIZE = 1000;
+
 export class MarketDataService {
   /**
    * The id of a contract, created on first sight.
@@ -141,52 +148,87 @@ export class MarketDataService {
     let updated = 0;
     let errors = 0;
 
-    await dbService.transaction(async (client: PoolClient) => {
-      for (const bar of bars) {
+    const UPSERT_SET = `
+      ON CONFLICT (contract_id, timestamp, timeframe)
+      DO UPDATE SET
+        open = EXCLUDED.open,
+        high = EXCLUDED.high,
+        low = EXCLUDED.low,
+        close = EXCLUDED.close,
+        volume = EXCLUDED.volume,
+        wap = EXCLUDED.wap,
+        count = EXCLUDED.count
+      RETURNING (xmax = 0) AS inserted`;
+
+    // One bar at a time, each in a savepoint: without it one bad bar aborts
+    // the transaction, every later bar fails with it, and nothing commits.
+    const storeOneByOne = async (client: PoolClient, batch: CandlestickBar[]) => {
+      for (const bar of batch) {
         try {
-          const query = `
-            INSERT INTO candlestick_data (contract_id, timestamp, timeframe, open, high, low, close, volume, wap, count)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            ON CONFLICT (contract_id, timestamp, timeframe)
-            DO UPDATE SET 
-              open = EXCLUDED.open,
-              high = EXCLUDED.high,
-              low = EXCLUDED.low,
-              close = EXCLUDED.close,
-              volume = EXCLUDED.volume,
-              wap = EXCLUDED.wap,
-              count = EXCLUDED.count
-            RETURNING (xmax = 0) AS inserted
-          `;
-
-          const params = [
-            contractId,
-            bar.timestamp,
-            timeframe,
-            bar.open,
-            bar.high,
-            bar.low,
-            bar.close,
-            bar.volume,
-            bar.wap || null,
-            bar.count || null,
-          ];
-
-          // A savepoint per bar: without it one bad bar aborts the
-          // transaction, every later bar fails with it, and nothing commits.
           await client.query('SAVEPOINT bar');
-          const result = await client.query(query, params);
+          const result = await client.query(
+            `INSERT INTO candlestick_data (contract_id, timestamp, timeframe, open, high, low, close, volume, wap, count)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ${UPSERT_SET}`,
+            [
+              contractId,
+              bar.timestamp,
+              timeframe,
+              bar.open,
+              bar.high,
+              bar.low,
+              bar.close,
+              bar.volume,
+              bar.wap || null,
+              bar.count || null,
+            ]
+          );
           await client.query('RELEASE SAVEPOINT bar');
-
-          if (result.rows[0]?.inserted) {
-            inserted++;
-          } else {
-            updated++;
-          }
+          if (result.rows[0]?.inserted) inserted++;
+          else updated++;
         } catch (error) {
           await client.query('ROLLBACK TO SAVEPOINT bar').catch(() => undefined);
           logger.error({ err: String(error) }, 'error storing candlestick bar');
           errors++;
+        }
+      }
+    };
+
+    await dbService.transaction(async (client: PoolClient) => {
+      // A batch at a time in one statement (deep history stores tens of
+      // thousands of bars); a batch that fails, for one bad bar or a
+      // timestamp twice, is stored again bar by bar.
+      for (let i = 0; i < bars.length; i += STORE_BATCH_SIZE) {
+        const batch = bars.slice(i, i + STORE_BATCH_SIZE);
+        try {
+          await client.query('SAVEPOINT batch');
+          const result = await client.query(
+            `INSERT INTO candlestick_data (contract_id, timestamp, timeframe, open, high, low, close, volume, wap, count)
+             SELECT $1, t, $2, o, h, l, c, v, w, n
+               FROM unnest($3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[],
+                           $7::numeric[], $8::bigint[], $9::numeric[], $10::int[])
+                 AS b(t, o, h, l, c, v, w, n)
+             ${UPSERT_SET}`,
+            [
+              contractId,
+              timeframe,
+              batch.map((b) => b.timestamp),
+              batch.map((b) => b.open),
+              batch.map((b) => b.high),
+              batch.map((b) => b.low),
+              batch.map((b) => b.close),
+              batch.map((b) => b.volume),
+              batch.map((b) => b.wap || null),
+              batch.map((b) => b.count || null),
+            ]
+          );
+          await client.query('RELEASE SAVEPOINT batch');
+          for (const row of result.rows) {
+            if (row.inserted) inserted++;
+            else updated++;
+          }
+        } catch {
+          await client.query('ROLLBACK TO SAVEPOINT batch').catch(() => undefined);
+          await storeOneByOne(client, batch);
         }
       }
     });
@@ -415,6 +457,8 @@ export class MarketDataService {
         dcc.auto_collect,
         dcc.collection_interval_minutes,
         dcc.retention_days,
+        to_char(dcc.history_start, 'YYYY-MM-DD') AS history_start,
+        dcc.backfilled_to,
         c.broker,
         c.broker_account,
         c.symbol,
@@ -441,10 +485,30 @@ export class MarketDataService {
       secType: row.sec_type,
       exchange: row.exchange,
       currency: row.currency,
+      historyStart: row.history_start ? new Date(`${row.history_start}T00:00:00Z`) : null,
+      backfilledTo: row.backfilled_to ? new Date(row.backfilled_to) : null,
     }));
   }
 
   /** Most recent stored bar timestamp for a (contract, timeframe), or null. */
+  async getOldestStoredTimestamp(contractId: number, timeframe: string): Promise<Date | null> {
+    const result = await dbService.query(
+      'SELECT MIN(timestamp) AS oldest FROM candlestick_data WHERE contract_id = $1 AND timeframe = $2',
+      [contractId, timeframe]
+    );
+    const oldest = result.rows[0]?.oldest;
+    return oldest ? new Date(oldest) : null;
+  }
+
+  /** Records how far back the backfill has asked the broker for this entry. */
+  async setBackfilledTo(contractId: number, timeframe: string, to: Date): Promise<void> {
+    await dbService.query(
+      `UPDATE data_collection_config SET backfilled_to = $3, updated_at = NOW()
+        WHERE contract_id = $1 AND timeframe = $2`,
+      [contractId, timeframe, to]
+    );
+  }
+
   async getLatestStoredTimestamp(contractId: number, timeframe: string): Promise<Date | null> {
     const result = await dbService.query(
       'SELECT MAX(timestamp) AS latest FROM candlestick_data WHERE contract_id = $1 AND timeframe = $2',
@@ -622,8 +686,15 @@ export class MarketDataService {
         `DELETE FROM candlestick_data
          WHERE contract_id = $1
            AND timeframe = $2
-           AND timestamp < NOW() - make_interval(days => $3::int)`,
-        [cfg.contractId, cfg.timeframe, cfg.retentionDays]
+           AND timestamp < NOW() - make_interval(days => $3::int)
+           AND ($4::date IS NULL OR timestamp < $4::date)`,
+        // Deep history asked for (history_start) is kept whatever the retention.
+        [
+          cfg.contractId,
+          cfg.timeframe,
+          cfg.retentionDays,
+          cfg.historyStart ? cfg.historyStart.toISOString().slice(0, 10) : null,
+        ]
       );
       const n = result.rowCount ?? 0;
       deleted += n;

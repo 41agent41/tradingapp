@@ -11,6 +11,7 @@ exercised by toggling OANDA_API_TOKEN/OANDA_ACCOUNT_ID.
 from __future__ import annotations
 
 import importlib
+from datetime import UTC
 
 import pytest
 from fastapi import HTTPException
@@ -160,6 +161,107 @@ def test_historical_bars_date_range_sets_custom_period(oanda):
     assert params["to"] == "2024-02-01T00:00:00Z"
     assert "count" not in params
     assert resp.period == "CUSTOM"
+
+
+def _venue_with_candles(start, end, step_seconds):
+    """A fake OANDA serving one candle every step from start (inclusive) to
+    end (exclusive), honouring count, to and from/to as the real API does:
+    at most `count` candles, the latest ones before `to`."""
+    from datetime import datetime, timedelta
+
+    times = []
+    t = start
+    while t < end:
+        times.append(t)
+        t += timedelta(seconds=step_seconds)
+
+    def iso(moment):
+        return moment.strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
+
+    def parse(text):
+        return datetime.strptime(text[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=UTC)
+
+    def handler(method, url, params, json):
+        selected = times
+        if "from" in params:
+            lo = parse(params["from"])
+            selected = [x for x in selected if x >= lo]
+        if "to" in params:
+            hi = parse(params["to"])
+            selected = [x for x in selected if x < hi]
+        if "count" in params:
+            selected = selected[-params["count"] :]
+        assert len(selected) <= 5000, "OANDA refuses more than 5000 candles"
+        return FakeResponse(
+            {
+                "candles": [
+                    {
+                        "time": iso(x),
+                        "complete": True,
+                        "volume": 1,
+                        "mid": {"o": "1", "h": "1", "l": "1", "c": "1"},
+                    }
+                    for x in selected
+                ]
+            }
+        )
+
+    return handler, times
+
+
+def test_historical_bars_pages_a_year_of_5min_candles(oanda):
+    from datetime import datetime
+
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    end = datetime(2025, 1, 1, tzinfo=UTC)
+    FakeClient.handler, times = _venue_with_candles(start, end, 300)
+    resp = _adapter(oanda).historical_bars(
+        "EUR_USD", "5min", "1Y", start_date="2024-01-01", end_date="2025-01-01"
+    )
+    assert resp.count == len(times) == 105408
+    stamps = [b.timestamp for b in resp.bars]
+    assert stamps == sorted(stamps) and len(set(stamps)) == len(stamps)
+    assert stamps[0] == start.timestamp()
+    # Walked back with to + count; never from, to and count together.
+    assert len(FakeClient.calls) == 22
+    for _m, _u, _h, params, _j in FakeClient.calls:
+        assert params["count"] == 5000 and "from" not in params
+
+
+def test_historical_bars_range_keeps_only_candles_inside_it(oanda):
+    from datetime import datetime
+
+    FakeClient.handler, _ = _venue_with_candles(
+        datetime(2023, 12, 1, tzinfo=UTC), datetime(2024, 3, 1, tzinfo=UTC), 300
+    )
+    resp = _adapter(oanda).historical_bars(
+        "EUR_USD", "5min", "1Y", start_date="2024-01-01", end_date="2024-02-01"
+    )
+    first = datetime(2024, 1, 1, tzinfo=UTC).timestamp()
+    last = datetime(2024, 2, 1, tzinfo=UTC).timestamp()
+    assert all(first <= b.timestamp < last for b in resp.bars)
+    assert resp.count == 31 * 288
+
+
+def test_historical_bars_period_pages_back_to_the_period_start(oanda):
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    FakeClient.handler, _ = _venue_with_candles(now - timedelta(days=60), now, 300)
+    resp = _adapter(oanda).historical_bars("EUR_USD", "5min", "1M")
+    # 31 days of 5-minute candles is 8928, so a second page was needed.
+    assert len(FakeClient.calls) == 2
+    assert resp.bars[0].timestamp <= (now - timedelta(days=31)).timestamp()
+
+
+def test_historical_bars_period_is_capped(oanda):
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    FakeClient.handler, _ = _venue_with_candles(now - timedelta(days=400), now, 60)
+    resp = _adapter(oanda).historical_bars("EUR_USD", "1min", "1Y")
+    assert len(FakeClient.calls) == oanda._MAX_PERIOD_PAGES
+    assert resp.count == oanda._MAX_PERIOD_PAGES * 5000
 
 
 def test_unsupported_timeframe_is_400(oanda):
