@@ -1,7 +1,7 @@
 import express from 'express';
 import type { Request, Response } from 'express';
 import { marketDataService } from '../../services/marketDataService.js';
-import { isDataQueryEnabled, handleDisabledDataQuery } from './shared.js';
+import { isDataQueryEnabled, handleDisabledDataQuery, resolveBroker } from './shared.js';
 
 const router = express.Router();
 
@@ -30,7 +30,8 @@ router.get('/database/stats', async (req: Request, res: Response) => {
 // Upload historical data to database endpoint
 router.post('/upload', async (req: Request, res: Response) => {
   try {
-    const { symbol, timeframe, bars, account_mode, secType, exchange, currency } = req.body;
+    const { symbol, timeframe, bars, account_mode, secType, exchange, currency, broker, source } =
+      req.body;
 
     // Validate required parameters
     if (!symbol || !timeframe || !bars || !Array.isArray(bars)) {
@@ -49,7 +50,10 @@ router.post('/upload', async (req: Request, res: Response) => {
     console.log(`Uploading ${bars.length} bars for ${symbol} ${timeframe} to database`);
 
     // Upload data to database using market data service
+    // Stored under the broker the bars were downloaded from (the history
+    // response names it), not whichever broker is the default now.
     const result = await marketDataService.uploadHistoricalData({
+      broker: resolveBroker(broker ?? source),
       symbol,
       timeframe,
       bars,

@@ -81,12 +81,16 @@ export interface RawBar {
 }
 
 export interface HistoryRequest {
+  /** The broker the contract belongs to, so its bars come from that broker. */
+  broker: string;
+  /** The account on that broker; 'default' lets the broker service choose. */
+  brokerAccount: string;
   symbol: string;
   timeframe: string;
   period: string;
   secType: string;
-  exchange: string;
-  currency: string;
+  exchange?: string;
+  currency?: string;
 }
 
 export interface StoreResult {
@@ -135,6 +139,11 @@ function defaultDeps(): BackfillDeps {
     fetchHistory: async (req) => {
       const response = await axios.get(`${BROKER_SERVICE_URL}/market-data/history`, {
         params: {
+          // Named explicitly: with no source the broker service answers from
+          // whichever broker responds first, and those bars would be stored
+          // under this contract's broker.
+          source: req.broker,
+          account: req.brokerAccount === 'default' ? undefined : req.brokerAccount,
           symbol: req.symbol,
           timeframe: req.timeframe,
           period: req.period,
@@ -306,13 +315,17 @@ export class BackfillScheduler {
     try {
       sessionId = await this.deps.startSession(cfg.contractId, cfg.timeframe).catch(() => null);
 
+      // Exchange and currency as stored: the broker service applies its
+      // own defaults, which differ by broker.
       const rawBars = await this.deps.fetchHistory({
+        broker: cfg.broker,
+        brokerAccount: cfg.brokerAccount,
         symbol: cfg.symbol,
         timeframe: cfg.timeframe,
         period: this.period,
         secType: cfg.secType,
-        exchange: cfg.exchange || 'SMART',
-        currency: cfg.currency || 'USD',
+        exchange: cfg.exchange || undefined,
+        currency: cfg.currency || undefined,
       });
 
       const bars: CandlestickBar[] = rawBars.map((b) => ({

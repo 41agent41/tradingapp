@@ -22,6 +22,8 @@ function config(overrides: Partial<CollectionConfig> = {}): CollectionConfig {
     autoCollect: true,
     collectionIntervalMinutes: 60,
     retentionDays: 365,
+    broker: 'ib',
+    brokerAccount: 'default',
     symbol: 'MSFT',
     secType: 'STK',
     exchange: 'SMART',
@@ -60,6 +62,26 @@ function makeScheduler(deps: BackfillDeps) {
 }
 
 describe('BackfillScheduler.runOnce', () => {
+  it("fetches from the contract's own broker and account", async () => {
+    const deps = makeDeps({
+      listConfigs: jest.fn().mockResolvedValue([
+        config({
+          contractId: 7,
+          broker: 'oanda',
+          brokerAccount: 'practice-1',
+          symbol: 'EUR_USD',
+        }),
+      ]),
+    });
+
+    await makeScheduler(deps).runOnce();
+
+    expect(deps.fetchHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ broker: 'oanda', brokerAccount: 'practice-1', symbol: 'EUR_USD' })
+    );
+    expect(deps.storeCandlestickData).toHaveBeenCalledWith(7, '1hour', expect.any(Array));
+  });
+
   it('fetches, stores, records quality and closes a session for each config', async () => {
     const deps = makeDeps();
     const scheduler = makeScheduler(deps);

@@ -17,6 +17,8 @@ interface HistoricalData {
   count: number;
   last_updated: string;
   source: string;
+  /** The broker the bars came from; the upload stores them under it. */
+  broker?: string;
   exchange?: string;
   secType?: string;
 }
@@ -231,6 +233,7 @@ export default function DownloadPage() {
           'X-Data-Query-Enabled': 'true',
         },
         body: JSON.stringify({
+          broker: chartData.broker,
           symbol: chartData.symbol,
           timeframe: chartData.timeframe,
           bars: chartData.bars,

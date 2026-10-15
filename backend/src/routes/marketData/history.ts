@@ -118,7 +118,8 @@ router.get('/history', async (req: Request, res: Response) => {
           symbol,
           timeframe,
           startDate,
-          endDate
+          endDate,
+          venue
         );
 
         if (dbData.length > 0) {
@@ -144,6 +145,7 @@ router.get('/history', async (req: Request, res: Response) => {
             timeframe: timeframe,
             account_mode: account_mode || 'paper',
             bars,
+            broker: venue,
             source: 'database',
             count: bars.length,
             last_updated: new Date().toISOString(),
@@ -239,6 +241,7 @@ router.get('/history', async (req: Request, res: Response) => {
 
     res.json({
       ...response.data,
+      broker: venue,
       source: 'broker_service',
       timestamp: new Date().toISOString(),
     });
