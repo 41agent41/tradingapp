@@ -4,6 +4,7 @@
  *   GET    /api/settings          every registered setting, where its value
  *                                 comes from, and whether it can be changed
  *   GET    /api/settings/audit    the change log, newest first (?key=, ?limit=)
+ *   GET    /api/settings/checklist  what a new install still needs (Getting started)
  *   PUT    /api/settings/:key     { value, reason? } — store a value
  *   DELETE /api/settings/:key     { reason? } — back to the default
  *
@@ -26,11 +27,14 @@ import { NextFunction, Request, Response, Router } from 'express';
 import { configService, SettingWriteError } from '../config/configService.js';
 import { SECTIONS, isSaferChange, normalizeValue, settingDef } from '../config/registry.js';
 import { isMfaRequired, isTradingAuthRequired, orderAuth } from '../middleware/orderAuth.js';
+import { checklist, loadChecklistState } from '../services/commissioning.js';
 import { logger } from '../services/logger.js';
 import { notifier } from '../services/notifier.js';
 import { liveTradingSafeguardsMissing } from '../services/orderTypes.js';
 
 const router = Router();
+
+const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
 
 function actor(req: Request): string {
   return req.headers.authorization || req.headers['x-api-token'] ? 'api token' : 'browser';
@@ -122,6 +126,16 @@ router.get('/', (_req: Request, res: Response) => {
       mfa_required: isMfaRequired(),
     },
   });
+});
+
+router.get('/checklist', async (_req: Request, res: Response) => {
+  try {
+    const items = checklist(await loadChecklistState(BROKER_SERVICE_URL));
+    res.json({ items, done: items.every((i) => i.done) });
+  } catch (err) {
+    logger.error({ err: (err as Error)?.message }, 'settings: checklist failed');
+    res.status(500).json({ error: 'The checklist could not be read.' });
+  }
 });
 
 router.get('/audit', async (req: Request, res: Response) => {
