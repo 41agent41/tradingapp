@@ -34,7 +34,7 @@ The canonical schema lives one directory up:
   schema will create the legacy `technical_indicators` table so the
   backend's `MarketDataService` insert/join queries don't fail. This is a
   temporary workaround pending the code refactor tracked in
-  [`GAP_ANALYSIS.md`](../../../../GAP_ANALYSIS.md).
+  [`GAP_ANALYSIS.md`](../../../../docs/plans/GAP_ANALYSIS.md).
 
 Otherwise, ignore these files. New deployments should only apply
 `../timescaledb-schema.sql`.

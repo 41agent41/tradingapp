@@ -155,7 +155,7 @@ returns raw OHLCV only, and `/api/market-data/indicators` proxies straight to
 the IB service (`broker_service/indicators.py`). No backend code references the
 `technical_indicators` table anymore, so a fresh canonical database no longer
 errors. See
-[`backend/src/database/README.md`](backend/src/database/README.md#indicators-are-not-persisted-by-design).
+[`backend/src/database/README.md`](../../backend/src/database/README.md#indicators-are-not-persisted-by-design).
 
 ### 3.3 IB connection model ✅ resolved (opt-in)
 
@@ -420,7 +420,7 @@ follow-on feature.
 > multi-broker (IB + MetaTrader) work that this section once hand-waved as
 > "larger follow-on features" is now delivered in full — see
 > [`SYSTEMATIC_TRADING_ROADMAP.md`](SYSTEMATIC_TRADING_ROADMAP.md) for the design
-> and [`FEATURES.md`](FEATURES.md#systematic-trading-rule-driven-auto-execution)
+> and [`FEATURES.md`](../../FEATURES.md#systematic-trading-rule-driven-auto-execution)
 > for what's live. The watchlist and in-app price alerts have since
 > shipped too (see §7 above); scanners / sector browsing remain the open
 > item.
@@ -456,7 +456,7 @@ follow-on feature.
 above — low priority given the deployment target is a Linux host.
 
 - The multi-broker topology (`DEPLOYMENT.md` §
-  [Multi-Broker Host Topology](DEPLOYMENT.md#multi-broker-host-topology-ib--mt5))
+  [Multi-Broker Host Topology](../../DEPLOYMENT.md#multi-broker-host-topology-ib--mt5))
   runs IB Gateway and the MT5 sidecar as two separate GUI-session hosts, each
   a single point of failure for its venue, and the MT5 sidecar's HTTP
   contract (`broker_service/mt5_adapter.py`) carries no authentication.
@@ -552,7 +552,7 @@ Phases 1–4 are complete (see §2). Remaining work, ordered by dependency:
     ([`test_market_data_history_route.py`](broker_service/tests/test_market_data_history_route.py)),
     leaving frontend RTL coverage beyond hooks and broader backend route
     coverage as the two remaining test-breadth items (see
-    [`FEATURES.md`](FEATURES.md#test-coverage-expansion)).
+    [`FEATURES.md`](../../FEATURES.md#test-coverage-expansion)).
 
 ---
 

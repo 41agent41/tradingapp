@@ -1,1005 +1,390 @@
 # TradingApp Deployment Guide
 
-Complete guide for deploying TradingApp on a remote server. All operations
-flow through the single management script `./tradingapp.sh` — there are no
-other deployment scripts in this repository.
+How to put TradingApp on a server, keep it up to date and run it. One
+command commissions a host: `./tradingapp.sh install`. Everything after that
+is done in the app, on the Settings page.
 
-> Building the hosts themselves from scratch on a hypervisor? See
-> [`PROXMOX_DEPLOYMENT.md`](PROXMOX_DEPLOYMENT.md) — it covers Proxmox VE
-> post-install, LXC container creation (including the flags Docker-in-LXC
-> requires), a dedicated TimescaleDB container, the IB Gateway and MT5
-> session hosts, firewalling and backups, then hands off to this document
-> for the application itself.
+Other guides:
 
-## Table of Contents
+- Building the hosts on Proxmox (LXC containers, a database container, the IB
+  Gateway and MT5 hosts): [PROXMOX_DEPLOYMENT.md](PROXMOX_DEPLOYMENT.md).
+- Installing unattended as root from an answers file:
+  [AGENT_INSTALL_RUNBOOK.md](AGENT_INSTALL_RUNBOOK.md) and
+  [`install/install.sh`](install/install.sh).
+- When something goes wrong: [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
-1. [Upgrading from `ib_service`](#upgrading-from-ib_service)
-2. [Prerequisites](#prerequisites)
-3. [Multi-Broker Host Topology (IB + MT5)](#multi-broker-host-topology-ib--mt5)
-4. [One-Command Deployment](#one-command-deployment)
-5. [Manual Deployment](#manual-deployment)
-6. [Environment Configuration](#environment-configuration)
-7. [Executions (fills) sync](#executions-fills-sync)
-8. [Service Verification](#service-verification)
-9. [Common Issues](#common-issues)
-10. [Production Setup](#production-setup)
-11. [Monitoring & Maintenance](#monitoring--maintenance)
-12. [Deployment Checklist](#deployment-checklist)
+## Install
 
-## Upgrading from `ib_service`
+What the host needs:
 
-The `ib_service` directory and Docker Compose service are now **`broker_service`**
-— the service grew beyond Interactive Brokers (it also hosts the MT5, Alpaca
-and OANDA adapters), so the name no longer fit. This is a **breaking change**
-for existing deployments:
+- Ubuntu 22.04+ or Debian 12+ (the script uses `apt`).
+- 4 GB of memory (the frontend build needs it) and 15 GB of free disk.
+- Ports 3000 (frontend) and 4000 (backend). The broker service (8000) is
+  published on loopback only.
 
-- The Compose service is now named `broker_service` (was `ib_service`) — update
-  any scripts that call `docker compose logs ib_service` / `exec ib_service`.
-- Env vars renamed: `IB_SERVICE_URL` → `BROKER_SERVICE_URL`,
-  `IB_SERVICE_PORT` → `BROKER_SERVICE_PORT`, `IB_SERVICE_HOST` →
-  `BROKER_SERVICE_HOST`. Update your `.env` accordingly — the old names are
-  **not** read as fallbacks.
-- `IB_HOST` / `IB_PORT` / `IB_CLIENT_ID` (the actual IB Gateway connection)
-  are **unchanged** — only the service-identity vars above were renamed.
-- `./tradingapp.sh` already targets the new service name; no script changes
-  needed on your part beyond `.env`.
+The script installs Docker and the compose plugin if they are missing.
 
-## Prerequisites
+<a id="user-account-do-not-install-as-root"></a>
 
-### System
+### 1. Prepare the host
 
-- **OS**: Ubuntu 20.04+ (the `tradingapp.sh` installer uses `apt`)
-- **RAM**: 2 GB minimum, 4 GB+ recommended
-- **Storage**: 10 GB free
-- **Ports**: 3000, 4000, 8000 (and 6379 if you expose Redis)
+`./tradingapp.sh` refuses to run as root and calls `sudo` itself when it needs
+to. Fresh containers and VPS images often log you in as root, so create a
+normal user first.
 
-### User account (do not install as root)
-
-`./tradingapp.sh` **refuses to run as root** (`Don't run this script as root.
-Use a user with sudo privileges.`) and calls `sudo` itself for the steps that
-need it. Fresh LXC containers, VPS images and minimal installs usually log you
-in as `root`, so create a normal user with sudo rights **before you clone**:
-
-```bash
-# As root, once per host
-apt update && apt install -y sudo git curl   # minimal images often lack sudo
-adduser tradingapp                           # set a password when prompted
-usermod -aG sudo tradingapp
-getent group docker && usermod -aG docker tradingapp   # only if Docker is already installed
-
-# Switch to the new user and work from its home directory
-su - tradingapp
-cd ~
-```
-
-Clone the repository as that user (into `~/tradingapp`, or `/opt/tradingapp`
-after `sudo mkdir -p /opt/tradingapp && sudo chown tradingapp: /opt/tradingapp`),
-not into `/root`: a checkout under `/root` is unreadable to every other user.
-
-If `./tradingapp.sh setup` installs Docker for you, it adds the user to the
-`docker` group, which only takes effect in a new login. Run `exit` and
-`su - tradingapp` again (or reconnect over SSH) before `./tradingapp.sh deploy`;
-`docker ps` working without `sudo` confirms it.
-
-The unattended installer, [`install/install.sh`](install/install.sh)
-([AGENT_INSTALL_RUNBOOK.md](AGENT_INSTALL_RUNBOOK.md)), is the exception: it
-is meant to run as root and creates the deploy user itself.
-
-### Software
-
-- **Docker** 20.10+
-- **Docker Compose** 2.0+
-- **Git**
-
-`./tradingapp.sh setup` will install Docker and Docker Compose for you on a
-fresh Ubuntu host.
-
-### Adding brokers
-
-Brokers are added in the app, never in `.env`. Once the app is deployed, sign
-in and open **Settings > Connections**, choose the broker, and enter its
-details: the IB Gateway address and port, the MT5 sidecar URL and secret, the
-OANDA token and account id, or the Alpaca keys. Secrets are stored encrypted
-under `SETTINGS_ENCRYPTION_KEY`, and the connection is checked as soon as it
-is saved, so a wrong key or address shows at once. Add several accounts per
-broker the same way, each marked paper or live.
-
-The sections below cover what each broker needs before you add it.
-
-### Interactive Brokers
-
-- **IB Gateway** or **TWS** running and logged in.
-- **API access enabled** (`File → Global Configuration → API → Settings`,
-  enable "ActiveX and Socket Clients", set the socket port — `4002` is the
-  default for paper trading).
-- The trading server's IP added to the **trusted IPs** list in IB Gateway.
-- Market-data subscriptions for the assets you intend to query (paper
-  accounts are recommended for testing).
-
-### MetaTrader 5 (MT5) — optional second broker
-
-MT5 is optional; skip this if you're only trading through IB. The
-`MetaTrader5` Python package only runs against a live MT5 terminal under
-Windows Python, so it cannot join the Linux Docker stack. Instead:
-
-- A **sidecar host** runs the MT5 terminal, logged into its own MT5 account,
-  plus the FastAPI sidecar in [`mt5_sidecar/`](mt5_sidecar/README.md), which
-  exposes the HTTP contract documented in
-  [`broker_service/mt5_adapter.py`](broker_service/mt5_adapter.py) (`/health`,
-  `/symbols`, `/history`, `/quote`, `/tick`, `/orders`, `/positions`,
-  `/account`, `/deals`, `/symbol`). The host is Windows, or Linux running the
-  terminal and Windows Python under Wine; the sidecar README covers both,
-  with a service script and a systemd unit. One sidecar serves one terminal,
-  so two accounts means two sidecars on two ports.
-- The Linux `broker_service` container talks to it as an HTTP client
-  (`MT5Adapter`). Add an MT5 connection in **Settings > Connections** with
-  the sidecar's URL (e.g. `http://10.7.3.22:9100`). Until one exists,
-  `source=mt5` / `broker=mt5` resolve to a clean `501` instead of a
-  confusing `404`.
-- Give it a random shared secret (at least 24 characters), and the same value
-  as `MT5_BRIDGE_SECRET` in the sidecar's own `sidecar.env` on its host. The
-  sidecar rejects any request whose `X-MT5-Bridge-Secret` header doesn't
-  match, and will not start on a non-loopback address without a secret;
-  anything that can reach an unprotected sidecar can trade the account.
-- For more than one MT5 account, add one connection per sidecar.
-- See [Multi-Broker Host Topology](#multi-broker-host-topology-ib--mt5)
-  below for how this host relates to the rest of the deployment, and the
-  design trade-offs of running IB and MT5 as separate dedicated hosts with
-  separate accounts.
-
-### Alpaca and OANDA — optional cloud brokers
-
-Both are optional and, unlike MT5, need **no dedicated host** — they're cloud
-REST APIs the `broker_service` container calls directly over HTTPS, so
-enabling either is just adding it in **Settings > Connections**, no redeploy:
-
-- **Alpaca** (US equities/options): the API key and secret. A paper
-  connection uses Alpaca's paper endpoint, a live one the live endpoint.
-- **OANDA** (FX/CFD): the API token and account id. A paper connection uses
-  OANDA's practice environment, a live one the live environment.
-
-Until a broker has a connection, requests for it resolve to a clean `501`,
-not a confusing `404`.
-
-> **Break-glass.** The broker service still reads the old `.env` variables
-> (`IB_HOST`, `MT5_BRIDGE_URL`, `ALPACA_API_KEY`, `OANDA_API_TOKEN`, the
-> `BROKER_CONNECTIONS` manifest; see `broker_service/connections.py`). A
-> broker set there replaces the app's connections for it, and the page shows
-> them as overridden. Use them only when the app cannot be reached.
-
-To add another broker with an API, follow
-[`broker_service/ADDING_A_BROKER.md`](broker_service/ADDING_A_BROKER.md).
-
-### External database (recommended for production)
-
-By default the base `docker-compose.yml` does **not** provision a
-PostgreSQL container — the backend is wired to an external Postgres
-(TimescaleDB recommended). Make sure you have:
-
-- A reachable Postgres 14+ instance.
-- Connection credentials (host, port, user, password, database).
-- The schema initialised — see
-  [`backend/src/database/README.md`](backend/src/database/README.md).
-
-#### Local / self-hosted alternative
-
-For development or self-hosted deployments without an external Postgres,
-opt into the bundled TimescaleDB by passing `--with-db` to any
-`tradingapp.sh` command:
-
-```bash
-./tradingapp.sh deploy --with-db    # bring up the stack including local TimescaleDB
-./tradingapp.sh status              # subsequent commands remember the choice
-./tradingapp.sh --no-db redeploy    # drop the override again
-```
-
-Under the hood `--with-db` layers `docker-compose.db.yml` onto the base
-file. The schema in `backend/src/database/timescaledb-schema.sql` is
-applied automatically on first run.
-
-## Multi-Broker Host Topology (IB + MT5)
-
-TradingApp can trade through several broker venues at once via the adapter
-seam in [`broker_service/adapters.py`](broker_service/adapters.py). IB and
-MT5 are both **GUI applications that hold a logged-in broker session**, and
-neither runs inside the Docker stack, so a full deployment spans up to four
-hosts. Alpaca and OANDA don't need this treatment — they're cloud REST APIs
-the `broker_service` container calls directly (see
-[Alpaca and OANDA](#alpaca-and-oanda--optional-cloud-brokers) above) — so
-this topology discussion is specific to IB + MT5:
-
-```
-                    ┌────────────────────────────────────────────┐
-                    │  App host — Docker Compose                 │
-                    │  frontend :3000  backend :4000  redis :6379│
-                    │  broker_service :8000  (172.20.0.0/16 bridge)  │
-                    └───────┬──────────────────────┬─────────────┘
-                            │                       │
-              IB socket API │                       │ HTTP (MT5Adapter)
-                (4001/4002) │                       │ MT5_BRIDGE_URL
-                            ▼                       ▼
-              ┌──────────────────────┐   ┌───────────────────────────┐
-              │ IB Gateway / TWS host│   │ MT5 Windows host           │
-              │ logged into one      │   │ MT5 terminal, logged into  │
-              │ IB account           │   │ one MT5 account            │
-              │ (Win/Linux, GUI)     │   │  + FastAPI sidecar :9100   │
-              │                      │   │  (not in this repo — see   │
-              │                      │   │  broker_service/mt5_adapter.py)│
-              └──────────────────────┘   └───────────────────────────┘
-                            │
-                            │ (elsewhere)
-                            ▼
-              ┌──────────────────────┐
-              │ External Postgres /  │
-              │ TimescaleDB          │
-              └──────────────────────┘
-```
-
-- **App host → IB Gateway host:** `broker_service` connects outbound over the
-  IB socket API (`IB_HOST:IB_PORT`, `ibapi`). One TCP session, one
-  `IB_CLIENT_ID`, one logged-in IB account.
-- **App host → MT5 host:** `broker_service`'s `MT5Adapter` connects outbound
-  over plain HTTP to the sidecar (`MT5_BRIDGE_URL`). One logged-in MT5
-  account, driven by whatever process keeps the MT5 terminal signed in on
-  that host.
-- Both venues are **broker-scoped** end-to-end: contract catalogues,
-  positions, order audit and the net-exposure cap are keyed per broker, so
-  IB and MT5 never reconcile against each other and a systematic run
-  targets exactly one venue (see `FEATURES.md` §
-  [Multi-broker: IB + MetaTrader](FEATURES.md#multi-broker-interactive-brokers--metatrader-mt5)).
-- Only the app host needs inbound exposure to end users (3000/4000, or a
-  reverse proxy in front of them). The IB Gateway and MT5 hosts should only
-  accept inbound connections from the app host's IP — put both behind the
-  same private network/VPN as the app host, never on the public internet.
-
-### Design considerations: one dedicated host + one account per broker
-
-The current design — a separate host per broker, each logged into its own
-broker account — is a reasonable default, but it's worth being deliberate
-about *why*, because it also compounds some existing weaknesses rather
-than fixing them.
-
-**What it gets right:**
-
-- **Forced by MT5, not optional.** `MetaTrader5` only runs Windows-side
-  against a live terminal, so *some* Windows host is unavoidable for MT5
-  regardless of how IB is deployed.
-- **Blast-radius isolation.** A crash, reboot, or Windows Update on the
-  MT5 host can't take down the IB session (or the Docker stack), and vice
-  versa. A resource-hungry MT5 backtest can't starve IB Gateway's socket
-  loop.
-- **Session isolation.** IB Gateway and an MT5 terminal are both fragile,
-  stateful GUI sessions (auto-logout, 2FA re-prompts, update dialogs).
-  Keeping them on separate machines means a stuck dialog or forced restart
-  on one doesn't require touching the other.
-
-**Where it's worth challenging:**
-
-- **It doubles the "must stay logged in" operational problem instead of
-  solving it.** The single-host review already flagged the IB Gateway
-  session as a manual, non-declarative dependency and a hard SPOF. Adding
-  a second GUI-session host for MT5 doesn't reduce that risk, it
-  duplicates it — now there are two broker sessions that can silently log
-  out and quietly stop trading, each needing its own babysitting
-  (auto-restart, session-alive monitoring, 2FA handling).
-- **The MT5 sidecar contract supports shared-secret auth, but it's opt-in
-  and the sidecar side still has to enforce it.** `MT5Adapter`
-  (`broker_service/mt5_adapter.py`) sends an `X-MT5-Bridge-Secret` header
-  on every request when `MT5_BRIDGE_SECRET` is set (`broker_service` logs a
-  startup warning if `MT5_BRIDGE_URL` is configured without it). That's
-  only half the contract — the sidecar has to reject requests missing the
-  header or presenting the wrong value. The sidecar in
-  [`mt5_sidecar/`](mt5_sidecar/README.md) does, and refuses to start on a
-  non-loopback address without a secret; a sidecar built some other way
-  must do the same, or *anything* that can reach `MT5_BRIDGE_URL:9100` can
-  query positions/account and place, cancel, or modify orders on that MT5
-  account. mTLS is a stronger alternative if you front the sidecar with a
-  proxy that supports it.
-- **"Dedicated host" doesn't necessarily mean "separate hardware."** The
-  two accounts genuinely need to stay separate (they're different broker
-  relationships), but the *hosts* don't automatically need to be separate
-  physical/virtual machines. IB Gateway also runs on Windows — if host
-  count/cost is a concern, both sessions could run on **one** Windows host
-  under separate OS users/services (or separate VMs on one hypervisor),
-  which cuts patching/monitoring surface in half while keeping the account
-  boundary intact via OS-level isolation rather than hardware isolation.
-  Conversely, if the two hosts exist for genuine reliability/compliance
-  reasons (e.g. so an MT5-host outage never touches IB), that's a valid
-  reason to keep them apart — but it should be a stated decision, not a
-  default.
-- **No failover per broker.** Each broker is still a single account on a
-  single host with no standby — this design isolates failures *between*
-  brokers, it doesn't add redundancy *within* either one. If MT5 or IB
-  Gateway logs out or the host drops, that venue goes dark until someone
-  intervenes; there's no secondary session to fail over to.
-- **Scaling stays vertical, doubled.** IB already can't run more than one
-  active session per `IB_CLIENT_ID`; MT5 has the same one-terminal-session
-  constraint. So this topology doesn't just inherit the IB service's
-  "vertical scaling only" ceiling, it applies it independently to a second
-  broker — running two venues doesn't add throughput, it adds two more
-  places a single stuck session can halt trading.
-
-**Recommendation:** keep the two accounts logically separate (required),
-but treat "separate hardware" as a choice to justify rather than a given —
-decide it based on actual reliability/compliance needs rather than
-defaulting to it. Whichever way that's decided, prioritize: (1) setting
-`MT5_BRIDGE_SECRET` and enforcing it on the sidecar before relying on MT5
-for anything beyond a lab test, (2) firewalling both the IB Gateway host and
-the MT5 host to accept connections only from the app host, and (3) an
-explicit liveness check + alert for both broker sessions — silent logout
-on either host is currently indistinguishable from "no trading opportunity
-today" until someone notices.
-
-**Future considerations** (tracked, not yet scheduled — see
-[`GAP_ANALYSIS.md` § Operational / Deployment Gaps](GAP_ANALYSIS.md#8-operational--deployment-gaps)
-for the living version of this list):
-
-- Implement the `X-MT5-Bridge-Secret` check on the sidecar itself (the
-  `broker_service` side now sends it — see `MT5_BRIDGE_SECRET` above) or
-  move to mTLS.
-- Firewall the IB Gateway and MT5 hosts to accept connections only from the
-  app host.
-- Add a liveness check + alert for both broker sessions.
-- Revisit whether IB Gateway and MT5 need separate hosts or can share one
-  with OS-level isolation.
-
-## One-Command Deployment
-
-Run these as a **non-root user with sudo rights**, not as root. On a fresh
-host or container, create one first (see
-[User account](#user-account-do-not-install-as-root)).
-
-```bash
-# 0. As root only: create the user, then switch to it
-#    apt install -y sudo git && adduser tradingapp && usermod -aG sudo tradingapp
-#    su - tradingapp
-
-# 1. Clone (into the user's home, not /root)
-cd ~
-git clone https://github.com/41agent41/tradingapp.git
-cd tradingapp
-
-# 2. Make the script executable
-chmod +x tradingapp.sh
-
-# 3. First-time setup (installs Docker, writes .env). No broker questions;
-#    it offers to deploy straight away.
-./tradingapp.sh setup
-
-# 4. Deploy the full stack (if you didn't at the end of setup). No logout
-#    is needed after setup installs Docker: deploy applies the new docker
-#    group itself.
-./tradingapp.sh deploy
-
-# 5. Confirm everything is healthy
-./tradingapp.sh test
-```
-
-### Available `tradingapp.sh` commands
-
-| Command | Purpose | When to use |
-|---|---|---|
-| `setup` | Install Docker, write a baseline `.env`, offer to deploy | First-time host setup |
-| `deploy` | Build images and bring the stack up | Initial deployment |
-| `redeploy` | Stop, prune project images, rebuild from scratch | After code changes |
-| `config` | Refresh `SERVER_IP` and fill in missing `.env` keys | Server IP changed |
-| `env` | Same as `config`, but does not redeploy | Quick env regeneration |
-| `start` / `stop` / `restart` | Compose lifecycle | Day-to-day ops |
-| `status` | `docker-compose ps` | Quick health check |
-| `logs` | Last 20 lines per service (`logs -f` to follow) | Inspect output |
-| `test` | Check frontend, backend, broker service and database; list the configured broker connections (brokers themselves are checked inside the app) | Troubleshooting |
-| `diagnose` | All of `test`, plus Docker, env file and container summaries | Debug a broken host |
-| `fix` | Recreate `.env` if missing, restart services and re-test | Auto-recover |
-| `ib-help` | Print IB Gateway configuration walk-through | Tweaking IB settings |
-| `verify-timestamps` | Run `verify_timestamp_config.sh` against the running stack | Debug wrong-year / wrong-timezone bars |
-| `clean` | Stop, remove project images and prune Docker | Reset before a fresh `deploy` |
-
-> `tradingapp.sh config` / `env` **merge** into `.env`: `SERVER_IP` and
-> the `CORS_ORIGINS` URL derived from it are updated in place, and every other key (ports, Postgres/Redis
-> credentials, and anything you've hand-added like `POSTGRES_HOST` or
-> `BACKFILL_ENABLED`) is filled in only if missing — a
-> hand-edited `.env` survives a re-run. There is no broker prompt and no
-> broker key is written: brokers are added in the app (see
-> [Adding brokers](#adding-brokers)) and checked there, never by `deploy` or `test`, so a broker that
-> is down does not fail a deploy. A request that names no broker goes to
-> the highest-priority configured one: OANDA (API brokers), then MT5, IB,
-> Alpaca. Set `DEFAULT_BROKER` in `.env` to pin one instead. Each
-> configured broker is checked every `BROKER_PROBE_INTERVAL_SECONDS`
-> (default 60): see the header health badge or **Settings > Connections**,
-> which has a Test button per broker. Brokers can be added, edited,
-> removed and reranked on that tab too; their credentials are stored
-> encrypted under `SETTINGS_ENCRYPTION_KEY`. A broker configured in `.env`
-> wins over one added there, so an existing install is unchanged. Pass
-> `--non-interactive` to skip the "Deploy now?" question at the end of
-> `setup`, for scripted / CI installs.
-
-## Manual Deployment
-
-If you prefer not to use `tradingapp.sh`:
-
-```bash
-# Install Docker (Ubuntu)
-sudo apt update && sudo apt install -y curl git
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker $USER  # log out / back in after this
-
-# Clone and configure
-git clone https://github.com/41agent41/tradingapp.git
-cd tradingapp
-cp .env.example .env
-$EDITOR .env   # set SERVER_IP, IB_HOST, POSTGRES_*, secrets, etc.
-
-# Build and start
-docker compose build
-docker compose up -d
-docker compose ps
-```
-
-## Environment Configuration
-
-`.env.example` is the documented reference; copy it to `.env` and fill in
-the values that apply to your environment. The most important keys:
-
-```bash
-# Server / network
-SERVER_IP=10.7.3.20
-CORS_ORIGINS=http://10.7.3.20:3000
-
-# IB Gateway
-IB_HOST=10.7.3.21
-IB_PORT=4002
-IB_CLIENT_ID=1
-IB_TIMEOUT=30
-
-# MT5 sidecar (optional second broker — see Multi-Broker Host Topology)
-MT5_BRIDGE_URL=http://10.7.3.22:9100
-MT5_BRIDGE_SECRET=<rotate-me>   # sidecar must enforce X-MT5-Bridge-Secret
-
-# External Postgres / TimescaleDB
-POSTGRES_HOST=db.example.com
-POSTGRES_PORT=5432
-POSTGRES_USER=tradingapp
-POSTGRES_PASSWORD=<rotate-me>
-POSTGRES_DB=tradingapp
-POSTGRES_SSL=true
-
-# Secrets (generate each with: openssl rand -hex 32). The login password
-# and API tokens are not here: they are set in the app.
-BROKER_SERVICE_TOKEN=<rotate-me>
-SETTINGS_ENCRYPTION_KEY=<rotate-me>
-REDIS_PASSWORD=<rotate-me>
-```
-
-Before the systematic engine places orders (`SYSTEMATIC_EXECUTION_ENABLED`),
-also set up alerting and the account limits. Each key is explained in
-`.env.example`, and [`PAPER_DEPLOYMENT_RUNBOOK.md`](PAPER_DEPLOYMENT_RUNBOOK.md)
-rehearses them on paper:
-
-The Telegram and heartbeat values can be entered on the Settings page (Alerts
-and safety) instead, where the token and URLs are stored encrypted; the rest
-are still set here for now.
-
-```bash
-# Alerts to your phone, and a monitor off the host that pages when they stop
-TELEGRAM_BOT_TOKEN=<from @BotFather>
-TELEGRAM_CHAT_ID=<your chat id>
-HEARTBEAT_URL=https://hc-ping.com/<uuid>
-HEARTBEAT_FAIL_URL=https://hc-ping.com/<uuid>/fail
-
-# Kill switch response to a critical trigger: notify | halt | flatten
-KILL_SWITCH_ACTION=notify
-
-# Account limits (per connection overrides use a __<CONNECTION> suffix)
-CONNECTION_MAX_DAILY_EQUITY_LOSS=300
-CONNECTION_MAX_DRAWDOWN=1000
-TRADING_DAY_TIMEZONE=Europe/Athens      # your broker's server zone
-
-# Prop-firm accounts: the firm's rules as JSON, one per connection
-# PROP_RULES__MT5_FTMO={"initial_balance":100000,"daily_loss":{"pct":5},"max_loss":{"pct":10}}
-# NEWS_CALENDAR_URL=...                 # only to replace the default feed
-```
-
-With `SYSTEMATIC_EXECUTION_ENABLED=true` and no heartbeat URL (in `.env` or on
-the Settings page), the backend logs a startup warning: nothing would page you if the host went down.
-
-### Settings page
-
-The app's **Settings** page (`/settings`, linked from the home page) shows every
-setting the app reads, where its value comes from, and changes the ones it can
-manage. Saved values live in the `app_settings` table, and every change is
-recorded in `settings_audit` (the page's History tab).
-
-- **`.env` always wins.** A key set in `.env` shows as "Set in .env" and is
-  locked on the page. To manage a setting from the page, remove its line from
-  `.env` and restart. This also makes `.env` a break-glass for anything the
-  page can change.
-- **What it can change today:** broker connections and broker priority
-  (Connections tab), the promotion gate thresholds, the news calendar, the
-  strategy runner and its scheduling, the backfill scheduler, fills sync, the
-  Redis cache and quote TTL, live streaming, Telegram alerts and their limits,
-  and the heartbeat. Everything else is listed read-only and is moving to the
-  page in stages (see the settings migration plan).
-- **When a change applies** is shown next to each setting. "Applies
-  immediately" means the next use reads it. "Applies on the next cycle" means
-  the loop it drives (runner, backfill, fills sync, streaming, heartbeat)
-  restarts with the new value as soon as it is saved, after its usual start
-  delay. Neither needs a service restart.
-- **Upgrading an existing install:** `docker-compose.yml` no longer pins the
-  scheduler, cache and streaming defaults, and `.env.example` ships them
-  commented out. A `.env` written before this still sets them, so they show as
-  locked; delete a line to manage that setting from the page.
-- **Protected settings** (marked on the page) need the same trading token and
-  MFA code as placing an order, when those are configured.
-- **What never moves to the page:** the database connection, the ports,
-  `BROKER_SERVICE_TOKEN`, `REDIS_PASSWORD`, `NODE_ENV`, `TZ`, `LOG_LEVEL` and
-  `SETTINGS_ENCRYPTION_KEY`. The app needs them before it can read its own
-  database.
-- **`SETTINGS_ENCRYPTION_KEY`** encrypts secrets saved on the page.
-  `./tradingapp.sh config` and the installer generate it. Keep a copy off the
-  host. If it is lost, secrets saved on the page have to be entered again;
-  nothing else is affected.
-
-The tables are created by `timescaledb-schema.sql`. On an existing install,
-apply the schema again (it is idempotent) before relying on the page. Until
-then the page still loads, shows values from `.env` and defaults, and refuses
-to save.
-
-### Configuring IB Gateway
-
-1. Launch IB Gateway / TWS and log in.
-2. `File → Global Configuration → API → Settings`
-   - Check **Enable ActiveX and Socket Clients**.
-   - Set **Socket port** to `4002` (paper) or `4001` (live).
-   - Add your trading server IP to **Trusted IPs**.
-3. Apply, click OK, and restart IB Gateway.
-4. In the app, add an Interactive Brokers connection under **Settings >
-   Connections** with the gateway's IP and port. It is checked as soon as
-   it is saved.
-
-`./tradingapp.sh ib-help` prints the same walk-through.
-
-## Authentication & CORS
-
-The browser logs in with a password; scripts use a bearer token. No
-credential is ever compiled into the frontend.
-
-### Configure
-
-The login password, API tokens, trading tokens and order MFA are managed in
-**Settings > Security**. Passwords are stored as scrypt hashes, tokens as
-SHA-256 hashes (each shown once when created), and the MFA and session
-secrets encrypted with `SETTINGS_ENCRYPTION_KEY`.
-
-On a fresh install with no password set anywhere, the app opens a first-run
-screen that asks for a setup code and a new password. The backend prints the
-code at startup; read it with:
-
-```bash
-./tradingapp.sh setup-code
-```
-
-`./tradingapp.sh config` and `install/install.sh` no longer put a login
-password, API token or session key in `.env`. The same keys still work there
-and take precedence over the page:
-
-```bash
-APP_PASSWORD=<12+ characters>          # the one user's login
-SESSION_SECRET=$(openssl rand -hex 32) # signs session cookies
-API_TOKEN=$(openssl rand -hex 32)      # scripts and curl, alongside page tokens
-```
-
-**An existing install** can move them, and every setting the page manages,
-out of `.env` with:
-
-```bash
-./tradingapp.sh settings-import   # stores them in the app, then offers to delete the lines
-./tradingapp.sh redeploy
-```
-
-The same password, tokens, MFA secret and session key are stored, so nobody is
-signed out and scripts keep working. The lines are removed only after a
-backup (`.env.bak.<time>`, which holds secrets: delete it once you are happy).
-Anything that cannot be stored is listed and left in `.env`;
-`LIVE_TRADING_ENABLED` always stays, as the ceiling described in
-[Enabling live trading](#enabling-live-trading). Run it after a deploy: a key
-added to `.env` since then is left alone until the backend has loaded it.
-
-**Locked out?** Set `APP_PASSWORD` (or `ORDER_MFA_SECRET`, if the authenticator
-is lost) in `.env` and `./tradingapp.sh redeploy`. The `.env` value wins, so
-you can sign in and set a new one on the Security tab, then remove it again.
-
-### How it works
-
-- **Browser**: `/login` posts the password to `POST /api/auth/login`, which
-  sets an HttpOnly, SameSite=Lax session cookie (Secure over HTTPS) signed
-  with the session secret. Sessions last `SESSION_TTL_HOURS` (default 12).
-  Changing the password on the Security tab, or rotating `SESSION_SECRET`,
-  signs every browser out. Five wrong passwords
-  from one address lock it out for 15 minutes.
-- **Scripts**: every backend route except the health checks, `/metrics` and
-  `/api/auth/*` accepts `Authorization: Bearer <token>` (or `X-API-Token`),
-  with an API token from the Security tab or `API_TOKEN`.
-- **Socket.IO**: the handshake accepts the session cookie (the frontend
-  connects with `withCredentials`) or the API token in `auth.token`.
-- **Broker service**: only the backend may call it. It is published on the
-  host's loopback only and rejects calls without `X-Broker-Service-Token`.
-
-The page and the API share one address: the frontend server forwards `/api`
-and `/socket.io` to the backend (`frontend/server.js`), so the browser's
-session cookie is first-party and nothing about the server's address is built
-into the frontend. Open the app on any name or IP that reaches port 3000 and
-it works. The backend believes the client address the frontend passes on only
-from the addresses in `TRUST_PROXY` (compose sets the frontend container's), so
-login lockout and the settings history record the real visitor.
-
-With `NODE_ENV=production` the backend refuses to start without
-authentication, or with template or default secrets. Development with an
-empty `.env` still runs open, with a warning.
-
-### CORS
-
-`CORS_ORIGINS` is now strictly enforced. Set it to a comma-separated
-list of trusted origins (the exact strings browsers send in their
-`Origin` header):
-
-```bash
-CORS_ORIGINS=http://10.7.3.20:3000,https://app.example.com
-```
-
-Setting `CORS_ORIGINS=*` (or leaving it empty) prints a startup warning
-and falls back to accepting any origin — again, fine for dev, not for
-production.
-
-## Redis cache
-
-The Redis container that ships with the base compose file is now wired
-into the backend as a **read-through cache** for high-traffic endpoints:
-
-- `/api/market-data/realtime` — `CACHE_TTL_REALTIME` seconds (default `2`).
-- `/api/market-data/indicators/available` — 1 hour, refreshed via the
-  cache wrapper.
-
-A Redis outage degrades into a cache miss — every endpoint keeps working
-without it. Health is surfaced in `/api/health` under
-`services.cache.connected`. To disable caching entirely turn off **Redis
-cache** on the Settings page (or set `REDIS_ENABLED=false` in `.env`).
-
-## Real-time streaming (Phase 4)
-
-The IB service runs an in-process `StreamingManager` that subscribes
-to IB tick data (`reqMktData`) and publishes each tick to Redis on
-`marketdata:tick:<SYMBOL>`. The backend opens a second Redis client in
-subscribe-mode and forwards every tick to Socket.IO clients in the
-`market-data:<SYMBOL>` room.
-
-The end-to-end flow is:
-
-```
-IB Gateway ──reqMktData──▶ broker_service ──redis.publish──▶ Redis
-                                                          │  pSUBSCRIBE
-                                                          ▼
-                              Socket.IO room ◀── backend StreamingBridge
-                                    │
-                                    ▼
-                        frontend useRealtimeStream hook
-                        (MSFTRealtimeChart, etc.)
-```
-
-Operational notes:
-
-- **Per-symbol refcounting** lives in both the IB service and the
-  backend so multiple browsers sharing a symbol only generate one
-  IB-side subscription.
-- **Subscriptions clean up on disconnect.** When a Socket.IO client
-  drops, the backend bridge runs `releaseSocket()` which decrements
-  every symbol it held and `cancelMktData`s anything that reaches
-  refcount zero.
-- **REST polling fallback** still works. The frontend seeds the price
-  display with a one-shot `/api/market-data/realtime` call before the
-  first tick arrives — useful when streaming is disabled or when
-  Redis is briefly unreachable.
-- **Turning it off:** turn off **Live streaming** on the Settings page (or
-  set `STREAMING_ENABLED=false` in `.env`) and the backend bridge
-  disconnects from Redis. The chart falls back to
-  one-shot REST calls (no live updates) and the rest of the app keeps
-  working normally.
-- **Diagnostics:**
-    - Backend `/api/health` includes a `services.streaming` block
-      (connected flag, per-symbol refcounts, ticks received /
-      forwarded / dropped totals).
-    - IB service `GET /market-data/stream/status` shows the same view
-      from the publisher side.
-
-## Data collection & retention (Phase 5)
-
-The backend can keep the database topped up and pruned automatically,
-driven by rows in the `data_collection_config` table. Both the backfill
-worker and the retention cleanup read that table, so nothing happens
-until you add rows to it.
-
-### 1. Tell the backend what to collect
-
-Insert a config row per `(contract, timeframe)` you want managed. The
-contract must already exist in `contracts` (the schema seeds a few; the
-*Download* page and contract search create more):
-
-```sql
--- Collect MSFT 1-hour bars every 15 minutes, keep 365 days.
-INSERT INTO data_collection_config
-  (contract_id, timeframe, enabled, auto_collect, collection_interval_minutes, retention_days)
-SELECT id, '1hour', true, true, 15, 365
-FROM contracts
-WHERE symbol = 'MSFT' AND sec_type = 'STK'
-ON CONFLICT (contract_id, timeframe) DO UPDATE
-  SET enabled = EXCLUDED.enabled,
-      auto_collect = EXCLUDED.auto_collect,
-      collection_interval_minutes = EXCLUDED.collection_interval_minutes,
-      retention_days = EXCLUDED.retention_days;
-```
-
-- `auto_collect = true` → eligible for the backfill scheduler.
-- `enabled = true` → eligible for retention cleanup (`retention_days`).
-- `collection_interval_minutes` → minimum age before a row is refetched,
-  so a fast global tick doesn't hammer IB for slow-moving data.
-
-### 2. Enable the scheduler
-
-The scheduler is **off by default** because it makes live IB requests on
-a timer. Turn on **Backfill scheduler** on the Settings page (Schedulers and
-data), where its interval, window and start delay are set too. It starts
-without a redeploy. Or pin it in `.env` and redeploy:
-
-```bash
-BACKFILL_ENABLED=true
-BACKFILL_INTERVAL_MINUTES=15   # how often the scheduler ticks
-BACKFILL_PERIOD=5D             # window fetched per run (any IB period)
-BACKFILL_INITIAL_DELAY_MS=30000
-```
-
-Each pass fetches the recent window for every eligible row and upserts it
-(existing bars update, new bars insert, holes inside the window
-self-heal). It records a `data_collection_sessions` row per attempt and
-per-day quality counts into `data_quality_metrics`.
-
-### 3. Retention cleanup
-
-Retention is enforced two ways:
-
-- **TimescaleDB retention policy** (in the schema) drops whole chunks
-  older than 2 years for `candlestick_data` and 30 days for `tick_data`.
-- **`POST /api/market-data/database/clean`** deletes bars older than each
-  config row's `retention_days` and returns the real number removed —
-  use this for a tighter, per-symbol retention than the coarse global
-  policy. Run it from cron against the authenticated endpoint.
-
-### Diagnostics
-
-```bash
-# Scheduler state: enabled flag, last run, per-run totals.
-curl -fs http://<server-ip>:4000/api/health | jq .services.backfill
-
-# Per-symbol storage + average quality score.
-curl -fs -H "Authorization: Bearer $API_TOKEN" \
-  http://<server-ip>:4000/api/market-data/database/stats | jq
-```
-
-## Executions (fills) sync
-
-Positions and P&L default to being inferred from **submitted orders** — what
-the app asked a venue to trade, recorded in `order_audit`. That estimate
-silently disagrees with the account on a partial fill, on a rejection that
-lands after the acknowledgement, and on any trade placed outside the app.
-Turning on the fills sync replaces the estimate with the venue's own execution
-reports.
-
-**Enable it if** you use a strategy's `risk.max_daily_loss` (the sync is its
-P&L source — with the sync off, a declared cap fails *closed* and the run
-places nothing), or you want `/api/account/executions` and `/api/account/pnl`
-to report anything.
-
-Turn on **Fills sync** on the Settings page (Schedulers and data); it starts
-without a redeploy. Or pin it in `.env` and redeploy:
-
-```bash
-# .env
-EXECUTIONS_SYNC_ENABLED=true
-EXECUTIONS_SYNC_INTERVAL_SECONDS=120   # per-venue poll cadence (min 15)
-EXECUTIONS_SYNC_LOOKBACK_DAYS=2        # window per poll (1-30)
-EXECUTIONS_DEFAULT_ACCOUNT_MODE=paper  # for fills with no order of ours behind them
-```
-
-The poller reads every venue the app has traded at recently plus every venue
-with a running strategy, so an unconfigured broker is never polled. The window
-**overlaps on purpose** — a fill can be reported late, and IB delivers a fill's
-commission on a callback separate from the fill itself, so re-reading is how
-those converge. Rows upsert on `(broker, exec_id)`, so re-delivery never
-duplicates.
-
-> **IB timestamps.** IB reports execution times in the **Gateway's** timezone
-> when it doesn't supply one on the wire. The service interprets those in
-> `IB_TIMEZONE` (default `UTC`) — if your Gateway is not running in UTC, set
-> `IB_TIMEZONE` to its actual zone or every fill will be stamped with the
-> account's offset applied in the wrong direction.
-
-### Diagnostics
-
-```bash
-# Poller state: enabled flag, last run, fetched / inserted / relinked totals.
-curl -fs http://<server-ip>:4000/api/health | jq .services.executions
-
-# Recorded fills, and today's realised P&L.
-curl -fs -H "Authorization: Bearer $API_TOKEN" \
-  "http://<server-ip>:4000/api/account/executions?limit=20" | jq
-curl -fs -H "Authorization: Bearer $API_TOKEN" \
-  http://<server-ip>:4000/api/account/pnl | jq
-
-# Reconciliation: what the app believes it holds vs what the venue reports.
-curl -fs -H "Authorization: Bearer $API_TOKEN" \
-  "http://<server-ip>:4000/api/account/reconciliation?broker=ib" | jq
-```
-
-### Positions come from fills *plus* working orders
-
-Once the sync is on, a position is the recorded fills **plus the unfilled
-remainder of any still-working orders** — not one or the other. Fills alone lag
-the poll interval, so a freshly-placed order would read as flat and a strategy
-could re-enter a position it already holds; submitted orders alone cannot see a
-partial fill. Both halves together mean an order moves from "in flight" to
-"filled" without ever being double-counted or briefly invisible.
-
-A **strategy run** sees only the exposure it created (fills carry the run id of
-the signal behind them), so a second run on the same symbol, or a trade you
-place by hand, cannot change what its sizing and pyramiding rules do.
-`ORDER_MAX_POSITION` is the opposite by design: it caps *account* exposure at
-the venue, so manual trades count toward it.
-
-Per-run attribution can therefore drift from the account — a manual trade
-belongs to no run, a corporate action to no order. `GET /api/account/reconciliation`
-exists to surface that: it lists every symbol either side knows about with a
-`matched` flag, so a divergence is something you can see rather than something
-that quietly accumulates. Worth a periodic check (or a cron alert on
-`.mismatches > 0`) on any account that is also traded by hand.
-
-## Service Verification
-
-```bash
-# Compose status
-./tradingapp.sh status
-
-# End-to-end health
-./tradingapp.sh test
-
-# Endpoint smoke tests
-curl -I  http://<server-ip>:3000          # Frontend
-curl -fs http://<server-ip>:4000/api/health
-curl -fs http://<server-ip>:8000/health   # IB service
-```
-
-Open the frontend in a browser at `http://<server-ip>:3000`.
-
-## Common Issues
-
-| Symptom | First step |
-|---|---|
-| Services won't start (port clash) | `sudo ss -ltnp \| grep -E ':(3000\|4000\|8000)'` and free the port |
-| Frontend can't reach backend | The frontend forwards `/api` to `BACKEND_INTERNAL_URL` (set in compose); check `docker compose logs frontend` for `Backend unavailable` |
-| IB connection failures | `./tradingapp.sh ib-help`, then `./tradingapp.sh test` |
-| MT5 requests return 501 | `MT5_BRIDGE_URL` is unset — expected until the MT5 sidecar host is deployed (see [Multi-Broker Host Topology](#multi-broker-host-topology-ib--mt5)) |
-| MT5 requests return 503 | Sidecar unreachable — confirm the MT5 Windows host is up, the terminal is logged in, and the app host can reach `MT5_BRIDGE_URL` (firewall/VPN) |
-| Alpaca/OANDA requests return 501 | Credentials unset — expected until `ALPACA_API_KEY`+`ALPACA_API_SECRET` or `OANDA_API_TOKEN`+`OANDA_ACCOUNT_ID` are both set (see [Alpaca and OANDA](#alpaca-and-oanda--optional-cloud-brokers)) |
-| Alpaca/OANDA requests return 503 | The broker's API is unreachable from the app host — check outbound HTTPS / firewall rules |
-| Database health check fails | Confirm `POSTGRES_HOST` is reachable from inside the backend container (`docker compose exec backend node -e "require('net').connect(5432,'$POSTGRES_HOST').on('connect',()=>console.log('ok'))"`) |
-| Charts not loading | `./tradingapp.sh logs` for frontend errors, then `./tradingapp.sh redeploy` |
-| Backend exits with `[startup] refusing to start: …` | The line names the key: a template or too-short secret, or an unreadable `KILL_SWITCH_ACTION`, `TRADING_DAY_TIMEZONE`, `PROP_RULES__*` or heartbeat URL. See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#backend-refuses-to-start) |
-
-For a fuller list, see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
-
-## Production Setup
-
-### Enabling live trading
-
-The order-placement path (`POST /api/orders` → `POST /orders` on the broker
-service) is gated by a switch that is **off by default**. Without it the
-backend and the broker service both reject any `account_mode=live` request
-with HTTP 403: paper orders work, live orders don't.
-
-To enable live trading:
-
-1. In **Settings > Security**, create a trading token (copy it, it is
-   shown once) and set up MFA by scanning the QR code with an authenticator
-   app and entering a code. `TRADING_TOKENS` and `ORDER_MFA_SECRET` in `.env`
-   still work instead.
-
-2. In **Settings > Trading**, enter the trading token and a current MFA
-   code, set **Live trading** to `true` and type `LIVE` when asked. The
-   page refuses without both safeguards in place, the change is written to
-   the settings history, and an alert goes to Telegram. The backend passes
-   the switch on to the broker service, which refuses live orders until it
-   has heard from the backend.
-
-   The account must also be added as a live connection (Settings >
-   Connections); a live order to a paper connection is refused. A strategy
-   goes live only after the promotion gate sees a paper run of the same
-   definition (`GET /api/strategies/definitions/:id/promotion`).
-
-3. Verify the gate is fully open:
+1. As root, create the user:
 
    ```bash
-   curl -s -H "Authorization: Bearer $API_TOKEN" http://<host>:3000/api/orders/config | jq
+   apt update && apt install -y sudo git curl
+   adduser tradingapp
+   usermod -aG sudo tradingapp
+   su - tradingapp
    ```
 
-   `live_trading_enabled` must be `true`. If `backend_live_enabled` and
-   `ib_live_enabled` disagree, the broker service has not picked up the
-   change yet (it does within 15 seconds); don't send a live order until
-   they match.
+2. As that user, clone into its home directory (not `/root`, which no other
+   user can read):
 
-Turning live trading off, or tightening any risk limit, needs only the
-login, so stopping is never harder than starting. Raising a limit or
-turning a switch on needs the trading token and MFA code as well.
+   ```bash
+   cd ~
+   git clone https://github.com/41agent41/tradingapp.git
+   cd tradingapp
+   ```
 
-`.env` is a ceiling: `LIVE_TRADING_ENABLED=false` there keeps live off
-whatever the page says (the page shows it locked). Removing a trading token
-or the MFA secret later also closes the gate.
+   To use `/opt/tradingapp` instead, run
+   `sudo mkdir -p /opt/tradingapp && sudo chown tradingapp: /opt/tradingapp`
+   first. `tradingapp.sh` is already executable.
 
-The order caps (`ORDER_MAX_QUANTITY`, default 100k, and `ORDER_MAX_PRICE`,
-default 1M) are set in **Settings > Risk** and applied to every submission.
-Every attempt is persisted in `order_audit` (visible in the `/trade` blotter
-and via `GET /api/orders/audit`).
-
-### Reverse proxy + TLS
+### 2. Run install
 
 ```bash
-sudo apt install -y nginx certbot python3-certbot-nginx
-sudo $EDITOR /etc/nginx/sites-available/tradingapp
+./tradingapp.sh install
 ```
 
-Example `nginx` site:
+It does the following:
 
-Everything goes to the frontend on port 3000, which forwards `/api` and
-`/socket.io` to the backend itself:
+1. Checks for curl and openssl, and installs Docker and the compose plugin if
+   needed. If it just added you to the `docker` group, it re-runs itself
+   under `sg docker`, so you do not need to log out.
+2. Writes `.env` with seven keys: the database connection and
+   `SETTINGS_ENCRYPTION_KEY`. With the bundled database (the default) it
+   generates the database password and points at `172.20.0.20`. It never
+   replaces an existing password or key.
+3. Builds and starts the stack, then waits until the backend reports ready
+   (up to 900 seconds; set `INSTALL_TIMEOUT` to change it). It stops early if
+   the backend reports `migration_failed` or `key_mismatch`, and prints why.
+4. Checks the frontend, backend, broker service and readiness. It does not
+   test brokers. The app does that, and a broker that is down never fails a
+   deploy.
+5. Prints the URL and, if no login password is set yet, the setup code.
 
-```nginx
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-}
+The backend creates and updates the database schema itself. There is no SQL
+to run.
 
-server {
-    listen 80;
-    server_name your-domain.com;
-    return 301 https://$server_name$request_uri;
-}
+Flags:
 
-server {
-    listen 443 ssl http2;
-    server_name your-domain.com;
+| Flag | Effect |
+|---|---|
+| `--external-db` | Use your own PostgreSQL + TimescaleDB. Asks for the host and password. See [External database](#external-database). |
+| `--answers FILE` | Take answers from `KEY=VALUE` lines. Database keys and `SETTINGS_ENCRYPTION_KEY` go to `.env`; other keys are stored as app settings. Broker keys are refused (exit 2). |
+| `--non-interactive` | Never prompt. |
+| `--env-only` | Write `.env` and stop. |
 
-    ssl_certificate     /etc/letsencrypt/live/your-domain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
-
-    location / {
-        proxy_pass http://localhost:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade           $http_upgrade;
-        proxy_set_header Connection        $connection_upgrade;
-        proxy_read_timeout 3600s;
-    }
-}
-```
+Save the encryption key off the host now:
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/tradingapp /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d your-domain.com
+./tradingapp.sh backup-key
 ```
 
-To have the backend log and rate-limit by the visitor's address rather than
-nginx's, add the Docker network gateway to `TRUST_PROXY` in `.env`
-(`TRUST_PROXY=172.20.0.3,172.20.0.1`) and redeploy.
+Any rebuild that keeps the database needs this key.
+
+### 3. Sign in with the setup code
+
+1. Open the URL that install printed (`http://<server-ip>:3000`).
+2. The first visit asks for the setup code. If you lost it, run
+   `./tradingapp.sh setup-code`.
+3. Choose the login password.
+
+If the page instead says the backend is waiting for the database, migrating,
+or reports a key mismatch, see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#backend-says-waiting-for-the-database-migration-failed-or-key-mismatch).
+
+### 4. Work through the Settings checklist
+
+The Settings page has a "Getting started" checklist. It is worked out from
+the app's state and shows what is left:
+
+1. **Login password.** Done at first sign-in.
+2. **Order MFA and a trading token.** On Settings > Security. Placing orders
+   and changing protected settings need them.
+3. **A broker connection.** Add one under Settings > Connections. See
+   [Adding brokers](#adding-brokers).
+4. **Instruments to collect.** Choose them on Settings > Schedulers and data,
+   and turn the backfill scheduler on there. See
+   [Data collection](#data-collection).
+5. **Alerts.** Telegram bot token and chat id, and a heartbeat URL, on
+   Settings > Alerts and safety.
+
+Before the systematic engine places orders, also set the account limits and
+`TRADING_DAY_TIMEZONE` (Settings > Risk) and leave the kill switch on
+`notify`. [PAPER_DEPLOYMENT_RUNBOOK.md](PAPER_DEPLOYMENT_RUNBOOK.md) walks
+through this on paper.
+
+<a id="alpaca-and-oanda--optional-cloud-brokers"></a>
+
+## Adding brokers
+
+Brokers are added in the app, under Settings > Connections. Do not put them
+in `.env` or in an answers file. Each connection is tested when you save it,
+and the app keeps checking it every `BROKER_PROBE_INTERVAL_SECONDS` (on
+Settings > Schedulers and data; 0 pauses it). Secrets are stored encrypted under
+`SETTINGS_ENCRYPTION_KEY`. Add several accounts per broker if you need them,
+each marked paper or live.
+
+A request that names no broker goes to the highest-priority one: OANDA, then
+MT5, then IB, then Alpaca. Change the order on the Connections tab, or pin one
+with `DEFAULT_BROKER` (Settings > Trading). A broker with no connection
+answers `501`.
+
+Per-connection risk limits and prop-firm rules are on each connection's own
+form. Precedence, highest first: a `.env` per-connection line
+(`CONNECTION_MAX_*__<CONN>`, `PROP_RULES__<CONN>`), then the connection's own
+values, then the fleet-wide cap on Settings > Risk.
+
+What each broker needs before you add it:
+
+- **OANDA** (FX and CFDs): an API token and account id. Paper connections use
+  OANDA's practice environment.
+- **Alpaca** (US equities and options): an API key and secret. Paper
+  connections use Alpaca's paper endpoint.
+- **Interactive Brokers**: IB Gateway or TWS running and logged in. In
+  `File > Global Configuration > API > Settings`, enable "ActiveX and Socket
+  Clients", set the socket port (4002 paper, 4001 live), add the app host's IP
+  to Trusted IPs, and untick "Read-Only API" if you will place orders. Then
+  add the connection with the gateway's address and port.
+- **MetaTrader 5**: a sidecar host running the MT5 terminal and the sidecar in
+  [`mt5_sidecar/`](mt5_sidecar/README.md) (Windows, or Linux under Wine). One
+  sidecar serves one terminal. When you add the connection, enter the sidecar
+  URL (for example `http://10.7.3.22:9100`) and a random secret of at least 24
+  characters. Put the same secret in `MT5_BRIDGE_SECRET` in the sidecar's
+  `sidecar.env`. The sidecar refuses requests without it and will not listen
+  on a non-loopback address without one.
+
+Alpaca and OANDA are cloud APIs that the broker service calls over HTTPS. IB
+and MT5 hold a logged-in session on a separate host.
+
+To add a new broker type, see
+[`broker_service/ADDING_A_BROKER.md`](broker_service/ADDING_A_BROKER.md).
+
+<a id="multi-broker-host-topology-ib--mt5"></a>
+
+### Host layout with IB and MT5
+
+IB and MT5 each need a host of their own (or one shared Windows host under
+separate OS users) holding a logged-in session, one account per IB Gateway or
+MT5 sidecar. The broker service reaches IB over its socket API and MT5 over
+HTTP with the shared secret.
+
+- Only the app host should accept connections from users. The IB Gateway and
+  MT5 hosts should accept connections only from the app host, on a private
+  network or VPN.
+- Each broker is one session on one host with no standby. If it logs out,
+  that venue stops until someone logs it back in. The connection checks show
+  this; set up alerts so you hear about it.
+
+Open items are tracked in
+[GAP_ANALYSIS.md](docs/plans/GAP_ANALYSIS.md#8-operational--deployment-gaps).
+
+Break-glass: the broker service still reads broker lines in `.env`
+(`IB_HOST`, `MT5_BRIDGE_URL`, `ALPACA_API_KEY`, `OANDA_API_TOKEN`,
+`BROKER_CONNECTIONS`; see `broker_service/connections.py`). A broker defined
+there replaces the app's connections for that broker, and the page shows it as
+overridden. Use this only when the app cannot be reached.
+
+## Rebuild or upgrade
+
+### Upgrade in place
+
+```bash
+cd ~/tradingapp
+git pull
+./tradingapp.sh install
+```
+
+Migrations apply themselves. Re-running install is also how you repair a host.
+On a host set up by an older version, install removes `.env` lines nothing
+reads any more (after a backup to `.env.bak.<timestamp>`) and reports any
+broker lines it kept.
+
+### Rebuild on a new host, keeping an external database
+
+1. Prepare the host and clone, as in [Install](#install).
+2. Create `.env` with the external database details and the saved
+   `SETTINGS_ENCRYPTION_KEY`. Or put the same keys in an answers file and pass
+   `--answers FILE`.
+3. Run `./tradingapp.sh install --external-db`.
+
+The backend adopts the existing schema, applies only pending migrations and
+checks the key. It comes up already configured: no setup screen, and the
+brokers are already there. With the wrong key it stops in `key_mismatch`
+instead of starting with secrets it cannot read.
+
+### Rebuild with the bundled database
+
+The bundled database lives in a Docker volume on that host
+(`tradingapp_pgdata`, which Docker names `tradingapp_tradingapp_pgdata`).
+`./tradingapp.sh clean` and `redeploy` keep it. Only
+`./tradingapp.sh clean --include-database`, after you type DELETE, removes it.
+To move to a new host, take a `pg_dump` first (see
+[Database backups](#database-backups)).
+
+### Lost encryption key
+
+Run `./tradingapp.sh forget-secrets` and type FORGET. It clears the secrets
+sealed with the lost key. Connections and settings stay; enter their secrets
+again on the Settings page.
+
+## What lives where
+
+| Where | What |
+|---|---|
+| `.env` (7 keys) | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_SSL`, `SETTINGS_ENCRYPTION_KEY`. Written by install. Mode 600. |
+| `.env` (optional) | `FRONTEND_PORT`, `BACKEND_PORT`, `BROKER_SERVICE_PORT`, and `APP_PASSWORD` as the way back in when the password is forgotten. Any Settings-page key can also be pinned here. |
+| Settings tabs | Trading, Risk, Alerts and safety, Strategies, Schedulers and data, Security, Network, History. Stored in the database. |
+| Settings > Connections | Broker connections, their priority, per-connection limits and prop-firm rules. |
+| `internal_secrets` volume | The broker service token and Redis password. Generated on first start by the one-shot `secrets` service, mounted read-only at `/run/tradingapp`. Replace with `./tradingapp.sh rotate-internal-secrets`. |
+
+How settings work:
+
+- A key set in `.env` wins. The page shows it as locked. To manage it from the
+  page, run `./tradingapp.sh settings-import`, which moves such lines into the
+  app (after a backup), or delete the line and run `./tradingapp.sh deploy`.
+- `.env` is also a ceiling for live trading: `LIVE_TRADING_ENABLED=false`
+  there keeps live off whatever the page says.
+- Each setting shows when a change applies. Most apply immediately or on the
+  next cycle of the loop they drive, without a restart.
+- Protected settings need the trading token and MFA code, when those are
+  configured.
+- Every change is recorded on the History tab (`settings_audit`).
+- A `BROKER_SERVICE_TOKEN` or `REDIS_PASSWORD` still in `.env` wins over the
+  volume, so an old install keeps working until install tidies it.
+
+Settings you are most likely to look for:
+
+| Tab | Keys |
+|---|---|
+| Trading | `LIVE_TRADING_ENABLED`, `SYSTEMATIC_ENABLED`, `SYSTEMATIC_EXECUTION_ENABLED`, `DEFAULT_BROKER` |
+| Risk | `ORDER_MAX_QUANTITY`, `ORDER_MAX_PRICE`, `ORDER_MAX_POSITION`, `CONNECTION_MAX_DAILY_EQUITY_LOSS`, `CONNECTION_MAX_DRAWDOWN`, `PORTFOLIO_MAX_DAILY_LOSS`, `TRADING_DAY_TIMEZONE` |
+| Alerts and safety | `KILL_SWITCH_ACTION` (`notify`, `halt` or `flatten`), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `HEARTBEAT_URL`, `HEARTBEAT_FAIL_URL` |
+| Strategies | `PROMOTION_*` gate thresholds |
+| Schedulers and data | Strategy runner timing, `BROKER_PROBE_INTERVAL_SECONDS`, `BACKFILL_*`, `EXECUTIONS_SYNC_*`, `REDIS_ENABLED`, `STREAMING_ENABLED`, `NEWS_CALENDAR_*`, and the data collection table |
+| Security | Login password, API tokens, trading tokens, order MFA, `SESSION_TTL_HOURS`, `COOKIE_SECURE` |
+| Network | `CORS_ORIGINS`, `TRUST_PROXY` |
+
+The page lists every key it reads, with its help text.
+
+## Command reference
+
+Run from the checkout as the deploy user: `./tradingapp.sh COMMAND`.
+
+| Command | What it does |
+|---|---|
+| `install` | Docker, `.env`, database and stack in one step. Safe to re-run. |
+| `deploy` | Build and start, then wait until ready. |
+| `redeploy` | Rebuild images from scratch, then deploy. The database is kept. |
+| `start`, `stop`, `restart`, `status` | Compose lifecycle. |
+| `logs [follow]` | Recent logs, or follow them. |
+| `setup-code` | The code the first-run screen asks for. |
+| `doctor` | Database, schema, key and broker state, and what `.env` holds. |
+| `test` | Check the services answer. |
+| `migrate` | Show the schema state and apply anything pending, without a restart. |
+| `settings-import` | Move Settings-page keys from `.env` into the app. |
+| `backup-key` | Print `SETTINGS_ENCRYPTION_KEY`, to store off the host. |
+| `rotate-internal-secrets` | Replace the broker service token and Redis password. |
+| `forget-secrets` | Clear secrets sealed with a lost encryption key (type FORGET). |
+| `fix` | Stop, then deploy and check again. |
+| `clean [--include-database]` | Remove containers and images. Volumes are kept unless `--include-database` is given and you type DELETE. |
+
+Old names still work: `setup` runs `install`, `config` and `env` run
+`install --env-only`, and `diagnose` runs `doctor`.
+
+<a id="external-database-recommended-for-production"></a>
+
+## External database
+
+The default is the bundled TimescaleDB container on the app host. To use your
+own PostgreSQL 14+ with TimescaleDB instead (managed, or on another host):
+
+1. Create a database and a user that owns it.
+2. Run `./tradingapp.sh install --external-db`. It asks for the host and
+   password, or reads them from `.env` or `--answers`. Set `POSTGRES_SSL=true`
+   if the server requires TLS.
+
+The backend applies the schema on first start and migrates it on later ones.
+It waits for the database however long it takes, so the database can come up
+after the app.
+
+On a host that already runs the bundled database, `--external-db` refuses,
+because that would abandon the data. To switch:
+
+1. Copy the data across (`pg_dump`, then restore on the new server).
+2. Run `./tradingapp.sh --no-db install --external-db`.
+
+## Reverse proxy, TLS and firewall
+
+### nginx and certbot
+
+1. Install them:
+
+   ```bash
+   sudo apt install -y nginx certbot python3-certbot-nginx
+   ```
+
+2. Create `/etc/nginx/sites-available/tradingapp`. Everything goes to the
+   frontend on port 3000, which forwards `/api` and `/socket.io` to the
+   backend:
+
+   ```nginx
+   map $http_upgrade $connection_upgrade {
+       default upgrade;
+       ''      close;
+   }
+
+   server {
+       listen 80;
+       server_name your-domain.com;
+
+       location / {
+           proxy_pass http://localhost:3000;
+           proxy_http_version 1.1;
+           proxy_set_header Host              $host;
+           proxy_set_header X-Real-IP         $remote_addr;
+           proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+           proxy_set_header X-Forwarded-Proto $scheme;
+           proxy_set_header Upgrade           $http_upgrade;
+           proxy_set_header Connection        $connection_upgrade;
+           proxy_read_timeout 3600s;
+       }
+   }
+   ```
+
+3. Enable it, then let certbot add TLS and the HTTP-to-HTTPS redirect:
+
+   ```bash
+   sudo ln -s /etc/nginx/sites-available/tradingapp /etc/nginx/sites-enabled/
+   sudo nginx -t && sudo systemctl reload nginx
+   sudo certbot --nginx -d your-domain.com --redirect
+   ```
+
+4. On Settings > Network:
+   - Set `CORS_ORIGINS` to the public origin, for example
+     `https://your-domain.com`. Empty or `*` accepts any origin. The app's own
+     pages go through the frontend and do not need this.
+   - Set `TRUST_PROXY` to the address nginx reaches the frontend from (the
+     Docker network gateway, usually `172.20.0.1`). Login lockout and the
+     settings history then record the visitor's address instead of nginx's.
+     The frontend container is always trusted.
+
+Both apply immediately.
 
 ### Firewall
 
@@ -1009,190 +394,212 @@ sudo ufw allow 'Nginx Full'
 sudo ufw enable
 ```
 
-If you expose the raw ports (no reverse proxy) also allow `3000` and `4000`.
-Never expose the broker service (`8000`): it can place orders, so the stack
-publishes it on the host's loopback only.
+Without a reverse proxy, allow 3000 instead (and 4000 only if scripts call the
+backend directly). Never expose the broker service (8000). It can place
+orders, so the stack publishes it on loopback only.
 
-### Systemd auto-start
+The containers use `restart: unless-stopped`, so they come back after a
+reboot. After `./tradingapp.sh stop`, start them with `./tradingapp.sh start`,
+not a bare `docker compose up`, which leaves out the bundled database.
 
-```ini
-# /etc/systemd/system/tradingapp.service
-[Unit]
-Description=TradingApp
-After=docker.service
-Requires=docker.service
+<a id="authentication--cors"></a>
 
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=/opt/tradingapp
-ExecStart=/opt/tradingapp/tradingapp.sh start
-ExecStop=/opt/tradingapp/tradingapp.sh stop
-User=tradingapp
+## Sign-in and API tokens
 
-[Install]
-WantedBy=multi-user.target
-```
+- The browser signs in with the login password and holds an HttpOnly session
+  cookie. Sessions last `SESSION_TTL_HOURS` (default 12). Five wrong
+  passwords from one address lock it out for 15 minutes.
+- Scripts send `Authorization: Bearer <token>` with an API token from
+  Settings > Security. Health checks, `/metrics` and `/api/auth/*` need none.
+- Only the backend may call the broker service, with the internal token.
+- The page and API share one address, so the app works on any name or IP that
+  reaches port 3000.
+
+Locked out? Set `APP_PASSWORD` (or `ORDER_MFA_SECRET`, if the authenticator is
+lost) in `.env` and run `./tradingapp.sh deploy`, which recreates the backend
+with it (`restart` does not re-read `.env`). The `.env` value wins, so you can
+sign in, set a new one on the Security tab, then remove the line.
+
+## Enabling live trading
+
+Live orders are off by default. The backend and the broker service both
+reject any `account_mode=live` order with 403 until you turn it on. Paper
+orders always work.
+
+1. In Settings > Security, create a trading token (copy it, it is shown
+   once), and set up MFA by scanning the QR code and entering a code.
+2. Add the account as a live connection under Settings > Connections. A live
+   order to a paper connection is refused.
+3. In Settings > Trading, enter the trading token and a current MFA code, set
+   Live trading to true, and type LIVE when asked. The page refuses without
+   both safeguards. The change goes to the settings history and to Telegram.
+4. Check the gate is open:
+
+   ```bash
+   curl -s -H "Authorization: Bearer $API_TOKEN" http://<host>:3000/api/orders/config | jq
+   ```
+
+   `live_trading_enabled` must be `true`. If `backend_live_enabled` and
+   `ib_live_enabled` disagree, the broker service has not picked up the change
+   yet (it does within 15 seconds). Do not send a live order until they match.
+
+A strategy goes live only after the promotion gate sees a paper run of the
+same definition (`GET /api/strategies/definitions/:id/promotion`).
+
+Safety rails:
+
+- Turning live off, or tightening a limit, needs only the login. Turning a
+  switch on or raising a limit also needs the trading token and MFA code.
+- `LIVE_TRADING_ENABLED=false` in `.env` keeps live off whatever the page
+  says. Removing the trading token or MFA secret also closes the gate.
+- `ORDER_MAX_QUANTITY` (default 100k) and `ORDER_MAX_PRICE` (default 1M) on
+  Settings > Risk apply to every order.
+- Every order attempt is stored in `order_audit`, visible in the `/trade`
+  blotter and at `GET /api/orders/audit`.
+- With `SYSTEMATIC_EXECUTION_ENABLED` on and no heartbeat URL, the backend
+  logs a startup warning: nothing would page you if the host went down.
+
+<a id="data-collection--retention-phase-5"></a>
+
+## Data collection
+
+Which instruments and timeframes are fetched and stored, how often, and how
+long they are kept, is a table on Settings > Schedulers and data. It writes
+`data_collection_config`. There is no SQL to run.
+
+1. Add an entry per instrument and timeframe: choose the broker, enter the
+   symbol, then the timeframe, the collection interval and the retention in
+   days. Removing an entry stops collection; stored bars stay.
+2. Turn on the backfill scheduler (`BACKFILL_ENABLED`, same tab). It is off by
+   default because it makes broker requests on a timer. It starts without a
+   restart.
+
+Each pass fetches every enabled row whose newest bar is older than its
+interval, and upserts the bars, so gaps inside the window fill themselves.
+`BACKFILL_INTERVAL_MINUTES` sets how often it runs and `BACKFILL_PERIOD` how
+far back each fetch reaches.
+
+Retention:
+
+- TimescaleDB policies in the schema drop `candlestick_data` chunks older
+  than 2 years and `tick_data` older than 30 days.
+- `POST /api/market-data/database/clean` deletes bars older than each row's
+  retention. Run it from cron with an API token for tighter limits.
+
+Check it:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now tradingapp
+curl -fs http://<server-ip>:4000/api/health | jq .services.backfill
+curl -fs -H "Authorization: Bearer $API_TOKEN" \
+  http://<server-ip>:4000/api/market-data/database/stats | jq
 ```
 
-The unit goes through `tradingapp.sh` so a `--with-db` deployment comes back
-with its bundled database; a bare `docker compose up -d` ignores that choice.
+## Executions (fills) sync
 
-## Monitoring & Maintenance
+Without the sync, positions and P&L are estimated from submitted orders. That
+is wrong on partial fills, late rejections and trades placed outside the app.
+The sync records the venue's own fills instead.
 
-### Health, logs, resources
+Turn on Fills sync (`EXECUTIONS_SYNC_ENABLED`) on Settings > Schedulers and
+data if a strategy uses `risk.max_daily_loss` (with the sync off, that cap
+fails closed and the run places nothing), or if you want
+`/api/account/executions` and `/api/account/pnl` to report anything. It starts
+without a restart.
+
+- It polls only venues the app has traded at recently or has a running
+  strategy on. The window overlaps on purpose, so late fills are picked up;
+  rows upsert on `(broker, exec_id)`, so nothing is duplicated.
+- A position is the recorded fills plus the unfilled part of working orders.
+  A strategy run sees only the exposure it created. `ORDER_MAX_POSITION` caps
+  the whole account, so manual trades count toward it.
+- IB reports times in the Gateway's timezone, which the broker service reads
+  as `IB_TIMEZONE` (default UTC). Run the Gateway in UTC.
+
+Check it:
 
 ```bash
-# Service health
+curl -fs http://<server-ip>:4000/api/health | jq .services.executions
+curl -fs -H "Authorization: Bearer $API_TOKEN" \
+  "http://<server-ip>:4000/api/account/reconciliation?broker=ib" | jq
+```
+
+The reconciliation lists every symbol either side knows about with a
+`matched` flag. On an account you also trade by hand, alert on
+`.mismatches > 0`.
+
+## Monitoring and maintenance
+
+### Health and logs
+
+```bash
 ./tradingapp.sh status
 ./tradingapp.sh test
-
-# Logs (structured JSON in non-TTY contexts — see Prometheus / Grafana below)
-./tradingapp.sh logs           # last 20 lines per service
-./tradingapp.sh logs follow    # stream all services
-
-# Resource usage
-docker stats
-docker system df
+./tradingapp.sh doctor
+./tradingapp.sh logs follow
+curl -fs http://<server-ip>:4000/api/health/ready
 ```
 
-### Prometheus / Grafana
+`/api/health/ready` answers 200 when the database is reachable, migrated and
+opened by the key, and 503 with the reason otherwise. The backend's Docker
+health check uses it. Brokers and Redis do not count, so an outage there never
+marks the backend down.
 
-Both the backend (Express + `prom-client`) and the IB service (FastAPI +
-`prometheus_fastapi_instrumentator`) expose a `GET /metrics` endpoint
-that returns the standard Prometheus text format. The backend endpoint
-is on the auth allow-list so the scraper does not need a bearer token.
+`/api/health` also reports the cache, streaming, backfill, fills sync and
+heartbeat. Redis is a cache and the live-tick bus: if it is down, endpoints
+still work and charts fall back to one-off REST calls. Both can be turned off
+on Settings > Schedulers and data (`REDIS_ENABLED`, `STREAMING_ENABLED`).
 
-Minimal Prometheus scrape config:
+### Prometheus and Grafana
 
-```yaml
-rule_files:
-  - /etc/prometheus/alerts.yml   # ops/prometheus/alerts.yml (see below)
+The backend and the broker service expose `GET /metrics` in Prometheus
+format; the backend's needs no token. [`ops/grafana/README.md`](ops/grafana/README.md)
+has the scrape config and the metrics list. Load the rules in
+[`ops/prometheus/alerts.yml`](ops/prometheus/alerts.yml) (targets down, error
+rate, latency, event-loop lag, and per-connection rules such as breaker open,
+unprotected position and position divergence) and import
+[`ops/grafana/tradingapp-dashboard.json`](ops/grafana/tradingapp-dashboard.json).
+Check rule edits with `promtool check rules ops/prometheus/alerts.yml`.
 
-scrape_configs:
-  - job_name: tradingapp-backend
-    static_configs: [{ targets: ['backend:4000'] }]
-    metrics_path: /metrics
-  - job_name: tradingapp-broker_service
-    static_configs: [{ targets: ['broker_service:8000'] }]
-    metrics_path: /metrics
-```
+Prometheus runs on your own infrastructure, so it does not replace Telegram
+alerts and the heartbeat: something off the host must notice when everything
+stops.
 
-### Alerting rules
-
-A ready-to-load rule file ships in
-[`ops/prometheus/alerts.yml`](ops/prometheus/alerts.yml). Mount it into
-the Prometheus container and reference it from `rule_files` (above). It
-reuses the exact metrics and label conventions the Grafana dashboard
-relies on, so each alert and its panel always agree. Rules cover:
-
-- **`TradingAppTargetDown`** (critical) — either service's `/metrics` is
-  unscrapeable for 2m.
-- **`BackendHighErrorRate` / `IBServiceHighErrorRate`** (warning) — 5xx
-  ratio above 5% over 5m.
-- **`BackendHighLatencyP95` / `IBServiceHighLatencyP95`** (warning) — p95
-  latency above 1s (backend) / 2s (IB service).
-- **`BackendEventLoopLagHigh`** (warning) — Node event-loop p99 lag above
-  200ms (main-thread blocking).
-- **`IBServiceNoTraffic`** (info) — the IB service is up but has served no
-  application traffic for 30m.
-
-The `tradingapp-fleet` group alerts per connection (`platform:account`):
-
-- **`ConnectionBreakerOpen`** (critical) — the runner is skipping a
-  connection after repeated failures.
-- **`UnprotectedPosition`** (critical) — an open position has no stop at the
-  venue though its strategy declares one.
-- **`KillSwitchStopGap`** (critical) — a position closed well past its stop.
-- **`PositionDivergence`** (warning) — venue and recorded positions have
-  disagreed for 30m, so fills are being missed.
-- **`OrdersBlockedByCap`** (warning) — risk caps refused more than 5 orders
-  in an hour.
-- **`ConnectionHasNoActiveRuns`** (info) — a connection has evaluated
-  nothing for an hour.
-
-These complement, not replace, the Telegram alerts and the dead-man's switch
-(`HEARTBEAT_URL`): Prometheus runs on your infrastructure too, so something
-off the host still has to notice when everything stops.
-
-Thresholds are conservative starting points — tune them to your traffic.
-Validate edits with `promtool check rules ops/prometheus/alerts.yml`.
-
-A pre-built Grafana dashboard ships in
-[`ops/grafana/tradingapp-dashboard.json`](ops/grafana/tradingapp-dashboard.json) —
-three rows (Backend / IB Service / Process) covering request rate, p95
-latency, error rate, persisted backtest runs and process metrics
-(RSS, CPU, event-loop lag). Import via Grafana **Dashboards → New →
-Import** and pick your Prometheus datasource for the `DS_PROMETHEUS`
-template variable. The companion
-[`ops/grafana/README.md`](ops/grafana/README.md) lists every metric the
-panels rely on and where in the code it is emitted.
-
-### Request correlation
-
-Every backend response carries an `X-Request-Id` header (the value is
-echoed back from the caller's request or minted as a uuid4 on the way
-in). The same id is propagated into every backend → broker_service axios
-hop, so a single grep across both services' structured logs reconstructs
-the trace. The frontend `apiFetch` mints the id browser-side, so traces
-start from the click.
-
-### Updates
-
-```bash
-cd /opt/tradingapp
-git pull origin master
-./tradingapp.sh redeploy
-```
+<a id="database-backups"></a>
 
 ### Database backups
 
-Because the database is external, backups are owned by whichever managed
-service or self-hosted Postgres you point `POSTGRES_HOST` at. A typical
-cron-driven dump:
+Keep the encryption key with the backups, but not on the same host:
+`./tradingapp.sh backup-key`. A dump without its key restores everything
+except the stored secrets.
+
+For the bundled database:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
+cd ~/tradingapp
 BACKUP_DIR=/var/backups/tradingapp
-DATE=$(date +%Y%m%d_%H%M%S)
 mkdir -p "$BACKUP_DIR"
-PGPASSWORD="$POSTGRES_PASSWORD" pg_dump \
-  -h "$POSTGRES_HOST" -U "$POSTGRES_USER" "$POSTGRES_DB" \
-  > "$BACKUP_DIR/tradingapp_${DATE}.sql"
+docker compose -f docker-compose.yml -f docker-compose.db.yml exec -T postgres \
+  pg_dump -U tradingapp tradingapp > "$BACKUP_DIR/tradingapp_$(date +%Y%m%d_%H%M%S).sql"
 find "$BACKUP_DIR" -name 'tradingapp_*.sql' -mtime +7 -delete
 ```
 
-## Deployment Checklist
+For an external database, use its own backups or run `pg_dump` against
+`POSTGRES_HOST` from another machine.
 
-- [ ] Host meets the prerequisites
-- [ ] Working as a non-root user with sudo (not root), repo cloned in its home
-- [ ] Docker / Docker Compose installed (`./tradingapp.sh setup` handles this)
-- [ ] Repository cloned and `tradingapp.sh` executable
-- [ ] `.env` created from `.env.example` and reviewed (no placeholders left)
-- [ ] `BROKER_SERVICE_TOKEN` and `SETTINGS_ENCRYPTION_KEY` set to fresh random values; login password set (first-run screen or `APP_PASSWORD`)
-- [ ] `CORS_ORIGINS` set to the actual browser origin(s) — not `*`
-- [ ] MT5 only: each sidecar running from `mt5_sidecar/` with its secret, and
-      rejecting requests without it
-- [ ] Before auto-execution: Telegram alerts and `HEARTBEAT_URL` set and
-      tested, account limits and `TRADING_DAY_TIMEZONE` set, kill switch on
-      `notify` (see [`PAPER_DEPLOYMENT_RUNBOOK.md`](PAPER_DEPLOYMENT_RUNBOOK.md))
-- [ ] Live only: a trading token and MFA set up in Settings > Security
-- [ ] External Postgres reachable from the backend container; schema applied
-      (or `--with-db` used to bring up the bundled TimescaleDB)
-- [ ] IB Gateway / TWS running with API enabled and server IP trusted
-- [ ] Firewall allows the required ports (or reverse proxy in place)
-- [ ] `./tradingapp.sh deploy` completed
-- [ ] `./tradingapp.sh test` reports all services healthy
-- [ ] Frontend renders charts in the browser
-- [ ] TLS certificate installed (production)
-- [ ] Backup strategy in place for the external database
+<a id="common-issues"></a>
 
----
+## Common issues
 
-**You're ready to deploy.** If anything misbehaves, run
-`./tradingapp.sh diagnose` and see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
+| Symptom | First step |
+|---|---|
+| Page says waiting for the database, migration failed or key mismatch | `./tradingapp.sh doctor`. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#backend-says-waiting-for-the-database-migration-failed-or-key-mismatch). |
+| Install stops with "Don't run this script as root" | Create a sudo user and clone as that user. See [Prepare the host](#1-prepare-the-host). |
+| Port clash on start | `sudo ss -ltnp \| grep -E ':(3000\|4000\|8000)'` and free the port, or set `FRONTEND_PORT` / `BACKEND_PORT` in `.env`. |
+| A broker shows down | Use its Test button on Settings > Connections. The error says whether the address, credentials or session is wrong. |
+| Broker requests return 501 | No connection for that broker yet. Add one on Settings > Connections. |
+| Backend logs `refusing to start: ...` | See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#backend-refuses-to-start). |
+| Forgot the password | Set `APP_PASSWORD` in `.env` and `./tradingapp.sh deploy`. See [Sign-in and API tokens](#sign-in-and-api-tokens). |
+
+More in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).

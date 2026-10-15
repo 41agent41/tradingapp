@@ -1,367 +1,172 @@
-# TradingApp - Streamlined Trading Platform
+# TradingApp
 
-A simplified trading application with TradingView lightweight charts and reliable Interactive Brokers integration, featuring a unified management system and streamlined architecture.
+A self-hosted trading platform: charts, a market-data store, backtesting and
+systematic strategies, with paper and live trading through OANDA, MetaTrader
+5, Interactive Brokers and Alpaca. It runs as a Docker stack on one host.
 
-## 🚀 **Quick Start - One Script Does Everything**
+```
+                      ┌──────────────────────────┐
+  browser ──────────► │ frontend (Next.js)       │
+                      └────────────┬─────────────┘
+                                   │ /api
+                      ┌────────────▼─────────────┐      ┌───────────────────────┐
+                      │ backend (Express)        │◄────►│ PostgreSQL+TimescaleDB│
+                      │ waits for its database,  │      │ settings, connections,│
+                      │ migrates it, checks key  │      │ bars, orders, audit   │
+                      └──────┬──────────────┬────┘      └───────────────────────┘
+                             │              │
+                   ┌─────────▼──────┐  ┌────▼────┐
+                   │ broker_service │  │  Redis  │  live ticks
+                   │ (FastAPI)      │──►         │
+                   └─────────┬──────┘  └─────────┘
+                             │  in priority order
+              OANDA ─ MT5 (sidecar) ─ IB Gateway ─ Alpaca
+```
 
-### **Single Command Setup**
+The database is the first dependency. Settings, logins, broker connections
+and market data all live there, so the backend does not start serving until
+the database is reachable, its schema is up to date and the encryption key
+opens what it holds. Until then the page says what it is waiting for.
 
-Run these as a **normal user with sudo rights, not as root**: `tradingapp.sh`
-stops with *"Don't run this script as root"* otherwise. If your host or
-container only has `root` (common on fresh LXC containers and VPS images),
-create a user first:
+## Requirements
+
+- Ubuntu 22.04+ or Debian 12+ (a VM, a Proxmox LXC or bare metal), 4 GB of
+  memory and 15 GB of free disk.
+- A user with sudo rights. The script refuses to run as root.
+- A database. By default `install` runs TimescaleDB as a container on the
+  same host. To use one you already have (PostgreSQL with the timescaledb
+  extension), see [DEPLOYMENT.md](DEPLOYMENT.md).
+
+Docker is installed for you if it is missing.
+
+## Commission a new install
+
+1. **Prepare the host** (as root, once). Skip this if you already have a sudo
+   user.
+   ```bash
+   apt update && apt install -y sudo git curl
+   adduser tradingapp && usermod -aG sudo tradingapp
+   su - tradingapp
+   ```
+2. **Install** (as that user):
+   ```bash
+   git clone https://github.com/41agent41/tradingapp.git ~/tradingapp
+   cd ~/tradingapp
+   ./tradingapp.sh install
+   ```
+   It installs Docker if needed and writes `.env`, which holds the database
+   details and an encryption key. It then builds and starts the stack, waits
+   until the backend has migrated the database, and prints the address and a
+   setup code. To use an existing database, run
+   `./tradingapp.sh install --external-db`, which asks for its host and
+   password.
+3. **Save the encryption key** somewhere off this host:
+   `./tradingapp.sh backup-key`. You need it to rebuild against the same
+   database.
+4. **Sign in.** Open `http://<host>:3000`. The first visit asks for the setup
+   code (`./tradingapp.sh setup-code` shows it again), then for the login
+   password you want.
+5. **Work through Getting started** at the top of the Settings page. It
+   ticks each step off as it is done:
+   - order MFA and a trading token (Security);
+   - a broker connection (Connections): OANDA, MT5, IB or Alpaca, tested when
+     you save it;
+   - the instruments and timeframes to collect, with the backfill scheduler
+     on (Schedulers and data);
+   - Telegram alerts and the heartbeat URL (Alerts and safety).
+
+The app starts in paper mode. Turning live trading on is a deliberate step,
+described in [DEPLOYMENT.md](DEPLOYMENT.md).
+
+## Rebuild or upgrade
+
+- **Upgrade in place:** `git pull && ./tradingapp.sh install`. Re-running
+  `install` is always safe. It adds only what is missing and never replaces
+  the database password or the encryption key. The backend applies any new
+  migrations when it starts.
+- **Rebuild on a new host, keeping the database:** clone, then run
+  `./tradingapp.sh install --external-db`. It asks for the database's host
+  and password and for the encryption key you saved (unattended: put them in
+  an answers file). The app comes up already configured, with no setup
+  screen and the brokers already there. With the wrong key it stops and says
+  so, instead of starting with secrets it cannot read.
+- **Bundled database:** its data is in a Docker volume on that host.
+  `./tradingapp.sh clean` keeps it; only `clean --include-database` (after
+  you type DELETE) removes it.
+
+## What lives where
+
+| Where | What |
+|---|---|
+| `.env` | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_SSL`, `SETTINGS_ENCRYPTION_KEY`. Nothing else is needed. |
+| Docker volume `internal_secrets` | The broker service token and the Redis password, generated on first start (`rotate-internal-secrets` replaces them). |
+| Settings > Connections | Brokers and accounts, their credentials (encrypted), per-account risk limits and prop-firm rules. |
+| Settings > other tabs | Trading, Risk, Alerts and safety, Strategies, Schedulers and data (including what data to collect), Security, Network (browser origins, trusted proxies). Every change is audited (History). |
+
+Any setting can still be pinned in `.env` by its key. The Settings page then
+shows it as locked, and `./tradingapp.sh settings-import` moves such lines
+into the app. Setting `APP_PASSWORD` in `.env` is the way back in if the
+login password is lost.
+
+## Everyday commands
+
+| Command | Does |
+|---|---|
+| `./tradingapp.sh install` | Commission, upgrade or repair (safe to re-run) |
+| `start` / `stop` / `restart` / `status` | Run the stack |
+| `logs [follow]` | Recent logs, or follow them |
+| `doctor` | Database, schema, key and broker state, and what `.env` holds |
+| `migrate` | Bring the database schema up to date now |
+| `backup-key` | Print the encryption key, to store off the host |
+| `setup-code` | The code the first-run screen asks for |
+| `redeploy` | Rebuild the images from scratch (the database is kept) |
+
+`./tradingapp.sh help` lists the rest.
+
+## Troubleshooting
+
+- **The page says it is waiting for the database.** Check the database is
+  running and that `POSTGRES_*` in `.env` point at it. `./tradingapp.sh doctor`
+  shows what the backend sees.
+- **"Encryption key does not match".** `.env` has a different
+  `SETTINGS_ENCRYPTION_KEY` from the one the database was set up with. Put
+  the saved key back. If it is lost, `./tradingapp.sh forget-secrets` clears
+  the stored secrets so they can be entered again.
+- **A broker shows as down.** Settings > Connections shows the last check and
+  its error. Fix it there; a broker that is down never stops the app.
+- Everything else: [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+## Documentation
+
+- [DEPLOYMENT.md](DEPLOYMENT.md): external database, nginx and TLS, live
+  trading, backups, reference.
+- [PROXMOX_DEPLOYMENT.md](PROXMOX_DEPLOYMENT.md): building the host, database,
+  IB Gateway and MT5 containers on Proxmox.
+- [AGENT_INSTALL_RUNBOOK.md](AGENT_INSTALL_RUNBOOK.md): unattended install
+  with `install/install.sh` and an answers file.
+- [PAPER_DEPLOYMENT_RUNBOOK.md](PAPER_DEPLOYMENT_RUNBOOK.md): taking a
+  strategy through paper trading.
+- [FEATURES.md](FEATURES.md): what the app does, in detail.
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+- [broker_service/ADDING_A_BROKER.md](broker_service/ADDING_A_BROKER.md) and
+  [mt5_sidecar/README.md](mt5_sidecar/README.md).
+- [backend/src/database/README.md](backend/src/database/README.md): the
+  schema and how migrations work.
+- [docs/plans/](docs/plans/): design and planning documents.
+
+## Development
 
 ```bash
-# As root, once
-apt update && apt install -y sudo git curl
-adduser tradingapp              # set a password when prompted
-usermod -aG sudo tradingapp
-su - tradingapp                 # continue as this user, in its home directory
+cd backend && npm install && npm run dev         # API on :4000
+cd frontend && npm install && npm run dev        # UI on :3000
+cd broker_service && pip install -r requirements.txt && python main.py
 ```
 
-Then, as that user:
+The backend needs a database: `POSTGRES_*` and `SETTINGS_ENCRYPTION_KEY` in
+its environment, pointing at any PostgreSQL with TimescaleDB. It migrates the
+database on start.
 
-```bash
-# Clone repository (into your home directory, not /root)
-cd ~
-git clone https://github.com/41agent41/tradingapp.git
-cd tradingapp
-
-# Make script executable (Linux/Mac)
-chmod +x tradingapp.sh
-
-# First time setup
-./tradingapp.sh setup
-
-# Deploy application
-# (if setup just installed Docker: exit, then su - tradingapp again first)
-./tradingapp.sh deploy
-
-# Test everything
-./tradingapp.sh test
-```
-
-> Deploying onto a bare-metal **Proxmox VE** host? Start with
-> [PROXMOX_DEPLOYMENT.md](PROXMOX_DEPLOYMENT.md) (deploy user in §4.3) — it builds the LXC
-> containers for the app, database and broker session from a fresh
-> hypervisor install, then runs the commands above.
->
-> Installing unattended, or handing the install to an AI agent? Follow
-> [AGENT_INSTALL_RUNBOOK.md](AGENT_INSTALL_RUNBOOK.md): `install/install.sh all`
-> installs and verifies a paper-mode deployment from an answers file.
-
-### **Access Your Application**
-- **Frontend**: `http://your-server-ip:3000` - Market data and charts
-- **Backend**: `http://your-server-ip:4000` - API endpoints  
-- **Broker Service**: internal only (loopback `127.0.0.1:8000` on the host) - Interactive Brokers, MetaTrader 5, Alpaca and OANDA integration
-
-## 📋 **Unified Management Commands**
-
-| Command | Purpose | When to Use |
-|---------|---------|-------------|
-| `./tradingapp.sh setup` | Install Docker, configure environment | First time setup |
-| `./tradingapp.sh deploy` | Deploy complete application | Initial deployment |
-| `./tradingapp.sh redeploy` | Clean redeploy (recommended) | After code changes |
-| `./tradingapp.sh config` | Configure IB Gateway connection | Change IB settings |
-| `./tradingapp.sh test` | Test all connections | Troubleshooting |
-| `./tradingapp.sh diagnose` | Run comprehensive diagnostics | Debug issues |
-| `./tradingapp.sh fix` | Auto-fix common issues | Connection problems |
-| `./tradingapp.sh logs` | View service logs | Monitor operations |
-| `./tradingapp.sh status` | Check service status | Quick health check |
-| `./tradingapp.sh clean` | Clean up and reset | Start fresh |
-
-## 🎯 **Key Features**
-
-### **Market Data & Charts**
-- **TradingView Integration**: Professional lightweight charts
-- **Real-time streaming**: IB `reqMktData` → Redis → Socket.IO → chart, with
-  per-symbol refcounting and a one-shot REST seed (no polling).
-- **Multiple Timeframes**: 5min, 15min, 30min, 1hour, 4hour, 8hour, 1day
-  (plus `tick` and `1min`).
-- **12 Months History**: Complete historical data access.
-- **Indicators**: SMA / EMA / WMA / MACD / RSI / Stochastic / Williams %R /
-  Bollinger / ATR / Keltner / OBV / VWAP, computed on demand.
-
-### **Interactive Brokers Integration**
-- **Simplified Connection**: Reliable synchronous IB Gateway connection.
-- **Market Data**: Real-time quotes and historical data.
-- **Contract Search**: Find stocks, options, futures, forex.
-- **Account read endpoints**: Summary, positions, orders, connection status.
-- **Error Handling**: Robust error recovery and reconnection.
-
-### **Multi-broker: MetaTrader 5, Alpaca, OANDA**
-- A venue-agnostic adapter seam (`broker_service/adapters.py`) lets other
-  brokers plug in behind the same `source=`/`broker=` API surface as IB.
-- **MetaTrader 5**: quote and trade via the MT5 sidecar (`mt5_sidecar/`, on Windows or Linux under Wine), reached at `MT5_BRIDGE_URL`.
-- **Alpaca** (equities/options) and **OANDA** (FX/CFD): cloud REST APIs
-  called directly — no sidecar host, just API credentials. See
-  [DEPLOYMENT.md](DEPLOYMENT.md#alpaca-and-oanda--optional-cloud-brokers).
-  OANDA attaches the stop loss and take profit on the fill itself, and can
-  supply an MT5 connection's balance and positions (`account_info_from`).
-- **Several accounts per platform**: the `BROKER_CONNECTIONS` manifest names
-  each account, its venue and whether it is `paper` or `live` (a binding
-  constraint). See `.env.example`.
-
-### **Systematic trading & risk controls**
-- **Rule-driven strategies** evaluated on **closed bars only**, with the same
-  rule-set used by the backtester and the live runner.
-- **Promotion gate**: a strategy needs a passing backtest before paper and a
-  paper record before live.
-- **Stops at the venue**: the protective stop is attached with the entry, an
-  entry filled without one is closed, and trailing stops only tighten.
-- **Account loss limits**: realised and equity-based daily loss and drawdown
-  per connection, plus prop-firm rules (`PROP_RULES__<connection>`) with
-  news blackouts, a weekend cutoff and trading-day counts.
-- **Kill switch**: `KILL_SWITCH_ACTION` of `notify` (default), `halt` (stop
-  new entries on that connection) or `flatten` (also close its positions).
-- **Fleet view** on `/systematic`: every connection's equity, limits and halt
-  state, with **Resume entries** and **Close all positions** buttons.
-- **Alerting**: Telegram alerts and a dead-man's switch heartbeat
-  (`HEARTBEAT_URL`) to a monitor off the host.
-- Walk through it on paper with
-  [PAPER_DEPLOYMENT_RUNBOOK.md](PAPER_DEPLOYMENT_RUNBOOK.md).
-
-### **Backtesting**
-- **`/backtest` page** with strategy picker, parameter form, metrics
-  summary, equity-curve chart and trade-list table.
-- **Strategies shipped**: `ma_crossover`, `rsi_mean_reversion` — engine
-  is event-driven (`broker_service/backtesting.py`).
-- **Backend proxy** (`/api/backtesting/*`) validates inputs and caches the
-  strategy catalogue.
-
-### **Jesse algo framework (embedded)**
-An IB-native port of the [Jesse](https://jesse.trade) strategy model lives in
-`broker_service/jesse/`, so strategies are written the way Jesse users
-expect and run against the app's own data, backtester and live runner —
-no separate Jesse install, database or exchange drivers.
-
-- **Authoring**: subclass `jesse.strategies.Strategy` in
-  `broker_service/jesse_strategies/` and implement `should_long()` /
-  `should_short()` / `go_long()` / `go_short()` /
-  `should_cancel_entry()`, plus the optional `update_position()`,
-  `before()` / `after()`, `on_open_position()` … hooks. Order intent is
-  declared through `self.buy` / `self.sell` / `self.stop_loss` /
-  `self.take_profit`; `self.candles`, `self.get_candles(tf)`,
-  `self.position`, `self.balance`, `self.vars`, `self.hp` and
-  `self.log()` behave as in Jesse. `hyperparameters()` declares tunables.
-- **Indicators & utils**: `jesse.indicators as ta` (`ta.sma`, `ta.ema`,
-  `ta.rsi`, `ta.macd`, `ta.bollinger_bands`, `ta.atr`, `ta.adx`,
-  `ta.supertrend`, `ta.vwap`, …, all with `sequential=` and `source_type=`)
-  and `jesse.utils` (`size_to_qty`, `risk_to_qty`, `crossed`, …).
-  Indicator results are memoised per candle history, so a bar-by-bar
-  backtest stays linear in the number of bars.
-- **Backtest**: `BacktestEngine` delegates to the Jesse simulator for these
-  strategies; results are mapped into the shared `BacktestResults` payload
-  and the full Jesse metric set (`sharpe_ratio`, `sortino_ratio`,
-  `calmar_ratio`, `omega_ratio`, `expectancy`, `kelly_criterion`, …) is
-  returned under `results.metrics`. Higher-timeframe context via
-  `get_candles()` is resampled from the base bars without look-ahead.
-- **Live**: `/strategies/evaluate` accepts
-  `{"engine": "jesse", "strategy": "SMACrossover", "hyperparameters": {…}}`
-  as a rule-set; the evaluator replays the bars to rebuild strategy state,
-  syncs the simulated position to the venue's, and emits the same
-  `signal` / `stop_price` / `trail` contract the `StrategyRunner` already
-  executes — so the exact code that was backtested is what runs live.
-- **Catalogue & UI**: strategies auto-register as `jesse_<snake_case>`
-  (`jesse_sma_crossover`, `jesse_rsi_mean_reversion`,
-  `jesse_bollinger_breakout`, `jesse_msft_trend_follower`) and appear on
-  `/backtest` with an engine badge and an editable hyperparameter panel.
-  `GET /jesse/strategies`, `GET /jesse/indicators` and
-  `POST /jesse/backtest` (caller-supplied bars, no IB) support authoring.
-- **Tests**: `broker_service/tests/test_jesse_*.py`.
-
-### **Automated data lifecycle**
-- **Manual download** to PostgreSQL via the `/download` page.
-- **Scheduled backfill** (opt-in via `BACKFILL_ENABLED`) driven by
-  `data_collection_config`; respects per-row collection intervals.
-- **Data-quality metrics** recorded on every store path
-  (`data_quality_metrics`).
-- **Retention cleanup** with real per-config row counts
-  (`POST /api/market-data/database/clean`), on top of TimescaleDB's
-  chunk-dropping policy.
-
-### **Streamlined Architecture**
-- **Single Script Management**: One script handles everything.
-- **Simplified Services**: Reduced complexity, improved reliability.
-- **Fast Deployment**: Clean redeploy in under 2 minutes.
-- **Easy Troubleshooting**: Built-in diagnostics and auto-fix.
-
-### **Security & Quality**
-- **Login**: the browser signs in with a password and gets an HttpOnly
-  session cookie; scripts use API tokens. The password, tokens and MFA are
-  managed in Settings > Security, with a first-run setup screen on a fresh
-  install; none of them are in `.env` (set there they still work and win,
-  and `./tradingapp.sh settings-import` moves an older `.env` into the app).
-  Nothing secret is compiled into
-  the frontend. The broker service is loopback-only and requires
-  `BROKER_SERVICE_TOKEN`. Production refuses to start with default secrets.
-- **Live trading guard rails**: live trading is turned on in Settings >
-  Trading, which needs a trading token (the trader role) and MFA (TOTP on
-  orders) set up in Settings > Security, a token and code on the page,
-  and typing LIVE. Turning trading off or tightening a limit needs only the
-  login. `LIVE_TRADING_ENABLED=false` in `.env` keeps it off regardless.
-- **Strict CORS**: Bound to `CORS_ORIGINS` rather than a wildcard.
-- **Whitelisted settings**: `GET /api/settings` returns only allow-listed,
-  non-credential environment variables.
-- **Redis read-through cache**: Backs the high-traffic realtime / indicator
-  endpoints, degrading gracefully to a cache miss on a Redis outage.
-- **CI per service**: GitHub Actions runs lint, format-check, type-check and
-  tests for the backend (ESLint/Prettier/Jest), frontend
-  (ESLint/Prettier/Vitest), the broker service and the MT5 sidecar
-  (Ruff/Black/pytest) on every push to `master`, plus an end-to-end paper
-  run of the whole stack against a simulated MT5 terminal (`e2e/`).
-
-## 🔧 **Configuration**
-
-### **Environment Setup**
-The unified script handles all configuration automatically:
-
-```bash
-# Refresh .env (Server IP is auto-detected; secrets are generated once)
-./tradingapp.sh config
-
-# No broker is asked for. Once deployed, add OANDA, MT5, IB or Alpaca in
-# the app under Settings > Connections; each is checked when you save it.
-```
-
-### **Manual Configuration**
-If needed, you can manually edit the `.env` file:
-
-```bash
-# Core Configuration
-SERVER_IP=10.7.3.20
-
-# Service Ports
-FRONTEND_PORT=3000
-BACKEND_PORT=4000
-BROKER_SERVICE_PORT=8000
-```
-
-## 🏗️ **Architecture**
-
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐    ┌────────────┐
-│                 │    │                 │    │                 │    │            │
-│   Frontend      │    │   Backend       │    │ Broker Service  │◄──►│ IB Gateway │
-│   (Next.js)     │◄──►│   (Express +    │◄──►│   (FastAPI +    │    │  / MT5 /   │
-│                 │    │    Socket.IO)   │    │  ibapi/httpx)   │    │Alpaca/OANDA│
-│ • TradingView   │    │ • REST routes   │    │ • REST routes   │    └────────────┘
-│ • Real-time UI  │    │ • Auth, CORS    │    │ • reqMktData    │
-│ • Charts        │    │ • Redis cache   │    │ • Redis publish │
-│                 │    │ • Stream bridge │    │                 │
-└─────────────────┘    └────────┬────────┘    └────────┬────────┘
-                                ▲                      │
-                                │                      │  PUBLISH
-                                │  pSUBSCRIBE          ▼
-                                └──────────┐  ┌──────────────────┐
-                                           │  │                  │
-                                           └──┤      Redis       │
-                                              │  marketdata:tick │
-                                              │  marketdata:status
-                                              └──────────────────┘
-```
-
-The real-time pipeline (Phase 4): `broker_service` subscribes to IB tick
-data via `reqMktData` and publishes every tick to
-`marketdata:tick:<SYMBOL>` on Redis. The `backend` subscribes to that
-pattern and fans each tick out to Socket.IO clients in the
-`market-data:<SYMBOL>` room. The frontend's
-`useRealtimeStream` hook consumes those events and updates the chart
-without polling.
-
-## 🔍 **Troubleshooting**
-
-### **Common Issues**
-```bash
-# Service won't start
-./tradingapp.sh diagnose
-./tradingapp.sh fix
-
-# IB Gateway connection failed
-./tradingapp.sh config    # Reconfigure IB settings
-./tradingapp.sh test      # Test connection
-
-# Charts not loading
-./tradingapp.sh logs      # Check for errors
-./tradingapp.sh redeploy  # Clean redeploy
-```
-
-### **Connection Problems**
-```bash
-# Test IB Gateway connectivity
-./tradingapp.sh test
-
-# View detailed diagnostics
-./tradingapp.sh diagnose
-
-# Auto-fix common issues
-./tradingapp.sh fix
-```
-
-## 📊 **Supported Assets**
-
-| Asset Class | Symbol Examples | Timeframes |
-|-------------|----------------|------------|
-| **Stocks** | MSFT, AAPL, GOOGL | 5min to 1day |
-| **Options** | MSFT Call/Put options | 5min to 1day |
-| **Futures** | ES, NQ, YM | 5min to 1day |
-| **Forex** | EUR.USD, GBP.USD | 5min to 1day |
-
-## 🚀 **Development**
-
-### **Local Development**
-```bash
-# Backend development
-cd backend && npm run dev
-
-# Frontend development  
-cd frontend && npm run dev
-
-# Broker Service development
-cd broker_service && python main.py
-```
-
-### **Docker Development**
-```bash
-# Build and run specific service
-docker-compose up --build broker_service
-
-# View logs for specific service
-docker-compose logs -f broker_service
-```
-
-## 📈 **Performance Improvements**
-
-- **80% reduction** in deployment scripts (from 45KB to 9KB)
-- **60% fewer files** to maintain
-- **Simplified architecture** with synchronous connections
-- **Faster troubleshooting** with unified diagnostics
-- **Reliable connections** without complex pooling
-
-## 🎉 **What's Changed**
-
-### **Removed Complexity**
-- ❌ 5 separate deployment scripts → ✅ 1 unified script
-- ❌ Complex async connection pooling → ✅ Simple synchronous connections
-- ❌ Multi-layered caching → ✅ Direct data retrieval
-- ❌ Complex configuration management → ✅ Simple environment variables
-- ❌ Multiple troubleshooting scripts → ✅ Built-in diagnostics
-
-### **Added Reliability**
-- ✅ Unified management system
-- ✅ Automatic error recovery
-- ✅ Simplified deployment process
-- ✅ Built-in connection testing
-- ✅ One-command troubleshooting
-
-## 📞 **Support**
-
-For issues or questions:
-1. Run `./tradingapp.sh diagnose` for detailed diagnostics
-2. Check `./tradingapp.sh logs` for recent errors
-3. Try `./tradingapp.sh fix` for auto-resolution
-4. Use `./tradingapp.sh clean` for complete reset
-
----
-
-**🚀 Your streamlined TradingApp is ready for reliable market data exploration!** 
+Tests: `npm test` in `backend` (set `DB_TESTS=1` with a database for the
+database-backed ones), `npx vitest run` in `frontend`, `pytest` in
+`broker_service`. [DEVELOPMENT_ITERATION_GUIDANCE.md](DEVELOPMENT_ITERATION_GUIDANCE.md)
+covers the workflow.

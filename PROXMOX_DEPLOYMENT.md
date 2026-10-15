@@ -1,25 +1,22 @@
 # Deploying TradingApp on a Bare-Metal Proxmox VE Host
 
-End-to-end instructions for taking a machine with **nothing but Proxmox VE
-freshly installed** to a running TradingApp deployment: application stack,
-TimescaleDB database, broker session hosts, reverse proxy, monitoring and
-backups.
+This guide takes a machine with only Proxmox VE installed to a running
+TradingApp: the app stack, a TimescaleDB database, the broker hosts, a
+reverse proxy, monitoring and backups.
 
-**Guests are LXC containers** wherever the workload allows it — see
-[§1.2](#12-why-lxc-and-the-two-places-it-costs-you) for what that requires and
-the one component that cannot be a container.
+Guests are LXC containers wherever the workload allows. [§1.2](#12-why-lxc-and-the-two-places-it-costs-you)
+says what that needs, and names the one component that cannot be a container.
 
-This guide is the Proxmox-specific *wrapper* around
-[`DEPLOYMENT.md`](DEPLOYMENT.md). Everything about the application itself —
-env keys, auth, streaming, executions sync, alerting rules — lives there and
-is cross-referenced rather than duplicated. Read this one to build the
-infrastructure; read that one to run the app.
+This guide builds the infrastructure. The app itself (settings, auth,
+streaming, executions sync, alerting) is covered in
+[`DEPLOYMENT.md`](DEPLOYMENT.md). To drive the install from a script or an
+agent, use [`AGENT_INSTALL_RUNBOOK.md`](AGENT_INSTALL_RUNBOOK.md); it automates
+§4 and §8.
 
-> **Scope note.** TradingApp places real orders. Every step below defaults to
-> the safe setting (`LIVE_TRADING_ENABLED=false`, paper IB account,
-> `ALPACA_PAPER=true`). Nothing here turns live trading on — see
-> [`DEPLOYMENT.md` § Enabling live trading](DEPLOYMENT.md#enabling-live-trading)
-> when you are ready for that, deliberately.
+> **Scope.** TradingApp places real orders. Every step here keeps to paper:
+> live trading stays off and every broker connection is a paper account.
+> Nothing in this guide turns live trading on. That is a separate, deliberate
+> step: [`DEPLOYMENT.md` § Enabling live trading](DEPLOYMENT.md#enabling-live-trading).
 
 ---
 
@@ -49,11 +46,10 @@ infrastructure; read that one to run the app.
 
 ### 1.1 The shape of it
 
-TradingApp spans more than one host by design: the Docker stack is Linux, but
-**IB Gateway and MetaTrader 5 are logged-in GUI sessions that cannot live
-inside the Docker stack** (see
-[`DEPLOYMENT.md` § Multi-Broker Host Topology](DEPLOYMENT.md#multi-broker-host-topology-ib--mt5)).
-On Proxmox each becomes its own guest — an LXC container in every case except
+The Docker stack is Linux. IB Gateway and MetaTrader 5 are logged-in GUI
+sessions that cannot live inside it (see
+[`DEPLOYMENT.md` § Host layout with IB and MT5](DEPLOYMENT.md#host-layout-with-ib-and-mt5)).
+On Proxmox each one gets its own guest. Every guest is an LXC container except
 MT5:
 
 ```
@@ -87,58 +83,53 @@ MT5:
 
 ### 1.2 Why LXC, and the two places it costs you
 
-Containers share the host kernel, so they boot in seconds, carry no guest-OS
-memory overhead, and `pct enter` beats waiting on a console. For four
-long-lived Linux services on one hypervisor, that is a real density and
-operability win.
+Containers share the host kernel. They boot in seconds, carry no guest-OS
+memory overhead, and `pct enter` is faster than a console. For four
+long-lived Linux services on one hypervisor, that is a real gain.
 
-Two consequences you have to design around rather than discover later:
+It costs you in two places.
 
-**1. MT5 runs Windows code.** LXC guests share the host's Linux kernel, so
-a Proxmox container is always Linux. The `MetaTrader5` Python package needs
-Windows Python and a live terminal, so this guide puts the MT5 sidecar in a
-Windows VM (§7). The sidecar can also run the terminal under Wine on Linux,
-in a VM or a privileged LXC (see [`mt5_sidecar/README.md`](mt5_sidecar/README.md)).
-If you don't trade MT5, every guest in this guide is an LXC.
+**1. MT5 runs Windows code.** An LXC guest always runs the host's Linux
+kernel. The `MetaTrader5` Python package needs Windows Python and a live
+terminal, so this guide puts the MT5 sidecar in a Windows VM (§7). The sidecar
+can also run the terminal under Wine on Linux, in a VM or a privileged LXC
+(see [`mt5_sidecar/README.md`](mt5_sidecar/README.md)). If you don't trade
+MT5, every guest is an LXC.
 
 **2. Docker-in-LXC needs specific container features.** The app container runs
-a Docker Compose stack, which is nesting containers inside a container. It
-works well on current Proxmox, but only with the right flags set **at create
-time**:
+a Docker Compose stack: containers inside a container. This works well on
+current Proxmox, but only with the right flags set at create time:
 
 | Requirement | Why |
 |---|---|
-| `--features nesting=1` | Lets the container run its own container runtime and systemd cleanly |
+| `--features nesting=1` | Lets the container run its own container runtime and systemd |
 | `--features keyctl=1` | containerd uses the kernel keyring; without it Docker fails to start |
 | `--unprivileged 1` | Keep it. A privileged container with nesting is close to root on the hypervisor |
-| Storage-driver choice | `overlay2` works on **LVM-thin / ext4-backed** rootfs. On **ZFS-backed** rootfs it does not — add `fuse=1` and switch Docker to `fuse-overlayfs` (§4.2) |
+| Storage-driver choice | `overlay2` works on LVM-thin or ext4-backed rootfs. On ZFS-backed rootfs it does not: add `fuse=1` and switch Docker to `fuse-overlayfs` (§4.2) |
 
-Check which case you are in before creating anything:
+Check which case you are in before you create anything:
 
 ```bash
 pvesm status        # look at the Type column for your container storage
 ```
 
-`lvmthin` or `dir` → nothing extra to do. `zfspool` → you will need the
+`lvmthin` or `dir`: nothing extra to do. `zfspool`: you need the
 `fuse-overlayfs` step in §4.2.
 
-The security trade is worth stating plainly since it applies to the host that
-holds your broker credentials: an unprivileged LXC is a solid boundary, but it
-is a shared-kernel boundary, not a hardware-virtualised one, and a host kernel
-update reboots every container at once. If that is unacceptable for the app
-container specifically, it is the one guest worth making a VM — the rest of
-this guide is unaffected either way.
+On security: an unprivileged LXC is a solid boundary, but it shares the
+kernel. It is not hardware virtualisation, and a host kernel update reboots
+every container at once. If that is not acceptable for the app container, make
+that one guest a VM. Nothing else in this guide changes.
 
-**Minimum viable variant:** if you only have resources for one guest, see
-[Appendix A](#appendix-a-single-container-quickstart) — one container, bundled
-TimescaleDB via `--with-db`, an external IB Gateway elsewhere on the network.
+**Smallest variant:** one guest only. See
+[Appendix A](#appendix-a-single-container-quickstart): one container with the
+bundled TimescaleDB, and IB Gateway elsewhere on the network.
 
 ---
 
 ## 2. Plan the deployment
 
-Fill this table in **before** you create anything. Every later step refers
-back to it, and the app's `.env` hard-codes several of these addresses.
+Fill in this table before you create anything. Later steps refer back to it.
 
 | ID | Name | Type | Purpose | Cores | RAM | Disk | IP |
 |---|---|---|---|---|---|---|---|
@@ -150,26 +141,25 @@ back to it, and the app's `.env` hard-codes several of these addresses.
 
 Also decide:
 
-- **Gateway / DNS**: e.g. `10.7.3.1` / `10.7.3.1`.
-- **Domain** (if using TLS): e.g. `trading.example.com` → `10.7.3.20`.
-- **Database sizing**: `candlestick_data` and `tick_data` are TimescaleDB
-  hypertables with retention policies (2 years OHLCV, 30 days ticks — see
+- **Gateway and DNS**: for example `10.7.3.1` for both.
+- **Domain** (if using TLS): for example `trading.example.com` → `10.7.3.20`.
+- **Database size**: `candlestick_data` and `tick_data` are TimescaleDB
+  hypertables with retention policies (2 years of OHLCV, 30 days of ticks; see
   [`backend/src/database/timescaledb-schema.sql`](backend/src/database/timescaledb-schema.sql)).
-  The DB container gets a **separate 200 GB mount point** for the data
-  directory (§5.1) so it can be grown, snapshotted and restored independently
-  of the container's root filesystem. Tick data across many symbols grows
-  fast — put that mount point on a pool you can expand.
-- **LXC memory is a hard cgroup limit**, not a balloon. The container does not
-  give memory back and does not gracefully degrade: overshoot and the kernel
-  OOM-kills a process inside it. Size generously and keep swap small.
+  The database container gets a separate 200 GB mount point for its data
+  directory (§5.1), so it can be grown, snapshotted and restored on its own.
+  Tick data across many symbols grows fast. Put that mount point on a pool you
+  can expand.
+- **LXC memory is a hard cgroup limit**, not a balloon. Go over it and the
+  kernel kills a process inside the container. Size generously and keep swap
+  small.
 
-> ⚠️ **Subnet collision.** The Compose stack creates a bridge network on
-> **`172.20.0.0/16`** with static container IPs (`docker-compose.yml`). If your
-> LAN, VPN or another Proxmox bridge uses any part of `172.20.0.0/16`, the app
-> container will lose routes to it. Pick a different LAN range, or edit the
-> `networks.tradingapp-network.ipam` block **and** the hard-coded
-> `172.20.0.x` addresses in `docker-compose.yml` / `docker-compose.db.yml`
-> together — they must stay consistent.
+> **Subnet collision.** The Compose stack creates a bridge network on
+> `172.20.0.0/16` with fixed container addresses (`docker-compose.yml`). If
+> your LAN, VPN or another Proxmox bridge uses any part of `172.20.0.0/16`, the
+> app container loses its routes to it. Pick a different LAN range, or edit
+> the `networks.tradingapp-network.ipam` block and every `172.20.0.x` address
+> in `docker-compose.yml` and `docker-compose.db.yml` together.
 
 ---
 
@@ -183,15 +173,14 @@ Do all of this in the Proxmox web UI shell (`https://<pve-ip>:8006` → node →
 ```bash
 pveversion -v | head -3
 ip -br addr        # vmbr0 should hold the host's LAN IP
-pvesm status       # note the Type column — see §1.2 for why it matters
+pvesm status       # note the Type column (§1.2)
 ```
 
 ### 3.2 Switch to the no-subscription repository
 
-A fresh install points at the enterprise repo, which 401s without a
-subscription key and blocks all updates. **Proxmox VE 9** uses deb822
-`.sources` files; **VE 8** uses classic `.list` files. Run the block that
-matches your version.
+A fresh install points at the enterprise repository. Without a subscription
+key it answers 401 and blocks all updates. Proxmox VE 9 uses deb822
+`.sources` files; VE 8 uses `.list` files. Run the block for your version.
 
 <details>
 <summary><b>Proxmox VE 9.x</b></summary>
@@ -234,21 +223,18 @@ apt install -y chrony
 reboot
 ```
 
-> Because every container shares this kernel, **a host kernel upgrade restarts
-> the entire deployment**. Do it during a market close, not mid-session. This
-> is the operational cost of the all-LXC topology, and it is the main reason
-> §13's boot ordering has to actually work.
+> Every container shares this kernel, so a host kernel upgrade restarts the
+> whole deployment. Do it during a market close. This is the main cost of the
+> all-LXC layout, and the reason the boot order in §13 has to work.
 
 ### 3.3 Time synchronisation (not optional, and host-only)
 
-Every bar, tick and fill in this system is timestamped, the whole stack runs
-in **UTC** (`TZ=UTC` on every Docker container), and IB rejects or mislabels
-data when the client clock drifts.
+Every bar, tick and fill is timestamped. The stack runs in UTC, and IB rejects
+or mislabels data when the client clock drifts.
 
-LXC guests **cannot set their own clock** — they read the host's. That is a
-simplification, not a limitation: fix it once here and every container is
-correct. Do not install chrony or NTP inside the containers; it will fail or,
-worse, appear to work.
+LXC guests cannot set their own clock. They read the host's. So fix it once,
+here, and every container is right. Do not install chrony or NTP inside the
+containers: it fails, or seems to work and does nothing.
 
 ```bash
 timedatectl set-timezone UTC
@@ -256,7 +242,7 @@ systemctl enable --now chrony
 chronyc tracking | grep -E 'Reference ID|System time'
 ```
 
-Only the Windows MT5 VM (§7), if you deploy one, needs its own time source.
+Only the Windows MT5 VM (§7), if you have one, needs its own time source.
 
 ### 3.4 Fetch the container templates
 
@@ -266,38 +252,41 @@ pveam available --section system | grep ubuntu-24
 pveam download local ubuntu-24.04-standard_24.04-2_amd64.tar.zst
 ```
 
-Adjust the template filename to whatever `pveam available` currently lists —
-the point release moves.
+Use the template filename that `pveam available` lists today; the point
+release moves.
 
-If you plan the optional **Windows MT5 VM**, also upload a Windows ISO plus
-the **VirtIO driver ISO**
+For the optional Windows MT5 VM, also upload a Windows ISO and the VirtIO
+driver ISO
 (<https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso>)
-via **Datacenter → local → ISO Images → Upload**.
+under **Datacenter → local → ISO Images → Upload**.
 
 ### 3.5 Create an SSH key for the guests
 
-On your workstation, if you don't already have one:
+On your workstation, if you don't have one yet:
 
 ```bash
 ssh-keygen -t ed25519 -C "tradingapp"
-ssh-copy-id root@<pve-ip>          # convenience: reach the host without a password
+ssh-copy-id root@<pve-ip>          # reach the host without a password
 scp ~/.ssh/id_ed25519.pub root@<pve-ip>:/root/tradingapp.pub
 ```
 
-`pct create --ssh-public-keys` injects this into the container's `root`
-account, so you can SSH straight in without setting a root password.
+`pct create --ssh-public-keys` puts this key on the container's `root`
+account, so you can SSH in without setting a root password.
 
 ---
 
 ## 4. Create the app container
 
-CT 110 runs the whole Docker Compose stack — `frontend`, `backend`,
-`broker_service`, `redis` — plus nginx as the TLS front door in §10.
+CT 110 runs the Docker Compose stack (`frontend`, `backend`, `broker_service`,
+`redis`) and nginx as the TLS front door (§10).
+
+[`install/proxmox-create-ct.sh`](install/proxmox-create-ct.sh) does §4.1 as a
+script. The steps below are what it does.
 
 ### 4.1 Create it
 
-Run on the Proxmox host. Substitute your container storage for `local-lvm`
-(`pvesm status`; ZFS installs typically use `local-zfs`).
+Run on the Proxmox host. Use your container storage in place of `local-lvm`
+(`pvesm status`; ZFS installs usually have `local-zfs`).
 
 ```bash
 CTID=110
@@ -317,20 +306,22 @@ pct create $CTID $TEMPLATE \
   --start 1
 ```
 
-On **ZFS-backed** storage, add `fuse=1` to the features list (see §4.2):
+On ZFS-backed storage, add `fuse=1` to the features (see §4.2):
 
 ```bash
 pct set $CTID --features nesting=1,keyctl=1,fuse=1
 ```
 
-The three flags that matter, restated because getting them wrong produces
-confusing failures much later: `nesting=1` (Docker won't start without it),
-`keyctl=1` (containerd's keyring access), `firewall=1` on `net0` (the Proxmox
-per-guest firewall in §10.3 is inert on an interface that lacks it).
+Three flags matter most, because getting them wrong fails much later and
+confusingly:
 
-`--swap 1024` keeps a small cushion. Don't set it large: swapping inside a
-container that is meant to serve real-time ticks trades a visible failure for
-an invisible latency problem.
+- `nesting=1`: Docker won't start without it.
+- `keyctl=1`: containerd needs the keyring.
+- `firewall=1` on `net0`: without it, the Proxmox firewall in §10.3 does
+  nothing for this guest.
+
+`--swap 1024` is a small cushion. Don't make it large: a container that swaps
+while serving live ticks is slow without saying so.
 
 ### 4.2 Install Docker
 
@@ -342,13 +333,13 @@ Inside the container:
 
 ```bash
 apt update && apt full-upgrade -y
-apt install -y git curl ca-certificates
+apt install -y git curl ca-certificates openssl
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime      # timezone; the clock itself is the host's
 ```
 
-**If your container storage is ZFS**, install the fuse-overlayfs driver
-*before* Docker starts for the first time — Docker will otherwise pick an
-unusable driver and cache that decision:
+**If your container storage is ZFS**, install the fuse-overlayfs driver before
+Docker starts for the first time. Otherwise Docker picks a driver that does
+not work and remembers that choice:
 
 ```bash
 apt install -y fuse-overlayfs
@@ -367,14 +358,17 @@ docker info | grep -E 'Storage Driver|Cgroup'
 docker run --rm hello-world
 ```
 
-`hello-world` succeeding is the real gate on the whole LXC approach. If it
-fails, fix it here — §15 has the common causes — rather than continuing and
-debugging it through the application stack.
+`hello-world` is the real test of the LXC setup. If it fails, fix it here (§15
+has the usual causes). Do not carry on and debug it through the app.
+
+`./tradingapp.sh install` can install Docker itself, but it does not know
+about ZFS. Installing Docker by hand here lets you choose the storage driver
+first. `install` then sees Docker is present and skips that step.
 
 ### 4.3 Create the deploy user
 
-`tradingapp.sh` **refuses to run as root** and requires sudo. A container drops
-you into a root shell, so create the user explicitly:
+`tradingapp.sh` refuses to run as root and needs sudo. A container gives you a
+root shell, so create the user:
 
 ```bash
 apt install -y sudo
@@ -390,7 +384,7 @@ chown -R tradingapp:tradingapp /home/tradingapp/.ssh
 chmod 700 /home/tradingapp/.ssh && chmod 600 /home/tradingapp/.ssh/authorized_keys
 ```
 
-Exit the container console and confirm the path you'll actually use:
+Leave the container console and check the path you will actually use:
 
 ```bash
 exit
@@ -402,23 +396,23 @@ docker ps        # must work without sudo
 
 ## 5. Create the database container (TimescaleDB)
 
-The base `docker-compose.yml` deliberately does **not** provision Postgres —
-the backend expects an external instance
-([`DEPLOYMENT.md` § External database](DEPLOYMENT.md#external-database-recommended-for-production)).
-Here that instance is its own container, which keeps the database's disk,
-snapshot schedule and restore path independent of the application's.
+Here the database runs in its own container. Its disk, snapshot schedule and
+restore path are then separate from the app's, and you can rebuild the app
+container without touching your data (§8.6).
 
-> **Shortcut:** to skip this section, deploy with
-> `./tradingapp.sh deploy --with-db`, which layers `docker-compose.db.yml` and
-> runs TimescaleDB as a Docker container inside CT 110 with a Docker volume.
-> Fine for evaluation. Not recommended otherwise: the data then shares a fate,
-> a disk and a backup window with the application, and `./tradingapp.sh clean`
-> prunes aggressively next to it.
+> **Skipping this section.** `./tradingapp.sh install` without
+> `--external-db` runs TimescaleDB as a Docker container inside CT 110, with
+> its data in a Docker volume. That is fine for evaluation. For anything
+> longer, use this section: with the bundled database, the data shares a disk
+> and a backup window with the app.
+
+You only create the role, the database and the `timescaledb` extension here.
+The backend creates and updates the schema itself when it starts.
 
 ### 5.1 Create it, with a separate data volume
 
-No nesting or keyctl here — Postgres runs directly in the container, so this
-is a plain unprivileged LXC.
+No nesting or keyctl here: Postgres runs directly in the container, so this is
+a plain unprivileged LXC.
 
 ```bash
 CTID=120
@@ -437,18 +431,18 @@ pct create $CTID local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst \
   --start 1
 ```
 
-`--mp0` puts the PostgreSQL data directory on its own 200 GB volume, mounted
-at `/var/lib/postgresql` before Postgres is installed so the packages lay
-their data down in the right place from the start. `backup=1` includes it in
-vzdump runs. Grow it later without touching the rest:
+`--mp0` puts the PostgreSQL data directory on its own 200 GB volume. It is
+mounted at `/var/lib/postgresql` before Postgres is installed, so the packages
+put their data there from the start. `backup=1` includes it in vzdump runs.
+Grow it later without touching the rest:
 
 ```bash
 pct resize 120 mp0 +100G
 ```
 
-`--startup order=1,up=60` starts the database first on host boot and waits 60s
-before releasing the next order group, so the app container (order 2) never
-comes up against a database that isn't listening yet.
+`--startup order=1,up=60` starts the database first on host boot and waits 60
+seconds before the next group. The backend waits for its database however long
+it takes, so this is about a tidy start, not correctness.
 
 ### 5.2 Install PostgreSQL + TimescaleDB
 
@@ -474,15 +468,14 @@ apt update
 apt install -y timescaledb-2-postgresql-17 postgresql-client-17
 ```
 
-PostgreSQL 15, 16 and 17 are all supported by the schema (the bundled
-container image is pg15; nothing in `timescaledb-schema.sql` is
-version-specific). Pick 17 for a new build.
+PostgreSQL 15, 16 and 17 all work (the bundled image is 15). Pick 17 for a new
+build.
 
-> If `apt update` reports no candidate for the TimescaleDB packages, the
-> packagecloud repo has not published for your Ubuntu codename yet. Substitute
-> the previous LTS codename (`jammy` for a `noble` container) in
-> `/etc/apt/sources.list.d/timescaledb.list` — the packages are built against
-> the PGDG PostgreSQL you just installed, not against the distro's own.
+> If `apt update` finds no TimescaleDB packages, packagecloud has not
+> published for your Ubuntu codename yet. Use the previous LTS codename
+> (`jammy` for a `noble` container) in
+> `/etc/apt/sources.list.d/timescaledb.list`. The packages are built against
+> the PGDG PostgreSQL you just installed, not the distribution's.
 
 ```bash
 timescaledb-tune --quiet --yes    # sizes shared_buffers/work_mem, adds the preload
@@ -490,67 +483,57 @@ systemctl restart postgresql
 ```
 
 > `timescaledb-tune` reads the memory the container reports. Proxmox mounts
-> lxcfs, so `/proc/meminfo` inside the container shows the **cgroup limit**
-> (8 GB), not the host's total — the tuning it produces is correct. Verify
-> with `free -h` before trusting it; if that shows the host's full RAM, lxcfs
-> isn't mounted and you must pass `--memory 8GB` to `timescaledb-tune`
-> manually, or it will size Postgres for memory the container cannot have.
+> lxcfs, so `/proc/meminfo` shows the cgroup limit (8 GB), not the host's
+> total, and the tuning is right. Check with `free -h` first. If it shows the
+> host's full RAM, lxcfs is not mounted: pass `--memory 8GB` to
+> `timescaledb-tune`, or it sizes Postgres for memory the container cannot
+> have.
 
-### 5.3 Create the role, database and schema
+### 5.3 Create the role, database and extension
 
-```bash
-sudo -u postgres psql <<'SQL'
-CREATE ROLE tradingapp WITH LOGIN PASSWORD 'REPLACE_WITH_A_STRONG_PASSWORD';
-CREATE DATABASE tradingapp OWNER tradingapp;
-SQL
+1. Generate a password and keep it. You give it to `install` in §8.2.
 
-sudo -u postgres psql -d tradingapp -c 'CREATE EXTENSION IF NOT EXISTS timescaledb;'
-```
+   ```bash
+   openssl rand -base64 24
+   ```
 
-Generate the password with `openssl rand -base64 24` and record it — it goes
-into the app container's `.env` as `POSTGRES_PASSWORD` in §8.2.
+2. Create the role and the database:
 
-Apply the canonical schema from the app container once the repo is cloned
-(§8.1):
+   ```bash
+   sudo -u postgres psql <<'SQL'
+   CREATE ROLE tradingapp WITH LOGIN PASSWORD 'REPLACE_WITH_THE_PASSWORD';
+   CREATE DATABASE tradingapp OWNER tradingapp;
+   SQL
+   ```
 
-```bash
-# On CT 110, as the tradingapp user
-PGPASSWORD='<the password>' psql \
-  "host=10.7.3.21 port=5432 user=tradingapp dbname=tradingapp sslmode=disable" \
-  -f /opt/tradingapp/backend/src/database/timescaledb-schema.sql
-```
+3. Create the extension. The app's role is not a superuser, so do this here:
 
-The script is idempotent — re-running it on an existing database is safe.
-Verify:
+   ```bash
+   sudo -u postgres psql -d tradingapp -c 'CREATE EXTENSION IF NOT EXISTS timescaledb;'
+   ```
 
-```bash
-PGPASSWORD='<the password>' psql "host=10.7.3.21 user=tradingapp dbname=tradingapp" \
-  -c "SELECT extname FROM pg_extension WHERE extname='timescaledb';" \
-  -c "SELECT hypertable_name FROM timescaledb_information.hypertables;"
-```
-
-You should see the `timescaledb` extension plus the `candlestick_data` and
-`tick_data` hypertables.
+That is all the database needs. Do not apply the schema by hand. On its first
+start the backend applies `timescaledb-schema.sql` and every migration, and
+records them in `schema_migrations`.
 
 ### 5.4 Let the app container connect
 
-Postgres listens on localhost by default. Open it to CT 110 — and **only**
-CT 110:
+Postgres listens on localhost by default. Open it to CT 110, and only CT 110:
 
 ```bash
 # /etc/postgresql/17/main/postgresql.conf
 sed -i "s/^#\?listen_addresses.*/listen_addresses = '10.7.3.21'/" \
   /etc/postgresql/17/main/postgresql.conf
 
-# /etc/postgresql/17/main/pg_hba.conf — single host, scram auth
+# /etc/postgresql/17/main/pg_hba.conf: one host, scram auth
 echo "host    tradingapp    tradingapp    10.7.3.20/32    scram-sha-256" \
   >> /etc/postgresql/17/main/pg_hba.conf
 
 systemctl restart postgresql
 ```
 
-Then firewall the container. Both layers are worth having — ufw inside, and
-the Proxmox host-side rules from §10.3:
+Then firewall the container. Have both layers: ufw inside, and the Proxmox
+rules from §10.3:
 
 ```bash
 apt install -y ufw
@@ -559,32 +542,68 @@ ufw allow from 10.7.3.20 to any port 5432 proto tcp
 ufw --force enable
 ```
 
-> ufw inside an **unprivileged** LXC works on current Proxmox but depends on
-> the host's netfilter modules and can be blocked by the container's AppArmor
-> profile. If `ufw enable` errors, don't fight it — the Proxmox per-guest
-> firewall (§10.3) is enforced host-side at the container's network interface,
-> covers the same ground, and cannot be bypassed from inside the guest.
+> ufw inside an unprivileged LXC works on current Proxmox, but it depends on
+> the host's netfilter modules and the container's AppArmor profile. If
+> `ufw enable` errors, skip it. The Proxmox per-guest firewall (§10.3) is
+> enforced on the host, covers the same ground, and cannot be bypassed from
+> inside the guest.
 
-**TLS between app and DB:** the example sets `sslmode=disable` /
-`POSTGRES_SSL=false` because both containers sit on one hypervisor bridge. If
-the DB ever moves off-host, generate a server certificate, set `ssl = on` in
+**TLS between app and database:** this guide uses `POSTGRES_SSL=false`
+because both containers are on one hypervisor bridge. If the database moves
+off this host, give Postgres a server certificate, set `ssl = on` in
 `postgresql.conf`, change the `pg_hba.conf` line to `hostssl`, and set
-`POSTGRES_SSL=true` in `.env`.
+`POSTGRES_SSL=true` in the app's `.env`.
+
+### 5.5 Moving from the bundled database
+
+If CT 110 already runs the bundled database and you want to move to CT 120,
+`install --external-db` refuses: it would leave the data behind. Move the data
+first:
+
+1. Do §5.1 to §5.4.
+2. On CT 110, stop the backend and dump the bundled database:
+
+   ```bash
+   cd /opt/tradingapp
+   docker compose -f docker-compose.yml -f docker-compose.db.yml stop backend
+   docker compose -f docker-compose.yml -f docker-compose.db.yml exec -T postgres \
+     pg_dump -U tradingapp -Fc tradingapp > /tmp/tradingapp.dump
+   ```
+
+3. Copy `/tmp/tradingapp.dump` to CT 120 and restore it:
+
+   ```bash
+   sudo -u postgres psql -d tradingapp -c 'SELECT timescaledb_pre_restore();'
+   sudo -u postgres pg_restore -d tradingapp --no-owner --role=tradingapp /tmp/tradingapp.dump
+   sudo -u postgres psql -d tradingapp -c 'SELECT timescaledb_post_restore();'
+   ```
+
+   An error that the `timescaledb` extension already exists is expected.
+
+4. On CT 110, switch over. `--no-db` stops using the bundled database; the
+   key in `.env` stays, so the restored secrets still open:
+
+   ```bash
+   ./tradingapp.sh --no-db install --external-db
+   ```
+
+   It asks for the database host (`10.7.3.21`) and the password from §5.3.
+
+5. Once the app is healthy on CT 120, remove the old volume:
+   `docker volume ls | grep pgdata`, then `docker volume rm <name>`.
 
 ---
 
 ## 6. Create the IB Gateway container
 
-`broker_service` connects **outbound** to IB Gateway's socket API. IB Gateway
-is a Java GUI application that must stay logged in — it is the single most
-fragile part of this deployment, and it gets its own guest with its own
-snapshot schedule.
+`broker_service` connects out to IB Gateway's socket API. IB Gateway is a Java
+GUI application that must stay logged in. It is the most fragile part of this
+deployment, so it gets its own guest and its own snapshots.
 
-It runs happily in an LXC container, with one adjustment: a container has no
-Proxmox graphical console (`pct enter` is a text shell), so the GUI is driven
-by a **virtual framebuffer plus VNC** for the one-time configuration, and by
-**IBC** (<https://github.com/IbcAlpha/IBC>) for automated login and daily
-restarts thereafter.
+It runs well in an LXC, with one change. A container has no graphical console
+(`pct enter` is a text shell), so you drive the GUI through a virtual
+framebuffer and VNC for the one-time setup, and through IBC
+(<https://github.com/IbcAlpha/IBC>) for automatic login and daily restarts.
 
 ### 6.1 Create it
 
@@ -605,8 +624,8 @@ pct create $CTID local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst \
   --start 1
 ```
 
-`nesting=1` here is for systemd, not Docker — the IBC service unit and the
-framebuffer both behave better with it.
+`nesting=1` here is for systemd, not Docker. The IBC unit and the framebuffer
+both behave better with it.
 
 ### 6.2 Install IB Gateway headlessly
 
@@ -624,7 +643,7 @@ wget -O /tmp/ibgw.sh \
   https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-stable-standalone-linux-x64.sh
 chmod +x /tmp/ibgw.sh && /tmp/ibgw.sh -q     # installs to ~/Jts
 
-# IBC — automates login and the daily restart.
+# IBC: automates login and the daily restart.
 # Check https://github.com/IbcAlpha/IBC/releases for the current version:
 # the asset filename carries it, so there is no version-agnostic URL.
 IBC_VERSION=3.20.0
@@ -636,8 +655,8 @@ unzip -o IBCLinux.zip && chmod +x *.sh scripts/*.sh
 
 ### 6.3 One-time GUI configuration over VNC
 
-Start a framebuffer and a VNC server bound to localhost, then reach it through
-an SSH tunnel — never expose VNC to the LAN:
+Start a framebuffer and a VNC server bound to localhost, and reach it through
+an SSH tunnel. Never expose VNC to the LAN.
 
 ```bash
 # In the container
@@ -654,21 +673,23 @@ ssh -L 5900:localhost:5900 root@10.7.3.22
 
 In the IB Gateway window:
 
-1. Log in with your **paper** account first.
-2. `Configure → Settings → API → Settings`:
-   - ✅ **Enable ActiveX and Socket Clients**
-   - ❌ **Read-Only API** (uncheck only when you intend to place orders)
-   - **Socket port**: `4002` (paper) or `4001` (live)
-   - **Trusted IPs**: add `10.7.3.20` (the app container)
-3. Apply, OK. The settings persist in `~/Jts`, so this is a one-time step.
+1. Log in with your **paper** account.
+2. Open `Configure → Settings → API → Settings` and set:
+   - **Enable ActiveX and Socket Clients**: on.
+   - **Read-Only API**: on, until you intend to place orders.
+   - **Socket port**: `4002` (paper). `4001` is live.
+   - **Trusted IPs**: add `10.7.3.20` (the app container).
+3. Click Apply, then OK. The settings are saved in `~/Jts`, so you do this
+   once.
 
-Kill the temporary processes (`pkill x11vnc; pkill -f ibgateway; pkill Xvfb`)
-once you're done — the permanent service in §6.4 starts its own.
+When done, stop the temporary processes
+(`pkill x11vnc; pkill -f ibgateway; pkill Xvfb`). The service in §6.4 starts
+its own.
 
 ### 6.4 Run it as a service under IBC
 
-Put your credentials and `TradingMode=paper` into `/opt/ibc/config.ini`
-(the file is commented throughout; the login settings are near the top), then:
+Put your credentials and `TradingMode=paper` in `/opt/ibc/config.ini` (the
+login settings are near the top). Then create the unit:
 
 ```ini
 # /etc/systemd/system/ibgateway.service
@@ -687,10 +708,9 @@ User=root
 WantedBy=multi-user.target
 ```
 
-`xvfb-run` owns the framebuffer's lifetime as a single supervised process. Do
-**not** start `Xvfb` from `ExecStartPre` instead: `ExecStartPre` runs to
-completion before `ExecStart` begins, so a long-running `Xvfb` there hangs the
-unit at startup forever.
+`xvfb-run` owns the framebuffer as one supervised process. Do not start `Xvfb`
+from `ExecStartPre` instead: `ExecStartPre` must finish before `ExecStart`
+runs, so a long-running `Xvfb` there hangs the unit forever.
 
 ```bash
 systemctl daemon-reload && systemctl enable --now ibgateway
@@ -698,8 +718,8 @@ systemctl status ibgateway
 ss -ltnp | grep 4002        # the API socket should be listening
 ```
 
-`./tradingapp.sh ib-help` (on the app container, after §8) prints the IB-side
-walk-through with your actual `.env` values substituted.
+The app learns about the gateway when you add an IB connection under
+Settings > Connections (§8.4): host `10.7.3.22`, port `4002`.
 
 ### 6.5 Firewall
 
@@ -711,35 +731,34 @@ ufw allow from 10.7.3.20 to any port 4002 proto tcp
 ufw --force enable
 ```
 
-Back it with a Proxmox rule (§10.3) — that one cannot be bypassed from inside
+Back it with a Proxmox rule (§10.3). That one cannot be bypassed from inside
 the guest.
 
-> **Known operational gap.** A silently logged-out IB Gateway is
-> indistinguishable from a quiet market — the app just stops receiving data.
-> IBC's auto-restart helps; add a liveness check on top.
-> `./tradingapp.sh test` covers it manually and `ops/prometheus/alerts.yml`
-> has the scrape-level alerts. Tracked in
-> [`GAP_ANALYSIS.md`](GAP_ANALYSIS.md#8-operational--deployment-gaps).
+> **Known gap.** A logged-out IB Gateway looks like a quiet market: data just
+> stops. The app checks each connection on a timer
+> (`BROKER_PROBE_INTERVAL_SECONDS`, on Settings > Schedulers and data) and
+> shows its state on Settings > Connections. IBC's auto-restart helps, and
+> `ops/prometheus/alerts.yml` has scrape-level alerts. Tracked in
+> [`GAP_ANALYSIS.md`](docs/plans/GAP_ANALYSIS.md#8-operational--deployment-gaps).
 
 ---
 
 ## 7. Optional: MT5 sidecar (Windows VM)
 
-Skip this entirely unless you trade MetaTrader 5.
+Skip this unless you trade MetaTrader 5.
 
-Proxmox containers share the host's Linux kernel, so they can only ever run
-Linux. The `MetaTrader5` Python package needs Windows Python and a live MT5
-terminal, so this guide runs it in a full hardware-virtualised Windows VM. The
-alternative is the terminal and Windows Python under Wine on Linux, in a VM or
-a privileged LXC; [`mt5_sidecar/README.md`](mt5_sidecar/README.md) covers that
-path and its systemd unit.
+Proxmox containers can only run Linux. The `MetaTrader5` Python package needs
+Windows Python and a live MT5 terminal, so this guide runs it in a Windows VM.
+The other option is the terminal and Windows Python under Wine on Linux, in a
+VM or a privileged LXC; [`mt5_sidecar/README.md`](mt5_sidecar/README.md)
+covers that, and [`install/mt5-sidecar-wine.sh`](install/mt5-sidecar-wine.sh)
+scripts it.
 
-The FastAPI sidecar that `broker_service` calls is in
+The sidecar that `broker_service` calls is in
 [`mt5_sidecar/`](mt5_sidecar/README.md). Its README covers installing it on
-the Windows VM and running it as a scheduled task; the HTTP contract is
-documented at the top of
-[`broker_service/mt5_adapter.py`](broker_service/mt5_adapter.py). One sidecar
-serves one terminal and one account, so a second account needs a second
+Windows and running it as a scheduled task. The HTTP contract is at the top
+of [`broker_service/mt5_adapter.py`](broker_service/mt5_adapter.py). One
+sidecar serves one terminal and one account. A second account needs a second
 terminal and sidecar on another port.
 
 ```bash
@@ -757,36 +776,40 @@ qm create 140 \
 qm start 140
 ```
 
-Load the VirtIO SCSI driver from the second CD when the Windows installer
-reports it cannot find a disk, and install `qemu-guest-agent` from the same
-ISO afterwards. Unlike the containers, this guest needs **its own NTP
-configuration** — it does not inherit the host clock.
+When the Windows installer cannot find a disk, load the VirtIO SCSI driver
+from the second CD. Install `qemu-guest-agent` from the same ISO afterwards.
+Unlike the containers, this guest needs its own NTP setup: it does not use the
+host clock.
 
-Then in `.env` on the app container:
+Then connect it to the app:
 
-```bash
-MT5_BRIDGE_URL=http://10.7.3.23:9100
-MT5_BRIDGE_SECRET=<openssl rand -hex 32>
-```
+1. Make a shared secret of at least 24 characters, for example with
+   `openssl rand -hex 32`.
+2. Put it in the sidecar's `sidecar.env` as `MT5_BRIDGE_SECRET`, and set
+   `MT5_ALLOW_REAL=false`.
+3. Scope the Windows firewall rule for port 9100 to `10.7.3.20` only.
+4. In the app, add an MT5 connection under Settings > Connections (§8.4) with
+   the URL `http://10.7.3.23:9100` and the same secret.
 
-Set the same secret as `MT5_BRIDGE_SECRET` in the sidecar's `sidecar.env`.
-`broker_service` sends `X-MT5-Bridge-Secret` on every request, and the sidecar
-rejects any request without the right value (it refuses to start on a
-non-loopback address without a secret of at least 24 characters). Still scope
-the Windows firewall rule for 9100 to `10.7.3.20` only. For two or more
-accounts, replace these two keys with the `BROKER_CONNECTIONS` manifest in
-`.env.example`.
+`broker_service` sends the secret as `X-MT5-Bridge-Secret` on every request.
+The sidecar rejects any request without it, and refuses to start on a
+non-loopback address without a secret. Anything that reaches the port with the
+secret can trade the account, so keep the firewall rule tight.
 
-Alpaca and OANDA need no guest at all — they are cloud REST APIs, enabled by
-setting credentials in `.env`
-([`DEPLOYMENT.md` § Alpaca and OANDA](DEPLOYMENT.md#alpaca-and-oanda--optional-cloud-brokers)).
+Alpaca and OANDA need no guest. They are cloud APIs: add them under
+Settings > Connections with their keys
+([`DEPLOYMENT.md` § Adding brokers](DEPLOYMENT.md#adding-brokers)).
 
 ---
 
 ## 8. Deploy the application stack
 
-Everything from here runs **inside CT 110** as the `tradingapp` user created
-in §4.3.
+Everything from here runs inside CT 110 as the `tradingapp` user from §4.3.
+
+One command commissions the app: `./tradingapp.sh install`. It writes `.env`,
+builds and starts the stack, waits for the backend to migrate the database,
+and prints the URL. Brokers, risk limits, alerts and data collection are then
+set in the app. You do not edit `.env` or run SQL.
 
 ### 8.1 Clone
 
@@ -796,126 +819,156 @@ ssh tradingapp@10.7.3.20
 sudo mkdir -p /opt/tradingapp && sudo chown tradingapp:tradingapp /opt/tradingapp
 git clone https://github.com/41agent41/tradingapp.git /opt/tradingapp
 cd /opt/tradingapp
-chmod +x tradingapp.sh
-
-# Docker is already installed (§4.2), so this just writes the baseline .env
-./tradingapp.sh setup
 ```
 
-`setup` asks nothing about brokers; answer `n` when it offers to deploy,
-because you deploy after writing the real `.env` below. To use IB, point it at the gateway
-container with `IB_HOST=10.7.3.22 ./tradingapp.sh config` (or set
-`IB_HOST=10.7.3.22` in `.env` in §8.2). `setup` detects the
-existing Docker install and skips it — which is why §4.2 installed Docker by
-hand: the script's installer assumes a normal host, and doing it manually let
-us make the ZFS storage-driver decision before Docker's first start.
+### 8.2 Install
 
-### 8.2 Write the real `.env`
-
-`./tradingapp.sh setup` writes a *baseline* `.env` — correct IPs and ports,
-but placeholder database credentials and **no** API token. Fill in the rest by
-hand. `config` and `env` re-runs preserve hand-edited keys, with one exception
-that matters after §10: they **force-reset** `SERVER_IP`, `IB_HOST` and
-`CORS_ORIGINS` (the last to `http://<SERVER_IP>:3000`). If you re-run either once TLS is in
-place, put the §10.1 values back before the next `redeploy`.
-
-Generate the secrets first:
+With the database container from §5:
 
 ```bash
-openssl rand -hex 32   # BROKER_SERVICE_TOKEN (backend → broker service)
-openssl rand -hex 32   # SETTINGS_ENCRYPTION_KEY (encrypts secrets saved in the app)
-openssl rand -hex 32   # REDIS_PASSWORD
+./tradingapp.sh install --external-db
 ```
 
-The login password and the API token for scripts are not in `.env`: the
-first visit to the app asks you to choose a password (with the code from
-`./tradingapp.sh setup-code`), and API tokens are made on Settings > Security.
-
-Then `nano .env` so the important keys read:
+It asks for the database host (`10.7.3.21`) and the password from §5.3. To
+skip the questions, pass them in a file:
 
 ```bash
-# --- Host / network -------------------------------------------------
-NODE_ENV=production
-TZ=UTC
-SERVER_IP=10.7.3.20
-CORS_ORIGINS=http://10.7.3.20:3000            # exact browser origin(s), never *
-
-# --- Secrets --------------------------------------------------------
-BROKER_SERVICE_TOKEN=<a 64-char hex>
-SETTINGS_ENCRYPTION_KEY=<a different 64-char hex>
-REDIS_PASSWORD=<a third 64-char hex>
-
-# --- Database (CT 120) ----------------------------------------------
+umask 077
+cat > ~/install.answers <<'EOF'
 POSTGRES_HOST=10.7.3.21
-POSTGRES_PORT=5432
-POSTGRES_USER=tradingapp
 POSTGRES_PASSWORD=<the password from §5.3>
-POSTGRES_DB=tradingapp
-POSTGRES_SSL=false          # true if you enabled hostssl in §5.4
-
-# --- IB Gateway (CT 130) --------------------------------------------
-IB_HOST=10.7.3.22
-IB_PORT=4002                # 4001 = live
-IB_CLIENT_ID=1
-IB_TIMEOUT=30
-
-# --- Safety rails: leave these off for the first deploy --------------
-LIVE_TRADING_ENABLED=false
-BACKFILL_ENABLED=false
-EXECUTIONS_SYNC_ENABLED=false
-SYSTEMATIC_ENABLED=false
-SYSTEMATIC_EXECUTION_ENABLED=false
+EOF
+./tradingapp.sh install --external-db --answers ~/install.answers --non-interactive
+rm ~/install.answers
 ```
 
-[`.env.example`](.env.example) documents every remaining key with inline
-commentary — read it once before you go to production.
+With the bundled database instead (no §5), run `./tradingapp.sh install` with
+no flag. It generates the database password itself.
 
-Two things that catch people out:
+What `install` does:
 
-- **Nothing about the server's address is built into the frontend.** The page
-  calls the API on its own address and the frontend forwards it, so changing
-  `SERVER_IP` or adding TLS needs no frontend rebuild. No secret is ever a
-  `NEXT_PUBLIC_*` value.
-- **With `NODE_ENV=production` the backend refuses to start** when login,
-  `BROKER_SERVICE_TOKEN` or the database password is missing or still a
-  template value, and when `LIVE_TRADING_ENABLED=true` lacks
-  `TRADING_TOKENS` and `ORDER_MFA_SECRET`. The log line names the key.
-  `./tradingapp.sh config` generates any missing secret for you.
+1. Checks curl and openssl. Installs Docker if missing (here it is already
+   there, from §4.2).
+2. Writes `.env` with seven keys: `POSTGRES_HOST`, `POSTGRES_PORT`,
+   `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_SSL` and
+   `SETTINGS_ENCRYPTION_KEY`. It generates the encryption key. It never
+   replaces a password or key that is already there.
+3. Builds and starts the stack. The first build takes several minutes.
+4. Waits until the backend reports ready: database reached, schema migrated,
+   encryption key checked. It stops early, with the reason, on
+   `migration_failed` or `key_mismatch`.
+5. Checks the frontend, backend and broker service. It does not test brokers.
+6. Prints the URL and, on a new install, the setup code.
 
-Lock the file down — it holds your database password, API token and, later,
-broker credentials:
+The broker service token and the Redis password are not in `.env`. They are
+generated into a Docker volume on first start.
+
+**Save the encryption key off this host now.** It opens every secret the app
+stores in the database (broker credentials, alert tokens). A rebuild that
+keeps the database needs it (§8.6).
 
 ```bash
-chmod 600 .env
+./tradingapp.sh backup-key     # prints SETTINGS_ENCRYPTION_KEY; put it in a password manager
 ```
 
-Now apply the database schema (§5.3) if you haven't yet — the file is on disk
-here.
+`install` is safe to re-run. It is also how you upgrade and repair.
 
-### 8.3 Deploy
+### 8.3 First sign-in
 
-```bash
-./tradingapp.sh deploy
-```
+1. Open `http://10.7.3.20:3000`.
+2. Enter the setup code. If you missed it, `./tradingapp.sh setup-code` shows
+   it again.
+3. Choose the login password.
 
-The first build compiles the Next.js frontend and installs the Python and Node
-dependency trees — expect 3–8 minutes. Subsequent `redeploy`s are faster.
+If the page shows a message over it, the backend is still waiting for
+something: `waiting_for_database`, `migrating`, `migration_failed` or
+`key_mismatch`. See §15.
 
-If you chose the bundled database instead of CT 120, use
-`./tradingapp.sh deploy --with-db` — the choice is remembered for later
-commands (`--no-db` reverses it).
+### 8.4 Add brokers
+
+Open **Settings > Connections**. The page lists brokers in priority order:
+OANDA, MT5, IB, Alpaca. For each one you use:
+
+1. Choose the broker and mark the connection **paper**.
+2. Enter its details:
+   - **IB**: host `10.7.3.22`, port `4002` (§6).
+   - **MT5**: the sidecar URL `http://10.7.3.23:9100` and the secret you put
+     on the sidecar (§7).
+   - **OANDA**: the practice API token and account id.
+   - **Alpaca**: the paper API key and secret.
+3. Save. The app tests the connection as it saves, and shows the result.
+
+The app keeps checking each connection on a timer
+(`BROKER_PROBE_INTERVAL_SECONDS`, on Settings > Schedulers and data; 0 pauses
+it). Per-connection risk limits and prop-firm rules are on the connection's
+own form.
+
+Secrets entered here are stored in the database, sealed with
+`SETTINGS_ENCRYPTION_KEY`. They are not in `.env`.
+
+### 8.5 Finish the Getting started checklist
+
+The Settings page shows a **Getting started** checklist. It is worked out from
+the app's state, so it shows what is left:
+
+1. Login password set (§8.3).
+2. Order MFA enrolled and a trading token made, on Settings > Security.
+3. A broker connection added (§8.4).
+4. Instruments chosen for data collection: the table on Settings >
+   Schedulers and data. Turn on the backfill scheduler there too
+   (`BACKFILL_ENABLED`).
+5. Alerts: the Telegram bot token and chat id, and the heartbeat URL, on
+   Settings > Alerts and safety. Point the heartbeat at a monitor off this
+   Proxmox host.
+
+### 8.6 Rebuild this container
+
+Use this when CT 110 is lost, broken, or you want a clean one. The database
+container (CT 120) stays as it is. You need the key you saved with
+`backup-key` in §8.2.
+
+1. Destroy or set aside the old CT 110. Do not touch CT 120.
+2. Do §4.1 to §4.3 again.
+3. Clone the repository (§8.1).
+4. Write an answers file with the database details and the saved key:
+
+   ```bash
+   umask 077
+   cat > ~/install.answers <<'EOF'
+   POSTGRES_HOST=10.7.3.21
+   POSTGRES_PASSWORD=<the password from §5.3>
+   SETTINGS_ENCRYPTION_KEY=<the key from backup-key>
+   EOF
+   ```
+
+5. Install:
+
+   ```bash
+   cd /opt/tradingapp
+   ./tradingapp.sh install --external-db --answers ~/install.answers --non-interactive
+   rm ~/install.answers
+   ```
+
+The backend finds the existing schema, applies only pending migrations, checks
+the key, and comes up configured. There is no setup screen; your login,
+brokers and settings are already there. Redo §10.1 (nginx) if you used it.
+
+If it stops with `key_mismatch`, the key is wrong. Put the right one in `.env`
+and run `install` again. If the key is lost for good,
+`./tradingapp.sh forget-secrets` clears the secrets sealed with it.
+Connections and settings stay, and you enter their secrets again.
 
 ---
 
 ## 9. Verify the deployment
 
-`deploy` already ran `test_deployment` as its last step, so you have seen one
-pass of this. Re-run it deliberately once the stack has settled:
+`install` already ran these checks once. Run them again once the stack has
+settled:
 
 ```bash
 ./tradingapp.sh status      # container states
-./tradingapp.sh test        # frontend, backend, broker service, IB reachability
-./tradingapp.sh diagnose    # the above plus Docker/env/container detail
+./tradingapp.sh test        # frontend, backend, broker service, readiness
+./tradingapp.sh doctor      # database, schema, key and broker state, and what .env holds
 ```
 
 Then check each layer directly:
@@ -924,48 +977,41 @@ Then check each layer directly:
 # Frontend
 curl -I http://10.7.3.20:3000
 
-# Backend health (no auth required on this route)
-curl -fs http://10.7.3.20:4000/api/health | jq
+# Readiness: database reached, schema up to date, key matches
+curl -s http://10.7.3.20:4000/api/health/ready | jq
 
-# Database health — proves CT 110 → CT 120 works
+# Database health: proves CT 110 → CT 120 works
 curl -fs http://10.7.3.20:4000/api/database/health | jq
 
-# Broker service → IB Gateway (loopback only: run this inside CT 110)
+# Broker service (loopback only: run this inside CT 110)
 curl -fs http://127.0.0.1:8000/health | jq
-
-# An authenticated route — proves a token works. Make an API token on
-# Settings > Security first (it is shown once) and paste it here.
-API_TOKEN=<your API token>
-curl -fs -H "Authorization: Bearer $API_TOKEN" \
-  http://10.7.3.20:4000/api/orders/config | jq
 ```
 
-Finally open `http://10.7.3.20:3000` in a browser, choose the login password
-(the setup code is printed by `./tradingapp.sh setup-code`), and confirm a chart renders
-with live data. `./tradingapp.sh verify-timestamps` checks the timezone chain
-end to end if bars land on the wrong day or year.
+Brokers are checked by the app, not by these commands. Their state is on
+Settings > Connections.
 
-Snapshot every container at this point — a known-good baseline is worth more
-than any amount of documentation, and LXC snapshots are near-instant on
-LVM-thin and ZFS:
+Open `http://10.7.3.20:3000`, sign in, and confirm a chart renders with data.
+
+Snapshot every container now. A known-good baseline is worth a lot, and LXC
+snapshots are near-instant on LVM-thin and ZFS:
 
 ```bash
 # On the Proxmox host
-pct snapshot 120 clean-install --description "TimescaleDB + schema applied"
+pct snapshot 120 clean-install --description "TimescaleDB, role and extension"
 pct snapshot 130 clean-install --description "IB Gateway configured, IBC running"
 pct snapshot 110 clean-deploy  --description "First green deploy"
 ```
 
-> Container snapshots require snapshot-capable storage (LVM-thin, ZFS, btrfs,
-> Ceph). On plain **directory** storage `pct snapshot` fails — which is a good
+> Container snapshots need snapshot-capable storage (LVM-thin, ZFS, btrfs,
+> Ceph). On plain directory storage `pct snapshot` fails, which is a good
 > reason not to put these containers there.
 
 ---
 
 ## 10. Reverse proxy, TLS and firewalling
 
-The raw ports serve plain HTTP and the bearer token travels in a header — on
-anything beyond an isolated lab network, put TLS in front.
+The raw ports serve plain HTTP. On anything beyond an isolated lab network,
+put TLS in front.
 
 ### 10.1 nginx in the app container
 
@@ -1018,41 +1064,35 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d trading.example.com
 ```
 
-The page calls the API on whatever address it was opened on, so nothing about
-the public origin is built into the frontend. Allow it for any direct API
-callers, and let the backend believe the client address nginx passes on (it
-reaches the frontend from the Docker network's gateway):
+Nothing about the address is built into the frontend, so no rebuild is
+needed. Then, in the app, open **Settings > Network** and set:
 
-```bash
-CORS_ORIGINS=https://trading.example.com
-TRUST_PROXY=172.20.0.3,172.20.0.1
-```
+- **Allowed browser origins** (`CORS_ORIGINS`): `https://trading.example.com`.
+- **Trusted reverse proxies** (`TRUST_PROXY`): `172.20.0.1`. nginx reaches the
+  frontend from the Docker network's gateway, and this lets the backend
+  believe the client address nginx passes on (for login lockout and the audit
+  log).
 
-```bash
-./tradingapp.sh redeploy
-```
+Both apply as soon as you save.
 
 ### 10.2 Why in-guest firewalling isn't enough here
 
-Docker publishes ports by writing its own `iptables` rules, which are
-evaluated before ufw's `INPUT` chain. Ports 3000 and 4000 stay reachable from
-the LAN even with ufw enabled inside CT 110. (The compose file no longer
-publishes Redis at all, and publishes the broker service on loopback only,
-with a shared secret. Older deployments published 6379 with no password and
-8000 on every interface; 8000 is the broker service, which
-talks to your broker.)
+Docker publishes ports by writing its own `iptables` rules, which run before
+ufw's `INPUT` chain. Ports 3000 and 4000 stay reachable from the LAN even with
+ufw on inside CT 110. (Redis is not published at all, and the broker service
+is published on loopback only.)
 
-In an unprivileged container this is worse than on a VM: ufw's own operation
-depends on host netfilter and the container's AppArmor profile, so it is not
-even guaranteed to load. Filter at the hypervisor instead — §10.3 — where the
-rules are enforced host-side and nothing inside the guest can bypass them.
+In an unprivileged container ufw may not even load: it depends on host
+netfilter and the container's AppArmor profile. Filter at the hypervisor
+instead (§10.3). Those rules are enforced on the host, and nothing inside the
+guest can bypass them.
 
 ### 10.3 Proxmox-level firewall (the authoritative layer)
 
 Proxmox filters at the guest's network interface, on the host, before packets
-reach Docker's rules. This works identically for containers and VMs, with one
-container-specific prerequisite: **the interface must carry `firewall=1`**,
-which the `pct create` commands above already set. Confirm:
+reach Docker's rules. It works the same for containers and VMs, with one
+condition: the interface must carry `firewall=1`. The `pct create` commands
+above set it. Confirm:
 
 ```bash
 pct config 110 | grep net0    # must contain firewall=1
@@ -1062,7 +1102,7 @@ Enable the firewall at **Datacenter → Firewall**, then per guest at
 **CT → Firewall → Options → Firewall: Yes**. From the shell:
 
 ```bash
-# /etc/pve/firewall/cluster.fw — datacenter-wide.
+# /etc/pve/firewall/cluster.fw: datacenter-wide.
 # This file does not exist on a fresh install, so write it whole. If you
 # already have one, merge these lines by hand: a second [OPTIONS] or
 # [RULES] section in the same file is a parse error, not an append.
@@ -1077,11 +1117,11 @@ EOF
 ```
 
 Enabling the datacenter firewall applies a default-DROP input policy to the
-**host itself**. The two rules above are what keep the web UI and SSH
-reachable — write them in the same edit that sets `enable: 1`, never after.
+host itself. The two rules above keep the web UI and SSH reachable. Write them
+in the same edit that sets `enable: 1`, never after.
 
 ```bash
-# /etc/pve/firewall/110.fw — app container: publish only 80/443, keep the rest internal
+# /etc/pve/firewall/110.fw: app container. Publish only 80/443, keep the rest internal
 cat > /etc/pve/firewall/110.fw <<'EOF'
 [OPTIONS]
 enable: 1
@@ -1097,14 +1137,12 @@ IN ACCEPT -source 10.7.3.24 -p tcp -dport 8000 -log nolog
 EOF
 ```
 
-The same file naming applies to every guest — `/etc/pve/firewall/<ID>.fw` —
-so give CT 120 and CT 130 the equivalents of their ufw rules from §5.4 and
-§6.5.
+Every guest uses the same naming, `/etc/pve/firewall/<ID>.fw`. Give CT 120
+and CT 130 the equivalents of their ufw rules from §5.4 and §6.5.
 
-With `policy_in: DROP`, ports 3000 / 6379 / 8000 are unreachable from the LAN
-while nginx still proxies to them over the container's own loopback and the
-Docker containers still reach each other on the bridge. Verify from another
-machine:
+With `policy_in: DROP`, ports 3000, 6379 and 8000 are unreachable from the
+LAN. nginx still reaches them over the container's loopback, and the Docker
+containers still reach each other on the bridge. Check from another machine:
 
 ```bash
 nc -vz 10.7.3.20 443     # succeeds
@@ -1112,29 +1150,26 @@ nc -vz 10.7.3.20 6379    # must fail
 nc -vz 10.7.3.20 3000    # must fail
 ```
 
-**Verify you still have UI and SSH access before you log out** — a wrong rule
-here locks you out of the hypervisor, and recovery means physical or IPMI
-console access.
+**Check you still have UI and SSH access before you log out.** A wrong rule
+here locks you out of the hypervisor, and recovery needs the physical or IPMI
+console.
 
-> **Why not just bind the ports to localhost in Compose?** You can — but note
-> that `tradingapp.sh` always invokes Compose with an explicit
-> `-f docker-compose.yml` (see `compose_cmd()` in the script), and an explicit
-> `-f` **suppresses** Docker's automatic pickup of `docker-compose.override.yml`.
-> A dropped-in override file would apply to a bare `docker compose up` and be
-> silently ignored by every `./tradingapp.sh` command — the worst possible
-> failure mode for a security control. If you want the binding change anyway,
-> edit the `ports:` entries in `docker-compose.yml` itself (e.g.
-> `"127.0.0.1:4000:4000"`, and drop the `redis` `ports:` block entirely),
-> accept that `git pull` may conflict there, and treat it as an addition to
-> the firewall rather than a replacement for it.
+> **Why not bind the ports to localhost in Compose?** You can, but not with an
+> override file. `tradingapp.sh` always passes an explicit
+> `-f docker-compose.yml`, and that stops Docker from reading
+> `docker-compose.override.yml`. An override would apply to a bare
+> `docker compose up` and be ignored by every `./tradingapp.sh` command. To
+> change the bindings, edit the `ports:` entries in `docker-compose.yml`
+> itself (for example `"127.0.0.1:4000:4000"`), expect `git pull` to conflict
+> there, and keep the firewall as well.
 
 ---
 
 ## 11. Optional: monitoring container
 
-Both `backend` and `broker_service` expose Prometheus metrics at `/metrics`
-(the backend's is on the auth allow-list, so no token is needed). This repo
-ships ready-made alert rules and a Grafana dashboard.
+`backend` and `broker_service` both expose Prometheus metrics at `/metrics`
+(the backend's needs no token). The repo ships alert rules and a Grafana
+dashboard.
 
 ```bash
 pct create 150 local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst \
@@ -1151,14 +1186,13 @@ pct create 150 local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst \
 pct enter 150
 ```
 
-Inside the container. Prometheus is in Ubuntu's `universe` repository;
-**Grafana is not packaged by Debian or Ubuntu at all** and needs its own APT
-repository:
+Inside the container. Prometheus is in Ubuntu's `universe` repository.
+Grafana is not packaged by Debian or Ubuntu and needs its own repository:
 
 ```bash
 apt update && apt install -y prometheus apt-transport-https software-properties-common wget
 
-# Grafana's own repository — `apt install grafana` fails without this
+# Grafana's own repository: `apt install grafana` fails without it
 mkdir -p /etc/apt/keyrings
 wget -q -O - https://apt.grafana.com/gpg.key \
   | gpg --dearmor > /etc/apt/keyrings/grafana.gpg
@@ -1185,39 +1219,37 @@ scrape_configs:
     metrics_path: /metrics
 ```
 
-> These targets only work if CT 110's firewall admits this container — that is
-> what the two `-source 10.7.3.24` rules in the `110.fw` example (§10.3) are
-> for. The broker service is bound to `127.0.0.1`, so the
-> `tradingapp-broker_service` job must scrape through nginx instead, with a
-> `/metrics` location allow-listed to `10.7.3.24`.
+> These targets work only if CT 110's firewall admits this container: that is
+> what the two `-source 10.7.3.24` rules in `110.fw` (§10.3) are for. The
+> broker service is bound to `127.0.0.1`, so its job must scrape through nginx
+> instead, with a `/metrics` location allowed only from `10.7.3.24`.
 
 ```bash
 promtool check rules /etc/prometheus/alerts.yml
 systemctl restart prometheus && systemctl enable --now grafana-server
 ```
 
-Then import [`ops/grafana/tradingapp-dashboard.json`](ops/grafana/tradingapp-dashboard.json)
-via Grafana → **Dashboards → New → Import**, selecting your Prometheus
-datasource for the `DS_PROMETHEUS` variable.
-[`ops/grafana/README.md`](ops/grafana/README.md) documents every metric the
-panels rely on.
+Import [`ops/grafana/tradingapp-dashboard.json`](ops/grafana/tradingapp-dashboard.json)
+in Grafana under **Dashboards → New → Import**, and pick your Prometheus data
+source for the `DS_PROMETHEUS` variable.
+[`ops/grafana/README.md`](ops/grafana/README.md) lists every metric the panels
+use.
 
-Also worth scraping the hypervisor: `apt install prometheus-pve-exporter` on
-the Proxmox host surfaces per-guest CPU, memory and disk pressure. On an
-all-LXC deployment this matters more than usual — the containers compete for
-one kernel's page cache and I/O queues, so host-level pressure shows up as
-application latency with no in-container symptom.
+Scrape the hypervisor too: `apt install prometheus-pve-exporter` on the
+Proxmox host shows per-guest CPU, memory and disk pressure. On an all-LXC
+host the containers share one kernel's page cache and I/O queues, so host
+pressure shows up as app latency with no sign inside the container.
 
 ---
 
 ## 12. Backups and snapshots
 
-Three independent layers, each covering what the others don't.
+Three layers, each covering what the others miss.
 
 ### 12.1 Guest backups (vzdump)
 
-**Datacenter → Backup → Add**: select 110/120/130 (and 140 if present),
-storage `local` (or a Proxmox Backup Server / NFS share), schedule nightly,
+**Datacenter → Backup → Add**: select 110, 120 and 130 (and 140 if present),
+storage `local` (or a Proxmox Backup Server or NFS share), schedule nightly,
 mode **Snapshot**, compression `zstd`.
 
 CLI equivalent:
@@ -1226,31 +1258,28 @@ CLI equivalent:
 vzdump 110 120 130 --mode snapshot --compress zstd --storage local
 ```
 
-Configure failure notifications through **Datacenter → Notifications** rather
-than the old `--mailnotification` flag, which is deprecated on PVE 8 and gone
-on PVE 9.
+Set up failure notifications under **Datacenter → Notifications**. The old
+`--mailnotification` flag is deprecated on PVE 8 and gone on PVE 9.
 
-Two container-specific notes:
+Two container notes:
 
 - **Mode `snapshot` needs snapshot-capable storage** (LVM-thin, ZFS, btrfs,
-  Ceph). On directory storage, vzdump falls back to `suspend` — which pauses
-  the container for the duration of the copy. On a trading host during market
-  hours, that is an outage, not a backup window. Check your storage type
-  before scheduling.
+  Ceph). On directory storage vzdump falls back to `suspend`, which pauses the
+  container during the copy. On a trading host in market hours, that is an
+  outage. Check your storage type before scheduling.
 - **The `mp0` data volume on CT 120 is included** because §5.1 set
-  `backup=1`. Verify with `pct config 120 | grep mp0` — a mount point marked
-  `backup=0` is silently skipped, which is exactly the surprise you don't want
-  during a restore.
+  `backup=1`. Check with `pct config 120 | grep mp0`. A mount point marked
+  `backup=0` is skipped without warning.
 
-**A vzdump of the DB container is not a database backup.** There is no guest
-agent to freeze the filesystem for a container, so the copy is
-crash-consistent at best — it restores like a machine that lost power. Good
-enough for infrastructure recovery, not for "restore yesterday's data
-cleanly". That is what §12.2 is for.
+**A vzdump of the database container is not a database backup.** A container
+has no guest agent to freeze the filesystem, so the copy is crash-consistent
+at best: it restores like a machine that lost power. Good enough to recover
+the infrastructure, not to restore yesterday's data cleanly. That is what
+§12.2 is for.
 
 ### 12.2 Database dumps
 
-In CT 120, `/usr/local/bin/backup-tradingapp.sh`:
+In CT 120, create `/usr/local/bin/backup-tradingapp.sh`:
 
 ```bash
 #!/usr/bin/env bash
@@ -1268,74 +1297,91 @@ chmod +x /usr/local/bin/backup-tradingapp.sh
 echo '10 2 * * * root /usr/local/bin/backup-tradingapp.sh' > /etc/cron.d/tradingapp-backup
 ```
 
-`/var/backups` lives on the container's **root** volume, not the `mp0` data
-volume — deliberately, so a lost data volume doesn't take the dumps with it.
-Better still, push them off the host entirely.
+`/var/backups` is on the container's root volume, not the `mp0` data volume,
+so losing the data volume does not take the dumps with it. Better still, copy
+them off the host.
 
-Restore with `pg_restore -d tradingapp -c /var/backups/.../file.dump`. Test
-this at least once — an untested backup is a hypothesis.
+Restore into a database where the `timescaledb` extension already exists:
 
-> TimescaleDB hypertables dump and restore through `pg_dump`/`pg_restore`
-> normally, but restore into a database where the extension is **already
-> created**, and check Timescale's version-specific dump notes if you are
-> crossing a major version.
+```bash
+sudo -u postgres psql -d tradingapp -c 'SELECT timescaledb_pre_restore();'
+sudo -u postgres pg_restore -d tradingapp -c /var/backups/tradingapp/<file>.dump
+sudo -u postgres psql -d tradingapp -c 'SELECT timescaledb_post_restore();'
+```
+
+Test a restore at least once. An untested backup is a guess. Check
+Timescale's version notes if you cross a major version.
+
+The dumps hold the broker credentials and other secrets, sealed with
+`SETTINGS_ENCRYPTION_KEY`. A restore is only useful with that key (§12.4).
 
 ### 12.3 Pre-change snapshots
 
-Before every app update, IB Gateway upgrade or schema change:
+Before every app update or IB Gateway upgrade:
 
 ```bash
 pct snapshot 110 pre-update-$(date -u +%Y%m%d)
 pct snapshot 120 pre-update-$(date -u +%Y%m%d)
 ```
 
-Roll back with `pct rollback 110 <snapname>`. Prune old snapshots — on
-LVM-thin and ZFS they consume real space and eventually stall writes.
+Snapshot CT 120 too: an app update can apply database migrations. Roll back
+with `pct rollback 110 <snapname>` (and 120 to the same point). Prune old
+snapshots: on LVM-thin and ZFS they take real space and eventually stall
+writes.
 
 ### 12.4 What is not backed up
 
-- **`.env`** exists only in CT 110 and holds every secret. Keep a copy in a
-  password manager; it is the one file a rebuild cannot regenerate.
-- **IBC's `config.ini`** in CT 130 holds your IB credentials. Same treatment.
-- **Redis** is a cache and stream bus — losing it is harmless, it refills.
-- **Docker images** rebuild from the repo; no need to back them up.
+- **`SETTINGS_ENCRYPTION_KEY`** opens every secret stored in the database.
+  Print it with `./tradingapp.sh backup-key` and keep it in a password
+  manager. Without it a rebuild (§8.6) cannot read the stored secrets. The
+  rest of `.env` is only the database address and password, which you already
+  have.
+- **IBC's `config.ini`** in CT 130 holds your IB credentials. Keep a copy the
+  same way.
+- **Redis** is a cache and stream bus. Losing it is harmless; it refills.
+- **The internal secrets volume** (broker service token, Redis password) is
+  regenerated on a new host. Nothing to keep.
+- **Docker images** rebuild from the repository.
 
 ---
 
 ## 13. Boot order and auto-start
 
-The `--startup order=` values set earlier bring the deployment up in sequence
-after a host reboot — which, on an all-LXC host, is *every* kernel update:
+The `--startup order=` values bring the deployment up in sequence after a host
+reboot. On an all-LXC host that is every kernel update:
 
 ```bash
-pct set 120 --onboot 1 --startup order=1,up=60     # DB first, then wait 60s
+pct set 120 --onboot 1 --startup order=1,up=60     # database first, then wait 60s
 pct set 130 --onboot 1 --startup order=1,up=30     # IB Gateway
 pct set 110 --onboot 1 --startup order=2,up=30     # app stack
 pct set 150 --onboot 1 --startup order=3           # monitoring
 qm  set 140 --onboot 1 --startup order=1           # MT5 VM, if present
 ```
 
-Inside CT 110 the Compose stack has `restart: unless-stopped` on every
-service, so Docker restarts it once the container is up. If you want an
-explicit systemd unit, have it call `tradingapp.sh` rather than
-`docker compose` directly. The script remembers a `--with-db` deploy (via
-`.tradingapp.with-db`) and layers `docker-compose.db.yml` accordingly; a bare
-`docker compose up -d` would silently start the stack without the bundled
-database:
+The backend waits for its database however long it takes, so a slow database
+start delays the app but does not break it.
+
+Inside CT 110 every Compose service has `restart: unless-stopped`, so Docker
+restarts the stack once the container is up. For an explicit systemd unit,
+call `tradingapp.sh`, not `docker compose`. The script knows when the host
+runs the bundled database (`install` writes `.tradingapp.with-db`) and adds
+`docker-compose.db.yml`. A bare `docker compose up -d` would start the stack
+without it.
 
 ```ini
 # /etc/systemd/system/tradingapp.service
 [Unit]
 Description=TradingApp
 After=docker.service network-online.target
+Wants=network-online.target
 Requires=docker.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/tradingapp
-ExecStart=/opt/tradingapp/tradingapp.sh start
-ExecStop=/opt/tradingapp/tradingapp.sh stop
+ExecStart=/bin/bash /opt/tradingapp/tradingapp.sh start
+ExecStop=/bin/bash /opt/tradingapp/tradingapp.sh stop
 User=tradingapp
 
 [Install]
@@ -1346,31 +1392,46 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload && sudo systemctl enable --now tradingapp
 ```
 
-Verify the whole chain with a real host reboot during a market close, then
-`./tradingapp.sh test`. A boot order that has never been tested is not a boot
-order — and with containers you will exercise it on every kernel update
-whether you planned to or not.
+`install/install.sh service` writes the same unit.
+
+Test the whole chain with a real host reboot during a market close, then run
+`./tradingapp.sh test`. A boot order that has never been tested does not
+count, and on containers every kernel update tests it for you.
 
 ---
 
 ## 14. Day-2 operations
 
 ```bash
-# Update the application (inside CT 110)
+# Upgrade the application (inside CT 110). Migrations apply themselves.
 cd /opt/tradingapp
-git pull origin master
-./tradingapp.sh redeploy         # rebuilds images — required after any NEXT_PUBLIC_* change
+git pull && ./tradingapp.sh install
+
+# State
+./tradingapp.sh status           # containers
+./tradingapp.sh doctor           # database, schema, key, brokers, .env
+./tradingapp.sh migrate          # show the schema state, apply anything pending now
 
 # Logs
-./tradingapp.sh logs             # last 20 lines per service
+./tradingapp.sh logs             # recent lines per service
 ./tradingapp.sh logs follow      # stream
 
 # Resource pressure
 docker stats
-docker system df                 # image/volume growth — prune between releases
+docker system df                 # image and volume growth
 ```
 
-From the Proxmox host, useful on a container deployment:
+Other maintenance commands:
+
+| Command | Does |
+|---|---|
+| `backup-key` | Prints `SETTINGS_ENCRYPTION_KEY`, to store off the host |
+| `settings-import` | Moves settings still in `.env` into the app |
+| `rotate-internal-secrets` | Replaces the broker service token and Redis password |
+| `forget-secrets` | Clears secrets sealed with a lost key (asks you to type FORGET) |
+| `clean [--include-database]` | Removes containers and images. The database volume is kept unless you add `--include-database` and type DELETE |
+
+From the Proxmox host:
 
 ```bash
 pct list                         # all containers and states
@@ -1378,22 +1439,23 @@ pct exec 110 -- docker ps        # run a command without entering
 pct df 110                       # per-volume usage
 ```
 
-Once the base deployment is stable, enable the optional subsystems **one at a
-time**, verifying each before moving on. Each makes live venue requests on a
-timer, so turning several on at once makes a misbehaving one hard to identify:
+Once the base deployment is stable, turn on the optional subsystems one at a
+time, and check each before the next. Each makes broker requests on a timer,
+so turning several on at once makes a faulty one hard to find. Each is a
+switch on the Settings page:
 
 | Feature | Key | Where it is documented |
 |---|---|---|
-| Scheduled backfill | `BACKFILL_ENABLED=true` | [`DEPLOYMENT.md` § Data collection & retention](DEPLOYMENT.md#data-collection--retention-phase-5) |
-| Executions (fills) sync | `EXECUTIONS_SYNC_ENABLED=true` | [`DEPLOYMENT.md` § Executions sync](DEPLOYMENT.md#executions-fills-sync) |
-| Systematic strategies | `SYSTEMATIC_ENABLED=true` | [`.env.example`](.env.example), [`SYSTEMATIC_TRADING_ROADMAP.md`](SYSTEMATIC_TRADING_ROADMAP.md) |
-| Strategy auto-execution | `SYSTEMATIC_EXECUTION_ENABLED=true`, after Telegram, `HEARTBEAT_URL` and the account limits are set | [`PAPER_DEPLOYMENT_RUNBOOK.md`](PAPER_DEPLOYMENT_RUNBOOK.md), [`FEATURES.md` § Risk controls](FEATURES.md#risk-controls-kill-switch--alerting) |
-| Live order placement | `LIVE_TRADING_ENABLED=true` (needs `TRADING_TOKENS` and `ORDER_MFA_SECRET`) | [`DEPLOYMENT.md` § Enabling live trading](DEPLOYMENT.md#enabling-live-trading) |
+| Scheduled backfill | `BACKFILL_ENABLED` | [`DEPLOYMENT.md` § Data collection](DEPLOYMENT.md#data-collection) |
+| Executions (fills) sync | `EXECUTIONS_SYNC_ENABLED` | [`DEPLOYMENT.md` § Executions sync](DEPLOYMENT.md#executions-fills-sync) |
+| Systematic strategies | `SYSTEMATIC_ENABLED` | [`SYSTEMATIC_TRADING_ROADMAP.md`](docs/plans/SYSTEMATIC_TRADING_ROADMAP.md) |
+| Strategy auto-execution | `SYSTEMATIC_EXECUTION_ENABLED`, after Telegram, the heartbeat URL and the account limits are set | [`PAPER_DEPLOYMENT_RUNBOOK.md`](PAPER_DEPLOYMENT_RUNBOOK.md), [`FEATURES.md` § Risk controls](FEATURES.md#risk-controls-kill-switch--alerting) |
+| Live order placement | `LIVE_TRADING_ENABLED` (needs a trading token and MFA) | [`DEPLOYMENT.md` § Enabling live trading](DEPLOYMENT.md#enabling-live-trading) |
 
-Proxmox-side routine: patch the host during a market close and reboot (all
-containers restart together — see §13), watch storage headroom (`pvesm
-status`; LVM-thin pools that hit 100% corrupt data, they don't just fail
-writes), and review `journalctl -u pve-firewall` after firewall edits.
+Proxmox routine: patch the host during a market close and reboot (all
+containers restart together, see §13). Watch storage headroom with
+`pvesm status`: an LVM-thin pool that reaches 100% corrupts data. Review
+`journalctl -u pve-firewall` after firewall edits.
 
 ---
 
@@ -1401,93 +1463,106 @@ writes), and review `journalctl -u pve-firewall` after firewall edits.
 
 ### Docker-in-LXC
 
-| Symptom | Cause / fix |
+| Symptom | Cause and fix |
 |---|---|
-| `docker: failed to start daemon` / containerd exits immediately | `keyctl=1` missing. `pct set 110 --features nesting=1,keyctl=1` and restart the container. |
-| Docker starts but every `run` fails with an overlay/mount error | `nesting=1` missing, or you are on ZFS-backed storage with `overlay2`. Add `fuse=1`, install `fuse-overlayfs`, set it in `/etc/docker/daemon.json`, then `rm -rf /var/lib/docker` and restart Docker (this discards images — rebuild them). |
-| `docker info` shows storage driver `vfs` | Docker fell back to the slow, space-hungry driver. Same fix as above; don't leave it on `vfs` for a build-heavy stack. |
-| Docker daemon warns about `/dev/kmsg` | Harmless in LXC — the device isn't exposed to containers. If a tool insists, `ln -s /dev/console /dev/kmsg` in a startup script. |
-| Docker works, but only after making the container privileged | Don't ship that. Revert to `--unprivileged 1` and add the specific feature flag that was actually missing (`nesting`/`keyctl`/`fuse`). |
-| AppArmor denials in `dmesg` on the host, Docker misbehaving | As a last resort add `lxc.apparmor.profile: unconfined` to `/etc/pve/lxc/110.conf` — but understand it removes a meaningful part of the container boundary on the host holding your broker credentials. Prefer identifying the missing feature flag. |
+| `docker: failed to start daemon`, or containerd exits at once | `keyctl=1` missing. `pct set 110 --features nesting=1,keyctl=1` and restart the container. |
+| Docker starts but every `run` fails with an overlay or mount error | `nesting=1` missing, or ZFS-backed storage with `overlay2`. Add `fuse=1`, install `fuse-overlayfs`, set it in `/etc/docker/daemon.json`, then `rm -rf /var/lib/docker` and restart Docker. This discards the images; `./tradingapp.sh install` rebuilds them. |
+| `docker info` shows storage driver `vfs` | Docker fell back to the slow, space-hungry driver. Same fix as above. |
+| Docker warns about `/dev/kmsg` | Harmless in LXC. If a tool insists, `ln -s /dev/console /dev/kmsg` in a startup script. |
+| Docker works only after making the container privileged | Don't ship that. Go back to `--unprivileged 1` and add the feature flag that was actually missing (`nesting`, `keyctl` or `fuse`). |
+| AppArmor denials in `dmesg` on the host, Docker misbehaving | Last resort: add `lxc.apparmor.profile: unconfined` to `/etc/pve/lxc/110.conf`. This removes much of the container boundary on the host that holds your broker credentials. Find the missing feature flag instead if you can. |
 
 ### Containers and the host
 
-| Symptom | Cause / fix |
+| Symptom | Cause and fix |
 |---|---|
-| `pct create` fails: "storage does not support container images" | You targeted an ISO-only directory storage. Use `local-lvm` / `local-zfs`, or enable *Container* content on that storage. |
-| `pct snapshot` fails | Directory storage doesn't support snapshots. Move the container to LVM-thin/ZFS, or rely on vzdump alone. |
-| `free -h` inside a container shows the host's total RAM | lxcfs isn't mounted for that container. Restart it; until then, tools that autotune from `/proc/meminfo` (notably `timescaledb-tune`, §5.2) will size for memory the container cannot have. |
-| Container OOM-kills a process well below the host's free memory | Working as designed — LXC memory is a hard cgroup limit. Raise it: `pct set 110 --memory 12288`. |
-| Time is wrong inside a container | Fix the **host** clock (§3.3). Containers cannot set time; NTP installed inside is a no-op at best. |
-| `ufw enable` fails inside an unprivileged container | Expected on some kernels/profiles. Use the Proxmox per-guest firewall (§10.3) — it is host-enforced and strictly stronger. |
+| `pct create` fails: "storage does not support container images" | You chose an ISO-only directory storage. Use `local-lvm` or `local-zfs`, or enable *Container* content on that storage. |
+| `pct snapshot` fails | Directory storage has no snapshots. Move the container to LVM-thin or ZFS, or rely on vzdump. |
+| `free -h` in a container shows the host's total RAM | lxcfs is not mounted for it. Restart the container. Until then, tools that size from `/proc/meminfo` (such as `timescaledb-tune`, §5.2) size for memory the container cannot have. |
+| A container kills a process well below the host's free memory | Working as designed: LXC memory is a hard limit. Raise it: `pct set 110 --memory 12288`. |
+| Time is wrong in a container | Fix the host clock (§3.3). Containers cannot set time. |
+| `ufw enable` fails in an unprivileged container | Expected on some kernels and profiles. Use the Proxmox per-guest firewall (§10.3). |
 | Proxmox firewall rules have no effect on a container | The interface lacks `firewall=1`. `pct set 110 --net0 name=eth0,bridge=vmbr0,firewall=1,ip=10.7.3.20/24,gw=10.7.3.1`. |
-| Everything unreachable after enabling the firewall | Datacenter rules default-deny once enabled. Recover from the physical/IPMI console: `pvefw-stop`, fix `/etc/pve/firewall/cluster.fw`, restart. |
-| Host storage full, containers wedged | LVM-thin pool exhausted, usually by snapshots or backups on `local`. Delete old snapshots/backups, then restart the affected containers. |
+| Everything unreachable after enabling the firewall | Datacenter rules deny by default once enabled. From the physical or IPMI console: `pvefw-stop`, fix `/etc/pve/firewall/cluster.fw`, restart. |
+| Host storage full, containers stuck | LVM-thin pool full, usually from snapshots or backups on `local`. Delete old ones, then restart the affected containers. |
 
 ### Application-level
 
-| Symptom | Cause / fix |
+The backend reports what it is waiting for on `/api/health/ready`, and the
+page shows the same message. `./tradingapp.sh doctor` prints it too.
+
+| State or symptom | Cause and fix |
 |---|---|
-| App container can't reach the DB container | Check in order: `nc -vz 10.7.3.21 5432` from CT 110, `listen_addresses`, the `pg_hba.conf` line, then the firewall rules (§5.4, §10.3). |
-| Backend health OK but `/api/database/health` fails | Reachability is fine, credentials or schema are not. Verify `POSTGRES_PASSWORD` in `.env` and that `timescaledb-schema.sql` was applied. |
-| Routes to part of the LAN disappear on CT 110 only | Docker's `172.20.0.0/16` bridge collides with a real subnet. See the warning in §2. |
-| Ports still open from the LAN despite `ufw enable` | Docker's iptables rules are evaluated before ufw's INPUT chain. Filter at the hypervisor — §10.3. |
-| A `docker-compose.override.yml` you created has no effect | `tradingapp.sh` passes an explicit `-f docker-compose.yml`, which suppresses automatic override pickup. Edit `docker-compose.yml` directly, or invoke `docker compose -f docker-compose.yml -f <your-file>` yourself. |
+| `waiting_for_database` | The backend cannot reach the database. It keeps retrying with no deadline. From CT 110 check `nc -vz 10.7.3.21 5432`, then `listen_addresses`, the `pg_hba.conf` line, the password in `.env`, and the firewall rules (§5.4, §10.3). |
+| `migrating` | Normal on first start and after an upgrade. Wait. |
+| `migration_failed` | A migration did not apply. The detail names it. Check that the `timescaledb` extension exists (§5.3) and the role owns the database. Fix it, then `./tradingapp.sh migrate` or `restart`. |
+| `key_mismatch` | `SETTINGS_ENCRYPTION_KEY` in `.env` is not the key this database was sealed with. Put the saved key back (§8.6). If it is lost, `./tradingapp.sh forget-secrets`. |
+| A broker shows as down on Settings > Connections | The app's own check failed. For IB, see §6.3 to §6.5 (logged in, trusted IPs, firewall). For MT5, check the sidecar URL, the secret on both sides, and the firewall rule (§7). |
+| Routes to part of the LAN disappear on CT 110 only | Docker's `172.20.0.0/16` bridge collides with a real subnet. See §2. |
+| Ports still open from the LAN despite `ufw enable` | Docker's iptables rules run before ufw. Filter at the hypervisor (§10.3). |
+| A `docker-compose.override.yml` you created has no effect | `tradingapp.sh` passes `-f docker-compose.yml`, which stops override pickup. Edit `docker-compose.yml` directly (§10.3). |
 | IB Gateway logged out, no data, no error | The known gap in §6.5. Check `systemctl status ibgateway` in CT 130 and reconnect over the VNC tunnel (§6.3). |
 
-Application-level issues beyond these (chart rendering, MT5 `501`/`503`,
-timestamp drift) are covered in [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) and
-[`DEPLOYMENT.md` § Common Issues](DEPLOYMENT.md#common-issues). Start with
-`./tradingapp.sh diagnose`.
+Other app issues (charts, MT5 `501` or `503`, timestamps) are in
+[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) and
+[`DEPLOYMENT.md` § Common issues](DEPLOYMENT.md#common-issues). Start with
+`./tradingapp.sh doctor`.
 
 ---
 
 ## Appendix A: single-container quickstart
 
-For evaluation, or when the hypervisor has limited resources. One LXC runs the
-app **and** the bundled TimescaleDB container; IB Gateway lives wherever it
-already lives.
+For evaluation, or a small hypervisor. One LXC runs the app and the bundled
+TimescaleDB. IB Gateway lives wherever it already lives.
 
-```bash
-# On the Proxmox host
-pct create 110 local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst \
-  --hostname tradingapp \
-  --cores 6 --memory 12288 --swap 1024 \
-  --rootfs local-lvm:200 \
-  --net0 name=eth0,bridge=vmbr0,firewall=1,ip=10.7.3.20/24,gw=10.7.3.1 \
-  --nameserver 10.7.3.1 \
-  --features nesting=1,keyctl=1 \
-  --unprivileged 1 \
-  --ssh-public-keys /root/tradingapp.pub \
-  --onboot 1 --start 1
-pct enter 110
-```
+`install/proxmox-create-ct.sh --bundled-db` does step 1 as a script.
 
-```bash
-# Inside the container — add fuse-overlayfs first if on ZFS (§4.2)
-apt update && apt install -y git curl sudo ca-certificates
-curl -fsSL https://get.docker.com | sh
-docker run --rm hello-world        # gate: must pass before continuing
+1. On the Proxmox host, create the container:
 
-adduser --disabled-password --gecos "" tradingapp
-usermod -aG sudo,docker tradingapp
-echo 'tradingapp ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/tradingapp && chmod 440 /etc/sudoers.d/tradingapp
+   ```bash
+   pct create 110 local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst \
+     --hostname tradingapp \
+     --cores 6 --memory 12288 --swap 1024 \
+     --rootfs local-lvm:200 \
+     --net0 name=eth0,bridge=vmbr0,firewall=1,ip=10.7.3.20/24,gw=10.7.3.1 \
+     --nameserver 10.7.3.1 \
+     --features nesting=1,keyctl=1 \
+     --unprivileged 1 \
+     --ssh-public-keys /root/tradingapp.pub \
+     --onboot 1 --start 1
+   pct enter 110
+   ```
 
-mkdir -p /opt/tradingapp && chown tradingapp:tradingapp /opt/tradingapp
-su - tradingapp
-git clone https://github.com/41agent41/tradingapp.git /opt/tradingapp
-cd /opt/tradingapp && chmod +x tradingapp.sh
-./tradingapp.sh setup            # no broker questions; answer "n" to "Deploy now?"
-nano .env                        # CORS_ORIGINS, database, secrets
-chmod 600 .env
-./tradingapp.sh deploy --with-db # bundled TimescaleDB, schema applied automatically
-./tradingapp.sh test
-```
+2. Inside the container, install Docker (add fuse-overlayfs first on ZFS,
+   §4.2) and create the deploy user:
 
-The schema is applied on **first container start only**. To re-apply it you
-must remove the `tradingapp_pgdata` volume — which deletes the data. Plan the
-move to a dedicated DB container (§5) before you accumulate history worth
-keeping.
+   ```bash
+   apt update && apt install -y git curl sudo ca-certificates openssl
+   curl -fsSL https://get.docker.com | sh
+   docker run --rm hello-world        # must pass before you go on
+
+   adduser --disabled-password --gecos "" tradingapp
+   usermod -aG sudo,docker tradingapp
+   echo 'tradingapp ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/tradingapp && chmod 440 /etc/sudoers.d/tradingapp
+   mkdir -p /opt/tradingapp && chown tradingapp:tradingapp /opt/tradingapp
+   ```
+
+3. As the deploy user, clone and install:
+
+   ```bash
+   su - tradingapp
+   git clone https://github.com/41agent41/tradingapp.git /opt/tradingapp
+   cd /opt/tradingapp
+   ./tradingapp.sh install
+   ./tradingapp.sh backup-key       # store the key off this host
+   ```
+
+4. Sign in and add brokers (§8.3 to §8.5).
+
+The data lives in the `tradingapp_pgdata` Docker volume (Docker adds the
+project name, so it shows as `tradingapp_tradingapp_pgdata`).
+`./tradingapp.sh clean` keeps it unless you add `--include-database`. Plan the
+move to a database container (§5.5) before you collect history worth keeping.
 
 ---
 
@@ -1495,43 +1570,44 @@ keeping.
 
 **Hypervisor**
 
-- [ ] Proxmox VE updated; enterprise repo disabled, no-subscription enabled
-- [ ] Host timezone UTC, `chrony` running and synchronised (containers inherit it)
-- [ ] Container storage type identified — LVM-thin/dir vs ZFS (§1.2)
+- [ ] Proxmox VE updated; enterprise repository off, no-subscription on
+- [ ] Host timezone UTC, `chrony` running and synchronised (containers use it)
+- [ ] Container storage type known: LVM-thin or dir, or ZFS (§1.2)
 - [ ] Ubuntu LXC template downloaded
 - [ ] LAN subnet does not overlap `172.20.0.0/16`
-- [ ] Datacenter firewall configured, UI/SSH access verified before logout
+- [ ] Datacenter firewall configured, UI and SSH access checked before logout
 
 **App container (110)**
 
-- [ ] Created unprivileged with `nesting=1,keyctl=1` (+ `fuse=1` on ZFS)
+- [ ] Created unprivileged with `nesting=1,keyctl=1` (plus `fuse=1` on ZFS)
 - [ ] `net0` carries `firewall=1`
 - [ ] `docker run --rm hello-world` passes; storage driver is `overlay2` or
-      `fuse-overlayfs`, **not** `vfs`
-- [ ] Non-root `tradingapp` user created with sudo + docker group
-- [ ] Repo cloned to `/opt/tradingapp`, `tradingapp.sh` executable
-- [ ] `.env` complete — no placeholders, `chmod 600`, copy stored offline
-- [ ] `BROKER_SERVICE_TOKEN`, `SETTINGS_ENCRYPTION_KEY`, `REDIS_PASSWORD` freshly generated
+      `fuse-overlayfs`, not `vfs`
+- [ ] Non-root `tradingapp` user with sudo and the docker group
+- [ ] Repository cloned to `/opt/tradingapp`
+- [ ] `./tradingapp.sh install --external-db` (or `install`) finished with all
+      checks passed
+- [ ] Encryption key saved off the host (`./tradingapp.sh backup-key`)
 - [ ] Login password chosen on the first-run screen (`./tradingapp.sh setup-code`)
-- [ ] `CORS_ORIGINS` is the real browser origin, not `*`
-- [ ] `LIVE_TRADING_ENABLED=false` for the first deploy
-- [ ] `./tradingapp.sh deploy` completed, `test` all green
+- [ ] Brokers added under Settings > Connections as paper, each tested
+- [ ] Getting started checklist on the Settings page complete
 - [ ] Charts render in a browser
-- [ ] nginx + TLS in front (production), `redeploy` run after the URL change
+- [ ] nginx and TLS in front (production); Settings > Network set to the
+      public origin
 
 **Database container (120)**
 
 - [ ] Data directory on its own mount point, `backup=1` confirmed
-- [ ] PostgreSQL + TimescaleDB installed; `timescaledb-tune` sized against the
-      container's limit, not the host's RAM
-- [ ] `tradingapp` role and database created, strong password recorded
-- [ ] `timescaledb-schema.sql` applied; both hypertables present
-- [ ] `listen_addresses` / `pg_hba.conf` scoped to CT 110 only
+- [ ] PostgreSQL and TimescaleDB installed; `timescaledb-tune` sized against
+      the container's limit, not the host's RAM
+- [ ] `tradingapp` role and database created, password recorded
+- [ ] `timescaledb` extension created
+- [ ] `listen_addresses` and `pg_hba.conf` scoped to CT 110 only
 - [ ] `pg_dump` cron installed and one restore tested
 
 **IB Gateway container (130)**
 
-- [ ] IB Gateway installed, logged into the **paper** account
+- [ ] IB Gateway installed, logged in to the **paper** account
 - [ ] API enabled, socket port set, CT 110 in Trusted IPs
 - [ ] IBC configured; `ibgateway.service` enabled and surviving a restart
 - [ ] VNC not exposed to the LAN (SSH tunnel only)
@@ -1539,23 +1615,24 @@ keeping.
 
 **Operations**
 
-- [ ] Proxmox firewall on 110 drops 3000/6379/8000 from the LAN — verified
-      with `nc` from another machine, not assumed
+- [ ] Proxmox firewall on 110 drops 3000, 6379 and 8000 from the LAN, checked
+      with `nc` from another machine
 - [ ] `--onboot` and `--startup order` set on every guest; host reboot tested
-- [ ] vzdump schedule covering 110/120/130; mode `snapshot` supported by the
-      storage (not silently falling back to `suspend`)
+- [ ] vzdump schedule covering 110, 120 and 130; storage supports mode
+      `snapshot` (not falling back to `suspend`)
 - [ ] Baseline snapshots taken after the first green deploy
-- [ ] Prometheus scraping both services; alert rules loaded and validated
-- [ ] Dead-man's switch: `HEARTBEAT_URL` points at a monitor **off this
-      Proxmox host**, and stopping the backend container pages you
+- [ ] Prometheus scraping both services; alert rules loaded and checked
+- [ ] Heartbeat URL points at a monitor off this Proxmox host, and stopping
+      the backend container pages you
 - [ ] Grafana dashboard imported
-- [ ] Optional subsystems (backfill, executions sync, systematic) enabled one
-      at a time, each verified before the next
+- [ ] Optional subsystems (backfill, executions sync, systematic) turned on
+      one at a time, each checked before the next
+- [ ] Rebuild procedure (§8.6) understood: CT 120 kept, key saved
 
 ---
 
 **Related documentation:** [`DEPLOYMENT.md`](DEPLOYMENT.md) (application
-deployment reference) · [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) ·
+deployment reference), [`AGENT_INSTALL_RUNBOOK.md`](AGENT_INSTALL_RUNBOOK.md)
+(unattended install), [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md),
 [`backend/src/database/README.md`](backend/src/database/README.md) (schema
-detail) · [`.env.example`](.env.example) (every configuration key) ·
-[`FEATURES.md`](FEATURES.md) (what the deployed system does).
+detail), [`FEATURES.md`](FEATURES.md) (what the deployed system does).

@@ -8,6 +8,26 @@ broker priority.
 `tests/test_broker_lists.py` fails, naming the file, until every list below
 includes the new broker. Run it as you go.
 
+## How a connection reaches the broker service
+
+Brokers are configured in the app, not in `.env`. The operator adds a
+connection on Settings > Connections. The form's fields come from
+`PLATFORM_FIELDS` in `backend/src/services/brokerConnections.ts`. The backend
+tests the connection on save and stores it in `broker_connections`, with the
+secrets encrypted under `SETTINGS_ENCRYPTION_KEY`.
+
+The broker service has no database access. `backend/src/services/brokerSync.ts`
+sends it the full set, secrets decrypted, with `PUT /connections/managed`:
+straight after every change, and whenever the `managed.revision` on the broker
+service's `/health` differs from the one last sent (for example after it
+restarts). `broker_service/managed.py` parses each entry with the same
+validation as a manifest entry (`connections.py`) and builds the adapters.
+
+Connections defined in `.env` (`BROKER_CONNECTIONS` or the legacy
+single-account variables) are the old path. They still work, and for a
+platform that has any, `.env` wins and the app's connections for it are
+reported as `overridden`. A new broker does not need an `.env` path.
+
 ## 1. The adapter (broker service)
 
 Copy `templates/api_broker_adapter.py` to `broker_service/<name>_adapter.py`
@@ -49,9 +69,10 @@ Tests: copy `tests/test_oanda_adapter.py`. It serves the venue with
     existing `Connection` fields where they fit: `token`, `account_id`,
     `api_key`, `api_secret`, `url`, `secret`, `environment`. Add a field only
     for something new.
-  - Optional: a single-account `.env` shorthand in `_legacy_connections`,
-    like `OANDA_API_TOKEN`/`OANDA_ACCOUNT_ID`. Add those variables to the
-    legacy list in `load_connections` and document them in `.env.example`.
+  - Do not add a single-account `.env` shorthand to `_legacy_connections`.
+    Those variables (`OANDA_API_TOKEN` and the like) exist only so old
+    installs keep working. `./tradingapp.sh install` and `install/install.sh`
+    refuse broker keys in an answers file.
 - `adapters.py`: add a branch in `_build_adapters` and a hint in
   `_UNAVAILABLE_HINTS`.
 - `tests/test_broker_lists.py`: add the class to `ADAPTER_CLASSES`.
@@ -67,9 +88,11 @@ on any registered adapter.
   Connections store read these lists.
 - `src/services/brokerConnections.ts`: add a `PLATFORM_FIELDS` entry.
   `settings` are stored in plain text, `secrets` are encrypted, and
-  `required` is checked on save. If the broker service needs a value derived
-  from the form, add it in `managedEntries` (OANDA's `environment` comes from
-  the paper/live mode this way).
+  `required` is checked on save. The names must match the `Connection`
+  fields the broker service validates, because `managedEntries` sends them
+  through as they are. If the broker service needs a value derived from the
+  form, add it in `managedEntries` (OANDA's `environment` comes from the
+  paper/live mode this way).
 
 ## 4. Frontend
 
