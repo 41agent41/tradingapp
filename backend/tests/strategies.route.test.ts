@@ -12,6 +12,11 @@ jest.mock('axios');
 jest.mock('../src/services/database.js', () => ({
   dbService: { query: jest.fn() },
 }));
+// Connections added in the app carry their own limits; these tests set them
+// in the environment, so no connection has any.
+jest.mock('../src/services/brokerConnectionsRuntime.js', () => ({
+  brokerConnectionStore: { limitsFor: jest.fn(async () => null) },
+}));
 
 const repoImpl = {
   createDefinition: jest.fn(),

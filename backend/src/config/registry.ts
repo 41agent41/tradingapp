@@ -12,9 +12,9 @@
  *     that Docker reads before any process starts: the POSTGRES_* connection,
  *     SETTINGS_ENCRYPTION_KEY, BROKER_SERVICE_TOKEN, REDIS_PASSWORD, the ports,
  *     NODE_ENV, TZ, LOG_LEVEL. These stay in `.env`.
- *   - Per-connection families (`CONNECTION_MAX_*__<CONN>`, `PROP_RULES__<CONN>`)
- *     and the connection manifest's secrets, which move to their own tables
- *     with the Connections tab.
+ *   - Per-connection caps and prop rules, which are columns on the connection
+ *     (`broker_connections.limits` / `prop_rules`, the Connections tab), and
+ *     the connections' own secrets.
  *   - The MT5 sidecar's settings, which live on its Windows host.
  *
  * `editable` marks the settings whose consumers already read through
@@ -239,7 +239,7 @@ export const SETTINGS: readonly SettingDef[] = [
     stepUp: true,
     safer: 'lower',
     editable: true,
-    help: 'Applies to every connection unless the connection sets its own.',
+    help: 'Applies to every connection unless it sets its own on the Connections tab.',
   },
   {
     key: 'CONNECTION_MAX_DAILY_LOSS',
@@ -557,6 +557,29 @@ export const SETTINGS: readonly SettingDef[] = [
     help: 'How long a failing connection is skipped.',
   },
   {
+    key: 'BROKER_PROBE_INTERVAL_SECONDS',
+    section: 'schedulers',
+    label: 'Broker check interval (seconds)',
+    type: 'integer',
+    default: '60',
+    min: 0,
+    apply: 'reload',
+    editable: true,
+    help: 'How often the broker service checks every connection (the header badge and Test buttons). 0 pauses the checks; Test still works.',
+  },
+  {
+    key: 'STREAM_POLL_SECONDS',
+    section: 'schedulers',
+    label: 'Price poll interval (seconds)',
+    type: 'number',
+    default: '2',
+    min: 0.25,
+    max: 60,
+    apply: 'reload',
+    editable: true,
+    help: 'How often live prices are fetched from a broker that has no price stream (OANDA streams; the others are polled).',
+  },
+  {
     key: 'BACKFILL_ENABLED',
     section: 'schedulers',
     label: 'Backfill scheduler',
@@ -801,26 +824,6 @@ export const SETTINGS: readonly SettingDef[] = [
     help: 'Unique per connecting process.',
   },
   {
-    key: 'IB_TIMEOUT',
-    section: 'connections',
-    label: 'IB timeout (seconds)',
-    type: 'integer',
-    default: '15',
-    min: 1,
-    apply: 'restart',
-    help: 'Request timeout against IB Gateway.',
-  },
-  {
-    key: 'IB_CLIENT_POOL_SIZE',
-    section: 'connections',
-    label: 'IB client pool size',
-    type: 'integer',
-    default: '1',
-    min: 1,
-    apply: 'restart',
-    help: '2 or more opens a pool of IB clients for concurrent requests.',
-  },
-  {
     key: 'IB_TIMEZONE',
     section: 'connections',
     label: 'IB timezone',
@@ -919,14 +922,24 @@ export const SETTINGS: readonly SettingDef[] = [
     help: 'practice is the paper environment.',
   },
 
-  // --- Network (goes away with the same-origin frontend) -------------------
+  // --- Network ------------------------------------------------------------
   {
     key: 'CORS_ORIGINS',
     section: 'network',
     label: 'Allowed browser origins',
     type: 'string',
-    apply: 'restart',
-    help: 'Comma-separated origins the backend accepts browser requests from.',
+    apply: 'immediate',
+    editable: true,
+    help: "Comma-separated origins (for example https://trading.example.com) whose pages may call the API from a browser. Leave unset to accept any; the app's own pages are served by the frontend and need nothing here.",
+  },
+  {
+    key: 'TRUST_PROXY',
+    section: 'network',
+    label: 'Trusted reverse proxies',
+    type: 'string',
+    apply: 'immediate',
+    editable: true,
+    help: 'Comma-separated addresses of reverse proxies in front of the app (nginx, a load balancer) whose X-Forwarded-For header is believed for login lockout and the audit log. The frontend container is always trusted.',
   },
   {
     key: 'IB_CORS_ORIGINS',

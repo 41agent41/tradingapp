@@ -27,6 +27,12 @@ import type { EnvLike } from '../config/read.js';
 import type { ConnectionLimits } from './executionEngine.js';
 import type { Connection } from './orderTypes.js';
 import { evaluatePropRules, parsePropRules, type PropMarks } from './propRules.js';
+import type {
+  BrokerConnectionStore,
+  LimitField,
+  StoredConnectionLimits,
+} from './brokerConnections.js';
+import { brokerConnectionStore } from './brokerConnectionsRuntime.js';
 
 /** What the app knows about a connection's equity. */
 export interface EquityMarks {
@@ -97,42 +103,67 @@ function positive(raw: string | undefined): number | null {
 }
 
 /**
- * A connection's declared caps, from the environment rather than the
- * connection manifest: the manifest describes *topology* (where an account is
- * and how to reach it), while a cap is a risk decision that changes far more
- * often than the wiring does.
+ * A connection's caps. Each one is looked up, first match wins:
  *
- * Each cap can be set
- * fleet-wide (`CONNECTION_MAX_DRAWDOWN`) or for one connection
- * (`CONNECTION_MAX_DRAWDOWN__MT5_ICMARKETS`), and the per-connection value
- * wins. All are amounts in the account's currency.
+ *   1. `.env` for this connection (`CONNECTION_MAX_DRAWDOWN__MT5_ICMARKETS`)
+ *   2. the connection's own limits, set on Settings > Connections (`stored`)
+ *   3. the fleet-wide cap (`CONNECTION_MAX_DRAWDOWN`, in `.env` or on the
+ *      Settings page's Risk tab)
+ *
+ * All are amounts in the account's currency. Prop rules are per account
+ * only: `PROP_RULES__<CONN>` in `.env`, else the connection's own.
  */
 export function connectionLimitsFor(
   connection: Connection,
-  env: EnvLike = configService.asEnv()
+  env: EnvLike = configService.asEnv(),
+  stored: StoredConnectionLimits | null = null
 ): ConnectionLimits | null {
   const key = connectionEnvKey(connection);
-  const read = (name: string) => positive(env[`${name}__${key}`] ?? env[name]);
+  const read = (name: string, field: LimitField) =>
+    positive(env[`${name}__${key}`]) ??
+    positive(stored?.limits?.[field]?.toString()) ??
+    positive(env[name]);
   const limits: ConnectionLimits = {};
-  const orders = read('CONNECTION_MAX_ORDERS_PER_DAY');
-  const loss = read('CONNECTION_MAX_DAILY_LOSS');
-  const equityLoss = read('CONNECTION_MAX_DAILY_EQUITY_LOSS');
-  const drawdown = read('CONNECTION_MAX_DRAWDOWN');
+  const orders = read('CONNECTION_MAX_ORDERS_PER_DAY', 'max_orders_per_day');
+  const loss = read('CONNECTION_MAX_DAILY_LOSS', 'max_daily_loss');
+  const equityLoss = read('CONNECTION_MAX_DAILY_EQUITY_LOSS', 'max_daily_equity_loss');
+  const drawdown = read('CONNECTION_MAX_DRAWDOWN', 'max_drawdown');
   if (orders != null) limits.max_orders_per_day = orders;
   if (loss != null) limits.max_daily_loss = loss;
   if (equityLoss != null) limits.max_daily_equity_loss = equityLoss;
   if (drawdown != null) limits.max_drawdown = drawdown;
-  // Prop rules are per account only: two funded accounts never share a firm's
-  // limits, so there is no fleet-wide default to fall back to.
-  const prop = env[`PROP_RULES__${key}`];
-  if (prop && prop.trim()) {
+  // Two funded accounts never share a firm's limits, so there is no
+  // fleet-wide default to fall back to.
+  const envProp = env[`PROP_RULES__${key}`];
+  if (envProp && envProp.trim()) {
     try {
-      limits.prop = parsePropRules(prop);
+      limits.prop = parsePropRules(envProp);
     } catch (err) {
       throw new Error(`PROP_RULES__${key} ${(err as Error).message}`);
     }
+  } else if (stored?.prop_rules) {
+    try {
+      limits.prop = parsePropRules(JSON.stringify(stored.prop_rules));
+    } catch (err) {
+      throw new Error(
+        `the prop rules on ${connection.broker}:${connection.brokerAccount} ${(err as Error).message}`
+      );
+    }
   }
   return Object.keys(limits).length > 0 ? limits : null;
+}
+
+/**
+ * `connectionLimitsFor` with the connection's stored limits read from the
+ * database. Throws when they cannot be read, so callers fail closed.
+ */
+export async function loadConnectionLimits(
+  connection: Connection,
+  store: Pick<BrokerConnectionStore, 'limitsFor'> = brokerConnectionStore,
+  env: EnvLike = configService.asEnv()
+): Promise<ConnectionLimits | null> {
+  const stored = await store.limitsFor(connection.broker, connection.brokerAccount);
+  return connectionLimitsFor(connection, env, stored);
 }
 
 /** Whether the limits include any equity-based cap. */

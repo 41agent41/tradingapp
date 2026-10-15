@@ -82,7 +82,7 @@ jobs:
           SETTINGS_ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000001'
         run: |
           node dist/cli/migrate.js
-          npx jest --runInBand tests/marketDataStorage.db.test.ts tests/startup.db.test.ts
+          npx jest --runInBand '\.db\.test\.ts$'
 
   # --------------------------------------------------------------------
   # Frontend (Next.js + React)

@@ -9,7 +9,8 @@ and charts work unchanged whichever broker is the default:
 - an adapter with ``stream_prices`` (OANDA's pricing stream) is streamed;
   the stream restarts whenever the set of symbols on that connection changes;
 - any other adapter is polled with ``tick()`` every
-  ``STREAM_POLL_SECONDS`` (default 2), which every adapter implements.
+  ``STREAM_POLL_SECONDS`` (default 2, set on the Settings page), which every
+  adapter implements.
 
 A failure never ends a worker: it records the error (shown on
 ``/market-data/stream/status``), waits, and tries again. The adapter is
@@ -19,17 +20,16 @@ page is picked up without resubscribing.
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Set, Tuple
 
+import app_settings
 from observability import get_logger
 
 logger = get_logger(__name__)
 
-POLL_SECONDS = float(os.getenv("STREAM_POLL_SECONDS", "2") or "2")
 RETRY_SECONDS = 5.0
 
 ConnectionKey = Tuple[str, str]  # (platform, account)
@@ -111,14 +111,22 @@ class VenueStreamer:
         self,
         publish_tick: Optional[Callable[..., None]] = None,
         resolve_adapter: Optional[Callable[[str, str], Any]] = None,
-        poll_seconds: float = POLL_SECONDS,
+        poll_seconds: Optional[float] = None,
     ) -> None:
         self._publish_tick = publish_tick
         self._resolve_adapter = resolve_adapter
-        self.poll_seconds = poll_seconds
+        self._poll_seconds = poll_seconds
         self._subs: Dict[str, VenueSubscription] = {}
         self._workers: Dict[ConnectionKey, _Worker] = {}
         self._lock = threading.Lock()
+
+    @property
+    def poll_seconds(self) -> float:
+        """The fixed interval given, else STREAM_POLL_SECONDS, read on every wait
+        so a change on the Settings page applies without a restart."""
+        if self._poll_seconds is not None:
+            return self._poll_seconds
+        return app_settings.stream_poll_seconds()
 
     # -- wiring (defaults resolved lazily to keep imports light) ----------- #
     def adapter_for(self, key: ConnectionKey) -> Any:

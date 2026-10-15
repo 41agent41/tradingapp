@@ -38,7 +38,7 @@ import {
   type StrategyDefinitionRow,
 } from '../services/strategyRepository.js';
 import {
-  connectionLimitsFor,
+  loadConnectionLimits,
   evaluateAccountLimits,
   propMarks,
   toEquityMarks,
@@ -461,7 +461,7 @@ router.get('/fleet', async (_req: Request, res: Response) => {
       let limits: ConnectionLimits | null = null;
       let limitsError: string | null = null;
       try {
-        limits = connectionLimitsFor(connection);
+        limits = await loadConnectionLimits(connection);
       } catch (err) {
         // A prop account whose rules cannot be read refuses every entry; the
         // panel has to say why rather than look healthy.

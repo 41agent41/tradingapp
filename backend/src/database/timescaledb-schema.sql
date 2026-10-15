@@ -952,31 +952,8 @@ CREATE TABLE IF NOT EXISTS broker_connections (
     UNIQUE (platform, account)
 );
 
--- ==============================================
--- INITIAL DATA
--- ==============================================
-
--- Insert some common contracts for testing. NOT EXISTS rather than
--- ON CONFLICT: the old conflict target no longer exists (it errored on every
--- run, and aborts a fresh docker init, which runs with ON_ERROR_STOP), and the
--- current key has nullable columns, so ON CONFLICT would never match these
--- rows and they would be duplicated on each re-run.
-INSERT INTO contracts (symbol, sec_type, exchange, currency)
-SELECT v.symbol, v.sec_type, v.exchange, v.currency
-  FROM (VALUES
-    ('MSFT', 'STK', 'NASDAQ', 'USD'),
-    ('AAPL', 'STK', 'NASDAQ', 'USD'),
-    ('GOOGL', 'STK', 'NASDAQ', 'USD'),
-    ('SPY', 'STK', 'ARCA', 'USD'),
-    ('QQQ', 'STK', 'NASDAQ', 'USD')
-  ) AS v(symbol, sec_type, exchange, currency)
- WHERE NOT EXISTS (
-    SELECT 1 FROM contracts c
-     WHERE c.broker = 'ib' AND c.broker_account = 'default'
-       AND c.symbol = v.symbol AND c.sec_type = v.sec_type
-       AND c.exchange = v.exchange AND c.currency = v.currency
-       AND c.expiry IS NULL AND c.strike IS NULL AND c."right" IS NULL
- );
+-- No contracts are seeded: each one is created, with its broker and account,
+-- the first time bars for it are stored.
 
 -- ==============================================
 -- VERIFICATION QUERIES

@@ -39,7 +39,6 @@ IB_HOST = (os.getenv("IB_HOST") or "").strip() or None
 
 IB_PORT = int(os.getenv("IB_PORT", "4002"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
-IB_TIMEOUT = int(os.getenv("IB_TIMEOUT", "15"))
 
 
 # ---------------------------------------------------------------------------

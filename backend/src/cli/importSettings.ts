@@ -9,6 +9,10 @@
  *   IMPORTED <KEY>            stored (or already stored); the line can go
  *   KEPT <KEY> <reason>       must stay in .env for now
  *
+ * Per-connection caps (`CONNECTION_MAX_*__<CONN>`) and prop rules
+ * (`PROP_RULES__<CONN>`) go onto that connection on the Connections tab when
+ * it was added in the app; for a connection defined in `.env` they are KEPT.
+ *
  * Keys it does not know (database, ports, the encryption key, brokers) are
  * not mentioned: they stay in `.env`.
  *
@@ -19,6 +23,12 @@ import { ConfigService } from '../config/configService.js';
 import { normalizeValue, settingDef } from '../config/registry.js';
 import type { Querier } from '../services/backtestRunRepository.js';
 import { CredentialStore } from '../services/credentials.js';
+import {
+  BrokerConnectionStore,
+  type BrokerConnectionView,
+  type LimitField,
+} from '../services/brokerConnections.js';
+import { connectionEnvKey } from '../services/accountLimits.js';
 
 export interface ImportResult {
   imported: string[];
@@ -37,6 +47,90 @@ const CREDENTIAL_KEYS = [
   'ORDER_MFA_SECRET',
 ] as const;
 
+/** `CONNECTION_MAX_DRAWDOWN__MT5_FTMO` → the cap it sets. */
+const PER_CONNECTION_CAPS: Record<string, LimitField> = {
+  CONNECTION_MAX_ORDERS_PER_DAY: 'max_orders_per_day',
+  CONNECTION_MAX_DAILY_LOSS: 'max_daily_loss',
+  CONNECTION_MAX_DAILY_EQUITY_LOSS: 'max_daily_equity_loss',
+  CONNECTION_MAX_DRAWDOWN: 'max_drawdown',
+};
+
+type ConnectionStore = Pick<BrokerConnectionStore, 'list' | 'update'>;
+
+/** What a per-connection key sets, or null when it is not one. */
+function perConnectionKey(key: string): { suffix: string; cap: LimitField | 'prop' } | null {
+  const at = key.indexOf('__');
+  if (at < 0) return null;
+  const family = key.slice(0, at);
+  const suffix = key.slice(at + 2);
+  if (!suffix) return null;
+  if (family === 'PROP_RULES') return { suffix, cap: 'prop' };
+  const cap = PER_CONNECTION_CAPS[family];
+  return cap ? { suffix, cap } : null;
+}
+
+async function importConnectionLimits(
+  keys: readonly string[],
+  env: Record<string, string | undefined>,
+  store: ConnectionStore,
+  ctx: { actor: string },
+  result: ImportResult
+): Promise<void> {
+  const wanted = keys
+    .map((key) => ({ key, target: perConnectionKey(key) }))
+    .filter((k): k is { key: string; target: NonNullable<ReturnType<typeof perConnectionKey>> } =>
+      Boolean(k.target)
+    );
+  if (wanted.length === 0) return;
+
+  let connections: BrokerConnectionView[];
+  try {
+    connections = await store.list();
+  } catch (err) {
+    for (const { key } of wanted) result.kept.push({ key, reason: message(err) });
+    return;
+  }
+  const bySuffix = new Map(
+    connections.map((c) => [connectionEnvKey({ broker: c.platform, brokerAccount: c.account }), c])
+  );
+
+  for (const { key, target } of wanted) {
+    if (env[key] === undefined) {
+      result.kept.push({ key, reason: NOT_LOADED });
+      continue;
+    }
+    const connection = bySuffix.get(target.suffix);
+    if (!connection) {
+      result.kept.push({
+        key,
+        reason: 'its connection is defined in .env, not on the Connections tab; it stays with it',
+      });
+      continue;
+    }
+    const raw = (env[key] ?? '').trim();
+    if (!raw) {
+      result.imported.push(key);
+      continue;
+    }
+    try {
+      if (target.cap === 'prop') {
+        let unchanged = false;
+        try {
+          unchanged = JSON.stringify(connection.prop_rules) === JSON.stringify(JSON.parse(raw));
+        } catch {
+          // Not JSON: the store's validation says so.
+        }
+        if (!unchanged) await store.update(connection.id, { prop_rules: raw }, ctx);
+      } else if (Number(connection.limits?.[target.cap]) !== Number(raw)) {
+        await store.update(connection.id, { limits: { [target.cap]: raw } }, ctx);
+      }
+      result.imported.push(key);
+    } catch (err) {
+      result.kept.push({ key, reason: message(err) });
+    }
+  }
+}
+
 function message(err: unknown): string {
   return (err as Error)?.message ?? String(err);
 }
@@ -44,7 +138,8 @@ function message(err: unknown): string {
 export async function importFromEnv(
   keys: readonly string[],
   env: Record<string, string | undefined>,
-  db: Querier
+  db: Querier,
+  connections?: ConnectionStore
 ): Promise<ImportResult> {
   const storeEnv = { SETTINGS_ENCRYPTION_KEY: env.SETTINGS_ENCRYPTION_KEY };
   const ctx = { actor: 'settings import', reason: 'imported from .env' };
@@ -121,6 +216,14 @@ export async function importFromEnv(
       result.kept.push({ key, reason: message(err) });
     }
   }
+
+  await importConnectionLimits(
+    keys,
+    env,
+    connections ?? new BrokerConnectionStore(db, storeEnv),
+    ctx,
+    result
+  );
   return result;
 }
 

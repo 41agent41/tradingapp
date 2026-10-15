@@ -40,9 +40,20 @@ export type StoredConnection = {
   currency: string;
   is_default: boolean;
   settings: Record<string, string>;
+  limits?: Partial<Record<LimitField, number>>;
+  prop_rules?: Record<string, unknown> | null;
   secrets_set: Record<string, boolean>;
   secret_error: string | null;
 };
+
+/** The caps a connection can set for itself; empty falls back to the Risk tab. */
+export const LIMIT_FORM = [
+  { name: 'max_orders_per_day', label: 'Orders per day' },
+  { name: 'max_daily_loss', label: 'Daily realised loss' },
+  { name: 'max_daily_equity_loss', label: 'Daily equity loss' },
+  { name: 'max_drawdown', label: 'Drawdown' },
+] as const;
+export type LimitField = (typeof LIMIT_FORM)[number]['name'];
 
 export type StoredPayload = {
   connections: StoredConnection[];
@@ -161,6 +172,9 @@ export type FormState = {
   currency: string;
   is_default: boolean;
   values: Record<string, string>;
+  limits: Partial<Record<LimitField, string>>;
+  /** The prop firm's rules as JSON text; empty for an ordinary account. */
+  prop_rules: string;
 };
 
 export function emptyForm(platform = 'oanda'): FormState {
@@ -171,6 +185,8 @@ export function emptyForm(platform = 'oanda'): FormState {
     currency: 'USD',
     is_default: true,
     values: {},
+    limits: {},
+    prop_rules: '',
   };
 }
 
@@ -182,12 +198,17 @@ export function formFromStored(c: StoredConnection): FormState {
     currency: c.currency,
     is_default: c.is_default,
     values: { ...c.settings },
+    limits: Object.fromEntries(
+      Object.entries(c.limits ?? {}).map(([k, v]) => [k, String(v)])
+    ) as FormState['limits'],
+    prop_rules: c.prop_rules ? JSON.stringify(c.prop_rules, null, 2) : '',
   };
 }
 
 /**
- * The POST/PUT body. Settings are always sent in full; a secret left blank is
- * not sent, which on an edit keeps the stored one.
+ * The POST/PUT body. Settings and limits are always sent in full (an empty
+ * limit clears it); a secret left blank is not sent, which on an edit keeps
+ * the stored one.
  */
 export function requestBody(form: FormState): Record<string, unknown> {
   const settings: Record<string, string> = {};
@@ -204,6 +225,10 @@ export function requestBody(form: FormState): Record<string, unknown> {
     currency: form.currency.trim().toUpperCase(),
     is_default: form.is_default,
     settings,
+    limits: Object.fromEntries(
+      LIMIT_FORM.map(({ name }) => [name, (form.limits[name] ?? '').trim()])
+    ),
+    prop_rules: form.prop_rules.trim() || null,
     ...(Object.keys(secrets).length ? { secrets } : {}),
   };
 }

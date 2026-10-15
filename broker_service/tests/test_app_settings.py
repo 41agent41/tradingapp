@@ -81,3 +81,25 @@ def test_managed_push_carries_the_settings():
     assert connections.default_platform([]) == "oanda"
     managed.reset()
     assert app_settings.live_trading_enabled() is False
+
+
+def test_broker_check_and_poll_intervals_come_from_the_backend():
+    assert app_settings.probe_interval_seconds() == 60
+    assert app_settings.stream_poll_seconds() == 2.0
+    app_settings.apply({"BROKER_PROBE_INTERVAL_SECONDS": "0", "STREAM_POLL_SECONDS": "0.5"})
+    assert app_settings.probe_interval_seconds() == 0
+    assert app_settings.stream_poll_seconds() == 0.5
+    app_settings.apply({"BROKER_PROBE_INTERVAL_SECONDS": "x", "STREAM_POLL_SECONDS": "-1"})
+    assert app_settings.probe_interval_seconds() == 60
+    assert app_settings.stream_poll_seconds() == 2.0
+
+
+def test_the_poll_interval_is_read_on_every_wait():
+    from venue_streaming import VenueStreamer
+
+    streamer = VenueStreamer()
+    app_settings.apply({"STREAM_POLL_SECONDS": "5"})
+    assert streamer.poll_seconds == 5.0
+    app_settings.apply({"STREAM_POLL_SECONDS": "1"})
+    assert streamer.poll_seconds == 1.0
+    assert VenueStreamer(poll_seconds=0.01).poll_seconds == 0.01
