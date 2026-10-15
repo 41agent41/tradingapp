@@ -31,6 +31,7 @@ import {
 export const OPEN_PATHS = new Set<string>([
   '/',
   '/api/health',
+  '/api/health/ready',
   '/api/database/health',
   '/metrics',
   '/api/auth/login',

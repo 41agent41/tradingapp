@@ -52,6 +52,7 @@ import { BROKER_SETTING_KEYS } from './services/brokerSync.js';
 import { credentials } from './services/credentials.js';
 import { announceSetupCode } from './services/setupCode.js';
 import { isLiveTradingEnabled, liveTradingSafeguardsMissing } from './services/orderTypes.js';
+import { StartupGate } from './services/startupGate.js';
 
 // Refuse to start on an unsafe configuration (open API, default secrets, live
 // trading without MFA, an unimplemented kill-switch action). See the module.
@@ -153,6 +154,11 @@ app.use(express.json({ limit: '25mb' }));
 // auth — gets a request-id, a log line and a metric observation.
 app.use(observabilityMiddleware());
 
+// The database comes first: until it is reachable, migrated and opened by the
+// encryption key, API routes answer 503 with the reason (health stays open).
+const startupGate = new StartupGate(dbService);
+app.use(startupGate.middleware());
+
 // Auth: a login session cookie (browser) or API_TOKEN (scripts). Open only in
 // development; startup checks refuse an unauthenticated production config.
 app.use(createAuthMiddleware());
@@ -188,6 +194,15 @@ app.get('/metrics', async (_req, res) => {
 // ---------------------------------------------------------------------------
 // Health checks
 // ---------------------------------------------------------------------------
+// Readiness, for Docker and the scripts: 200 once the database is reachable,
+// migrated and the encryption key checks out. Unlike /api/health it does not
+// depend on the broker service or Redis, so a broker outage never holds the
+// frontend back.
+app.get('/api/health/ready', (_req, res) => {
+  const startup = startupGate.current();
+  res.status(startup.ready ? 200 : 503).json(startup);
+});
+
 app.get('/api/health', async (_req, res) => {
   const [dbConnected, redisConnected, ibResult] = await Promise.all([
     dbService.testConnection().catch(() => false),
@@ -198,12 +213,14 @@ app.get('/api/health', async (_req, res) => {
       .catch((e: any) => ({ ok: false as const, error: e?.message || 'unknown' })),
   ]);
 
-  const overall = dbConnected && ibResult.ok;
+  const startup = startupGate.current();
+  const overall = startup.ready && dbConnected && ibResult.ok;
   const cacheStatus = cacheService.status();
 
   res.status(overall ? 200 : 503).json({
-    status: overall ? 'healthy' : 'degraded',
+    status: overall ? 'healthy' : startup.ready ? 'degraded' : 'starting',
     timestamp: new Date().toISOString(),
+    startup,
     services: {
       backend: { status: 'running', port: PORT },
       database: {
@@ -517,6 +534,26 @@ server.listen(PORT, '0.0.0.0', () => {
   // The broker an order or run goes to when it names none (broker priority).
   stopDefaultBrokerRefresh = startDefaultBrokerRefresh(BROKER_SERVICE_URL);
 
+  void startupGate.run();
+  startupGate.onReady(startServices);
+
+  void cacheService
+    .ping()
+    .then((ok) => {
+      if (ok) {
+        logger.info('redis cache reachable');
+      } else if (cacheService.status().enabled) {
+        logger.warn(
+          'redis cache unreachable — caching disabled at runtime, ' +
+            'requests will pass through directly'
+        );
+      }
+    })
+    .catch((err) => logger.warn({ err: String(err) }, 'redis cache check error'));
+});
+
+/** Everything that needs the database, started once it is ready. */
+function startServices(): void {
   // Settings saved from the Settings page. `.env` still wins over them.
   configService.attach(dbService);
   const settingsLoaded = configService.start();
@@ -619,31 +656,6 @@ server.listen(PORT, '0.0.0.0', () => {
     executionsPoller.reconfigure(executionsSettings());
     executionsPoller.start();
   })();
-
-  void dbService
-    .testConnection()
-    .then((connected) => {
-      if (connected) {
-        logger.info('database connection established');
-      } else {
-        logger.warn('database connection failed - some features may be limited');
-      }
-    })
-    .catch((error) => logger.error({ err: String(error) }, 'database connection error'));
-
-  void cacheService
-    .ping()
-    .then((ok) => {
-      if (ok) {
-        logger.info('redis cache reachable');
-      } else if (cacheService.status().enabled) {
-        logger.warn(
-          'redis cache unreachable — caching disabled at runtime, ' +
-            'requests will pass through directly'
-        );
-      }
-    })
-    .catch((err) => logger.warn({ err: String(err) }, 'redis cache check error'));
-});
+}
 
 export default app;
