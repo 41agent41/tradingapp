@@ -1,7 +1,7 @@
 """Every supported broker is wired in every place it has to be.
 
 Adding a broker touches the broker service, the backend and the frontend
-(see ADDING_A_BROKER.md). This test reads each list and fails, naming the
+(see docs/DEVELOPMENT.md, "Adding a broker"). This test reads each list and fails, naming the
 file, when one of them is missing the broker or disagrees on the order, so a
 half-added broker cannot pass CI. It also checks every adapter implements the
 whole adapter contract, plus ``probe()``.

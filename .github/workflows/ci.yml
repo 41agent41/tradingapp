@@ -193,7 +193,7 @@ jobs:
 
   # --------------------------------------------------------------------
   # End to end: backend + broker service + the real sidecar app over two
-  # simulated MT5 terminals, trading on paper (PAPER_DEPLOYMENT_RUNBOOK.md
+  # simulated MT5 terminals, trading on paper (docs/PAPER_TRADING.md
   # steps 11-22, plus a restart of the backend and broker service).
   # --------------------------------------------------------------------
   e2e:

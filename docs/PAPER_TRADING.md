@@ -1,11 +1,11 @@
-# Paper Deployment Runbook: Two MT5 Demo Accounts
+# Paper Trading Runbook: Two MT5 Demo Accounts
 
 **Purpose:** get Components C and E running end to end against two real MT5
 demo accounts, with auto-execution **off** for most of it and the kill switch
-in notify-only throughout. The app itself is commissioned with
-`./tradingapp.sh install`. This runbook covers what sits around it: broker
-accounts, the MT5 terminals and sidecars on their own hosts, and the
-settings to turn on in the app.
+in notify-only throughout. Start from an install that has passed
+[INSTALL.md](INSTALL.md) step 10. This runbook covers what sits around it:
+two broker accounts, their MT5 terminals and sidecars, and the settings to
+turn on in the app, in order.
 
 **How to use it:** work top to bottom. Each step has a **verify** command or
 observation and an explicit pass condition. Report `PASS` / `FAIL` per step
@@ -22,7 +22,7 @@ locked, and `.env` wins. Prefer the page.
 
 Notation: `{BASE}` is the backend URL (e.g. `http://localhost:4000`),
 `{BROKER}` the broker service (e.g. `http://localhost:8000`), `{SIDECAR}` an
-MT5 sidecar (e.g. `http://10.7.3.22:9100`).
+MT5 sidecar (e.g. `http://10.7.3.23:9100`).
 
 Calls to `{BROKER}` other than `/health` need the broker service token in an
 `X-Broker-Service-Token` header. The token is not in `.env`; read it on the
@@ -50,10 +50,13 @@ the portfolio cap off by design.
 and the **exact** EURUSD symbol as the terminal shows it (`EURUSD`,
 `EURUSD.a`, `EURUSD_i`, `EURUSDm` and so on). The suffix matters later.
 
-### 2. Stand up the Windows host(s)
-One MT5 terminal per account, each logged in and left running. One sidecar
-process per terminal: the `MetaTrader5` Python package binds to a single
-terminal, so two accounts means two processes on two ports.
+### 2. Stand up the terminals and sidecars
+One MT5 terminal per account, each logged in and left running, and one
+sidecar per terminal: the `MetaTrader5` Python package binds to a single
+terminal, so two accounts means two sidecars on two ports. Install them as in
+[INSTALL.md § 5.2](INSTALL.md#52-metatrader-5) (Windows, or Linux under Wine),
+with a secret of its own for each sidecar. Keep the secrets: you enter them
+in the app in step 11. Do not add the connections in the app yet.
 
 **Verify:** both terminals show "connected" in the bottom-right status bar.
 **Pass:** two terminals, both connected, both left running.
@@ -96,23 +99,18 @@ the systematic services start normally.
 
 ---
 
-## Phase 2: Sidecar (the real work)
+## Phase 2: Sidecar acceptance against a real terminal
 
-The sidecar is in the repo at `mt5_sidecar/`. Its
-[README](mt5_sidecar/README.md) covers installing it on Windows or on Linux
-under Wine. The contract it implements is documented at the top of
-`broker_service/mt5_adapter.py`. The checks below are the acceptance tests
-against a real terminal.
+The sidecar's contract is documented at the top of
+`broker_service/mt5_adapter.py`, and CI tests it against a simulated
+terminal. The checks below prove it against your broker's real terminal,
+whose symbols, stop distances and tick values CI cannot know.
 
-Each sidecar needs its own secret (`MT5_BRIDGE_SECRET` in its `sidecar.env`).
-Pick it yourself, for example with `openssl rand -hex 32`, and keep it: you
-enter the same value in the app in step 11. Nothing generates it for you.
-
-### 5. Implement the read-side endpoints
+### 5. Check the read-side endpoints
 `GET /health`, `/symbols`, `/history`, `/quote`, `/tick`, `/positions`,
-`/orders`, `/account`, `/deals`, `/symbol`. All requests carry
-`X-MT5-Bridge-Secret`. **Reject requests without it.** Anything that can
-reach the sidecar can otherwise trade the account.
+`/orders`, `/account`, `/deals`, `/symbol`. Every request carries
+`X-MT5-Bridge-Secret`, and the sidecar rejects any without it: anything that
+could reach it otherwise could trade the account.
 
 **Verify (from the app host, not the Windows box, so you test the network
 path too):**
@@ -127,9 +125,8 @@ curl {SIDECAR}/health          # no header: must be rejected
 **Record:** the `/symbols` output for each connection. That is what symbol
 resolution will match against.
 
-### 6. Add the fields E-2/E-3/E-4 need
-These are additions to endpoints you already have, and they are the reason
-this phase exists rather than reusing an older sidecar:
+### 6. Check the fields stops and sizing need
+The terminal must report these, or the engine refuses rather than guesses:
 
 | Endpoint | Field | Why |
 |---|---|---|
@@ -143,10 +140,10 @@ standard EURUSD lot on a USD account.
 **If it fails:** send the raw `/symbol` payload. The adapter reads these
 defensively under several names and can be widened.
 
-### 7. Implement `POST /orders` with `sl`/`tp`
+### 7. Check `POST /orders` with `sl`/`tp`
 The order body carries `sl` and `tp` (absolute prices, or null).
 
-**Two requirements, both load-bearing:**
+**Two guarantees, both load-bearing:**
 - Attach them **atomically with the entry**: one `order_send` with SL/TP
   populated, not an order followed by a modify. The two-call version leaves a
   window where the position is open and unprotected.
@@ -166,7 +163,7 @@ curl -X POST -H "X-MT5-Bridge-Secret: $SECRET" -H 'Content-Type: application/jso
 **If it fails:** the most common cause is the broker rejecting a stop inside
 its minimum distance. Try a wider stop and check `trade_stops_level`.
 
-### 8. Implement `POST /positions/{symbol}/stop`
+### 8. Check `POST /positions/{symbol}/stop`
 MT5's `TRADE_ACTION_SLTP`. Body `{"sl": <price>, "tp": <price|null>}`.
 
 **Verify:** with the position from step 7 still open, move the stop 10 pips
@@ -196,7 +193,7 @@ On Settings > Connections, add an MT5 connection for each account:
 | Name | `broker-a-demo` | `broker-b-demo` |
 | Mode | paper | paper |
 | Currency | USD | USD |
-| Bridge URL | `http://10.7.3.22:9100` | `http://10.7.3.23:9100` |
+| Bridge URL | `http://10.7.3.23:9100` | `http://10.7.3.25:9100` |
 | Bridge secret | sidecar A's `MT5_BRIDGE_SECRET` | sidecar B's `MT5_BRIDGE_SECRET` |
 | Default account for MT5 | on | off |
 
@@ -242,7 +239,9 @@ curl -X POST -H 'Content-Type: application/json' \
 **If it fails with "ambiguous":** the broker offers several tiers of the
 pair. That is working as intended: the connection needs a symbol map, such
 as `{"EURUSD": "EURUSD.a"}`. The connection form on Settings > Connections
-has no symbol map field yet. Report it, with the `/symbols` output from
+has no symbol map field yet; add it as in
+[INSTALL.md § 5.2](INSTALL.md#not-yet-on-the-form-symbol-maps-and-account-info-from)
+and repeat this step. If that is not possible, report it with the `/symbols` output from
 step 5.
 
 ### 14. Turn on the fleet view

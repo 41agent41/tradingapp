@@ -199,7 +199,7 @@ load_answers() {
 check_requirements() {
     if [[ $EUID -eq 0 ]]; then
         print_error "Don't run this script as root. Use a user with sudo privileges."
-        echo "  Create one and clone as that user (README, 'Install'):"
+        echo "  Create one and clone as that user (docs/INSTALL.md, step 1):"
         echo "    apt update && apt install -y sudo git"
         echo "    adduser tradingapp && usermod -aG sudo tradingapp"
         echo "    su - tradingapp"

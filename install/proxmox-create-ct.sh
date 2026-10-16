@@ -6,7 +6,7 @@
 # storage), starts it, and waits for its network. Idempotent: an existing
 # container with that id is checked, not recreated.
 #
-# This is PROXMOX_DEPLOYMENT.md §4.1 (or Appendix A with --bundled-db) as a
+# This is docs/PROXMOX.md §5.1 (or Appendix A with --bundled-db) as a
 # script; read that section for why each flag is there.
 #
 #   proxmox-create-ct.sh --ctid 110 --ip 10.7.3.20/24 --gw 10.7.3.1 [options]
@@ -79,7 +79,7 @@ log "storage $STORAGE is $stype; features $features"
 if pct status "$CTID" >/dev/null 2>&1; then
     log "container $CTID exists; checking it"
     conf=$(pct config "$CTID")
-    grep -q '^unprivileged: 1' <<<"$conf" || fail 1 "container $CTID is privileged; PROXMOX_DEPLOYMENT.md §1.2 says keep it unprivileged"
+    grep -q '^unprivileged: 1' <<<"$conf" || fail 1 "container $CTID is privileged; docs/PROXMOX.md §1.2 says keep it unprivileged"
     for f in nesting=1 keyctl=1; do
         grep -E '^features:' <<<"$conf" | grep -q "$f" || fail 1 "container $CTID lacks $f: pct set $CTID --features $features, then restart it"
     done
@@ -116,7 +116,7 @@ log "waiting for the container's network"
 for _ in $(seq 1 30); do
     if pct exec "$CTID" -- getent hosts github.com >/dev/null 2>&1; then
         log "container $CTID is up at ${IP%%/*} and resolves names"
-        log "next: pct push $CTID install.sh /root/install.sh; pct push $CTID <answers> /etc/tradingapp/install.answers (AGENT_INSTALL_RUNBOOK.md phase 2)"
+        log "next: pct push $CTID install.sh /root/install.sh; pct push $CTID <answers> /etc/tradingapp/install.answers (docs/INSTALL.md Appendix A.3)"
         exit 0
     fi
     sleep 2

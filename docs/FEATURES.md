@@ -1,19 +1,15 @@
 # TradingApp Features
 
-This document describes what TradingApp does **today** and what is on the
-**roadmap**. The two are kept in separate sections so the available
-capabilities never get conflated with aspirational plans.
+What TradingApp does today, and what is planned. The two are kept in
+separate sections so the available capabilities never get conflated with
+plans.
 
-It is the home for feature detail. [`README.md`](README.md) is the operating
-guide: how to commission, upgrade and run the app. Most features are switched
-on and tuned on the app's Settings page (tabs: Connections, Trading, Risk,
-Alerts and safety, Strategies, Schedulers and data, Security, Network,
-History). Each setting is named below by its key, which the page shows. A
-key can still be pinned in `.env`, and then wins and shows as locked.
-
-> The full gap analysis and prioritised roadmap live in
-> [`GAP_ANALYSIS.md`](docs/plans/GAP_ANALYSIS.md). The list below is a more accessible
-> summary aimed at end users.
+Most features are switched on and tuned on the app's Settings page (tabs:
+Connections, Trading, Risk, Alerts and safety, Strategies, Schedulers and
+data, Security, Network, History). Each setting is named below by its key,
+which the page shows. A key can still be pinned in `.env`; it then wins and
+shows as locked. Installing is in [INSTALL.md](INSTALL.md) and running the
+app in [OPERATIONS.md](OPERATIONS.md).
 
 ---
 
@@ -230,20 +226,26 @@ separate Jesse install, database or exchange driver.
 
 ### Historical data download
 
-A `/download` page lets you pull historical OHLCV bars from a broker and
-persist them into the database. See [`DOWNLOAD_FEATURE.md`](DOWNLOAD_FEATURE.md)
-for the full walk-through.
+The `/download` page pulls historical OHLCV bars from a broker, shows them,
+and stores them in the database on request.
 
-- Choose market / exchange / security type / symbol / currency.
-- Predefined periods (`1D`, `1W`, `1M`, `3M`, `6M`, `1Y`) or a custom date
-  range.
-- Any of the shipped timeframes including tick.
-- Preview the result in an in-page DataFrame viewer.
-- Push to Postgres via `POST /api/market-data/upload` with upsert
-  semantics.
-- Export the visible (filtered + sorted) rows as **CSV** (RFC 4180,
-  client-side), **JSON** (client-side) or **Parquet** (encoded server-side
-  via `POST /api/export/parquet`, then streamed back as a download).
+1. Choose the region, exchange, security type, symbol and currency.
+2. Choose a period (`1D`, `1W`, `1M`, `3M`, `6M`, `1Y`) or a custom date
+   range, and a timeframe (tick to 1 day).
+3. **Download** fetches the bars (`GET /api/market-data/history`) and shows
+   them in a DataFrame viewer with a record count.
+4. **Load to PostgreSQL** stores them (`POST /api/market-data/upload`) with
+   upsert semantics, so re-loading the same bars updates rather than
+   duplicates, and reports inserted and updated counts. Data quality metrics
+   are recorded on the way in.
+5. Export the visible (filtered and sorted) rows as **CSV** (RFC 4180,
+   in the browser), **JSON**, or **Parquet** (encoded by
+   `POST /api/export/parquet`).
+
+The request names no broker, so it goes to the highest-priority broker with
+a connection, even though the page's buttons still say "IB API". To keep an
+instrument topped up without coming back here, add it to the data collection
+table instead (next section).
 
 ### Automated data collection & retention
 
@@ -354,13 +356,13 @@ A single flat list of symbols to keep an eye on, independent of any
 broker/backtest workflow:
 
 - **Page:** `/watchlist`, plus a quick-access tile on the home page.
-- **Component:** [`Watchlist`](frontend/app/components/Watchlist.tsx),
-  backed by the [`useWatchlist`](frontend/app/lib/useWatchlist.ts) hook.
+- **Component:** [`Watchlist`](../frontend/app/components/Watchlist.tsx),
+  backed by the [`useWatchlist`](../frontend/app/lib/useWatchlist.ts) hook.
 - **Backend:** `GET /api/watchlist` (list), `POST /api/watchlist` (add,
   idempotent: adding an already-watched contract returns the existing
   row instead of erroring), `DELETE /api/watchlist/:id` (remove),
   persisted in the `watchlist_items` table
-  ([`WatchlistRepository`](backend/src/services/watchlistRepository.ts)).
+  ([`WatchlistRepository`](../backend/src/services/watchlistRepository.ts)).
 - **Live quotes:** each row polls the existing (Redis-cached)
   `GET /api/market-data/realtime` endpoint every 15s, so no new IB traffic
   or streaming subscription is introduced by adding a symbol here.
@@ -388,8 +390,8 @@ broker/backtest workflow:
 
 Place, cancel and modify orders against any connected broker from the UI:
 
-- **Components:** [`OrderTicket`](frontend/app/components/OrderTicket.tsx)
-  and [`OrderBlotter`](frontend/app/components/OrderBlotter.tsx).
+- **Components:** [`OrderTicket`](../frontend/app/components/OrderTicket.tsx)
+  and [`OrderBlotter`](../frontend/app/components/OrderBlotter.tsx).
 - **Pages:** a full surface at `/trade` (ticket + blotter), plus a
   compact ticket on the Orders tab of `/account`.
 - **Order types:** MKT, LMT, STP, STP_LMT. **TIF:** DAY, GTC, IOC,
@@ -431,12 +433,12 @@ Place, cancel and modify orders against any connected broker from the UI:
 
 Evaluate declarative criteria against live bars and place orders
 automatically: paper-first, staged behind gates. See the
-[Systematic Trading roadmap](docs/plans/SYSTEMATIC_TRADING_ROADMAP.md) for the full design.
+[Systematic Trading roadmap](plans/SYSTEMATIC_TRADING_ROADMAP.md) for the full design.
 
 - **Rule-driven strategies:** a strategy is one declarative rule-set (entry /
   exit conditions, sessions, multi-timeframe operands, position-aware fields,
   sizing, risk) shared by the backtester **and** the live runner
-  ([`broker_service/rule_strategy.py`](broker_service/rule_strategy.py)). Evaluated
+  ([`broker_service/rule_strategy.py`](../broker_service/rule_strategy.py)). Evaluated
   statelessly via `POST /strategies/evaluate`.
 - **Definitions & runs:** create/list rule-sets and start/stop runs through
   `/api/strategies/*`; each run pins a definition to a broker + `account_mode`.
@@ -534,7 +536,7 @@ stop **new entries** only: exits and stop management keep running, so a limit
 never strands an open position. The fleet-wide settings are on Settings >
 Risk and Settings > Alerts and safety. Per-connection limits and prop-firm
 rules are on each connection's own form under Settings > Connections. The
-[paper runbook](PAPER_DEPLOYMENT_RUNBOOK.md) rehearses each one.
+[paper runbook](PAPER_TRADING.md) rehearses each one.
 
 - **Connection limits:** `CONNECTION_MAX_ORDERS_PER_DAY` and
   `CONNECTION_MAX_DAILY_LOSS` (realised P&L from fills), plus
@@ -572,7 +574,7 @@ rules are on each connection's own form under Settings > Connections. The
   off the host pages you when the app, the host or its network goes down.
   `/api/health` reports the last result.
 - **Prometheus rules:** the `tradingapp-fleet` group in
-  [`ops/prometheus/alerts.yml`](ops/prometheus/alerts.yml) alerts per
+  [`ops/prometheus/alerts.yml`](../ops/prometheus/alerts.yml) alerts per
   connection on an open circuit breaker, unprotected positions, position
   divergence, stop gaps, orders blocked by caps and connections with no
   active runs.
@@ -580,7 +582,7 @@ rules are on each connection's own form under Settings > Connections. The
 ### Multi-broker: Interactive Brokers, MetaTrader (MT5), Alpaca, OANDA
 
 A venue-agnostic adapter seam lets each broker plug in without touching the
-routes. [`broker_service/ADDING_A_BROKER.md`](broker_service/ADDING_A_BROKER.md)
+routes. [DEVELOPMENT.md § Adding a broker](DEVELOPMENT.md#adding-a-broker)
 describes adding another.
 
 - **Connections in the app:** brokers are added on Settings > Connections,
@@ -597,7 +599,7 @@ describes adding another.
   secrets decrypted, to the broker service (`PUT /connections/managed`)
   after every change and whenever the broker service restarts.
 
-- **Adapter registry** ([`broker_service/adapters.py`](broker_service/adapters.py)):
+- **Adapter registry** ([`broker_service/adapters.py`](../broker_service/adapters.py)):
   `MarketDataAdapter` / `BrokerAdapter` protocols keyed by provider. A request's
   `source=` (market data) / `broker=` (orders) resolves to the concrete adapter,
   defaulting to `ib`; an unknown provider → 400, a recognised-but-unconfigured
@@ -607,10 +609,10 @@ describes adding another.
   and a strategy run targets exactly one venue.
 - **MetaTrader (MT5) via sidecar:** `MetaTrader5` is Windows-only, so MT5 runs as
   a small HTTP service next to the terminal, on Windows or on Linux under Wine.
-  The sidecar ships in [`mt5_sidecar/`](mt5_sidecar/README.md): it enforces
+  The sidecar ships in [`mt5_sidecar/`](INSTALL.md#52-metatrader-5): it enforces
   the shared secret, attaches the stop with the entry and echoes back the stop
   the terminal recorded. The Linux
-  [`MT5Adapter`](broker_service/mt5_adapter.py) is a thin client pointed at
+  [`MT5Adapter`](../broker_service/mt5_adapter.py) is a thin client pointed at
   the connection's Bridge URL, implementing both **data** (search, bars,
   quotes, ticks, normalised to the app's shapes) and **execution** (place,
   cancel, modify, positions, account, with the same validation and live gate
@@ -626,8 +628,8 @@ describes adding another.
   while orders still go through the sidecar.
 - **Alpaca and OANDA: cloud REST, no sidecar host.** Unlike MT5, both are
   reachable directly over HTTPS, so
-  [`AlpacaAdapter`](broker_service/alpaca_adapter.py) and
-  [`OANDAAdapter`](broker_service/oanda_adapter.py) run in-process in
+  [`AlpacaAdapter`](../broker_service/alpaca_adapter.py) and
+  [`OANDAAdapter`](../broker_service/oanda_adapter.py) run in-process in
   `broker_service`. Their connections take API credentials (Alpaca: API key
   and secret; OANDA: account id and token) instead of a bridge URL. Both implement the same data + execution surface as
   MT5. OANDA has a native 8-hour candle (unlike MT5) so every app timeframe
@@ -761,8 +763,11 @@ Cache health surfaces in `/api/health` under `services.cache`. Turn
 ### Interactive Brokers integration
 
 - Built on the official Interactive Brokers TWS API (`ibapi`).
-- A **single synchronous IB client** keeps the integration simple.
-- Auto-reconnect logic in `broker_service/main.py` re-establishes the socket if
+- A **single synchronous IB client** by default. An opt-in pool
+  (`IB_CLIENT_POOL_SIZE` of 2 or more, `broker_service/ib_pool.py`) exists,
+  but `./tradingapp.sh install` currently removes that line from `.env` as
+  obsolete, so it does not survive a re-run.
+- `get_ib_connection()` in `broker_service/ib_client.py` re-establishes the socket if
   IB Gateway drops the connection.
 - IB is added as a connection on Settings > Connections (Gateway host, Port,
   Client ID).
@@ -807,30 +812,28 @@ Cache health surfaces in `/api/health` under `services.cache`. Turn
 ### Deployment & operations
 
 - Docker Compose stack: `frontend`, `backend`, `broker_service`, `redis`,
-  and by default a bundled TimescaleDB (`docker-compose.db.yml`, data in
-  the `tradingapp_pgdata` volume). An external PostgreSQL with TimescaleDB
-  works too (`--external-db`).
+  and by default a bundled TimescaleDB (`docker-compose.db.yml`). An external
+  PostgreSQL with TimescaleDB works too (`--external-db`).
 - **One command to commission:** `./tradingapp.sh install` installs Docker if
-  needed, writes `.env` (seven keys: the `POSTGRES_*` connection and
+  needed, writes a seven-key `.env` (the `POSTGRES_*` connection and
   `SETTINGS_ENCRYPTION_KEY`), builds and starts the stack, waits until the
-  backend is ready, and prints the address and setup code. Re-running it is
-  how you upgrade or repair. It never replaces an existing password or key.
+  backend is ready, and prints the address and setup code. Re-running it
+  upgrades or repairs. It never replaces an existing password or key.
 - **The database comes first:** the backend waits for its database, applies
-  the schema and migrations, checks the encryption key, and only then starts
-  everything else. Until then every API route answers 503 with the reason
-  (`waiting_for_database`, `migrating`, `migration_failed`, `key_mismatch`)
-  and the page shows it. See
-  [`backend/src/database/README.md`](backend/src/database/README.md).
-- **Management script** `./tradingapp.sh`: `install`; `deploy`, `redeploy`,
-  `start`, `stop`, `restart`, `status`, `logs [follow]`, `setup-code`;
+  the schema and migrations, checks the encryption key, and only then serves.
+  Until then every API route answers 503 with the reason and the page shows
+  it.
+- **Management script:** `./tradingapp.sh` with `install`, `deploy`,
+  `redeploy`, `start`, `stop`, `restart`, `status`, `logs`, `setup-code`,
   `doctor`, `test`, `migrate`, `settings-import`, `backup-key`,
-  `rotate-internal-secrets`, `forget-secrets`, `fix`, and
-  `clean [--include-database]`.
-- **Unattended install:** `install/install.sh` with an answers file. See
-  [`AGENT_INSTALL_RUNBOOK.md`](AGENT_INSTALL_RUNBOOK.md).
-- The MT5 sidecar ([`mt5_sidecar/`](mt5_sidecar/README.md)) with a Task
-  Scheduler launcher for Windows and a systemd unit for Linux under Wine.
-- See [`DEPLOYMENT.md`](DEPLOYMENT.md) for the full reference.
+  `rotate-internal-secrets`, `forget-secrets`, `fix` and `clean`
+  ([OPERATIONS.md](OPERATIONS.md#commands)).
+- **Unattended install:** `install/install.sh` with an answers file, ending
+  in a machine-checked report
+  ([INSTALL.md Appendix A](INSTALL.md#appendix-a-unattended-install)).
+- **MT5 sidecar** with a Task Scheduler launcher for Windows and a systemd
+  unit and install script for Linux under Wine
+  ([INSTALL.md § 5.2](INSTALL.md#52-metatrader-5)).
 
 ### Testing, linting & CI
 
@@ -853,88 +856,29 @@ Cache health surfaces in `/api/health` under `services.cache`. Turn
 
 ## Planned / Roadmap
 
-The items below are described in the existing documentation set or
-implied by the codebase but are **not yet implemented**. They are the
-forward-looking work tracked in [`GAP_ANALYSIS.md`](docs/plans/GAP_ANALYSIS.md).
+Not yet implemented. Design records for the larger pieces are in
+[`plans/`](plans/); deferred decisions are registered in
+[`FUTURE_DECISION_POINTS.md`](plans/FUTURE_DECISION_POINTS.md).
 
-> **Recently shipped (no longer roadmap).** Bearer-token auth, strict CORS,
-> the settings API, Redis caching, the bundled TimescaleDB, the real-time streaming pipeline, the scheduled
-> backfill worker, `data_quality_metrics` population, real
-> `clean_old_data()` counts and the `/backtest` UI all landed in Phases 2–5
-> and now live under [Currently Available](#currently-available).
->
-> **Also recently shipped (home-page UX polish).** A live `HealthBadge`,
-> a global `error.tsx` boundary, `ResizeObserver`-driven chart refits,
-> `localStorage`-backed last-symbol/timeframe persistence, and an
-> RFC 4180-correct CSV export from the DataFrame viewer.
->
-> **Also recently shipped (backtest persistence + observability).**
-> A `backtest_runs` table with a Previous Runs UI; backend `pino` +
-> `prom-client` + `/metrics`; IB-service `structlog` +
-> `prometheus_fastapi_instrumentator` + `/metrics`; and end-to-end
-> `X-Request-Id` propagation from `apiFetch` → backend axios →
-> broker_service.
->
-> **Also recently shipped (Tier 2 polish).** Loading skeletons on
-> `/historical`, `/msft` and `/backtest`; the service-layer
-> `console.log` sweep now routes every backend log through pino with
-> structured payloads; a pre-built Grafana dashboard
-> ([`ops/grafana/tradingapp-dashboard.json`](ops/grafana/tradingapp-dashboard.json))
-> + Prometheus scrape config in `DEPLOYMENT.md`; and an *Export Parquet*
-> button in `DataframeViewer` backed by `POST /api/export/parquet`.
->
-> **Also recently shipped (Tier 3 refactors).** `broker_service/main.py`
-> split into [`models.py`](broker_service/models.py), [`ib_client.py`](broker_service/ib_client.py),
-> [`ib_helpers.py`](broker_service/ib_helpers.py) and
-> [`bars_processing.py`](broker_service/bars_processing.py) (2,700 → 1,840
-> LoC); shared `<Chart>` primitive +
-> [`useHistoricalData`](frontend/app/lib/useHistoricalData.ts) hook
-> (HistoricalChart now delegates to them); test breadth expanded across
-> all three services.
->
-> **Also recently shipped (Tier 4 item 9: order management).**
-> Full place / cancel / modify path gated by `LIVE_TRADING_ENABLED`,
-> with [`OrderTicket`](frontend/app/components/OrderTicket.tsx) /
-> [`OrderBlotter`](frontend/app/components/OrderBlotter.tsx)
-> components, a new [`/trade`](frontend/app/trade/page.tsx) page,
-> backend validation + `order_audit` persistence and IB-service routes
-> mirroring the gate.
->
-> **Also recently shipped (Systematic Trading & Multi-Broker roadmap,
-> all phases).** Rule-driven strategies (backtest == live), a live signal
-> runner, gated paper auto-execution with a full risk layer, the
-> `/systematic` monitoring UI, the broker abstraction, MetaTrader (MT5) data
-> **and** execution via the Windows sidecar, and Alpaca/OANDA as two
-> sidecar-free cloud brokers. Now live under
-> [Systematic trading](#systematic-trading-rule-driven-auto-execution) and
-> [Multi-broker: IB + MetaTrader + Alpaca + OANDA](#multi-broker-interactive-brokers-metatrader-mt5-alpaca-oanda).
-> The full design lives in
-> [`SYSTEMATIC_TRADING_ROADMAP.md`](docs/plans/SYSTEMATIC_TRADING_ROADMAP.md).
->
-> **Also recently shipped (watchlist + in-app price alerts).** A flat,
-> broker-scoped watchlist (`watchlist_items` table, `/api/watchlist`
-> CRUD, the `/watchlist` page) with per-row live quotes polled from the
-> existing `/api/market-data/realtime` endpoint, plus in-app-only price
-> alerts (`price_alerts` table, `/api/alerts` CRUD, a triggered-alerts
-> banner and an optional browser Notification) evaluated client-side
-> against that same polled quote. See [Watchlist](#watchlist).
-> Email/SMS/webhook delivery remain open.
->
-> **Also recently shipped (production hardening and risk controls).**
-> Login sessions in place of the public API token, a locked-down broker
-> service, the MT5 sidecar in the repo, closed-bar evaluation, the
-> promotion gate, stops attached at entry, multi-account connections with
-> a fleet view, account and prop-firm loss limits, news and weekend rules,
-> the kill switch (notify, halt, flatten), Telegram alerts, a dead-man's
-> switch and an end-to-end paper run in CI. Now under
-> [Systematic trading](#systematic-trading-rule-driven-auto-execution) and
-> [Risk controls](#risk-controls-kill-switch--alerting).
+### Known gaps in what ships
+
+- **Connections form:** an MT5 connection's symbol map and its "account info
+  from" link cannot be entered on Settings > Connections yet. Until they can,
+  they need SQL or a `.env` manifest, each with a catch
+  ([INSTALL.md § 5.2](INSTALL.md#not-yet-on-the-form-symbol-maps-and-account-info-from)).
+- **Single points of failure per venue:** IB Gateway and each MT5 terminal
+  are one logged-in session on one host with no standby. A logout stops that
+  venue until someone logs it back in; the connection checks and alerts make
+  it visible.
+- **Price-action rule vocabulary:** the rule engine expresses indicator logic;
+  candle geometry, swing structure and sequenced setups are planned
+  ([`SYSTEMATIC_STRATEGY_IMPLEMENTATION_PLAN.md`](plans/SYSTEMATIC_STRATEGY_IMPLEMENTATION_PLAN.md)).
 
 ### Systematic trading: open follow-ons
 
 The authoring loop (build a rule-set → backtest it → deploy it live on any
 instrument or venue) ships today. What remains, in priority order. See
-[`SYSTEMATIC_TRADING_ROADMAP.md`](docs/plans/SYSTEMATIC_TRADING_ROADMAP.md) §9:
+[`SYSTEMATIC_TRADING_ROADMAP.md`](plans/SYSTEMATIC_TRADING_ROADMAP.md) §9:
 
 - **Intrabar fills.** The backtester fills at the bar close; live fills happen
   at the market. Sessions, multi-timeframe operands, position-aware rules,
@@ -954,7 +898,7 @@ instrument or venue) ships today. What remains, in priority order. See
 The first two observability passes have shipped (`pino` / `structlog` /
 `/metrics` / `X-Request-Id` / Grafana dashboard / service-layer log
 sweep), and the Prometheus alerting rules now ship in
-[`ops/prometheus/alerts.yml`](ops/prometheus/alerts.yml) (target-down,
+[`ops/prometheus/alerts.yml`](../ops/prometheus/alerts.yml) (target-down,
 5xx error-rate, p95 latency and event-loop-lag alerts that reuse the
 dashboard's metrics). What is still open:
 
@@ -982,7 +926,7 @@ on `master` have **shipped** (see
 - Backend route/integration coverage beyond the initial validation tests.
 - Done: IB-service tests around the historical-data assembly path: a
   `FakeIBApp` stand-in for `EClient`/`EWrapper`
-  ([`broker_service/tests/test_market_data_history_route.py`](broker_service/tests/test_market_data_history_route.py))
+  ([`broker_service/tests/test_market_data_history_route.py`](../broker_service/tests/test_market_data_history_route.py))
   exercises `GET /market-data/history` end-to-end (contract-qualification,
   the period vs. date-range branches, the 404/503 failure paths, and the
   hand-off into `bars_processing`) without a real IB Gateway, network
@@ -1038,5 +982,4 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 
 If you spot a feature here that should be in *Available* but isn't, or
 vice-versa, please open an issue. Keeping this split honest is ongoing
-hygiene. The current gap list and roadmap live in
-[`GAP_ANALYSIS.md`](docs/plans/GAP_ANALYSIS.md).
+hygiene.

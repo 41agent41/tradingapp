@@ -97,7 +97,7 @@ export const PLATFORM_FORM: Record<string, Field[]> = {
 /**
  * Every supported broker, in the built-in priority order (the broker service
  * reports the order in effect). Mirrors BROKER_PRIORITY in
- * broker_service/connections.py; see broker_service/ADDING_A_BROKER.md.
+ * broker_service/connections.py; see docs/DEVELOPMENT.md, "Adding a broker".
  */
 export const BROKERS_BY_PRIORITY = ['oanda', 'mt5', 'ib', 'alpaca'];
 

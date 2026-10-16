@@ -1,4 +1,4 @@
-"""Template for a new API broker's adapter. See ../ADDING_A_BROKER.md.
+"""Template for a new API broker's adapter. See docs/DEVELOPMENT.md, "Adding a broker".
 
 Copy to ``broker_service/<name>_adapter.py``, rename ``ExampleAdapter`` and
 ``"example"``, and fill in each method. ``oanda_adapter.py`` is the worked

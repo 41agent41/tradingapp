@@ -39,7 +39,7 @@
 #INSTALL_REF=master
 # bundled: TimescaleDB as a container on this host (docker-compose.db.yml).
 # external: an existing PostgreSQL + TimescaleDB, e.g. the database container
-#           of PROXMOX_DEPLOYMENT.md §5. Needs POSTGRES_HOST and
+#           of docs/PROXMOX.md §4. Needs POSTGRES_HOST and
 #           POSTGRES_PASSWORD below, and the role, database and timescaledb
 #           extension created there first (§5.3).
 #INSTALL_DB_MODE=bundled
@@ -70,7 +70,7 @@
 # ---------------------------------------------------------------------------
 # App settings (optional; each can be set on the Settings page instead)
 # ---------------------------------------------------------------------------
-# Behind nginx/TLS (PROXMOX_DEPLOYMENT.md §10), the public origin:
+# Behind nginx/TLS (docs/INSTALL.md step 8), the public origin:
 #CORS_ORIGINS=https://trading.example.com
 
 # Alerting and the dead-man's switch (from the operator; strongly recommended)
@@ -79,7 +79,7 @@
 #HEARTBEAT_URL=https://hc-ping.com/<uuid>
 #HEARTBEAT_FAIL_URL=https://hc-ping.com/<uuid>/fail
 
-# Paper-stage switches (see PAPER_DEPLOYMENT_RUNBOOK.md)
+# Paper-stage switches (see docs/PAPER_TRADING.md)
 #EXECUTIONS_SYNC_ENABLED=false
 #SYSTEMATIC_ENABLED=false
 #KILL_SWITCH_ACTION=notify
