@@ -360,7 +360,7 @@ The HTTP contract is documented at the top of
 `broker_service/mt5_adapter.py`, and
 `broker_service/tests/test_mt5_sidecar_contract.py` runs the adapter against
 the sidecar on every CI run. Installing it is
-[INSTALL.md § 5.2](INSTALL.md#52-metatrader-5).
+[INSTALL.md § 4.2](INSTALL.md#42-metatrader-5-vm-120).
 
 What the sidecar guarantees:
 
@@ -405,8 +405,7 @@ ruff check . && black --check . && pytest -q
 | File | For |
 |---|---|
 | [README.md](../README.md) | What the app is, and where to start |
-| [INSTALL.md](INSTALL.md) | Installing, in order: database, app, brokers |
-| [PROXMOX.md](PROXMOX.md) | The Proxmox guests for the same install |
+| [INSTALL.md](INSTALL.md) | Installing on Proxmox VE with community scripts, in order: database, app, brokers, proxy, monitoring |
 | [OPERATIONS.md](OPERATIONS.md) | Running, upgrading, going live, troubleshooting |
 | [PAPER_TRADING.md](PAPER_TRADING.md) | Taking strategies through paper on two MT5 demo accounts |
 | [FEATURES.md](FEATURES.md) | What the app does, and what is planned |

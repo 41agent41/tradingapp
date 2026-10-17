@@ -1,7 +1,7 @@
 # One MT5 terminal + sidecar per account under Wine, headless (Xvfb).
 #   instance name = account label, e.g. mt5-sidecar@broker-a
 #   settings in   /etc/mt5-sidecar/<instance>.env (see sidecar.env.example)
-#   Wine prefix   /var/lib/mt5/<instance> (see docs/INSTALL.md § 5.2, "Linux under Wine")
+#   Wine prefix   /var/lib/mt5/<instance> (see docs/INSTALL.md § 4.2)
 [Unit]
 Description=MT5 sidecar (%i)
 After=network-online.target

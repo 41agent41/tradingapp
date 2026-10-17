@@ -6,10 +6,11 @@
 # storage), starts it, and waits for its network. Idempotent: an existing
 # container with that id is checked, not recreated.
 #
-# This is docs/PROXMOX.md §5.1 (or Appendix A with --bundled-db) as a
-# script; read that section for why each flag is there.
+# docs/INSTALL.md step 2.1 creates this container with the community Docker
+# script; this is the same container without prompts, for automation (or
+# docs/INSTALL.md Appendix B with --bundled-db).
 #
-#   proxmox-create-ct.sh --ctid 110 --ip 10.7.3.20/24 --gw 10.7.3.1 [options]
+#   proxmox-create-ct.sh --ctid 110 --ip <address>/<prefix> --gw <gateway> [options]
 #
 # Options:
 #   --storage NAME      container storage (default local-lvm)
@@ -60,7 +61,7 @@ done
 [[ $EUID -eq 0 ]] || fail 2 "run as root on the Proxmox host"
 for c in pct pvesm pveam; do command -v "$c" >/dev/null || fail 1 "$c not found: this is not a Proxmox VE host"; done
 [[ $CTID =~ ^[0-9]+$ ]] || fail 2 "--ctid is required (a number)"
-[[ $IP =~ ^[0-9.]+/[0-9]+$ ]] || fail 2 "--ip is required, in CIDR form (10.7.3.20/24)"
+[[ $IP =~ ^[0-9.]+/[0-9]+$ ]] || fail 2 "--ip is required, in CIDR form (address/prefix)"
 [[ $GW =~ ^[0-9.]+$ ]] || fail 2 "--gw is required"
 [[ ${IP%%/*} != 172.20.* ]] || fail 2 "$IP overlaps the stack's Docker network 172.20.0.0/16"
 NS=${NS:-$GW}
@@ -79,7 +80,7 @@ log "storage $STORAGE is $stype; features $features"
 if pct status "$CTID" >/dev/null 2>&1; then
     log "container $CTID exists; checking it"
     conf=$(pct config "$CTID")
-    grep -q '^unprivileged: 1' <<<"$conf" || fail 1 "container $CTID is privileged; docs/PROXMOX.md §1.2 says keep it unprivileged"
+    grep -q '^unprivileged: 1' <<<"$conf" || fail 1 "container $CTID is privileged; docs/INSTALL.md says keep it unprivileged"
     for f in nesting=1 keyctl=1; do
         grep -E '^features:' <<<"$conf" | grep -q "$f" || fail 1 "container $CTID lacks $f: pct set $CTID --features $features, then restart it"
     done
@@ -116,7 +117,7 @@ log "waiting for the container's network"
 for _ in $(seq 1 30); do
     if pct exec "$CTID" -- getent hosts github.com >/dev/null 2>&1; then
         log "container $CTID is up at ${IP%%/*} and resolves names"
-        log "next: pct push $CTID install.sh /root/install.sh; pct push $CTID <answers> /etc/tradingapp/install.answers (docs/INSTALL.md Appendix A.3)"
+        log "next: pct push $CTID install.sh /root/install.sh; pct push $CTID <answers> /etc/tradingapp/install.answers (docs/INSTALL.md step 2.2)"
         exit 0
     fi
     sleep 2

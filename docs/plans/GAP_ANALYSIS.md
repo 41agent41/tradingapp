@@ -461,7 +461,7 @@ follow-on feature.
 above — low priority given the deployment target is a Linux host.
 
 - The multi-broker topology (`DEPLOYMENT.md` §
-  [Multi-Broker Host Topology](../PROXMOX.md#1-target-topology))
+  [Multi-Broker Host Topology](../INSTALL.md#4-brokers))
   runs IB Gateway and the MT5 sidecar as two separate GUI-session hosts, each
   a single point of failure for its venue, and the MT5 sidecar's HTTP
   contract (`broker_service/mt5_adapter.py`) carries no authentication.

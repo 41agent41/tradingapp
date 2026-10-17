@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Install one MT5 terminal + sidecar under Wine on Linux, headless.
 #
-# This is option 2 of docs/INSTALL.md § 5.2 (MetaTrader 5) as an
-# idempotent script: one Wine prefix, env file and systemd unit per account.
-# Run as root on the host that will run the terminal (a VM, or a privileged
-# LXC; see docs/PROXMOX.md §1.2).
+# docs/INSTALL.md § 4.2 (MetaTrader 5) runs it, as an idempotent script: one
+# Wine prefix, env file and systemd unit per account. Run as root on the
+# machine that will run the terminal: a VM (an unprivileged container cannot
+# run it).
 #
 #   mt5-sidecar-wine.sh install --instance NAME [--port 9100]
 #                               [--server-tz Europe/Athens]

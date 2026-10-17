@@ -27,7 +27,7 @@ the same JSON). One entry per connection::
 
     [
       { "id": "pepperstone-live", "platform": "mt5",
-        "url": "http://10.7.3.22:9100", "secret_env": "MT5_SECRET_PEPPERSTONE",
+        "url": "http://mt5-bridge:9100", "secret_env": "MT5_SECRET_PEPPERSTONE",
         "account_mode": "live", "currency": "USD", "default": true,
         "server_timezone": "Etc/GMT-2" },
 
@@ -55,7 +55,7 @@ while orders keep going through the MT5 sidecar. It implies ``same_funds_as``
 and the two connections must declare the same currency, because the equity it
 returns is what `pct_equity` sizing divides by::
 
-    { "id": "oanda-mt5", "platform": "mt5", "url": "http://10.7.3.24:9100",
+    { "id": "oanda-mt5", "platform": "mt5", "url": "http://mt5-bridge:9101",
       "secret_env": "MT5_SECRET_OANDA", "account_mode": "live",
       "account_info_from": "oanda-native" }
 

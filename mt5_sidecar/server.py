@@ -2,7 +2,7 @@
 
 Implements the contract documented at the top of
 ``broker_service/mt5_adapter.py``. Run it with ``python server.py`` on the
-machine (or Wine prefix) where the MT5 terminal runs; see docs/INSTALL.md § 5.2.
+machine (or Wine prefix) where the MT5 terminal runs; see docs/INSTALL.md § 4.2.
 """
 
 from __future__ import annotations
