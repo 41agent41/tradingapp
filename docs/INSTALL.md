@@ -1,27 +1,31 @@
-# Installing TradingApp
+# Installing TradingApp on Proxmox VE
 
-This guide takes you from an empty host to a working install trading on
-paper. Do the steps in order. Each one ends with a check, and later steps
-assume the earlier ones passed.
+This guide builds TradingApp on a Proxmox VE host, one server at a time. The
+database comes first, complete with everything it needs, then the app, then
+the servers around it. Each server is created with a
+[Proxmox VE community script](https://community-scripts.org), so most of the
+work is answering a few prompts.
 
-| Step | What you do | Where |
-|---|---|---|
-| [0. Plan](#0-plan) | Decide the database, the brokers and the hosts | on paper |
-| [1. Host](#1-prepare-the-host) | A Linux host with a sudo user | the app host |
-| [2. Database](#2-database) | The bundled database, or your own PostgreSQL + TimescaleDB | the database host |
-| [3. App](#3-install-the-app) | `./tradingapp.sh install` | the app host |
-| [4. Sign in](#4-sign-in-and-secure-the-app) | Login password, order MFA, trading token | the browser |
-| [5. Brokers](#5-add-brokers) | OANDA, then MT5, then IB, then Alpaca, as you need them | broker hosts, then the browser |
-| [6. Market data](#6-choose-the-market-data-to-collect) | Instruments, timeframes, history | the browser |
-| [7. Alerts](#7-alerts-and-safety-nets) | Telegram, heartbeat, risk limits | the browser |
-| [8. Network](#8-reverse-proxy-tls-and-firewall) | nginx, TLS, firewall | the app host |
-| [9. Backups](#9-backups-and-start-on-boot) | Encryption key, database dumps, boot unit | the app and database hosts |
-| [10. Verify](#10-verify) | Everything above, checked once more | the app host |
+Do the steps in order. Each one ends with a check, and later steps assume the
+earlier ones passed.
 
-On Proxmox, build the guests with [PROXMOX.md](PROXMOX.md) as you reach
-steps 1, 2 and 5; it points back here for everything inside them. To run
-the whole install from a script or an agent, see
-[Appendix A](#appendix-a-unattended-install). Running, upgrading and
+| Step | Server | Built with | Needed? |
+|---|---|---|---|
+| [1. Database](#1-database-server-ct-100) | CT 100 `tradingapp-db` | PostgreSQL script | Yes |
+| [2. App](#2-app-server-ct-110) | CT 110 `tradingapp-app` | Docker script | Yes |
+| [3. Sign in](#3-sign-in-and-secure-the-app) | | the browser | Yes |
+| [4. Brokers](#4-brokers) | VM 120 `mt5-bridge`, CT 130 `ib-gateway` | Ubuntu VM and Docker scripts | Only for the brokers you use |
+| [5. Market data](#5-market-data) | | the browser | Yes |
+| [6. Alerts](#6-alerts-and-safety-nets) | | the browser | Strongly recommended |
+| [7. Reverse proxy](#7-reverse-proxy-and-tls-ct-140) | CT 140 `tradingapp-proxy` | Nginx Proxy Manager script | Recommended |
+| [8. Firewall](#8-firewall) | every guest | the Proxmox UI | Recommended |
+| [9. Monitoring](#9-monitoring-ct-150-and-ct-160) | CT 150 `prometheus`, CT 160 `grafana` | Prometheus and Grafana scripts | Optional |
+| [10. Backups and boot](#10-backups-snapshots-and-boot-order) | every guest | the Proxmox UI | Yes |
+| [11. Verify](#11-verify) | | | Yes |
+
+To try the app before building all of this, one container is enough:
+[Appendix B](#appendix-b-one-container-for-evaluation). Without Proxmox, see
+[Appendix C](#appendix-c-without-proxmox). Running, upgrading and
 troubleshooting an installed app are in [OPERATIONS.md](OPERATIONS.md).
 
 > **Paper first.** Everything in this guide keeps to paper: every broker
@@ -31,353 +35,481 @@ troubleshooting an installed app are in [OPERATIONS.md](OPERATIONS.md).
 
 ---
 
-## 0. Plan
+## Before you start
 
-Decide three things before you start.
+### What this guide assumes
 
-**The database.** Settings, logins, broker connections and market data all
-live in the database, so it comes first.
+- A Proxmox VE 8 or 9 host that is installed, updated and on your network,
+  with its clock synchronised (containers read the host's clock and cannot
+  set their own).
+- Storage that holds container disks and supports snapshots, such as
+  `local-lvm` or a ZFS pool.
+- A network bridge (usually `vmbr0`) with outbound internet access, for the
+  community scripts, Docker images, GitHub and the cloud brokers.
 
-| Choice | Use it when | Step 2 |
-|---|---|---|
-| **Bundled** (default) | Evaluation, or one host for everything. TimescaleDB runs as a container on the app host, with its data in a Docker volume there. | Nothing to do |
-| **External** | Anything you want to keep. The data gets its own disk, backups and restore path, and the app host can be rebuilt without touching it. | [2B](#2b-external-database) |
+### Plan the addresses
 
-You can move from bundled to external later, but it is a data migration
-([OPERATIONS.md § Move to an external database](OPERATIONS.md#move-from-the-bundled-to-an-external-database)).
+The servers talk to each other by address, so each one needs an address that
+does not change. Pick one for each server you will build, on your LAN, before
+you start: you enter it as a static address when you create the server, or
+reserve it for the server on your DHCP server.
 
-**The brokers.** The app asks brokers in this order of priority, and this
-guide adds them in the same order:
+This guide writes them as placeholders. Wherever you see one, use the address
+you picked:
 
-| Priority | Broker | Needs a host of its own? | What you need from the broker |
-|---|---|---|---|
-| 1 | OANDA (FX, CFDs) | No, it is a cloud API | A practice account: API token and account id |
-| 2 | MetaTrader 5 | Yes: Windows, or Linux under Wine | A demo account: login, password, server, and the server's time zone |
-| 3 | Interactive Brokers | Yes: IB Gateway, logged in | A paper account |
-| 4 | Alpaca (US stocks, options) | No, it is a cloud API | A paper API key and secret |
-
-None is required to install. Without a broker the app runs, but charts,
-quotes and orders need at least one.
-
-**The hosts and addresses.** Write down the app host's address, and the
-address of each database, IB Gateway and MT5 host. The app's Docker network
-uses `172.20.0.0/16`; if your LAN or VPN uses any part of that range, see
-[PROXMOX.md § Plan](PROXMOX.md#2-plan-the-deployment) before you go on.
-
----
-
-## 1. Prepare the host
-
-The app host needs:
-
-- Ubuntu 22.04+ or Debian 12+: a VM, a Proxmox LXC
-  ([PROXMOX.md § 5](PROXMOX.md#5-create-the-app-container)) or bare metal.
-- 4 GB of memory (the frontend build needs it) and 15 GB of free disk, more
-  with the bundled database and a lot of history.
-- Outbound HTTPS, for Docker images, GitHub and the cloud brokers.
-- A normal user with sudo rights. `./tradingapp.sh` refuses to run as root.
-
-As root, once:
-
-```bash
-apt update && apt install -y sudo git curl openssl
-adduser tradingapp
-usermod -aG sudo tradingapp
-su - tradingapp
-```
-
-As that user, clone the repository into its home directory (not `/root`,
-which other users cannot read):
-
-```bash
-git clone https://github.com/41agent41/tradingapp.git ~/tradingapp
-cd ~/tradingapp
-```
-
-To use `/opt/tradingapp` instead, run
-`sudo mkdir -p /opt/tradingapp && sudo chown tradingapp: /opt/tradingapp`
-first and clone there.
-
-Docker is installed by step 3 if it is missing. On a Proxmox LXC on ZFS
-storage, install it by hand first
-([PROXMOX.md § 5.2](PROXMOX.md#52-install-docker)), because the storage
-driver has to be chosen before Docker first starts.
-
-**Check:** `whoami` prints `tradingapp`, and `ls ~/tradingapp/tradingapp.sh`
-finds the script.
-
----
-
-## 2. Database
-
-The app needs PostgreSQL with the TimescaleDB extension. It creates and
-updates its own schema when it starts, so there is never any SQL to apply by
-hand.
-
-### 2A. Bundled database
-
-Nothing to do now. Step 3 starts TimescaleDB as a container on the app host
-(`docker-compose.db.yml`, image `timescale/timescaledb:2.17.2-pg15`, address
-`172.20.0.20`, published on the host's loopback only) and generates its
-password. Go to [step 3](#3-install-the-app).
-
-### 2B. External database
-
-Any PostgreSQL 15, 16 or 17 with TimescaleDB will do: a VM or container of
-your own, or a managed service with the extension available (Timescale
-Cloud, or a cloud Postgres that offers it). On Proxmox,
-[PROXMOX.md § 4](PROXMOX.md#4-create-the-database-container) builds one.
-
-1. **Install PostgreSQL and TimescaleDB** on the database host (Ubuntu shown;
-   see Timescale's own install guide for others):
-
-   ```bash
-   apt update && apt install -y gnupg postgresql-common apt-transport-https lsb-release wget
-   /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-   echo "deb https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" \
-     > /etc/apt/sources.list.d/timescaledb.list
-   wget --quiet -O - https://packagecloud.io/timescale/timescaledb/gpgkey \
-     | gpg --dearmor > /etc/apt/trusted.gpg.d/timescaledb.gpg
-   apt update && apt install -y timescaledb-2-postgresql-17 postgresql-client-17
-   timescaledb-tune --quiet --yes
-   systemctl restart postgresql
-   ```
-
-   If `apt update` finds no TimescaleDB packages, packagecloud has not
-   published for your release yet: use the previous LTS codename (`jammy`
-   for `noble`) in `timescaledb.list`.
-
-2. **Create the role, the database and the extension.** Make a password and
-   keep it; step 3 asks for it.
-
-   ```bash
-   openssl rand -base64 24
-   sudo -u postgres psql <<'SQL'
-   CREATE ROLE tradingapp WITH LOGIN PASSWORD 'REPLACE_WITH_THE_PASSWORD';
-   CREATE DATABASE tradingapp OWNER tradingapp;
-   SQL
-   sudo -u postgres psql -d tradingapp -c 'CREATE EXTENSION IF NOT EXISTS timescaledb;'
-   ```
-
-   The role must own the database, so the app can create and alter its
-   tables. It does not need to be a superuser, which is why the extension is
-   created here.
-
-3. **Let the app host in, and only the app host.** With PostgreSQL 17 and an
-   app host at `10.7.3.20`, a database host at `10.7.3.21`:
-
-   ```bash
-   sed -i "s/^#\?listen_addresses.*/listen_addresses = '10.7.3.21'/" \
-     /etc/postgresql/17/main/postgresql.conf
-   echo "host    tradingapp    tradingapp    10.7.3.20/32    scram-sha-256" \
-     >> /etc/postgresql/17/main/pg_hba.conf
-   systemctl restart postgresql
-   ```
-
-   Firewall port 5432 to the app host as well (`ufw allow from 10.7.3.20 to
-   any port 5432 proto tcp`, or the hypervisor's firewall).
-
-4. **TLS.** On a private bridge or LAN you can leave it off. If the database
-   is anywhere else, give PostgreSQL a certificate, set `ssl = on`, make the
-   `pg_hba.conf` line `hostssl`, and answer yes to the TLS question in
-   step 3 (`POSTGRES_SSL=true`).
-
-**Check,** from the app host:
-
-```bash
-nc -vz 10.7.3.21 5432
-```
-
----
-
-## 3. Install the app
-
-On the app host, as the deploy user, in the checkout:
-
-```bash
-./tradingapp.sh install                  # bundled database (2A)
-./tradingapp.sh install --external-db    # your own database (2B): asks for its host and password
-```
-
-What it does, in order:
-
-1. Checks for `curl` and `openssl`. Installs Docker and its compose plugin if
-   missing, and adds you to the `docker` group. It carries on under
-   `sg docker`, so you do not need to log out.
-2. Writes `.env` (mode 600) with seven keys and nothing else:
-   `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`,
-   `POSTGRES_DB`, `POSTGRES_SSL` and `SETTINGS_ENCRYPTION_KEY`. It generates
-   the encryption key, and with the bundled database also the database
-   password. It never replaces a password or key that is already there.
-   With `--external-db` it asks whether the database needs TLS, and for the
-   encryption key of an earlier install if the database already holds data.
-3. Builds the images and starts the stack. The first build takes several
-   minutes.
-4. Waits, up to 900 seconds, until the backend reports ready: database
-   reached, schema created or migrated, encryption key checked. It prints
-   what it is waiting for, and stops early if the backend reports
-   `migration_failed` or `key_mismatch`.
-5. Checks that the frontend, backend and broker service answer. It does not
-   test brokers; the app does that, and a broker that is down never fails an
-   install.
-6. Prints the address and, on a new install, the setup code.
-
-The broker service token and the Redis password are not in `.env`. A
-one-shot container generates them into the `internal_secrets` Docker volume
-on first start.
-
-Flags:
-
-| Flag | Effect |
+| Placeholder | Server |
 |---|---|
-| `--external-db` | Use your own database (step 2B). Asks for its host and password, or reads them from `.env` or `--answers`. |
-| `--answers FILE` | Read `KEY=VALUE` answers instead of asking (format in [`install/install.answers.example`](../install/install.answers.example)). The file must be mode 600. Broker keys are refused. |
-| `--non-interactive` | Never prompt. |
-| `--env-only` | Write `.env` and stop. |
+| `<db-address>` | CT 100, the database |
+| `<app-address>` | CT 110, the app |
+| `<mt5-address>` | VM 120, the MetaTrader 5 bridge |
+| `<ib-address>` | CT 130, IB Gateway |
+| `<proxy-address>` | CT 140, the reverse proxy |
+| `<prometheus-address>` | CT 150, Prometheus |
+| `<grafana-address>` | CT 160, Grafana |
 
-`INSTALL_TIMEOUT=1800 ./tradingapp.sh install` waits longer on a slow host.
+> **One range to avoid.** The app's own Docker network uses
+> `172.20.0.0/16`. If your LAN, a VPN or another bridge uses any part of
+> that range, the app server loses its routes to it. Use a different range
+> for your servers.
 
-**Save the encryption key now,** somewhere off this host such as a password
-manager:
+### Running a community script
 
-```bash
-./tradingapp.sh backup-key
-```
+Every server in this guide starts the same way:
 
-It opens every secret the app stores in the database: broker credentials,
-alert tokens, the MFA secret. Any rebuild that keeps the database needs it.
+1. Find the script on [community-scripts.org](https://community-scripts.org)
+   (the name is given in each step) and copy its install command. It looks
+   like this:
 
-**Check:** install ends with `All checks passed` and the address.
-`./tradingapp.sh doctor` shows `state: ready`. If it stops instead, the
-message names the state; see
-[OPERATIONS.md § Readiness states](OPERATIONS.md#the-page-says-it-is-waiting-for-the-database-or-a-key-mismatch).
+   ```bash
+   bash -c "$(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/ct/postgresql.sh)"
+   ```
+
+2. In the Proxmox web UI, select the node, open **Shell**, paste the command
+   and press Enter.
+3. Choose **Advanced Install**. It walks through the container's settings
+   one screen at a time. Set the ones each step lists, and keep the default
+   for everything else.
+4. Answer the questions the script asks about the application, then wait for
+   `Completed successfully`.
+
+To work inside a container afterwards, select it in the Proxmox UI and open
+**Console**. Unless you set a root password in Advanced Install, it logs you
+in as root.
+
+The settings each step asks you to enter:
+
+| Setting | What to enter |
+|---|---|
+| Container type | **Unprivileged** |
+| Container ID | the ID in the step (100, 110, ...) |
+| Hostname | the name in the step |
+| Disk size, CPU cores, RAM | the sizes in the step (RAM is in MiB) |
+| IPv4 | **Static**, with the address you planned and your gateway; or DHCP with a reservation |
+| Nesting, Keyctl | only where the step says so |
 
 ---
 
-## 4. Sign in and secure the app
+## 1. Database server (CT 100)
 
-1. Open `http://<app-host>:3000`.
-2. Enter the setup code. If you missed it, `./tradingapp.sh setup-code`
-   shows it again.
-3. Choose the login password.
-4. Open **Settings**. The **Getting started** checklist at the top ticks
-   itself off as you complete each step of this guide.
-5. On **Settings > Security**:
+The database is the first dependency. Settings, logins, broker connections,
+market data, orders and the audit log all live in it, and the app does not
+serve until it can reach it. This step builds it completely: PostgreSQL,
+TimescaleDB, the app's role and database, access for the app server only,
+and nightly dumps.
+
+### 1.1 Create the container
+
+Script: **PostgreSQL**. In Advanced Install:
+
+| Setting | Value |
+|---|---|
+| Container ID | `100` |
+| Hostname | `tradingapp-db` |
+| Disk size | `100` GB (market data grows; you can enlarge it later) |
+| CPU cores | `4` |
+| RAM | `8192` MiB |
+| IPv4 | `<db-address>` |
+
+If the script asks for the container OS, choose **Debian**. When it asks
+for the PostgreSQL version, enter **17**. Answer **No** to Adminer.
+
+### 1.2 Add TimescaleDB
+
+The app stores bars and ticks in TimescaleDB, a PostgreSQL extension the
+script does not install. In CT 100's **Console**:
+
+```bash
+apt install -y gnupg curl
+mkdir -p /etc/apt/keyrings
+curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey \
+  | gpg --dearmor -o /etc/apt/keyrings/timescaledb.gpg
+echo "deb [signed-by=/etc/apt/keyrings/timescaledb.gpg] https://packagecloud.io/timescale/timescaledb/debian/ $(. /etc/os-release && echo "$VERSION_CODENAME") main" \
+  > /etc/apt/sources.list.d/timescaledb.list
+apt update
+apt install -y timescaledb-2-postgresql-17 timescaledb-tools
+timescaledb-tune --quiet --yes
+systemctl restart postgresql
+```
+
+If `apt install` finds no TimescaleDB package, Timescale has not yet
+published for this Debian release: replace the release name in
+`/etc/apt/sources.list.d/timescaledb.list` with `bookworm` and run the last
+four lines again.
+
+`timescaledb-tune` sizes PostgreSQL's memory from what the container has.
+Run `free -h` first: it should show the container's 8 GB. If it shows the
+host's total instead, add `--memory 8GB` to the `timescaledb-tune` line.
+
+### 1.3 Create the app's role, database and extension
+
+Make a password for the app and keep it; step 2 needs it:
+
+```bash
+tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32; echo
+```
+
+Then create the role, its database and the extension, with that password in
+place of `PASTE-THE-PASSWORD`:
+
+```bash
+runuser -u postgres -- psql <<'SQL'
+CREATE ROLE tradingapp WITH LOGIN PASSWORD 'PASTE-THE-PASSWORD';
+CREATE DATABASE tradingapp OWNER tradingapp;
+\c tradingapp
+CREATE EXTENSION IF NOT EXISTS timescaledb;
+SQL
+```
+
+The role owns its database, so the app can create and update its own tables
+when it starts. There is never any SQL to apply by hand after this. The role
+is not a superuser, which is why the extension is created here.
+
+### 1.4 Let in the app server, and nothing else
+
+The community script lets every address on the network log in with a
+password. Replace that with one line for the app server:
+
+```bash
+HBA=/etc/postgresql/17/main/pg_hba.conf
+sed -i '/0\.0\.0\.0/d' "$HBA"
+echo "host  tradingapp  tradingapp  <app-address>/32  scram-sha-256" >> "$HBA"
+systemctl reload postgresql
+```
+
+The firewall in [step 8](#8-firewall) closes port 5432 to everything else as
+well.
+
+Encryption on the wire is optional while both servers sit on the same
+Proxmox bridge, and the app connects without it by default. If the database
+is anywhere else, give PostgreSQL a real certificate, change `host` to
+`hostssl` in that line, and add `POSTGRES_SSL=true` in step 2.2.
+
+### 1.5 Nightly dumps
+
+A Proxmox backup of this container ([step 10](#10-backups-snapshots-and-boot-order))
+restores like a machine that lost power. A dump is a clean copy of the data.
+Create `/usr/local/bin/backup-tradingapp.sh`:
+
+```bash
+cat > /usr/local/bin/backup-tradingapp.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+BACKUP_DIR=/var/backups/tradingapp
+mkdir -p "$BACKUP_DIR"
+chown postgres "$BACKUP_DIR"
+runuser -u postgres -- pg_dump -Fc tradingapp \
+  > "$BACKUP_DIR/tradingapp_$(date -u +%Y%m%d_%H%M%S).dump"
+find "$BACKUP_DIR" -name 'tradingapp_*.dump' -mtime +14 -delete
+EOF
+chmod +x /usr/local/bin/backup-tradingapp.sh
+echo '10 2 * * * root /usr/local/bin/backup-tradingapp.sh' > /etc/cron.d/tradingapp-backup
+```
+
+Copy the dumps off the host as well. Restoring one is in
+[OPERATIONS.md § Backups and restore](OPERATIONS.md#backups-and-restore).
+
+### 1.6 Check
+
+```bash
+runuser -u postgres -- psql -d tradingapp -c '\dx'       # lists timescaledb
+runuser -u postgres -- psql -c 'SHOW shared_preload_libraries;'   # includes timescaledb
+/usr/local/bin/backup-tradingapp.sh && ls /var/backups/tradingapp
+```
+
+Then take a snapshot, so you can return to a clean database: CT 100 >
+**Snapshots** > **Take Snapshot**, named `db-ready`.
+
+---
+
+## 2. App server (CT 110)
+
+The app runs as a Docker stack: the web frontend, the backend that owns the
+database, the broker service that talks to brokers, and Redis.
+
+### 2.1 Create the container
+
+Script: **Docker**. In Advanced Install:
+
+| Setting | Value |
+|---|---|
+| Container ID | `110` |
+| Hostname | `tradingapp-app` |
+| Disk size | `60` GB |
+| CPU cores | `4` |
+| RAM | `8192` MiB (the app's first build needs at least 4096) |
+| IPv4 | `<app-address>` |
+| Nesting | **Yes** (Docker needs it) |
+| Keyctl | **Yes** (Docker needs it) |
+
+If the script asks for the container OS, choose **Debian**. Answer **No** to
+exposing the Docker TCP socket, and **Yes** if it offers Docker Compose.
+
+**Check,** in CT 110's **Console**:
+
+```bash
+docker run --rm hello-world
+docker info | grep 'Storage Driver'     # overlay2 or fuse-overlayfs
+```
+
+If `hello-world` fails or the driver is `vfs`, fix that first:
+[OPERATIONS.md § Proxmox containers](OPERATIONS.md#proxmox-containers).
+
+### 2.2 Tell the installer about the database
+
+The installer reads its answers from a file. Create it:
+
+```bash
+mkdir -p -m 700 /etc/tradingapp
+nano /etc/tradingapp/install.answers
+```
+
+and enter three lines, with your database address and the password from
+step 1.3:
+
+```ini
+INSTALL_DB_MODE=external
+POSTGRES_HOST=<db-address>
+POSTGRES_PASSWORD=the-password-from-step-1.3
+```
+
+Save (Ctrl+O, Enter) and exit (Ctrl+X), then make it private, as the
+installer insists:
+
+```bash
+chmod 600 /etc/tradingapp/install.answers
+```
+
+Every other answer is optional. The full list, with what each one does, is
+in [`install/install.answers.example`](../install/install.answers.example).
+Do not put broker details here: brokers are added in the app (step 4), and
+the installer refuses them.
+
+### 2.3 Run the installer
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/41agent41/tradingapp/master/install/install.sh -o /root/install.sh
+bash /root/install.sh all
+```
+
+It creates a `tradingapp` user, checks out the app into `/opt/tradingapp`,
+writes its `.env`, builds and starts the stack, waits until the backend has
+reached the database, created its tables and checked its encryption key,
+runs its checks, and installs a service that starts the app at boot. The
+first build takes several minutes.
+
+To install your own fork, download `install.sh` from your fork instead and
+add `INSTALL_REPO_URL=https://github.com/<you>/tradingapp.git` to the
+answers.
+
+**Check:** the last lines read `result: PASS` and `done: preflight docker
+user repo env schema deploy verify service`. If it stops, the message names
+the phase and the cause; fix it and run the same command again (it is safe
+to re-run). [Appendix A](#appendix-a-the-installer-in-detail) lists each
+phase and check.
+
+### 2.4 Save the encryption key
+
+The app encrypts every secret it stores (broker credentials, alert tokens,
+the MFA secret) with a key generated on this server. Any rebuild that keeps
+the database needs it. Print it and store it somewhere off this host, such
+as a password manager:
+
+```bash
+cd /opt/tradingapp
+runuser -u tradingapp -- ./tradingapp.sh backup-key
+```
+
+Commands in [OPERATIONS.md](OPERATIONS.md) run the same way, as the
+`tradingapp` user in `/opt/tradingapp`; `su - tradingapp` then
+`cd /opt/tradingapp` gives you a shell for that.
+
+---
+
+## 3. Sign in and secure the app
+
+1. Read the setup code in CT 110's Console:
+
+   ```bash
+   cd /opt/tradingapp && runuser -u tradingapp -- ./tradingapp.sh setup-code
+   ```
+
+2. Open `http://<app-address>:3000`, enter the setup code and choose the
+   login password.
+3. Open **Settings**. The **Getting started** checklist at the top ticks
+   itself off as you work through the rest of this guide.
+4. On **Settings > Security**:
    - enrol **order MFA**: scan the QR code with an authenticator app and
      enter a code;
    - make a **trading token** and keep it (it is shown once).
 
    Placing orders, and any change that loosens a gate or raises a cap, needs
    both.
-6. For scripts, make an **API token** on the same tab. Scripts send it as
+5. For scripts, make an **API token** on the same tab. Scripts send it as
    `Authorization: Bearer <token>`.
 
-**Check:** the checklist shows the login password and the order MFA and
-trading token steps done.
+**Check:** the checklist shows the login password, order MFA and trading
+token steps done.
 
 ---
 
-## 5. Add brokers
+## 4. Brokers
 
-Every broker is added the same way, on **Settings > Connections**: choose
-the broker, fill in the form, and save. The app tests the connection as it
-saves it, shows the result, and keeps checking it on a timer
-(`BROKER_PROBE_INTERVAL_SECONDS` on Settings > Schedulers and data; 0 pauses
-it). Secrets are stored in the database, encrypted with the key from step 3.
+The app asks brokers in this order of priority, and this step adds them in
+the same order. Add only the ones you use.
+
+| Priority | Broker | Server | What you need from the broker |
+|---|---|---|---|
+| 1 | OANDA (FX, CFDs) | none, a cloud API | A practice account: API token and account id |
+| 2 | MetaTrader 5 | VM 120 | A demo account: login, password, server, and the server's time zone |
+| 3 | Interactive Brokers | CT 130 | A paper account: username and password |
+| 4 | Alpaca (US stocks, options) | none, a cloud API | A paper API key and secret |
+
+Every broker is added the same way, on **Settings > Connections**: choose the
+broker, fill in the form, and save. The app tests the connection as it saves
+it, shows the result, and keeps checking it on a timer
+(`BROKER_PROBE_INTERVAL_SECONDS` on Settings > Schedulers and data). Secrets
+are stored encrypted with the key from step 2.4.
 
 Every form has these fields:
 
 | Field | Meaning |
 |---|---|
-| Name | The account's name in the app: lower-case letters, digits, `-` and `_`, such as `oanda-practice`. Requests address it as `broker=<broker>&account=<name>`. |
+| Name | The account's name in the app: lower-case letters, digits, `-` and `_`, such as `oanda-practice`. |
 | Mode | `paper` or `live`. It is binding: a live order to a paper connection is refused. Use **paper** throughout this guide. |
 | Currency | The account currency, such as `USD`. |
 | Default | The connection used for this broker when a request names no account. |
-| Limits, prop rules | Optional per-account risk limits; set them in [step 7](#7-alerts-and-safety-nets). |
+| Limits, prop rules | Optional per-account risk limits; see [step 6](#6-alerts-and-safety-nets). |
 
 Add one broker at a time and check it before the next, so a failure has one
-cause. Do not put brokers in `.env` or in an answers file: install refuses
-them there.
+cause.
 
-### 5.1 OANDA
+### 4.1 OANDA
 
-A cloud API; there is no host to prepare.
+A cloud API, with no server to build.
 
 1. In OANDA's account portal, generate an API token for your practice
-   account and note its account id (`101-001-1234567-001` style).
+   account and note its account id.
 2. On Settings > Connections, add **OANDA**, Mode **paper**, with the
    **Account ID** and **API token**. Paper connections use OANDA's practice
    environment.
 
-**If the test fails:** the token or account id is wrong, the token belongs
-to a live account, or the app host has no outbound HTTPS.
+**If the test fails:** the token or account id is wrong, the token belongs to
+a live account, or the app server has no outbound HTTPS.
 
-### 5.2 MetaTrader 5
+### 4.2 MetaTrader 5 (VM 120)
 
 MT5 needs a terminal that stays logged in, and the `MetaTrader5` Python
-package that drives it only runs on Windows Python. So each account gets a
-terminal and a small HTTP service next to it, the **sidecar**
-(`mt5_sidecar/`), on a host of its own: Windows, or Linux under Wine. Not the
-app host (its LXC is unprivileged and its stack is Linux-only).
+package that drives it only runs on Windows Python. So each MT5 account gets
+a terminal and a small HTTP service next to it, the **sidecar**
+(`mt5_sidecar/`). They need a virtual machine: a container shares the host's
+Linux kernel and cannot run them. Linux running the terminal under Wine is
+the scripted route; a Windows VM is the alternative.
 
-One sidecar serves one terminal logged in to one account. Two accounts need
-two terminals and two sidecars on two ports.
+One sidecar serves one terminal logged in to one account. A second account
+gets a second terminal and sidecar, on another port, in the same VM.
 
-#### Make the shared secret
+#### Create the VM
 
-The app and the sidecar share a secret that the sidecar demands on every
-request. Anything that reaches the sidecar with it can trade the account.
-Make it on the MT5 host and keep it for the app's form:
+Script: **Ubuntu VM**. Choose Ubuntu **24.04**, answer **Yes** to
+Cloud-Init, and **No** to the default settings, then:
+
+| Setting | Value |
+|---|---|
+| Virtual Machine ID | `120` |
+| Disk size | `40` GiB |
+| Hostname | `mt5-bridge` |
+| CPU cores | `2` |
+| RAM | `4096` MiB |
+| Start VM when completed | **No** |
+
+When the script finishes, open VM 120 > **Cloud-Init** in the Proxmox UI, set
+a user and password (or an SSH key), set **IP Config** to `<mt5-address>`
+with your gateway, click **Regenerate Image**, and start the VM. Log in on its
+**Console** and run `sudo -i` for a root shell.
+
+#### Install the terminal and sidecar
+
+[`install/mt5-sidecar-wine.sh`](../install/mt5-sidecar-wine.sh) installs
+Wine, Windows Python, the MT5 terminal and the sidecar, with one systemd
+service per account. Download it and give it the demo account's details
+through the environment (it never takes secrets as arguments):
 
 ```bash
-openssl rand -hex 32
+curl -fsSL https://raw.githubusercontent.com/41agent41/tradingapp/master/install/mt5-sidecar-wine.sh -o /root/mt5-sidecar-wine.sh
+export MT5_BRIDGE_SECRET="$(openssl rand -hex 32)"
+read -rp 'MT5 login: ' MT5_LOGIN
+read -rsp 'MT5 password: ' MT5_PASSWORD; echo
+read -rp 'MT5 server: ' MT5_SERVER
+export MT5_LOGIN MT5_PASSWORD MT5_SERVER
+bash /root/mt5-sidecar-wine.sh install --instance demo-a --port 9100 --server-tz Europe/Athens
+unset MT5_BRIDGE_SECRET MT5_PASSWORD
 ```
 
-It goes in the sidecar's own settings as `MT5_BRIDGE_SECRET` (never in the
-app's `.env`). The sidecar refuses to listen on anything but loopback without
-a secret of at least 24 characters.
+Use your broker's server time zone for `--server-tz`, and add
+`--installer-url <url>` to install your broker's own MT5 build. The secret
+is generated once and saved in `/etc/mt5-sidecar/demo-a.env`; anything that
+reaches the sidecar with it can trade the account. The script keeps the
+sidecar to demo accounts (`MT5_ALLOW_REAL=false`).
 
-#### Sidecar settings
+**Exit 0** ends with `check: PASS (demo account ...)`.
 
-The sidecar reads `sidecar.env` next to `server.py` (Windows), or
-`/etc/mt5-sidecar/<instance>.env` (Linux), copied from
-[`mt5_sidecar/sidecar.env.example`](../mt5_sidecar/sidecar.env.example).
-Variables in the process environment win over the file.
+**Exit 4** means the terminal needs a person, to log in or to turn on
+**Algo Trading**. Run `bash /root/mt5-sidecar-wine.sh vnc --instance demo-a`,
+open an SSH tunnel to the VM from your computer
+(`ssh -L 5900:localhost:5900 <user>@<mt5-address>`), connect a VNC viewer to
+`localhost:5900`, and do it there. Then
+`bash /root/mt5-sidecar-wine.sh check --instance demo-a`.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `MT5_BRIDGE_SECRET` | none | The shared secret above |
-| `MT5_SIDECAR_HOST` / `MT5_SIDECAR_PORT` | `127.0.0.1` / `9100` | Listen address; set the host to the address the app host reaches |
-| `MT5_TERMINAL_PATH` | none | `terminal64.exe` to attach to, and relaunch if it exits |
-| `MT5_PORTABLE` | `false` | Start the terminal in portable mode (one install folder per account) |
-| `MT5_LOGIN` / `MT5_PASSWORD` / `MT5_SERVER` | none | Log the terminal in on start. With `MT5_LOGIN` set, a terminal logged in to another account is refused. |
-| `MT5_SERVER_TZ` | `UTC` | The trade server's time zone, such as `Europe/Athens` |
-| `MT5_MAGIC` | `61000` | Magic number on every order this sidecar sends |
-| `MT5_DEVIATION_POINTS` | `20` | Slippage accepted on market orders |
-| `MT5_ALLOW_REAL` | `false` | Allow orders on a real-money account. Leave it `false`. |
+For a second account, run the install again with another `--instance` name
+and `--port 9101`.
 
-In the terminal, turn **Algo Trading** on (`/health` reports
-`trading_disabled` while it is off), and raise **Tools > Options > Charts >
-Max bars in chart** if you need long histories.
+<details>
+<summary><b>Alternative: a Windows VM</b></summary>
 
-#### Option 1: Windows
+There is no community script for Windows. Create the VM in the Proxmox UI
+with **Create VM**: ID `120`, a Windows 11 ISO and the
+[VirtIO driver ISO](https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso),
+2 cores, 4096 MiB, a 64 GB disk. When the Windows installer finds no disk,
+load the VirtIO SCSI driver from the second CD. Give it the address
+`<mt5-address>`.
+
+Then:
 
 1. Install the MT5 terminal from your broker. For two accounts, install it
-   twice into two folders, such as `C:\MT5-A` and `C:\MT5-B`, and set
-   `MT5_PORTABLE=true`.
+   twice into two folders and set `MT5_PORTABLE=true`.
 2. Install 64-bit Python 3.11 from python.org, and put the repository (or
-   just `mt5_sidecar/`) on the host, for example at `C:\tradingapp`.
-3. Install and try the sidecar in the foreground:
+   just `mt5_sidecar/`) on the VM, for example at `C:\tradingapp`.
+3. Install the sidecar and try it:
 
    ```powershell
    cd C:\tradingapp\mt5_sidecar
    python -m pip install -r requirements.txt
-   copy sidecar.env.example sidecar.env    # then edit it
+   copy sidecar.env.example sidecar.env    # then edit it: the settings below
    python server.py
    ```
 
-4. Run it at logon. The terminal needs an interactive desktop, so use Task
-   Scheduler with automatic logon, not a Windows service:
+4. Run it at logon with Task Scheduler and automatic logon (the terminal
+   needs a desktop, so not a Windows service):
 
    ```powershell
    $action  = New-ScheduledTaskAction -Execute "powershell.exe" `
@@ -388,100 +520,190 @@ Max bars in chart** if you need long histories.
    Register-ScheduledTask -TaskName "MT5 sidecar A" -Action $action -Trigger $trigger -Settings $settings
    ```
 
-   `run-sidecar.ps1` restarts the sidecar if it exits and logs to
-   `sidecar.log`. For a second account, copy the folder, give it its own
-   `sidecar.env` (another port and terminal path) and register a second
-   task.
-5. Allow the port through Windows Firewall from the app host only, and give
-   the VM its own time source.
+5. In Windows Firewall, allow the sidecar's port from `<app-address>` only.
+6. In the terminal, turn on **Algo Trading**.
 
-#### Option 2: Linux under Wine (scripted)
+</details>
 
-The terminal and Windows Python run under Wine, headless on Xvfb, in a VM or
-a privileged LXC. [`install/mt5-sidecar-wine.sh`](../install/mt5-sidecar-wine.sh)
-does all of it, one Wine prefix, env file and systemd unit per account. As
-root on the MT5 host, with the demo account's details passed through the
-environment, not the command line:
+#### Sidecar settings
 
-```bash
-export MT5_BRIDGE_SECRET="$(openssl rand -hex 32)"
-export MT5_LOGIN=... MT5_PASSWORD=... MT5_SERVER=...
-./mt5-sidecar-wine.sh install --instance broker-a --port 9100 --server-tz Europe/Athens
-unset MT5_BRIDGE_SECRET MT5_PASSWORD
-```
+The script writes these to `/etc/mt5-sidecar/<instance>.env`; on Windows they
+go in `sidecar.env` next to `server.py`
+([`mt5_sidecar/sidecar.env.example`](../mt5_sidecar/sidecar.env.example)).
 
-It saves the secret in `/etc/mt5-sidecar/broker-a.env` with
-`MT5_ALLOW_REAL=false`; a re-run without `MT5_BRIDGE_SECRET` keeps the saved
-one. `--installer-url` takes your broker's own MT5 installer. Exit 0 ends
-with `check: PASS (demo account ...)`.
+| Variable | Default | Meaning |
+|---|---|---|
+| `MT5_BRIDGE_SECRET` | none | The shared secret; the sidecar refuses to listen beyond loopback without one of at least 24 characters |
+| `MT5_SIDECAR_HOST` / `MT5_SIDECAR_PORT` | `127.0.0.1` / `9100` | Listen address (the script sets `0.0.0.0`) |
+| `MT5_TERMINAL_PATH` | none | `terminal64.exe` to attach to, and relaunch if it exits |
+| `MT5_PORTABLE` | `false` | Start the terminal in portable mode (one install folder per account) |
+| `MT5_LOGIN` / `MT5_PASSWORD` / `MT5_SERVER` | none | Log the terminal in on start. With `MT5_LOGIN` set, a terminal logged in to another account is refused. |
+| `MT5_SERVER_TZ` | `UTC` | The trade server's time zone, such as `Europe/Athens` |
+| `MT5_MAGIC` | `61000` | Magic number on every order this sidecar sends |
+| `MT5_DEVIATION_POINTS` | `20` | Slippage accepted on market orders |
+| `MT5_ALLOW_REAL` | `false` | Allow orders on a real-money account. Leave it `false`. |
 
-Exit 4 means the terminal needs a person: run
-`./mt5-sidecar-wine.sh vnc --instance broker-a`, tunnel to it
-(`ssh -L 5900:localhost:5900 root@<mt5-host>`), connect a VNC viewer to
-`localhost:5900`, log in if asked and turn Algo Trading on. Then
-`./mt5-sidecar-wine.sh check --instance broker-a`.
+For long chart histories, raise **Tools > Options > Charts > Max bars in
+chart** in the terminal.
 
-By hand instead, the script's steps are:
+#### Check it from the app server
+
+In CT 110's Console, so the network path is tested too, with the secret from
+`/etc/mt5-sidecar/demo-a.env` on VM 120:
 
 ```bash
-sudo apt install wine64 xvfb winbind
-sudo useradd -m -d /var/lib/mt5 mt5
-sudo -u mt5 -i
-export WINEPREFIX=/var/lib/mt5/broker-a WINEDEBUG=-all
-wget https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe
-xvfb-run wine python-3.11.9-amd64.exe /quiet InstallAllUsers=0 PrependPath=1
-wget https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe
-xvfb-run wine mt5setup.exe /auto
-wine python -m pip install -r /opt/tradingapp/mt5_sidecar/requirements.txt
-```
-
-Log in once by hand (VNC on the Xvfb display) and turn Algo Trading on, put
-the settings in `/etc/mt5-sidecar/broker-a.env` with
-`MT5_TERMINAL_PATH=C:\Program Files\MetaTrader 5\terminal64.exe`, then:
-
-```bash
-sudo cp /opt/tradingapp/mt5_sidecar/deploy/mt5-sidecar@.service /etc/systemd/system/
-sudo systemctl enable --now mt5-sidecar@broker-a
-```
-
-Firewall the port to the app host only (`ufw` or the hypervisor's
-firewall).
-
-#### Check the sidecar from the app host
-
-From the app host, so the network path is tested too:
-
-```bash
-SECRET=...    # the sidecar's MT5_BRIDGE_SECRET
+SECRET=paste-the-secret
 H="X-MT5-Bridge-Secret: $SECRET"
-curl -H "$H" http://<mt5-host>:9100/health         # status ok, account_type demo
-curl http://<mt5-host>:9100/health                 # must be refused (401)
-curl -H "$H" "http://<mt5-host>:9100/symbols?query=EURUSD&limit=20"
-curl -H "$H" "http://<mt5-host>:9100/quote?symbol=EURUSD"
-date -u +%s                                        # compare with the quote's time
+curl -H "$H" http://<mt5-address>:9100/health          # status ok, account_type demo
+curl http://<mt5-address>:9100/health                  # refused: 401
+curl -H "$H" "http://<mt5-address>:9100/symbols?query=EURUSD&limit=20"
+curl -H "$H" "http://<mt5-address>:9100/quote?symbol=EURUSD"
+date -u +%s                                            # compare with the quote's time
 ```
 
 While the market is open, the quote's `time` is within a few seconds of
-`date -u +%s`. If it is off by whole hours, `MT5_SERVER_TZ` is wrong. Note
-the exact symbol names `/symbols` returns (`EURUSD`, `EURUSD.a`, `EURUSDm`);
-you may need them for a symbol map below.
+`date -u +%s`. If it is off by whole hours, the server time zone is wrong.
+Note the exact symbol names `/symbols` returns (`EURUSD`, `EURUSD.a`,
+`EURUSDm`); you may need them for a symbol map ([4.6](#46-not-yet-on-the-form-symbol-maps-and-account-info-from)).
 
 #### Add the connection
 
 On Settings > Connections, add **MetaTrader 5**, Mode **paper**:
 
-- **Bridge URL**: the sidecar as the app host sees it, such as
-  `http://10.7.3.23:9100`.
-- **Bridge secret**: the sidecar's `MT5_BRIDGE_SECRET`.
-- **Server timezone** (optional): the trade server's zone.
+- **Bridge URL**: `http://<mt5-address>:9100`
+- **Bridge secret**: the sidecar's `MT5_BRIDGE_SECRET`
+- **Server timezone** (optional): the trade server's zone
 
-For a second account, add a second connection pointing at the second
-sidecar.
+For a second account, add a second connection with port 9101.
 
 **If the test fails:** check the URL and port, that the secret is the same
-on both sides, and the firewall rule.
+on both sides, and the firewall (step 8).
 
-#### Not yet on the form: symbol maps and "account info from"
+### 4.3 Interactive Brokers (CT 130)
+
+IB Gateway is a Java application that must stay logged in. CT 130 runs it in
+Docker with the [`ib-gateway`](https://github.com/gnzsnz/ib-gateway-docker)
+image, which bundles IBC to log in, accept the API settings and restart it
+daily without a person.
+
+#### Create the container
+
+Script: **Docker**. In Advanced Install:
+
+| Setting | Value |
+|---|---|
+| Container ID | `130` |
+| Hostname | `ib-gateway` |
+| Disk size | `16` GB |
+| CPU cores | `2` |
+| RAM | `4096` MiB |
+| IPv4 | `<ib-address>` |
+| Nesting | **Yes** |
+| Keyctl | **Yes** |
+
+Answer **No** to exposing the Docker TCP socket.
+
+#### Run IB Gateway
+
+In CT 130's Console, create a folder with two files:
+
+```bash
+mkdir -p /opt/ib-gateway && cd /opt/ib-gateway
+nano .env
+```
+
+`.env`, with your **paper** account's login:
+
+```ini
+TWS_USERID=your-ib-username
+TWS_PASSWORD=your-ib-password
+TRADING_MODE=paper
+READ_ONLY_API=no
+TIME_ZONE=Etc/UTC
+AUTO_RESTART_TIME=11:59 PM
+TWOFA_TIMEOUT_ACTION=restart
+RELOGIN_AFTER_TWOFA_TIMEOUT=yes
+```
+
+```bash
+chmod 600 .env
+nano docker-compose.yml
+```
+
+`docker-compose.yml`:
+
+```yaml
+services:
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    restart: always
+    env_file: .env
+    ports:
+      - "4002:4004"
+```
+
+Then start it:
+
+```bash
+docker compose up -d
+docker compose logs -f      # wait for the login to finish, then Ctrl+C
+```
+
+`READ_ONLY_API=no` lets the app place orders (paper ones included). Inside
+the container the API answers on its loopback, which IB Gateway always
+trusts, so there is no Trusted IPs list to keep: the firewall in step 8 is
+what limits port 4002 to the app server. The IB API has no authentication of
+its own, so do not skip that step.
+
+To see the Gateway's screen (for example when IB asks for a second factor),
+add `VNC_SERVER_PASSWORD=...` to `.env` and `- "127.0.0.1:5900:5900"` under
+`ports`, run `docker compose up -d`, and reach it through an SSH tunnel to
+CT 130. Never publish VNC to the network.
+
+**Check,** in CT 110's Console:
+
+```bash
+nc -vz <ib-address> 4002
+```
+
+#### Add the connection
+
+On Settings > Connections, add **Interactive Brokers**, Mode **paper**:
+**Gateway host** `<ib-address>`, **Port** `4002`, and a **Client ID** that no
+other program uses on that Gateway (`1` if nothing else connects).
+
+**If the test fails:** the Gateway has not finished logging in
+(`docker compose logs` in CT 130), the port or client id is wrong, or a
+firewall blocks the port.
+
+A logged-out Gateway looks like a quiet market: data just stops. The
+connection check on Settings > Connections shows it, and so do the alerts in
+step 6.
+
+### 4.4 Alpaca
+
+A cloud API, with no server to build.
+
+1. In Alpaca's paper dashboard, generate an API key and secret.
+2. On Settings > Connections, add **Alpaca**, Mode **paper**, with the
+   **API key** and **API secret**. Paper connections use Alpaca's paper
+   endpoint.
+
+**If the test fails:** the key is wrong or belongs to a live account, or the
+app server has no outbound HTTPS.
+
+### 4.5 Priority and the default broker
+
+A request that names no broker goes to the highest-priority one that has a
+connection: OANDA, then MT5, then IB, then Alpaca. Change the order on the
+Connections tab, or pin one with `DEFAULT_BROKER` on Settings > Trading. A
+broker with no connection answers 501.
+
+**Check:** each connection shows as connected on Settings > Connections, the
+header's health badge agrees, and the Getting started checklist shows the
+broker step done.
+
+### 4.6 Not yet on the form: symbol maps and "account info from"
 
 Two MT5 options cannot be entered on the Connections form yet:
 
@@ -494,81 +716,31 @@ Two MT5 options cannot be entered on the Connections form yet:
 
 Until the form has them there are two workarounds, each with a catch:
 
-1. **SQL, on a connection added in the app.** The backend passes every key
-   of a connection's stored settings to the broker service, so:
+1. **SQL, on a connection added in the app.** The app passes every key of a
+   connection's stored settings to the broker service, so in CT 100:
 
-   ```sql
+   ```bash
+   runuser -u postgres -- psql -d tradingapp <<'SQL'
    UPDATE broker_connections
       SET settings = settings || '{"symbol_map": {"EURUSD": "EURUSD.a"}}'::jsonb
-    WHERE platform = 'mt5' AND account = 'broker-a-demo';
+    WHERE platform = 'mt5' AND account = 'demo-a';
+   SQL
    ```
 
-   then `./tradingapp.sh restart`. The catch: saving that connection on the
+   then restart the app (`runuser -u tradingapp -- ./tradingapp.sh restart`
+   in `/opt/tradingapp` on CT 110). The catch: saving that connection on the
    form again rebuilds its settings from the form's fields and drops the map,
-   so re-run the update after every edit.
+   so run the update again after every edit.
 2. **A `BROKER_CONNECTIONS` manifest in `.env`.** A JSON list of connections
    that may carry `symbol_map` and `account_info_from` (the format is at the
    top of [`broker_service/connections.py`](../broker_service/connections.py)).
-   The catch: for a broker it names, `.env` replaces every connection added
-   in the app (they show as overridden), so all of that broker's accounts
-   must then live in the manifest, with secrets in further `.env` lines it
-   refers to by name.
-
-### 5.3 Interactive Brokers
-
-IB Gateway (or TWS) is a Java GUI that must stay logged in. Give it a host of
-its own; on Proxmox, [PROXMOX.md § 6](PROXMOX.md#6-create-the-ib-gateway-container)
-runs it headless in an LXC with IBC for automatic login and daily restarts.
-
-1. Install IB Gateway (stable, standalone) and log in to your **paper**
-   account.
-2. In `Configure > Settings > API > Settings` (TWS: `File > Global
-   Configuration > API > Settings`):
-   - turn on **Enable ActiveX and Socket Clients**;
-   - set the **Socket port**: `4002` for paper (`4001` is live);
-   - add the app host's address to **Trusted IPs**;
-   - untick **Read-Only API** if the app will place orders, paper ones
-     included.
-3. Run the Gateway host in UTC. The broker service reads IB's times in
-   `IB_TIMEZONE`, which defaults to UTC.
-4. Firewall the socket port to the app host only. The IB API has no
-   authentication beyond the trusted-IP list.
-5. On Settings > Connections, add **Interactive Brokers**, Mode **paper**:
-   **Gateway host**, **Port** `4002`, and a **Client ID** no other program
-   uses on that Gateway (`1` if nothing else connects).
-
-**Check,** from the app host: `nc -vz <gateway-host> 4002`.
-
-**If the test fails:** the Gateway is not logged in, the app host is not in
-its Trusted IPs, the port or client id is wrong, or a firewall blocks the
-port.
-
-### 5.4 Alpaca
-
-A cloud API; there is no host to prepare.
-
-1. In Alpaca's paper dashboard, generate an API key and secret.
-2. On Settings > Connections, add **Alpaca**, Mode **paper**, with the
-   **API key** and **API secret**. Paper connections use Alpaca's paper
-   endpoint.
-
-**If the test fails:** the key is wrong or belongs to a live account, or the
-app host has no outbound HTTPS.
-
-### 5.5 Priority and the default broker
-
-A request that names no broker goes to the highest-priority one that has a
-connection: OANDA, then MT5, then IB, then Alpaca. Change the order on the
-Connections tab, or pin one with `DEFAULT_BROKER` on Settings > Trading. A
-broker with no connection answers 501.
-
-**Check:** each connection shows as connected on Settings > Connections, the
-header's health badge agrees, and the Getting started checklist shows the
-broker step done.
+   The catch: for a broker it names, `.env` replaces every connection added in
+   the app (they show as overridden), so all of that broker's accounts must
+   then live in the manifest, with their secrets in further `.env` lines.
 
 ---
 
-## 6. Choose the market data to collect
+## 5. Market data
 
 On **Settings > Schedulers and data**:
 
@@ -588,7 +760,7 @@ a chart of a collected instrument shows bars.
 
 ---
 
-## 7. Alerts and safety nets
+## 6. Alerts and safety nets
 
 Set these before anything runs unattended. All are on the Settings page.
 
@@ -597,10 +769,11 @@ Set these before anything runs unattended. All are on the Settings page.
    `https://api.telegram.org/bot<TOKEN>/getUpdates`, and set
    `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
 2. **Dead-man's switch** (same tab): create a check on a monitor **off this
-   host**, such as healthchecks.io with a 1-minute period and 5-minute grace.
-   Set `HEARTBEAT_URL`, and `HEARTBEAT_FAIL_URL` (the check's `/fail` URL).
-   The backend pings it every minute, and the fail URL when the broker
-   service is unreachable.
+   Proxmox host**, such as healthchecks.io with a 1-minute period and
+   5-minute grace. Set `HEARTBEAT_URL`, and `HEARTBEAT_FAIL_URL` (the check's
+   `/fail` URL). The backend pings it every minute, and the fail URL when the
+   broker service is unreachable. If the whole host goes down, this is what
+   tells you.
 3. **Kill switch**: leave `KILL_SWITCH_ACTION` at `notify` until the paper
    runbook has shown what its alerts look like.
 4. **Risk limits** (Settings > Risk): set `TRADING_DAY_TIMEZONE` to your
@@ -608,167 +781,266 @@ Set these before anything runs unattended. All are on the Settings page.
    Per-account limits and prop-firm rules go on each connection's form; a
    connection's own value wins over the fleet-wide one.
 
-**Check:** `curl -s http://<app-host>:4000/api/health | jq .services.heartbeat`
+**Check:** `curl -s http://<app-address>:4000/api/health | jq .services.heartbeat`
 shows `last_result: ok`, the monitor's check turns green, and the Getting
 started checklist is complete.
 
 ---
 
-## 8. Reverse proxy, TLS and firewall
+## 7. Reverse proxy and TLS (CT 140)
 
 The app serves plain HTTP on port 3000. Anywhere beyond an isolated lab
-network, put TLS in front. The frontend forwards `/api` and `/socket.io` to
-the backend itself, so one proxy location covers everything.
+network, put TLS in front of it. Nginx Proxy Manager does that from a web
+page, including the Let's Encrypt certificate. The app's frontend forwards
+`/api` and `/socket.io` to the backend itself, so one proxy host covers
+everything.
 
-1. Install nginx and certbot:
+You need a domain name, such as `trading.example.com`, pointing at the
+address where Nginx Proxy Manager is reachable.
 
-   ```bash
-   sudo apt install -y nginx certbot python3-certbot-nginx
-   ```
+### 7.1 Create the container
 
-2. Create `/etc/nginx/sites-available/tradingapp`:
+Script: **Nginx Proxy Manager**. In Advanced Install: ID `140`, hostname
+`tradingapp-proxy`, IPv4 `<proxy-address>`; keep the default sizes.
 
-   ```nginx
-   map $http_upgrade $connection_upgrade {
-       default upgrade;
-       ''      close;
-   }
+### 7.2 Add the proxy host
 
-   server {
-       listen 80;
-       server_name trading.example.com;
+1. Open `http://<proxy-address>:81` and sign in. The script's page on
+   community-scripts.org gives the first login; you are asked to change it.
+2. **Hosts > Proxy Hosts > Add Proxy Host**:
+   - **Domain Names**: `trading.example.com`
+   - **Scheme** `http`, **Forward Hostname / IP** `<app-address>`,
+     **Forward Port** `3000`
+   - tick **Websockets Support** and **Block Common Exploits**
+3. On the **SSL** tab: **Request a new SSL Certificate**, tick **Force SSL**
+   and **HTTP/2 Support**, agree to the terms, and save.
 
-       location / {
-           proxy_pass http://127.0.0.1:3000;
-           proxy_http_version 1.1;
-           proxy_set_header Host              $host;
-           proxy_set_header X-Real-IP         $remote_addr;
-           proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-           proxy_set_header X-Forwarded-Proto $scheme;
-           proxy_set_header Upgrade           $http_upgrade;
-           proxy_set_header Connection        $connection_upgrade;
-           proxy_read_timeout 3600s;
-       }
-   }
-   ```
+### 7.3 Tell the app about the proxy
 
-3. Enable it, then let certbot add the certificate and the HTTPS redirect:
+On **Settings > Network** in the app:
 
-   ```bash
-   sudo ln -s /etc/nginx/sites-available/tradingapp /etc/nginx/sites-enabled/
-   sudo nginx -t && sudo systemctl reload nginx
-   sudo certbot --nginx -d trading.example.com --redirect
-   ```
+- **Allowed browser origins** (`CORS_ORIGINS`): `https://trading.example.com`
+- **Trusted reverse proxies** (`TRUST_PROXY`): `<proxy-address>`. Login
+  lockout and the settings history then record the visitor's address instead
+  of the proxy's.
 
-4. On **Settings > Network**, set **Allowed browser origins**
-   (`CORS_ORIGINS`) to `https://trading.example.com`, and **Trusted reverse
-   proxies** (`TRUST_PROXY`) to `172.20.0.1`, the Docker network gateway
-   nginx reaches the frontend from. Login lockout and the settings history
-   then record the visitor's address instead of nginx's. Both apply at once.
-   (The session cookie is marked secure from nginx's `X-Forwarded-Proto`;
-   `COOKIE_SECURE` on Settings > Security is only for a proxy that does not
-   send it.)
+Both apply at once. The session cookie is marked secure from the proxy's
+`X-Forwarded-Proto` header, so `COOKIE_SECURE` on Settings > Security is only
+for a proxy that does not send it.
 
-5. Firewall:
-
-   ```bash
-   sudo ufw allow OpenSSH
-   sudo ufw allow 'Nginx Full'
-   sudo ufw enable
-   ```
-
-   Docker writes its own iptables rules ahead of ufw's, so ports 3000 and
-   4000 stay reachable from the LAN even with ufw on. Filter them where
-   Docker cannot reach: the hypervisor's firewall
-   ([PROXMOX.md § 8](PROXMOX.md#8-firewall-at-the-hypervisor)) or the
-   network's. The broker service (8000) and the bundled database (5432) are
-   published on loopback only, and Redis not at all. Never publish the broker
-   service: it can place orders.
-
-**Check:** `https://trading.example.com` loads and signs in, and from another
-machine `nc -vz <app-host> 8000` fails.
+**Check:** `https://trading.example.com` loads and signs in.
 
 ---
 
-## 9. Backups and start on boot
+## 8. Firewall
 
-1. **The encryption key.** Confirm it is stored off the host (step 3). A
-   database backup without it restores everything except the stored secrets.
-2. **Database dumps.** For the bundled database, a daily cron job on the app
-   host:
+Docker publishes the app's ports by writing its own firewall rules, which run
+before anything inside the container, so a firewall inside CT 110 cannot
+close them. The Proxmox firewall filters each guest's traffic on the host,
+before it reaches the guest, and nothing inside a guest can get around it.
+Every rule below is set in the Proxmox web UI.
 
-   ```bash
-   #!/usr/bin/env bash
-   # /usr/local/bin/backup-tradingapp.sh
-   set -euo pipefail
-   cd /home/tradingapp/tradingapp
-   BACKUP_DIR=/var/backups/tradingapp
-   mkdir -p "$BACKUP_DIR"
-   docker compose -f docker-compose.yml -f docker-compose.db.yml exec -T postgres \
-     pg_dump -U tradingapp -Fc tradingapp > "$BACKUP_DIR/tradingapp_$(date -u +%Y%m%d_%H%M%S).dump"
-   find "$BACKUP_DIR" -name 'tradingapp_*.dump' -mtime +14 -delete
-   ```
+### 8.1 Name the servers
 
-   ```bash
-   sudo chmod +x /usr/local/bin/backup-tradingapp.sh
-   echo '10 2 * * * root /usr/local/bin/backup-tradingapp.sh' | sudo tee /etc/cron.d/tradingapp-backup
-   ```
+**Datacenter > Firewall > Alias > Add**, one per server you built:
 
-   For an external database, run `pg_dump -Fc` on the database host or use
-   the service's own backups. Copy dumps off the host. Restoring is in
-   [OPERATIONS.md § Backups](OPERATIONS.md#backups-and-restore).
-3. **Start on boot.** The containers use `restart: unless-stopped`, so they
-   come back after a reboot unless you stopped them. For an explicit unit
-   (and after `./tradingapp.sh stop`), use the script, never a bare
-   `docker compose up`, which would leave out the bundled database:
+| Name | IP/CIDR |
+|---|---|
+| `tradingapp_db` | `<db-address>` |
+| `tradingapp_app` | `<app-address>` |
+| `mt5_bridge` | `<mt5-address>` |
+| `ib_gateway` | `<ib-address>` |
+| `tradingapp_proxy` | `<proxy-address>` |
+| `prometheus` | `<prometheus-address>` |
 
-   ```ini
-   # /etc/systemd/system/tradingapp.service
-   [Unit]
-   Description=TradingApp
-   After=docker.service network-online.target
-   Wants=network-online.target
-   Requires=docker.service
+Rules then refer to these names instead of addresses.
 
-   [Service]
-   Type=oneshot
-   RemainAfterExit=yes
-   WorkingDirectory=/home/tradingapp/tradingapp
-   ExecStart=/bin/bash /home/tradingapp/tradingapp/tradingapp.sh start
-   ExecStop=/bin/bash /home/tradingapp/tradingapp/tradingapp.sh stop
-   User=tradingapp
+### 8.2 Turn the firewall on for each guest's network
 
-   [Install]
-   WantedBy=multi-user.target
-   ```
+The community scripts do not do this. For each container: select it >
+**Network** > `net0` > **Edit** > tick **Firewall** > **OK**. For VM 120:
+**Hardware** > **Network Device** > **Edit** > tick **Firewall**. Without
+it, the rules below do nothing for that guest.
 
-   ```bash
-   sudo systemctl daemon-reload && sudo systemctl enable --now tradingapp
-   ```
+### 8.3 Rules per guest
 
-   `install/install.sh service` writes the same unit for `/opt/tradingapp`.
+For each guest, add its rules under *guest* > **Firewall** > **Add**
+(Direction `in`, Action `ACCEPT`, Protocol `tcp`), then under *guest* >
+**Firewall** > **Options** set **Firewall** to **Yes** and **Input Policy**
+to **DROP**.
 
-**Check:** a dump file exists, and after a reboot (outside market hours)
-`./tradingapp.sh test` passes with nothing else done.
+| Guest | Allow | From (Source) |
+|---|---|---|
+| CT 100 database | port `5432` | `tradingapp_app` |
+| CT 110 app | port `3000` | `tradingapp_proxy` (without step 7: your LAN) |
+| CT 110 app | port `4000` | `prometheus` (only with step 9) |
+| VM 120 MT5 | ports `9100-9101` | `tradingapp_app` |
+| CT 130 IB Gateway | port `4002` | `tradingapp_app` |
+| CT 140 proxy | ports `80`, `443` | anywhere (leave Source empty) |
+| CT 140 proxy | port `81` | your own computer or LAN only |
+| every guest | port `22` | your LAN, if you use SSH |
+
+The Proxmox console keeps working with every guest's firewall on: it does not
+go over the guest's network.
+
+The datacenter-level switch (**Datacenter > Firewall > Options > Firewall**)
+must also be on for any of this to apply. If it is off on your host, turn it
+on only after adding rules at **Datacenter > Firewall** that let your
+computer reach the host's web UI (`8006`) and SSH (`22`); turning it on
+applies a default-drop policy to the host itself, and a mistake there needs
+the physical console to undo.
+
+**Check,** from your own computer: `https://trading.example.com` works, and
+`http://<app-address>:3000` and port `5432` on `<db-address>` do not answer.
+
+> The broker service (port 8000) and Redis are not published beyond the app
+> server's own loopback, so they need no rule.
 
 ---
 
-## 10. Verify
+## 9. Monitoring (CT 150 and CT 160)
+
+Optional. Prometheus collects the backend's metrics and evaluates the alert
+rules shipped with the app; Grafana shows the dashboard.
+
+### 9.1 Prometheus (CT 150)
+
+Script: **Prometheus**. In Advanced Install: ID `150`, hostname
+`prometheus`, IPv4 `<prometheus-address>`, disk `16` GB.
+
+In CT 150's Console, fetch the alert rules and add the app as a target:
 
 ```bash
-./tradingapp.sh status     # every container up
-./tradingapp.sh test       # frontend, backend, broker service, readiness
-./tradingapp.sh doctor     # database, schema, key, brokers, and what .env holds
+curl -fsSL https://raw.githubusercontent.com/41agent41/tradingapp/master/ops/prometheus/alerts.yml \
+  -o /etc/prometheus/alerts.yml
+nano /etc/prometheus/prometheus.yml
 ```
 
-- [ ] `doctor` shows `state: ready` and `.env` holds only the seven keys
+Add to `prometheus.yml` (keep what is there; `rule_files` is a top-level key,
+the job goes under the existing `scrape_configs:`):
+
+```yaml
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: tradingapp-backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['<app-address>:4000']
+```
+
+```bash
+promtool check config /etc/prometheus/prometheus.yml
+systemctl restart prometheus
+```
+
+**Check:** `http://<prometheus-address>:9090/targets` shows
+`tradingapp-backend` up. Port 4000 on CT 110 must allow `prometheus`
+(step 8.3).
+
+### 9.2 Grafana (CT 160)
+
+Script: **Grafana**. In Advanced Install: ID `160`, hostname `grafana`.
+
+1. Open `http://<grafana-address>:3000` and sign in (`admin` / `admin`, then
+   change it).
+2. **Connections > Data sources > Add > Prometheus**, URL
+   `http://<prometheus-address>:9090`, **Save & test**.
+3. **Dashboards > New > Import**, upload
+   [`ops/grafana/tradingapp-dashboard.json`](../ops/grafana/tradingapp-dashboard.json)
+   and pick the Prometheus data source.
+
+What the rules and dashboard cover is in
+[OPERATIONS.md § Prometheus and Grafana](OPERATIONS.md#prometheus-and-grafana).
+The community-scripts **Prometheus Proxmox VE Exporter** adds per-guest CPU,
+memory and disk pressure, which on a busy host shows up as app latency with
+no sign inside the containers.
+
+Monitoring on the same host goes down with it, so it does not replace the
+dead-man's switch in step 6.
+
+---
+
+## 10. Backups, snapshots and boot order
+
+### 10.1 Backup job
+
+**Datacenter > Backup > Add**:
+
+- **Selection**: 100, 110, 130 and 120 (and 140 to 160 if you built them)
+- **Storage**: a backup storage, ideally a Proxmox Backup Server or a share
+  off this host
+- **Schedule**: daily, outside market hours
+- **Mode**: **Snapshot**
+- **Notification**: on failure
+
+A backup of CT 100 restores the server, but its data only as of a power
+cut. The nightly dumps from step 1.5 are the clean copy of the data; keep
+both.
+
+### 10.2 What the backups do not hold
+
+- **The encryption key** (step 2.4). Keep it in a password manager. Without
+  it a restored database opens everything except the stored secrets.
+- **Broker logins** in `/opt/ib-gateway/.env` on CT 130 and
+  `/etc/mt5-sidecar/` on VM 120 are in the guest backups, but keep your own
+  record of them too.
+- Docker images, Redis and the app's internal secrets are rebuilt or
+  regenerated; nothing to keep.
+
+### 10.3 Before an upgrade
+
+Snapshot the app and the database together, since an upgrade can change the
+database: CT 110 and CT 100 > **Snapshots** > **Take Snapshot**. Roll both
+back to the same point if the upgrade goes wrong, and delete old snapshots:
+they take real space on LVM-thin and ZFS. Upgrading is in
+[OPERATIONS.md § Upgrade](OPERATIONS.md#upgrade-in-place).
+
+### 10.4 Boot order
+
+The community scripts set every guest to start at boot. Set the order under
+*guest* > **Options** > **Start/Shutdown order**:
+
+| Guest | Order | Startup delay |
+|---|---|---|
+| CT 100 database | 1 | 30 |
+| VM 120 MT5, CT 130 IB Gateway | 2 | 30 |
+| CT 110 app | 3 | |
+| CT 140 proxy, CT 150, CT 160 | 4 | |
+
+The backend waits for its database however long it takes, so a slow
+database start delays the app but does not break it. Inside CT 110 the
+installer's service starts the stack.
+
+**Check:** reboot the Proxmox host outside market hours. Afterwards, every
+guest is running, the app signs in and the connections show connected.
+
+---
+
+## 11. Verify
+
+In CT 110:
+
+```bash
+cd /opt/tradingapp
+runuser -u tradingapp -- ./tradingapp.sh status     # every container up
+runuser -u tradingapp -- ./tradingapp.sh test       # frontend, backend, broker service, readiness
+runuser -u tradingapp -- ./tradingapp.sh doctor     # database, schema, key, brokers, and what .env holds
+bash /root/install.sh verify                        # the installer's checks again
+```
+
+- [ ] `doctor` shows `state: ready`, and `.env` holds only the seven database
+      and key lines
 - [ ] Encryption key stored off the host
 - [ ] Getting started checklist complete on the Settings page
 - [ ] Each broker connection is paper and connected
 - [ ] A chart renders with data for a collected instrument
 - [ ] The heartbeat check is green on its monitor
-- [ ] TLS in front, and the broker service unreachable from the LAN
-- [ ] A database backup exists, and a reboot brings everything back
+- [ ] The app is reached through TLS, and the guests' ports are closed to
+      everything but the servers that need them
+- [ ] A dump exists in CT 100, the backup job has run once, and a host
+      reboot brings everything back
 
 Next: take a strategy through paper trading with
 [PAPER_TRADING.md](PAPER_TRADING.md). Day-to-day running, upgrades and
@@ -776,208 +1048,202 @@ troubleshooting are in [OPERATIONS.md](OPERATIONS.md).
 
 ---
 
-## Appendix A: Unattended install
+## Appendix A: The installer in detail
 
-[`install/install.sh`](../install/install.sh) runs steps 1 to 3, the boot
-unit and a machine-checked verification from an answers file. It is written
-to be driven by an agent (or a person) top to bottom, and installs in
-**paper mode** only. It does what needs root (packages, Docker, the deploy
-user, the checkout, the boot unit) and then runs `./tradingapp.sh install` as
-the deploy user, so an unattended install and a hand install end up the
-same. Brokers are not part of it: they are added in the app (step 5).
-
-| Script | Runs on | Does |
-|---|---|---|
-| [`install/proxmox-create-ct.sh`](../install/proxmox-create-ct.sh) | Proxmox VE host | Creates the app LXC with the Docker-in-LXC features ([PROXMOX.md § 5.1](PROXMOX.md#51-create-it)) |
-| [`install/install.sh`](../install/install.sh) | App host | Steps 1 to 3, verification, boot unit |
-| [`install/mt5-sidecar-wine.sh`](../install/mt5-sidecar-wine.sh) | MT5 host | Step 5.2 option 2 |
-
-### A.1 Rules for an agent
-
-Each rule exists because breaking it can lose money or lock the operator out.
-
-1. **Paper only.** Never turn on `LIVE_TRADING_ENABLED` or
-   `SYSTEMATIC_EXECUTION_ENABLED` (answers, `.env` or the Settings page).
-   Never add a live connection, use an IB live port (4001 or 7496), or set
-   `MT5_ALLOW_REAL=true`. `install.sh` refuses the two switches with exit
-   code 3; do not work around it.
-2. **Never invent an operator input.** Broker logins, API keys, Telegram
-   tokens, heartbeat URLs, addresses and an external database's password come
-   from the operator. The scripts generate the internal secrets (encryption
-   key, bundled database password, broker service token, Redis password); do
-   not choose these. Generate an MT5 sidecar secret with `openssl`, never type
-   one. The login password is chosen by the operator in the browser.
-3. **Never print a secret** into chat, a ticket, a commit or a kept log. Say
-   where it is instead (for example `/opt/tradingapp/.env`, key
-   `SETTINGS_ENCRYPTION_KEY`). The setup code counts: tell the operator how
-   to read it, not the code.
-4. **Stop on a FAIL.** Fix only what the linked section describes and re-run
-   the step. If it still fails, stop and report (A.7).
-5. **Re-running is safe; editing by hand is not.** Do not edit `.env` unless
-   the operator asks.
-6. **Do not open ports to the internet** or change firewalls unless asked.
-7. **Never clear data on your own.** `./tradingapp.sh forget-secrets` and
-   `clean --include-database` destroy data. Only on the operator's word.
-8. **Exit codes:** `0` done; `1` a step failed (read the output); `2` an input
-   is missing or invalid (ask the operator); `3` refused for safety (stop and
-   report); `4` (MT5 script) the operator must act on the terminal's screen.
-
-### A.2 Inputs
-
-| Input | Needed for | Notes |
-|---|---|---|
-| Target: a Proxmox host, or an Ubuntu 22.04+/Debian 12+ host | everything | Root SSH (or `pct exec`) |
-| App host address, gateway, bridge, CT id, storage | Proxmox only | Not in `172.20.0.0/16` |
-| Database: bundled or external | `INSTALL_DB_MODE` | Default bundled. External needs step 2B done, its host and password |
-| Saved encryption key | a rebuild that keeps a database | From `./tradingapp.sh backup-key` on the old host |
-| Broker accounts, hosts and credentials | step 5, optional | Entered in the app, never in the answers |
-| Telegram bot token and chat id, heartbeat URLs | step 7, recommended | Settings page, or the answers |
-
-With none of the optional inputs the result is a working app with no broker.
-
-### A.3 Proxmox container (skip on an existing host)
-
-On the Proxmox host (`pveversion` 8 or later, and `chronyc tracking` showing
-leap status `Normal`):
+[`install/install.sh`](../install/install.sh) is what step 2 runs. It does
+what needs root (packages, Docker, the `tradingapp` user, the checkout, the
+boot service) and runs `./tradingapp.sh install` as that user for the app
+itself. It installs in **paper mode** only. Every phase is safe to re-run: it
+checks what is in place and does only what is missing, so the same command
+also upgrades and repairs.
 
 ```bash
-mkdir -p /root/tradingapp-install && cd /root/tradingapp-install
-for f in proxmox-create-ct.sh install.sh install.answers.example mt5-sidecar-wine.sh; do
-  curl -fsSLO "https://raw.githubusercontent.com/41agent41/tradingapp/master/install/$f"
-done
-chmod +x *.sh
-
-# One container with the bundled database; drop --bundled-db for an external one.
-./proxmox-create-ct.sh --ctid 110 --ip 10.7.3.20/24 --gw 10.7.3.1 \
-  --storage local-lvm --bundled-db
-
-pct exec 110 -- mkdir -p -m 700 /etc/tradingapp
-pct push 110 install.sh /root/install.sh --perms 0755
-pct push 110 install.answers.example /etc/tradingapp/install.answers --perms 0600
+bash /root/install.sh all                              # every phase
+bash /root/install.sh deploy verify service            # from a failed phase on
+bash /root/install.sh repo env deploy verify           # upgrade to the latest version
 ```
 
-**Pass:** exit 0 and `container 110 is up ... and resolves names`. The script
-adds `fuse=1` itself on ZFS storage. From here everything runs inside the
-container as root (`pct enter 110`).
-
-### A.4 Answers
-
-On an existing host, fetch `install.sh` and the example as above, then:
-
-```bash
-install -d -m 700 /etc/tradingapp
-install -m 600 install.answers.example /etc/tradingapp/install.answers
-```
-
-A fresh install with the bundled database needs nothing in it. The example
-documents every key. There are three kinds:
-
-- `INSTALL_*`: the installer itself (`INSTALL_DIR`, default `/opt/tradingapp`;
-  `INSTALL_USER`, `tradingapp`; `INSTALL_REF`, `master`; `INSTALL_DB_MODE`,
-  `bundled`; `INSTALL_HEALTH_TIMEOUT`, 900).
-- `POSTGRES_*` and `SETTINGS_ENCRYPTION_KEY`: go to `.env`. External database:
-  `INSTALL_DB_MODE=external`, `POSTGRES_HOST`, `POSTGRES_PASSWORD`, and
-  `POSTGRES_SSL=true` if it needs TLS. A rebuild that keeps a database: also
-  `SETTINGS_ENCRYPTION_KEY`.
-- Anything else is an app setting (for example `TELEGRAM_BOT_TOKEN`,
-  `HEARTBEAT_URL`), stored in the app's database after deploy and not left in
-  `.env`.
-
-Broker keys (`IB_HOST`, `BROKER_CONNECTIONS`, `OANDA_*`, `ALPACA_*`, `MT5_*`)
-are refused with exit 2.
-
-**Pass:** `stat -c %a /etc/tradingapp/install.answers` prints `600`.
-
-### A.5 Run it
-
-```bash
-/root/install.sh all
-```
+### A.1 Phases
 
 | Phase | Does |
 |---|---|
-| `preflight` | OS, root, packages, disk, network, the `172.20.0.0/16` check |
-| `docker` | Installs Docker (fuse-overlayfs first on ZFS); `hello-world` must pass |
-| `user` | Creates the deploy user, in the docker group |
-| `repo` | Clones or fast-forwards the checkout; refuses if tracked files were changed |
-| `env` | `tradingapp.sh install --env-only` as the deploy user |
-| `schema` | Nothing: the backend migrates its database at startup |
-| `deploy` | `tradingapp.sh install` as the deploy user: build, start, wait until ready, store app settings from the answers |
+| `preflight` | OS, root, packages, memory, disk, network, the `172.20.0.0/16` check |
+| `docker` | Uses Docker if it works (it does after the Docker script); otherwise installs it. `hello-world` must pass |
+| `user` | Creates the `tradingapp` user, in the docker group |
+| `repo` | Clones or fast-forwards `/opt/tradingapp`; refuses if tracked files were changed |
+| `env` | Writes `.env`: the database lines and the encryption key, nothing else |
+| `schema` | Nothing: the backend creates and migrates its tables when it starts |
+| `deploy` | Builds and starts the stack, waits until ready, stores app settings from the answers |
 | `verify` | The checks below, written to `/var/log/tradingapp-install/report.txt` |
-| `service` | The systemd unit that starts the stack on boot |
+| `service` | The systemd service that starts the stack at boot |
 
-**Pass:** exit 0, and the last lines read `result: PASS` and
-`done: preflight docker user repo env schema deploy verify service`. The full
-log is `/var/log/tradingapp-install/install.log`. After a failure, fix the
-cause and re-run from the failed phase, for example
-`/root/install.sh deploy verify service`.
+The full log is `/var/log/tradingapp-install/install.log`.
+
+To create CT 110 without the community script's prompts (for automation),
+[`install/proxmox-create-ct.sh`](../install/proxmox-create-ct.sh) does the
+same from the Proxmox shell.
 
 | Phase | Typical failure | Fix |
 |---|---|---|
-| preflight | address in `172.20.0.0/16`; disk; GitHub unreachable | [PROXMOX.md § 2](PROXMOX.md#2-plan-the-deployment); network |
-| docker | daemon will not start; `hello-world` fails; `vfs` driver | [PROXMOX.md § 12](PROXMOX.md#12-proxmox-troubleshooting) (`nesting`, `keyctl`, `fuse` on ZFS) |
-| repo | local changes in the checkout | ask the operator before discarding |
-| env | exit 2 naming a key; exit 3 | ask for the key; for 3, rule 1 |
-| deploy | `waiting_for_database` until the timeout | step 2B (address, `pg_hba.conf`, password, extension) |
+| preflight | address in `172.20.0.0/16`; disk; GitHub unreachable | [Plan the addresses](#plan-the-addresses); the container's network |
+| docker | daemon will not start; `hello-world` fails; `vfs` driver | [OPERATIONS.md § Proxmox containers](OPERATIONS.md#proxmox-containers) |
+| repo | local changes in `/opt/tradingapp` | look at them (`git -C /opt/tradingapp status`) before discarding |
+| env | exit 2 naming a key; exit 3 | supply the key; for 3, rule 1 below |
+| deploy | `waiting_for_database` until the timeout | step 1: the address, `pg_hba.conf`, the password, the extension, the firewall |
 | deploy | `migration_failed`, `key_mismatch`, `refusing to start` | [OPERATIONS.md § Troubleshooting](OPERATIONS.md#troubleshooting) |
 
-The report has one line per check, `CHECK <id> PASS|FAIL|SKIP <detail>`:
+### A.2 Answers
+
+`/etc/tradingapp/install.answers`, mode 600, `KEY=VALUE` lines. Every key is
+documented in [`install/install.answers.example`](../install/install.answers.example).
+There are three kinds:
+
+- `INSTALL_*`: the installer itself. `INSTALL_DIR` (default `/opt/tradingapp`),
+  `INSTALL_USER` (`tradingapp`), `INSTALL_REPO_URL`, `INSTALL_REF` (`master`),
+  `INSTALL_DB_MODE` (`bundled` or `external`), `INSTALL_HEALTH_TIMEOUT` (900
+  seconds).
+- `POSTGRES_*` and `SETTINGS_ENCRYPTION_KEY`: written to `.env`.
+  `POSTGRES_HOST` and `POSTGRES_PASSWORD` for an external database;
+  `POSTGRES_SSL=true` if it needs TLS; `SETTINGS_ENCRYPTION_KEY` only when
+  rebuilding against a database that already holds data.
+- Anything else is an app setting, such as `TELEGRAM_BOT_TOKEN` or
+  `HEARTBEAT_URL`. It is stored in the app's database after deploy, not left
+  in `.env`.
+
+Broker keys (`IB_HOST`, `BROKER_CONNECTIONS`, `OANDA_*`, `ALPACA_*`, `MT5_*`)
+are refused with exit 2. `LIVE_TRADING_ENABLED` or
+`SYSTEMATIC_EXECUTION_ENABLED` set to anything but `false` is refused with
+exit 3.
+
+### A.3 Checks
+
+The report has one line per check, `CHECK <id> PASS|FAIL|SKIP <detail>`, and
+ends with `result: PASS` or `result: FAIL`.
 
 | Check | Proves | On FAIL |
 |---|---|---|
 | V1 | every container is running | `./tradingapp.sh status`, `logs` |
 | V2 | `/api/health` is healthy | the detail names the failing side |
-| V3 | the database answers the backend (`/api/database/health`) | step 2B |
+| V3 | the database answers the backend | step 1 |
 | V4 | the broker service answers `/health` | `./tradingapp.sh logs` |
 | V5 | the frontend serves | `install.sh deploy` |
 | V6 | the API refuses an unauthenticated call | someone changed the auth setup |
 | V7 | the broker service refuses calls without its token | "token not found": the internal secrets volume is missing; `install.sh deploy` |
 | V8 | the broker service is on loopback only | someone changed `docker-compose.yml` |
-| V9 | `/api/health/ready`: schema up to date, key matches | the deploy rows above |
+| V9 | the schema is up to date and the key matches | the deploy rows above |
 | V10 | no startup refusals in the backend log | the log line names the key |
-| V11 | live trading off in `.env` and in the app | rule 1: stop and report |
-| V12 | `.env` mode 600, owned by the deploy user | `install.sh env` |
-| V13 | broker connections, all paper | a live one: rule 1, stop and report |
-| V16 | the dead-man's switch is pinging | wait a minute, re-run `install.sh verify` |
+| V11 | live trading is off in `.env` and in the app | rule 1: stop and report |
+| V12 | `.env` is mode 600, owned by `tradingapp` | `install.sh env` |
+| V13 | every broker connection is paper | a live one: rule 1, stop and report |
+| V16 | the dead-man's switch is pinging | wait a minute, run `install.sh verify` again |
 
 SKIP is not a failure: V13 is SKIP until a broker is added and V16 until a
 heartbeat URL is set. There is no V14 or V15; the app checks brokers itself.
 
-### A.6 After the script
+Exit codes: `0` done; `1` a step failed (read the output); `2` an input is
+missing or invalid; `3` refused for safety. `mt5-sidecar-wine.sh` adds `4`:
+a person must act on the terminal's screen.
 
-The operator then:
+### A.4 Rebuilding the app server
 
-1. Opens `http://<app-host>:3000` and signs in (step 4). Tell them how to read
-   the setup code (`runuser -u tradingapp -- ./tradingapp.sh setup-code` in
-   `/opt/tradingapp`), not the code. A rebuild that kept its database has no
-   setup screen.
-2. Runs `./tradingapp.sh backup-key` and stores the key. Do not run it for
-   them.
-3. Adds the brokers (step 5). The agent may prepare the broker hosts (IB
-   Gateway packages, the MT5 script) but the logins and the form are the
-   operator's.
-4. Sets alerts (step 7), on the Settings page or in the answers followed by
-   `/root/install.sh deploy`, then `/root/install.sh verify` for V16.
+When CT 110 is lost or broken, the database in CT 100 is untouched and the
+app can be rebuilt around it. You need the key from step 2.4.
 
-On Proxmox, snapshot the container once it passes:
-`pct snapshot 110 clean-install --description "install.sh all: PASS"`. Test
-a reboot outside market hours (`pct reboot 110`, then `/root/install.sh
-verify`).
+1. Remove the old CT 110, or stop it and give the new one another ID.
+2. Do step 2 again, adding `SETTINGS_ENCRYPTION_KEY=<the saved key>` to the
+   answers.
 
-Upgrade with the same script and answers: `/root/install.sh repo env deploy
-verify`. A rebuild that keeps an external database is a fresh `all` with
-`INSTALL_DB_MODE=external`, `POSTGRES_HOST`, `POSTGRES_PASSWORD` and the saved
-`SETTINGS_ENCRYPTION_KEY`; it passes with V9 confirming the key and V13
-listing the existing connections. A host that runs the bundled database
-cannot be switched to an external one by the installer: that is a data move
-([OPERATIONS.md](OPERATIONS.md#move-from-the-bundled-to-an-external-database)).
+The backend adopts the existing tables, applies only pending migrations,
+checks the key and comes up configured: no setup screen, and your login,
+brokers and settings are already there. Then redo step 8.3's rules if the
+address changed. If it stops with `key_mismatch`, the key is wrong; see
+[OPERATIONS.md § Lost encryption key](OPERATIONS.md#lost-encryption-key).
 
-### A.7 Report to the operator
+### A.5 Rules for an agent running the install
 
-1. The outcome: `PASS`, or the phase that stopped and its exit code.
-2. `/var/log/tradingapp-install/report.txt` (it holds no secrets).
-3. The address, and that the first visit asks for the setup code.
-4. A reminder to save the encryption key, if not confirmed.
-5. What was skipped and the input it needs.
-6. What only the operator can do next: broker logins, TLS (step 8), firewall
-   rules, backups (step 9).
+The installer is written so that an agent can drive it. Each rule exists
+because breaking it can lose money or lock the operator out.
+
+1. **Paper only.** Never turn on `LIVE_TRADING_ENABLED` or
+   `SYSTEMATIC_EXECUTION_ENABLED` (answers, `.env` or the Settings page).
+   Never add a live connection, set `TRADING_MODE=live` for IB Gateway, or
+   set `MT5_ALLOW_REAL=true`. Do not work around exit code 3.
+2. **Never invent an operator input.** Broker logins, API keys, Telegram
+   tokens, heartbeat URLs, addresses and the database password come from the
+   operator. The scripts generate the internal secrets (encryption key,
+   broker service token, Redis password); do not choose them. Generate an MT5
+   sidecar secret with `openssl`, never type one. The login password is
+   chosen by the operator in the browser.
+3. **Never print a secret** into chat, a ticket, a commit or a kept log. Say
+   where it is instead (for example `/opt/tradingapp/.env`, key
+   `SETTINGS_ENCRYPTION_KEY`). The setup code counts: tell the operator how to
+   read it, not the code.
+4. **Stop on a FAIL.** Fix only what the linked section describes and re-run
+   the phase. If it still fails, stop and report.
+5. **Re-running is safe; editing by hand is not.** Do not edit `.env` unless
+   the operator asks.
+6. **Do not open ports to the internet** or change firewalls unless asked.
+7. **Never clear data on your own.** `./tradingapp.sh forget-secrets` and
+   `clean --include-database` destroy data. Only on the operator's word.
+
+Report to the operator: the outcome (`PASS`, or the phase that stopped and its
+exit code), `/var/log/tradingapp-install/report.txt` (it holds no secrets),
+the address and that the first visit asks for the setup code, a reminder to
+save the encryption key, what was skipped and the input it needs, and what
+only the operator can do next (broker logins, TLS, firewall, backups).
+
+---
+
+## Appendix B: One container for evaluation
+
+To try the app, one Docker container can hold the app and its own database.
+The data then shares a disk and a backup with the app, so move it to a
+database server ([OPERATIONS.md § Move to an external database](OPERATIONS.md#move-from-the-bundled-to-an-external-database))
+before you collect history worth keeping.
+
+1. Create CT 110 as in [step 2.1](#21-create-the-container), with a `100` GB
+   disk and `12288` MiB of RAM.
+2. In its Console, with no answers to give:
+
+   ```bash
+   mkdir -p -m 700 /etc/tradingapp
+   install -m 600 /dev/null /etc/tradingapp/install.answers
+   curl -fsSL https://raw.githubusercontent.com/41agent41/tradingapp/master/install/install.sh -o /root/install.sh
+   bash /root/install.sh all
+   ```
+
+   Without `INSTALL_DB_MODE=external`, the installer runs TimescaleDB as a
+   container next to the app and generates its password. Its data lives in
+   the `tradingapp_pgdata` Docker volume (Docker shows it as
+   `tradingapp_tradingapp_pgdata`).
+3. Continue with [step 2.4](#24-save-the-encryption-key).
+
+## Appendix C: Without Proxmox
+
+The app runs on any Ubuntu 22.04+ or Debian 12+ machine with 4 GB of memory
+and 15 GB of free disk. The servers in this guide map onto it directly:
+
+- **Database:** any PostgreSQL 15, 16 or 17 with TimescaleDB, prepared as in
+  steps 1.2 to 1.4 (on another machine, or a managed service that offers the
+  extension). Or let the app run its own, as in Appendix B.
+- **App:** as root, steps 2.2 and 2.3 unchanged. Or, as a user with sudo
+  rights (not root), from a clone of the repository:
+
+  ```bash
+  git clone https://github.com/41agent41/tradingapp.git ~/tradingapp
+  cd ~/tradingapp
+  ./tradingapp.sh install                  # with its own database
+  ./tradingapp.sh install --external-db    # with yours: asks for its address and password
+  ./tradingapp.sh backup-key
+  ```
+
+  `./tradingapp.sh install` installs Docker if it is missing and accepts
+  `--answers FILE` and `--non-interactive`.
+- **Brokers:** the MT5 sidecar needs a Linux machine for the Wine script or a
+  Windows machine (step 4.2). IB Gateway runs anywhere Docker does, with the
+  same two files as step 4.3.
+- **TLS:** any reverse proxy that forwards to port 3000 with WebSocket
+  support and sends `X-Forwarded-Proto`; set `CORS_ORIGINS` and
+  `TRUST_PROXY` as in step 7.3 (for a proxy on the app server itself,
+  `TRUST_PROXY` is `172.20.0.1`, the Docker network's gateway). Docker's published ports bypass `ufw`, so
+  close 3000 and 4000 at a firewall Docker does not control.

@@ -4,8 +4,10 @@ How to run an installed TradingApp: the management commands, where settings
 live, upgrades and rebuilds, going live, data collection, monitoring,
 backups and troubleshooting. Installing is in [INSTALL.md](INSTALL.md).
 
-Every command here runs on the app host, as the deploy user, in the checkout:
-`./tradingapp.sh COMMAND`.
+Every command here runs on the app server, as the deploy user, in the
+checkout: `./tradingapp.sh COMMAND`. On a server built with
+[INSTALL.md](INSTALL.md), that is the `tradingapp` user in `/opt/tradingapp`:
+in CT 110's Console, `su - tradingapp`, then `cd /opt/tradingapp`.
 
 ## Contents
 
@@ -83,7 +85,7 @@ How settings behave:
   `MT5_BRIDGE_URL`, `OANDA_API_TOKEN`, `ALPACA_API_KEY` and the rest) still
   define connections, and for that broker replace the ones added in the app,
   which then show as overridden. Use them only as a break-glass, or for the
-  symbol map gap in [INSTALL.md § 5.2](INSTALL.md#not-yet-on-the-form-symbol-maps-and-account-info-from).
+  symbol map gap in [INSTALL.md § 4.6](INSTALL.md#46-not-yet-on-the-form-symbol-maps-and-account-info-from).
 
 Settings you are most likely to look for (the page lists every key with its
 help text):
@@ -127,22 +129,27 @@ remove the line and restart again.
 
 ### Upgrade in place
 
+Snapshot the app and database containers first
+([INSTALL.md § 10.3](INSTALL.md#103-before-an-upgrade)). Then, as root in
+CT 110:
+
 ```bash
-git pull
-./tradingapp.sh install
+bash /root/install.sh repo env deploy verify
 ```
+
+On a host installed by hand instead: `git pull`, then `./tradingapp.sh install`.
 
 Migrations apply themselves when the backend starts. On a host set up by an
 older version, `install` also removes `.env` lines nothing reads any more
-(after a backup to `.env.bak.<timestamp>`). On Proxmox, snapshot the app and
-database containers first ([PROXMOX.md § 10.3](PROXMOX.md#103-pre-change-snapshots)).
+(after a backup to `.env.bak.<timestamp>`).
 
 ### Rebuild on a new host, keeping an external database
 
-1. Prepare the host and clone ([INSTALL.md step 1](INSTALL.md#1-prepare-the-host)).
-2. Put the database details and the saved `SETTINGS_ENCRYPTION_KEY` in an
-   answers file (mode 600), or type them when asked.
-3. `./tradingapp.sh install --external-db [--answers FILE]`.
+Build the new app server as in [INSTALL.md step 2](INSTALL.md#2-app-server-ct-110),
+with the saved key added to the answers as `SETTINGS_ENCRYPTION_KEY`
+([INSTALL.md § A.4](INSTALL.md#a4-rebuilding-the-app-server)). On a host
+installed by hand: `./tradingapp.sh install --external-db`, with the same
+values in `--answers FILE` or typed when asked.
 
 The backend adopts the existing schema, applies only pending migrations and
 checks the key. It comes up configured: no setup screen, and the brokers are
@@ -160,7 +167,7 @@ removes it. To move to a new host, take a dump first and restore it there.
 `install --external-db` refuses on a host that runs the bundled database,
 because it would leave the data behind. Move the data first:
 
-1. Prepare the new database ([INSTALL.md step 2B](INSTALL.md#2b-external-database)).
+1. Build the database server ([INSTALL.md step 1](INSTALL.md#1-database-server-ct-100)).
 2. On the app host, stop the backend and dump the bundled database:
 
    ```bash
@@ -169,12 +176,12 @@ because it would leave the data behind. Move the data first:
      pg_dump -U tradingapp -Fc tradingapp > /tmp/tradingapp.dump
    ```
 
-3. Copy the dump to the database host and restore it:
+3. Copy the dump to the database server and restore it:
 
    ```bash
-   sudo -u postgres psql -d tradingapp -c 'SELECT timescaledb_pre_restore();'
-   sudo -u postgres pg_restore -d tradingapp --no-owner --role=tradingapp /tmp/tradingapp.dump
-   sudo -u postgres psql -d tradingapp -c 'SELECT timescaledb_post_restore();'
+   runuser -u postgres -- psql -d tradingapp -c 'SELECT timescaledb_pre_restore();'
+   runuser -u postgres -- pg_restore -d tradingapp --no-owner --role=tradingapp /tmp/tradingapp.dump
+   runuser -u postgres -- psql -d tradingapp -c 'SELECT timescaledb_post_restore();'
    ```
 
    An error that the `timescaledb` extension already exists is expected.
@@ -254,7 +261,7 @@ Safety rails:
 Which instruments and timeframes are stored, how often and for how long is
 the data collection table on Settings > Schedulers and data
 (`data_collection_config`; API `/api/market-data/collection`). Setting it up
-is [INSTALL.md step 6](INSTALL.md#6-choose-the-market-data-to-collect).
+is [INSTALL.md step 5](INSTALL.md#5-market-data).
 
 - Each backfill pass (`BACKFILL_INTERVAL_MINUTES`) fetches every enabled
   entry whose newest bar is older than its interval, over the recent
@@ -381,18 +388,20 @@ Keep the encryption key with the backups, but not on the same host:
 `./tradingapp.sh backup-key`. A dump restores everything; without its key,
 everything except the stored secrets.
 
-Taking dumps is [INSTALL.md step 9](INSTALL.md#9-backups-and-start-on-boot)
-(bundled database) or [PROXMOX.md § 10.2](PROXMOX.md#102-database-dumps)
-(database container). Managed databases have their own point-in-time
-recovery; prefer it.
+Taking dumps on the database server is
+[INSTALL.md § 1.5](INSTALL.md#15-nightly-dumps). For the bundled database,
+the same `pg_dump -Fc` runs through `docker compose -f docker-compose.yml -f
+docker-compose.db.yml exec -T postgres pg_dump -U tradingapp -Fc tradingapp`
+on the app server. Managed databases have their own point-in-time recovery;
+prefer it.
 
 Restore a `-Fc` dump into a database where the `timescaledb` extension exists,
 with the backend stopped:
 
 ```bash
-sudo -u postgres psql -d tradingapp -c 'SELECT timescaledb_pre_restore();'
-sudo -u postgres pg_restore -d tradingapp -c --no-owner --role=tradingapp <file>.dump
-sudo -u postgres psql -d tradingapp -c 'SELECT timescaledb_post_restore();'
+runuser -u postgres -- psql -d tradingapp -c 'SELECT timescaledb_pre_restore();'
+runuser -u postgres -- pg_restore -d tradingapp -c --no-owner --role=tradingapp <file>.dump
+runuser -u postgres -- psql -d tradingapp -c 'SELECT timescaledb_post_restore();'
 ```
 
 For the bundled database, run the same through
@@ -459,7 +468,7 @@ heartbeat URL.
 
 | Symptom | Fix |
 |---|---|
-| "Don't run this script as root" | Create a sudo user and clone again in its home ([INSTALL.md step 1](INSTALL.md#1-prepare-the-host)). Don't work around it with `sudo -u` from root. |
+| "Don't run this script as root" | `tradingapp.sh` runs as the deploy user: `su - tradingapp`, or `runuser -u tradingapp -- ./tradingapp.sh ...`. As root, use `install/install.sh` ([INSTALL.md step 2](INSTALL.md#23-run-the-installer)). |
 | "docker group membership is not active" | The script re-runs itself under `sg docker`. If it still says so: `newgrp docker` (or log out and in), then re-run. |
 | "Docker is installed but not running" | `sudo systemctl start docker` |
 | Port already in use | `sudo ss -ltnp \| grep -E ':(3000\|4000\|8000)'`; free it, or set `FRONTEND_PORT` / `BACKEND_PORT` / `BROKER_SERVICE_PORT` in `.env` and `./tradingapp.sh deploy`. |
@@ -470,6 +479,26 @@ heartbeat URL.
 Never run `docker compose down -v` to "fix" volumes: it deletes the bundled
 database and the internal secrets. `./tradingapp.sh clean` keeps them.
 
+### Proxmox containers
+
+| Symptom | Cause and fix |
+|---|---|
+| Docker fails to start, or containerd exits at once | Keyctl is off. CT > **Options** > **Features**: tick **keyctl** and **nesting**, then restart the container. |
+| Docker starts but every `run` fails with an overlay or mount error, or `docker info` shows storage driver `vfs` | Nesting is off, or the storage cannot carry `overlay2`. Tick **nesting** (and **FUSE**) under **Options** > **Features**, `apt install fuse-overlayfs`, put `{ "storage-driver": "fuse-overlayfs" }` in `/etc/docker/daemon.json`, then `rm -rf /var/lib/docker` and `systemctl restart docker`. That discards the images; `bash /root/install.sh deploy` rebuilds them. |
+| Docker warns about `/dev/kmsg` | Harmless in a container. |
+| Docker works only in a privileged container | Don't keep that. Go back to unprivileged and turn on the feature that was missing (nesting, keyctl or FUSE). |
+| `free -h` in a container shows the host's total memory | Restart the container. |
+| A process is killed well below the host's free memory | Container memory is a hard limit. Raise it under **Resources** > **Memory**. |
+| Time is wrong in a container | Fix the host's clock; containers cannot set their own. |
+| The installer warns the clock is not NTP-synchronised | In a container that is the host's job; check the host's time synchronisation. |
+| Firewall rules have no effect on a guest | Its network device lacks the **Firewall** tick ([INSTALL.md § 8.2](INSTALL.md#82-turn-the-firewall-on-for-each-guests-network)). |
+| Everything unreachable after turning on the datacenter firewall | From the physical console: `pve-firewall stop`, fix the rules at **Datacenter** > **Firewall**, then start it again. |
+| Snapshots fail | The storage cannot snapshot (plain directory storage). Move the disk to LVM-thin or ZFS, or rely on the backup job. |
+| Host storage full, containers stuck | Usually old snapshots or backups on local storage. Delete them, then restart the containers. |
+| Routes to part of the LAN vanish on CT 110 only | That part of the LAN overlaps the app's Docker network, `172.20.0.0/16` ([INSTALL.md § Plan the addresses](INSTALL.md#plan-the-addresses)). |
+| `waiting_for_database` on CT 110 | From CT 110: `nc -vz <db-address> 5432`; then the database's `pg_hba.conf` line, the password in `.env`, and CT 100's firewall rule ([INSTALL.md step 1](INSTALL.md#1-database-server-ct-100)). |
+| IB Gateway connection down | In CT 130: `docker compose logs` in `/opt/ib-gateway`. A login IB refuses, or a second factor it asks for, shows there. |
+
 ### Sign-in
 
 | Symptom | Fix |
@@ -478,7 +507,7 @@ database and the internal secrets. `./tradingapp.sh clean` keeps them.
 | Forgot the password or lost the authenticator | [Sign-in and API tokens](#sign-in-and-api-tokens). |
 | Scripts get 401 | Missing or wrong API token. If `NEXT_PUBLIC_API_TOKEN` is still in `.env`, remove it and rotate any token that held that value: it was readable in the page. |
 | CORS error | Only pages on another site calling the API need this: list their exact origins in `CORS_ORIGINS` (Settings > Network). |
-| Logs show nginx's address, not the visitor's | Set `TRUST_PROXY` to `172.20.0.1` (Settings > Network). |
+| Logs show the proxy's address, not the visitor's | Set `TRUST_PROXY` (Settings > Network) to the proxy's address ([INSTALL.md § 7.3](INSTALL.md#73-tell-the-app-about-the-proxy)); for a proxy on the app server itself, `172.20.0.1`. |
 
 ### Brokers
 
@@ -495,7 +524,7 @@ app re-checks every `BROKER_PROBE_INTERVAL_SECONDS`.
 | MT5 sidecar rejects requests | The connection's Bridge secret is not the sidecar's `MT5_BRIDGE_SECRET`. |
 | MT5 `/health` reports `trading_disabled` | Turn Algo Trading on in the terminal. |
 | MT5 quote times off by whole hours | `MT5_SERVER_TZ` on the sidecar is wrong. |
-| Symbol resolution says "ambiguous" | The broker lists several tiers of the pair; the connection needs a symbol map ([INSTALL.md § 5.2](INSTALL.md#not-yet-on-the-form-symbol-maps-and-account-info-from)). |
+| Symbol resolution says "ambiguous" | The broker lists several tiers of the pair; the connection needs a symbol map ([INSTALL.md § 4.6](INSTALL.md#46-not-yet-on-the-form-symbol-maps-and-account-info-from)). |
 | Log line `connection breaker open` | That connection is not answering. Others keep running; it is retried after the cooldown. |
 
 IB Gateway, checked from the app host with `nc -vz <gateway> 4002`:

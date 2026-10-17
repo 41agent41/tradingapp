@@ -3,7 +3,7 @@
 **Purpose:** get Components C and E running end to end against two real MT5
 demo accounts, with auto-execution **off** for most of it and the kill switch
 in notify-only throughout. Start from an install that has passed
-[INSTALL.md](INSTALL.md) step 10. This runbook covers what sits around it:
+[INSTALL.md](INSTALL.md) step 11. This runbook covers what sits around it:
 two broker accounts, their MT5 terminals and sidecars, and the settings to
 turn on in the app, in order.
 
@@ -22,7 +22,7 @@ locked, and `.env` wins. Prefer the page.
 
 Notation: `{BASE}` is the backend URL (e.g. `http://localhost:4000`),
 `{BROKER}` the broker service (e.g. `http://localhost:8000`), `{SIDECAR}` an
-MT5 sidecar (e.g. `http://10.7.3.23:9100`).
+MT5 sidecar (e.g. `http://<mt5-address>:9100`).
 
 Calls to `{BROKER}` other than `/health` need the broker service token in an
 `X-Broker-Service-Token` header. The token is not in `.env`; read it on the
@@ -54,8 +54,8 @@ and the **exact** EURUSD symbol as the terminal shows it (`EURUSD`,
 One MT5 terminal per account, each logged in and left running, and one
 sidecar per terminal: the `MetaTrader5` Python package binds to a single
 terminal, so two accounts means two sidecars on two ports. Install them as in
-[INSTALL.md § 5.2](INSTALL.md#52-metatrader-5) (Windows, or Linux under Wine),
-with a secret of its own for each sidecar. Keep the secrets: you enter them
+[INSTALL.md § 4.2](INSTALL.md#42-metatrader-5-vm-120): both in VM 120, as two instances on
+ports 9100 and 9101, each with a secret of its own. Keep the secrets: you enter them
 in the app in step 11. Do not add the connections in the app yet.
 
 **Verify:** both terminals show "connected" in the bottom-right status bar.
@@ -193,7 +193,7 @@ On Settings > Connections, add an MT5 connection for each account:
 | Name | `broker-a-demo` | `broker-b-demo` |
 | Mode | paper | paper |
 | Currency | USD | USD |
-| Bridge URL | `http://10.7.3.23:9100` | `http://10.7.3.25:9100` |
+| Bridge URL | `http://<mt5-address>:9100` | `http://<mt5-address>:9101` |
 | Bridge secret | sidecar A's `MT5_BRIDGE_SECRET` | sidecar B's `MT5_BRIDGE_SECRET` |
 | Default account for MT5 | on | off |
 
@@ -240,7 +240,7 @@ curl -X POST -H 'Content-Type: application/json' \
 pair. That is working as intended: the connection needs a symbol map, such
 as `{"EURUSD": "EURUSD.a"}`. The connection form on Settings > Connections
 has no symbol map field yet; add it as in
-[INSTALL.md § 5.2](INSTALL.md#not-yet-on-the-form-symbol-maps-and-account-info-from)
+[INSTALL.md § 4.6](INSTALL.md#46-not-yet-on-the-form-symbol-maps-and-account-info-from)
 and repeat this step. If that is not possible, report it with the `/symbols` output from
 step 5.
 

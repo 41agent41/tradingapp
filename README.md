@@ -32,26 +32,28 @@ risk limits, alerts and what data to collect are all set in the app.
 
 ## Quick start
 
-On Ubuntu 22.04+ or Debian 12+, as a user with sudo (not root):
+The app is built for Proxmox VE, one server per job, each created with a
+[community script](https://community-scripts.org):
 
-```bash
-git clone https://github.com/41agent41/tradingapp.git ~/tradingapp
-cd ~/tradingapp
-./tradingapp.sh install        # Docker, .env, bundled database, the stack
-./tradingapp.sh backup-key     # store this key off the host
-```
+| ID | Server | Community script |
+|---|---|---|
+| CT 100 | Database: PostgreSQL + TimescaleDB | PostgreSQL |
+| CT 110 | The app | Docker |
+| VM 120 | MetaTrader 5 terminals and sidecars (optional) | Ubuntu VM |
+| CT 130 | IB Gateway (optional) | Docker |
+| CT 140 | Reverse proxy and TLS | Nginx Proxy Manager |
+| CT 150, CT 160 | Prometheus and Grafana (optional) | Prometheus, Grafana |
 
-Open `http://<host>:3000`, enter the setup code install printed, choose a
-password, and work through **Getting started** on the Settings page. The full
-sequence, with an external database and each broker, is in
-[docs/INSTALL.md](docs/INSTALL.md).
+The database is built first, then the app on top of it:
+[docs/INSTALL.md](docs/INSTALL.md) walks through every step. To try the app
+on one container with its own database, see its
+[Appendix B](docs/INSTALL.md#appendix-b-one-container-for-evaluation).
 
 ## Documentation
 
 | Guide | For |
 |---|---|
-| [docs/INSTALL.md](docs/INSTALL.md) | Installing, step by step: host, database, app, sign-in, brokers (OANDA, MT5, IB, Alpaca), market data, alerts, TLS, backups. Also the unattended installer. |
-| [docs/PROXMOX.md](docs/PROXMOX.md) | Building the hosts on Proxmox VE: database, app, IB Gateway and MT5 guests, firewall, backups, boot order. |
+| [docs/INSTALL.md](docs/INSTALL.md) | Installing on Proxmox VE, step by step: the database server, the app server, sign-in, brokers (OANDA, MT5, IB, Alpaca), market data, alerts, reverse proxy, firewall, monitoring, backups. Also the installer in detail, and installing without Proxmox. |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Running it: commands, settings, upgrades and rebuilds, going live, monitoring, backups, troubleshooting. |
 | [docs/PAPER_TRADING.md](docs/PAPER_TRADING.md) | Taking strategies through paper trading on two MT5 demo accounts, step by step. |
 | [docs/FEATURES.md](docs/FEATURES.md) | What the app does, and what is planned. |
@@ -59,6 +61,8 @@ sequence, with an external database and each broker, is in
 | [docs/plans/](docs/plans/) | Design records for the larger features. |
 
 ## Everyday commands
+
+On the app server, as the `tradingapp` user in `/opt/tradingapp`:
 
 | Command | Does |
 |---|---|

@@ -224,7 +224,7 @@ phase_preflight() {
     fi
     if command -v timedatectl >/dev/null 2>&1; then
         timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q yes ||
-            warn "clock not reported as NTP-synchronised; in an LXC the host's chrony is what matters (docs/PROXMOX.md §3.3)"
+            warn "clock not reported as NTP-synchronised; in an LXC the host's clock is what matters (docs/OPERATIONS.md, Proxmox containers)"
     fi
     log "preflight: ok (server address $ip)"
 }
@@ -251,13 +251,13 @@ phase_docker() {
         if [[ -d /run/systemd/system ]]; then
             systemctl enable --now docker
         fi
-        docker info >/dev/null 2>&1 || fail 1 "Docker is installed but the daemon is not answering (in an LXC: check nesting=1,keyctl=1; docs/PROXMOX.md §12)"
+        docker info >/dev/null 2>&1 || fail 1 "Docker is installed but the daemon is not answering (in an LXC: check nesting=1,keyctl=1; docs/OPERATIONS.md, Proxmox containers)"
     fi
     docker compose version >/dev/null 2>&1 || fail 1 "the docker compose plugin is missing"
     local driver
     driver=$(docker info --format '{{.Driver}}')
-    [[ $driver != vfs ]] || fail 1 "Docker is using the vfs storage driver, which is unusably slow (docs/PROXMOX.md §5.2)"
-    docker run --rm hello-world >/dev/null || fail 1 "docker run hello-world failed (docs/PROXMOX.md §12, Docker-in-LXC)"
+    [[ $driver != vfs ]] || fail 1 "Docker is using the vfs storage driver, which is unusably slow (docs/OPERATIONS.md, Proxmox containers)"
+    docker run --rm hello-world >/dev/null || fail 1 "docker run hello-world failed (docs/OPERATIONS.md, Proxmox containers)"
     log "docker: ok (storage driver $driver)"
 }
 
@@ -550,7 +550,7 @@ phase_service() {
     cat >"$tmp" <<EOF
 # Installed by install/install.sh. Starts the stack on boot through
 # tradingapp.sh, which layers docker-compose.db.yml when .tradingapp.with-db
-# exists (docs/PROXMOX.md §11).
+# exists (docs/INSTALL.md § 10.4).
 [Unit]
 Description=TradingApp
 After=docker.service network-online.target

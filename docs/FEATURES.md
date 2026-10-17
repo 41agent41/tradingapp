@@ -609,7 +609,7 @@ describes adding another.
   and a strategy run targets exactly one venue.
 - **MetaTrader (MT5) via sidecar:** `MetaTrader5` is Windows-only, so MT5 runs as
   a small HTTP service next to the terminal, on Windows or on Linux under Wine.
-  The sidecar ships in [`mt5_sidecar/`](INSTALL.md#52-metatrader-5): it enforces
+  The sidecar ships in [`mt5_sidecar/`](INSTALL.md#42-metatrader-5-vm-120): it enforces
   the shared secret, attaches the stop with the entry and echoes back the stop
   the terminal recorded. The Linux
   [`MT5Adapter`](../broker_service/mt5_adapter.py) is a thin client pointed at
@@ -830,10 +830,10 @@ Cache health surfaces in `/api/health` under `services.cache`. Turn
   ([OPERATIONS.md](OPERATIONS.md#commands)).
 - **Unattended install:** `install/install.sh` with an answers file, ending
   in a machine-checked report
-  ([INSTALL.md Appendix A](INSTALL.md#appendix-a-unattended-install)).
+  ([INSTALL.md Appendix A](INSTALL.md#appendix-a-the-installer-in-detail)).
 - **MT5 sidecar** with a Task Scheduler launcher for Windows and a systemd
   unit and install script for Linux under Wine
-  ([INSTALL.md § 5.2](INSTALL.md#52-metatrader-5)).
+  ([INSTALL.md § 4.2](INSTALL.md#42-metatrader-5-vm-120)).
 
 ### Testing, linting & CI
 
@@ -865,7 +865,7 @@ Not yet implemented. Design records for the larger pieces are in
 - **Connections form:** an MT5 connection's symbol map and its "account info
   from" link cannot be entered on Settings > Connections yet. Until they can,
   they need SQL or a `.env` manifest, each with a catch
-  ([INSTALL.md § 5.2](INSTALL.md#not-yet-on-the-form-symbol-maps-and-account-info-from)).
+  ([INSTALL.md § 4.6](INSTALL.md#46-not-yet-on-the-form-symbol-maps-and-account-info-from)).
 - **Single points of failure per venue:** IB Gateway and each MT5 terminal
   are one logged-in session on one host with no standby. A logout stops that
   venue until someone logs it back in; the connection checks and alerts make

@@ -38,10 +38,10 @@
 #INSTALL_REPO_URL=https://github.com/41agent41/tradingapp.git
 #INSTALL_REF=master
 # bundled: TimescaleDB as a container on this host (docker-compose.db.yml).
-# external: an existing PostgreSQL + TimescaleDB, e.g. the database container
-#           of docs/PROXMOX.md §4. Needs POSTGRES_HOST and
+# external: an existing PostgreSQL + TimescaleDB, e.g. the database server
+#           of docs/INSTALL.md step 1. Needs POSTGRES_HOST and
 #           POSTGRES_PASSWORD below, and the role, database and timescaledb
-#           extension created there first (§5.3).
+#           extension created there first (step 1.3).
 #INSTALL_DB_MODE=bundled
 # Seconds to wait for the stack to report ready after a build.
 #INSTALL_HEALTH_TIMEOUT=900
@@ -50,12 +50,12 @@
 #INSTALL_ALLOW_EXISTING_LIVE=yes
 # This host's address, when the default route does not give the right one
 # (only used for the preflight check and the report).
-#SERVER_IP=10.7.3.20
+#SERVER_IP=<this server's address>
 
 # ---------------------------------------------------------------------------
 # External database (INSTALL_DB_MODE=external only)
 # ---------------------------------------------------------------------------
-#POSTGRES_HOST=10.7.3.21
+#POSTGRES_HOST=<the database server's address>
 #POSTGRES_PORT=5432
 #POSTGRES_USER=tradingapp
 #POSTGRES_DB=tradingapp
@@ -70,7 +70,7 @@
 # ---------------------------------------------------------------------------
 # App settings (optional; each can be set on the Settings page instead)
 # ---------------------------------------------------------------------------
-# Behind nginx/TLS (docs/INSTALL.md step 8), the public origin:
+# Behind a TLS reverse proxy (docs/INSTALL.md step 7), the public origin:
 #CORS_ORIGINS=https://trading.example.com
 
 # Alerting and the dead-man's switch (from the operator; strongly recommended)
