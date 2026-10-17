@@ -1,5 +1,5 @@
 # Runs the MT5 sidecar and restarts it if it exits.
-# Register it with Task Scheduler (see README.md): the MT5 terminal needs an
+# Register it with Task Scheduler (see docs/INSTALL.md § 5.2): the MT5 terminal needs an
 # interactive desktop, which a Windows service does not have.
 param(
     [string]$Dir = (Split-Path -Parent $PSScriptRoot),

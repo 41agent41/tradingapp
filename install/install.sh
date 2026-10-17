@@ -12,7 +12,7 @@
 # and a hand install end up the same. Brokers are not in the answers: they are
 # added in the app (Settings > Connections), which checks each one.
 #
-# Written to be driven by an agent following AGENT_INSTALL_RUNBOOK.md. It never
+# Written to be driven by an agent following docs/INSTALL.md Appendix A. It never
 # invents an operator credential, and it never turns live trading on.
 #
 #   install.sh [--answers FILE] PHASE...
@@ -122,9 +122,9 @@ lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 check_answers_safe() {
     local v k brokers=()
     v=$(lower "$(ans LIVE_TRADING_ENABLED false)")
-    [[ $v == false ]] || fail 3 "LIVE_TRADING_ENABLED must be false: this installer only installs paper. Live is a human decision (DEPLOYMENT.md § Enabling live trading)."
+    [[ $v == false ]] || fail 3 "LIVE_TRADING_ENABLED must be false: this installer only installs paper. Live is a human decision (docs/OPERATIONS.md § Going live)."
     v=$(lower "$(ans SYSTEMATIC_EXECUTION_ENABLED false)")
-    [[ $v == false ]] || fail 3 "SYSTEMATIC_EXECUTION_ENABLED must be false at install; it is turned on later, on paper, by PAPER_DEPLOYMENT_RUNBOOK.md step 20."
+    [[ $v == false ]] || fail 3 "SYSTEMATIC_EXECUTION_ENABLED must be false at install; it is turned on later, on paper, by docs/PAPER_TRADING.md step 20."
     v=$(lower "$(ans KILL_SWITCH_ACTION notify)")
     case $v in notify | halt | flatten) ;; *) fail 2 "KILL_SWITCH_ACTION must be notify, halt or flatten" ;; esac
     for k in "${BROKER_KEYS[@]}"; do [[ -n ${ANS[$k]+x} ]] && brokers+=("$k"); done
@@ -224,7 +224,7 @@ phase_preflight() {
     fi
     if command -v timedatectl >/dev/null 2>&1; then
         timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q yes ||
-            warn "clock not reported as NTP-synchronised; in an LXC the host's chrony is what matters (PROXMOX_DEPLOYMENT.md §3.3)"
+            warn "clock not reported as NTP-synchronised; in an LXC the host's chrony is what matters (docs/PROXMOX.md §3.3)"
     fi
     log "preflight: ok (server address $ip)"
 }
@@ -251,13 +251,13 @@ phase_docker() {
         if [[ -d /run/systemd/system ]]; then
             systemctl enable --now docker
         fi
-        docker info >/dev/null 2>&1 || fail 1 "Docker is installed but the daemon is not answering (in an LXC: check nesting=1,keyctl=1; PROXMOX_DEPLOYMENT.md §15)"
+        docker info >/dev/null 2>&1 || fail 1 "Docker is installed but the daemon is not answering (in an LXC: check nesting=1,keyctl=1; docs/PROXMOX.md §12)"
     fi
     docker compose version >/dev/null 2>&1 || fail 1 "the docker compose plugin is missing"
     local driver
     driver=$(docker info --format '{{.Driver}}')
-    [[ $driver != vfs ]] || fail 1 "Docker is using the vfs storage driver, which is unusably slow (PROXMOX_DEPLOYMENT.md §4.2)"
-    docker run --rm hello-world >/dev/null || fail 1 "docker run hello-world failed (PROXMOX_DEPLOYMENT.md §15, Docker-in-LXC)"
+    [[ $driver != vfs ]] || fail 1 "Docker is using the vfs storage driver, which is unusably slow (docs/PROXMOX.md §5.2)"
+    docker run --rm hello-world >/dev/null || fail 1 "docker run hello-world failed (docs/PROXMOX.md §12, Docker-in-LXC)"
     log "docker: ok (storage driver $driver)"
 }
 
@@ -314,7 +314,7 @@ phase_env() {
         fail 3 ".env already has LIVE_TRADING_ENABLED=true. A human enabled live trading here; the operator must set INSTALL_ALLOW_EXISTING_LIVE=yes in the answers before this installer touches it."
     fi
     if [[ -f $DIR/.tradingapp.with-db && $DB_MODE == external ]]; then
-        fail 1 "this host runs the bundled database (.tradingapp.with-db). Moving to an external one is a data migration; do it by hand (PROXMOX_DEPLOYMENT.md §5)."
+        fail 1 "this host runs the bundled database (.tradingapp.with-db). Moving to an external one is a data migration; do it by hand (docs/OPERATIONS.md, Move from the bundled to an external database)."
     fi
 
     tradingapp install --env-only || fail 1 "tradingapp.sh install --env-only failed (output above)"
@@ -550,7 +550,7 @@ phase_service() {
     cat >"$tmp" <<EOF
 # Installed by install/install.sh. Starts the stack on boot through
 # tradingapp.sh, which layers docker-compose.db.yml when .tradingapp.with-db
-# exists (PROXMOX_DEPLOYMENT.md §13).
+# exists (docs/PROXMOX.md §11).
 [Unit]
 Description=TradingApp
 After=docker.service network-online.target
