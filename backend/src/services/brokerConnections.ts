@@ -40,6 +40,20 @@ export const PLATFORM_FIELDS: Record<
   mt5: { settings: ['url', 'server_timezone'], required: ['url'], secrets: ['secret'] },
   ib: { settings: ['host', 'port', 'client_id'], required: ['host'], secrets: [] },
   alpaca: { settings: [], required: ['api_key', 'api_secret'], secrets: ['api_key', 'api_secret'] },
+  // IG: the API key, the login's username and password (`api_secret`), and
+  // optionally which of the login's accounts to trade.
+  ig: {
+    settings: ['username', 'account_id'],
+    required: ['api_key', 'username', 'api_secret'],
+    secrets: ['api_key', 'api_secret'],
+  },
+  // cTrader Open API: the application's client id and secret, the account
+  // holder's access token, and the numeric ctidTraderAccountId.
+  ctrader: {
+    settings: ['account_id'],
+    required: ['api_key', 'api_secret', 'token', 'account_id'],
+    secrets: ['api_key', 'api_secret', 'token'],
+  },
 };
 
 /** The caps a connection can carry, all amounts in its currency but the first. */

@@ -67,7 +67,7 @@ export interface SearchQuery {
   currency?: string;
   searchByName?: boolean;
   account_mode?: string;
-  /** Venue (B1): 'ib' | 'mt5' | 'alpaca' | 'oanda', default the priority broker. Accepts `source` as an alias. */
+  /** Venue (B1): 'ib' | 'mt5' | 'alpaca' | 'oanda' | 'ig' | 'ctrader', default the priority broker. Accepts `source` as an alias. */
   broker?: string;
   source?: string;
 }

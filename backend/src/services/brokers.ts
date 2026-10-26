@@ -9,5 +9,5 @@
  * Its own module, with no imports, so the settings registry can list the
  * brokers without importing `orderTypes.ts` (which reads the settings).
  */
-export const BROKERS = ['ib', 'mt5', 'alpaca', 'oanda'] as const;
+export const BROKERS = ['ib', 'mt5', 'alpaca', 'oanda', 'ig', 'ctrader'] as const;
 export type Broker = (typeof BROKERS)[number];

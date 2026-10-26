@@ -32,6 +32,8 @@ ADAPTER_CLASSES = {
     "mt5": ("mt5_adapter", "MT5Adapter"),
     "alpaca": ("alpaca_adapter", "AlpacaAdapter"),
     "oanda": ("oanda_adapter", "OANDAAdapter"),
+    "ig": ("ig_adapter", "IGAdapter"),
+    "ctrader": ("ctrader_adapter", "CTraderAdapter"),
 }
 
 

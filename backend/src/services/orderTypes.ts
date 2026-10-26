@@ -35,7 +35,7 @@ function setting(key: string): string | undefined {
  * that follow it), then MT5, IB and Alpaca. Mirrors `BROKER_PRIORITY` in
  * `broker_service/connections.py`, which owns the choice of default.
  */
-export const BROKER_PRIORITY: readonly Broker[] = ['oanda', 'mt5', 'ib', 'alpaca'];
+export const BROKER_PRIORITY: readonly Broker[] = ['oanda', 'ig', 'ctrader', 'mt5', 'ib', 'alpaca'];
 
 /**
  * What a persisted row with no broker means. Every row written before the

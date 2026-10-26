@@ -374,15 +374,16 @@ token steps done.
 
 ## 4. Brokers
 
-The app asks brokers in this order of priority, and this step adds them in
-the same order. Add only the ones you use.
+The app asks brokers in this order of priority. Add only the ones you use.
 
 | Priority | Broker | Server | What you need from the broker |
 |---|---|---|---|
 | 1 | OANDA (FX, CFDs) | none, a cloud API | A practice account: API token and account id |
-| 2 | MetaTrader 5 | VM 120 | A demo account: login, password, server, and the server's time zone |
-| 3 | Interactive Brokers | CT 130 | A paper account: username and password |
-| 4 | Alpaca (US stocks, options) | none, a cloud API | A paper API key and secret |
+| 2 | IG (CFDs) | none, a cloud API | A demo login and an API key |
+| 3 | cTrader (IC Markets, Pepperstone, FP Markets, Fusion and other cTrader brokers) | none, a cloud API | A demo cTrader account, a cTrader Open API application and an access token |
+| 4 | MetaTrader 5 (Axi, Eightcap, Vantage and other MT5 brokers) | VM 120 | A demo account: login, password, server, and the server's time zone |
+| 5 | Interactive Brokers | CT 130 | A paper account: username and password |
+| 6 | Alpaca (US stocks, options) | none, a cloud API | A paper API key and secret |
 
 Every broker is added the same way, on **Settings > Connections**: choose the
 broker, fill in the form, and save. The app tests the connection as it saves
@@ -401,7 +402,8 @@ Every form has these fields:
 | Limits, prop rules | Optional per-account risk limits; see [step 6](#6-alerts-and-safety-nets). |
 
 Add one broker at a time and check it before the next, so a failure has one
-cause.
+cause. The form's **Firm** list picks the platform for a named firm (Axi,
+IC Markets, Pepperstone and others; see [4.7](#47-which-platform-for-which-firm)).
 
 ### 4.1 OANDA
 
@@ -564,7 +566,7 @@ date -u +%s                                            # compare with the quote'
 While the market is open, the quote's `time` is within a few seconds of
 `date -u +%s`. If it is off by whole hours, the server time zone is wrong.
 Note the exact symbol names `/symbols` returns (`EURUSD`, `EURUSD.a`,
-`EURUSDm`); you may need them for a symbol map ([4.6](#46-not-yet-on-the-form-symbol-maps-and-account-info-from)).
+`EURUSDm`); you may need them for a symbol map ([4.9](#49-not-yet-on-the-form-symbol-maps-and-account-info-from)).
 
 #### Add the connection
 
@@ -692,10 +694,73 @@ A cloud API, with no server to build.
 **If the test fails:** the key is wrong or belongs to a live account, or the
 app server has no outbound HTTPS.
 
-### 4.5 Priority and the default broker
+### 4.5 IG
+
+A cloud API, with no server to build.
+
+1. Log in to IG's web platform with your demo login. Under **My IG >
+   Settings > API keys**, create a key. A demo key works only with a demo
+   login, and a live key only with a live one.
+2. On Settings > Connections, add **IG**, Mode **paper**, with the **API
+   key**, **Username** and **Password** of that login. Leave **Account ID**
+   blank to trade the login's default account, or enter another account's id
+   (such as `Z3ABCD`) from My IG.
+
+Markets are addressed by IG's *epic*. Spot FX in the app's form (`EUR.USD`)
+maps to IG's CFD epic (`CS.D.EURUSD.CFD.IP`); anything else uses the epic
+search returns, such as `IX.D.ASX.IFT.IP`. IG meters historical prices
+(10,000 points a week by default), so a chart period asks for at most the
+1,000 most recent bars. IG has no 8-hour bar and no stop-limit order.
+
+**If the test fails:** the key belongs to the other environment (demo vs
+live), the password is wrong, or the app server has no outbound HTTPS.
+
+### 4.6 cTrader (IC Markets, Pepperstone, FP Markets, Fusion and others)
+
+Spotware's cTrader Open API serves every cTrader broker through one cloud
+service, so there is no server to build. The broker is whichever one holds
+the account you grant access to.
+
+1. Open a demo cTrader account at the broker.
+2. At [openapi.ctrader.com](https://openapi.ctrader.com), sign in with the
+   same cTrader ID, add an application, and note its **client ID** and
+   **client secret**. Spotware approves new applications, which can take a
+   day or two.
+3. In the application's **Playground**, authorise it with the **trading**
+   scope and copy the **access token**. The playground also lists your
+   accounts with their `ctidTraderAccountId`, the number to enter as the
+   account id (it is not the account login).
+4. On Settings > Connections, add **cTrader**, Mode **paper**, with the
+   client ID, client secret, access token and ctidTraderAccountId.
+
+Quantities on cTrader are in units, as on OANDA (100,000 EURUSD units is one
+lot). cTrader has no 8-hour bar.
+
+**Access tokens expire after about 30 days.** The app does not refresh them
+(refreshing replaces the refresh token, which the broker service cannot write
+back), so when the connection check reports that the credentials were
+refused, issue a new token in the playground and paste it into the
+connection.
+
+**If the test fails:** the access token has expired or was issued for
+another account, the account id is the login instead of the
+ctidTraderAccountId, or the app server cannot reach `demo.ctraderapi.com`
+on port 5036.
+
+### 4.7 Which platform for which firm
+
+| Firm | Platform in the app | Notes |
+|---|---|---|
+| OANDA | OANDA | Native REST API. An OANDA MT5 account can also use MT5. |
+| IG | IG | Native REST API. |
+| IC Markets, Pepperstone, FP Markets, Fusion Markets | cTrader | For a cTrader account. Their MT5 accounts use MT5 instead. |
+| Axi | MT5 | Axi has no public trading API. Its MCP server (`mcp.axi.com`, in alpha) connects an Axi MT5 account to Claude only, not to other applications, so the app reaches Axi through the MT5 sidecar. |
+| Eightcap, Vantage and other MT5 brokers | MT5 | Through the MT5 sidecar. |
+
+### 4.8 Priority and the default broker
 
 A request that names no broker goes to the highest-priority one that has a
-connection: OANDA, then MT5, then IB, then Alpaca. Change the order on the
+connection: OANDA, then IG, cTrader, MT5, IB and Alpaca. Change the order on the
 Connections tab, or pin one with `DEFAULT_BROKER` on Settings > Trading. A
 broker with no connection answers 501.
 
@@ -703,7 +768,7 @@ broker with no connection answers 501.
 header's health badge agrees, and the Getting started checklist shows the
 broker step done.
 
-### 4.6 Not yet on the form: symbol maps and "account info from"
+### 4.9 Not yet on the form: symbol maps and "account info from"
 
 Two MT5 options cannot be entered on the Connections form yet:
 

@@ -9,11 +9,13 @@ import {
   type StoredConnection,
   type StoredPayload,
   BROKERS_BY_PRIORITY,
+  FIRM_PRESETS,
   LIMIT_FORM,
   PLATFORM_FORM,
   checkSummary,
   saveMessage,
   emptyForm,
+  formForFirm,
   formFromStored,
   movePlatform,
   platformName,
@@ -68,6 +70,8 @@ function ConnectionForm({
   onCancel: () => void;
 }) {
   const { form, id, stored } = editing;
+  const [firmId, setFirmId] = useState('');
+  const firm = FIRM_PRESETS.find((f) => f.id === firmId && f.platform === form.platform);
   const set = (patch: Partial<FormState>) => onChange({ ...form, ...patch });
   const setValue = (name: string, value: string) =>
     onChange({ ...form, values: { ...form.values, [name]: value } });
@@ -81,6 +85,30 @@ function ConnectionForm({
         onSave();
       }}
     >
+      {id === null && (
+        <div>
+          <label className="text-sm text-gray-700 block">
+            Firm (optional)
+            <select
+              className={INPUT}
+              value={firm ? firm.id : ''}
+              onChange={(e) => {
+                const picked = FIRM_PRESETS.find((f) => f.id === e.target.value);
+                setFirmId(picked ? picked.id : '');
+                if (picked) onChange(formForFirm(picked));
+              }}
+            >
+              <option value="">Choose a firm to fill in the platform</option>
+              {FIRM_PRESETS.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {firm && <p className="mt-1 text-xs text-gray-600">{firm.note}</p>}
+        </div>
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className="text-sm text-gray-700">
           Broker

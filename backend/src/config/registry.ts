@@ -776,7 +776,7 @@ export const SETTINGS: readonly SettingDef[] = [
     apply: 'immediate',
     stepUp: true,
     editable: true,
-    help: 'Brokers highest first, comma separated (for example oanda,mt5,ib,alpaca). Sets the default broker and the display order. Set it with the arrows on the Connections tab.',
+    help: 'Brokers highest first, comma separated (for example oanda,ig,ctrader,mt5,ib,alpaca). Sets the default broker and the display order. Set it with the arrows on the Connections tab.',
   },
   {
     key: 'BROKER_CONNECTIONS',

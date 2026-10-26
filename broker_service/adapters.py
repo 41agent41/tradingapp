@@ -163,7 +163,39 @@ def _build_adapters(conn: Connection) -> tuple[Optional[Any], Optional[Any]]:
         )
         return oanda, oanda
 
+    if conn.platform == "ig":
+        from ig_adapter import IGAdapter
+
+        ig = IGAdapter(
+            conn.api_key or "",
+            conn.username or "",
+            conn.api_secret or "",
+            account_id=conn.account_id,
+            environment=_server(conn),
+        )
+        return ig, ig
+
+    if conn.platform == "ctrader":
+        from ctrader_adapter import CTraderAdapter
+
+        ctrader = CTraderAdapter(
+            conn.api_key or "",
+            conn.api_secret or "",
+            conn.token or "",
+            conn.account_id or "",
+            environment=_server(conn),
+        )
+        return ctrader, ctrader
+
     return None, None
+
+
+def _server(conn: Connection) -> str:
+    """``live`` or ``demo``: the connection's environment when it names one,
+    otherwise its paper or live mode, so a live account is never sent to a
+    demo server by omission."""
+    environment = (conn.environment or conn.account_mode or "").strip().lower()
+    return "live" if environment == "live" else "demo"
 
 
 def _bootstrap() -> None:
@@ -332,6 +364,11 @@ _UNAVAILABLE_HINTS = {
     "oanda": (
         " Configure an oanda connection in BROKER_CONNECTIONS, or set OANDA_API_TOKEN "
         "and OANDA_ACCOUNT_ID."
+    ),
+    "ig": " Add an IG connection on Settings > Connections (API key, username, password).",
+    "ctrader": (
+        " Add a cTrader connection on Settings > Connections (Open API client id and "
+        "secret, access token, ctidTraderAccountId)."
     ),
 }
 

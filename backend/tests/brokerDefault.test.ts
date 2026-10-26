@@ -20,7 +20,7 @@ describe('broker priority', () => {
   });
 
   it('ranks API brokers, then MT5, IB and Alpaca', () => {
-    expect(BROKER_PRIORITY).toEqual(['oanda', 'mt5', 'ib', 'alpaca']);
+    expect(BROKER_PRIORITY).toEqual(['oanda', 'ig', 'ctrader', 'mt5', 'ib', 'alpaca']);
   });
 
   it('defaults to the top of the list before the broker service answers', () => {
