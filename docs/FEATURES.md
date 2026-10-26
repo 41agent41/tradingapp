@@ -633,9 +633,11 @@ describes adding another.
   `broker_service`. Their connections take API credentials (Alpaca: API key
   and secret; OANDA: account id and token) instead of a bridge URL. Both implement the same data + execution surface as
   MT5. OANDA has a native 8-hour candle (unlike MT5) so every app timeframe
-  maps cleanly; `STP_LMT` orders aren't representable on OANDA and are
-  rejected with a 400. OANDA entries carry their stop loss and take profit
-  on the fill, and positions report the stop per trade.
+  maps cleanly. A `STP_LMT` goes to OANDA as a STOP with a `priceBound` (the
+  limit is the worst fill price; what can't fill inside it is cancelled, not
+  left resting). Units may be fractional where the instrument allows. OANDA
+  entries carry their stop loss and take profit on the fill, positions report
+  the stop per trade and are marked with one pricing call.
 - **Provider health:** the broker service exposes `/providers` (and folds
   provider status into `/health`) so operators can see which venues are
   registered.
