@@ -240,7 +240,7 @@ curl -X POST -H 'Content-Type: application/json' \
 pair. That is working as intended: the connection needs a symbol map, such
 as `{"EURUSD": "EURUSD.a"}`. The connection form on Settings > Connections
 has no symbol map field yet; add it as in
-[INSTALL.md § 4.6](INSTALL.md#46-not-yet-on-the-form-symbol-maps-and-account-info-from)
+[INSTALL.md § 4.9](INSTALL.md#49-not-yet-on-the-form-symbol-maps-and-account-info-from)
 and repeat this step. If that is not possible, report it with the `/symbols` output from
 step 5.
 

@@ -633,9 +633,32 @@ describes adding another.
   `broker_service`. Their connections take API credentials (Alpaca: API key
   and secret; OANDA: account id and token) instead of a bridge URL. Both implement the same data + execution surface as
   MT5. OANDA has a native 8-hour candle (unlike MT5) so every app timeframe
-  maps cleanly; `STP_LMT` orders aren't representable on OANDA and are
-  rejected with a 400. OANDA entries carry their stop loss and take profit
-  on the fill, and positions report the stop per trade.
+  maps cleanly. A `STP_LMT` goes to OANDA as a STOP with a `priceBound` (the
+  limit is the worst fill price; what can't fill inside it is cancelled, not
+  left resting). Units may be fractional where the instrument allows. OANDA
+  entries carry their stop loss and take profit on the fill, positions report
+  the stop per trade and are marked with one pricing call.
+- **IG: cloud REST.** [`IGAdapter`](../broker_service/ig_adapter.py) logs in
+  with the connection's API key, username and password and trades CFDs
+  through IG's REST API (demo or live by the connection's mode). Spot FX in
+  the app's form maps to IG's CFD epics; other markets use their epic. Stops
+  and targets ride on the entry (as force-open deals), every deal is checked
+  on `/confirms`, and positions are netted per epic with the least protective
+  stop reported. No 8-hour bars or stop-limit orders.
+- **cTrader brokers: one integration.**
+  [`CTraderAdapter`](../broker_service/ctrader_adapter.py) speaks Spotware's
+  cTrader Open API (JSON over WebSocket), so one connection type reaches IC
+  Markets, Pepperstone, FP Markets, Fusion and every other cTrader broker.
+  It covers search, history (walked in windows), quotes, native price
+  streaming, every order type including stop-limit, stops on the entry
+  (as distances on a market order), position stops, positions netted across
+  a hedged account, account equity and fills. Quantities are in units.
+  Access tokens last about 30 days and are renewed by hand.
+- **Firms on the form:** Settings > Connections has a **Firm** list (OANDA,
+  IG, IC Markets, Pepperstone, FP Markets, Fusion, Axi, Eightcap, Vantage)
+  that picks the platform and says how to connect. Axi has no public trading
+  API, and its MCP server serves Claude only, so Axi accounts go through the
+  MT5 sidecar.
 - **Provider health:** the broker service exposes `/providers` (and folds
   provider status into `/health`) so operators can see which venues are
   registered.
@@ -686,7 +709,7 @@ describes adding another.
 | `/metrics` | GET | Prometheus scrape endpoint (backend) |
 
 Market-data reads (`/api/market-data/*`) and orders accept a `source=` /
-`broker=` parameter (`ib`, `mt5`, `oanda`, `alpaca`) selecting the venue,
+`broker=` parameter (`ib`, `mt5`, `oanda`, `ig`, `ctrader`, `alpaca`) selecting the venue,
 plus `account=` to pick a connection.
 
 Socket.IO is mounted on the backend at the default path and its handshake
@@ -865,7 +888,7 @@ Not yet implemented. Design records for the larger pieces are in
 - **Connections form:** an MT5 connection's symbol map and its "account info
   from" link cannot be entered on Settings > Connections yet. Until they can,
   they need SQL or a `.env` manifest, each with a catch
-  ([INSTALL.md § 4.6](INSTALL.md#46-not-yet-on-the-form-symbol-maps-and-account-info-from)).
+  ([INSTALL.md § 4.9](INSTALL.md#49-not-yet-on-the-form-symbol-maps-and-account-info-from)).
 - **Single points of failure per venue:** IB Gateway and each MT5 terminal
   are one logged-in session on one host with no standby. A logout stops that
   venue until someone logs it back in; the connection checks and alerts make

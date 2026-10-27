@@ -92,20 +92,108 @@ export const PLATFORM_FORM: Record<string, Field[]> = {
     { name: 'api_key', label: 'API key', secret: true, required: true },
     { name: 'api_secret', label: 'API secret', secret: true, required: true },
   ],
+  ig: [
+    { name: 'api_key', label: 'API key', secret: true, required: true },
+    { name: 'username', label: 'Username', required: true },
+    { name: 'api_secret', label: 'Password', secret: true, required: true },
+    { name: 'account_id', label: 'Account ID', placeholder: 'Leave blank for the default' },
+  ],
+  ctrader: [
+    { name: 'api_key', label: 'Open API client ID', secret: true, required: true },
+    { name: 'api_secret', label: 'Open API client secret', secret: true, required: true },
+    { name: 'token', label: 'Access token', secret: true, required: true },
+    {
+      name: 'account_id',
+      label: 'ctidTraderAccountId',
+      required: true,
+      placeholder: '12345678 (not the login)',
+    },
+  ],
 };
+
+/**
+ * Firms whose accounts the app can reach, and through which platform. Picking
+ * one on the form only chooses the platform and explains how to connect; the
+ * account itself decides what it can trade.
+ */
+export type FirmPreset = { id: string; name: string; platform: string; note: string };
+
+export const FIRM_PRESETS: FirmPreset[] = [
+  {
+    id: 'oanda',
+    name: 'OANDA',
+    platform: 'oanda',
+    note: 'REST API. Create a token under Manage API Access in the OANDA hub.',
+  },
+  {
+    id: 'ig',
+    name: 'IG',
+    platform: 'ig',
+    note: 'REST API. Create an API key on My IG > Settings > API keys; a demo key needs a demo login.',
+  },
+  {
+    id: 'pepperstone',
+    name: 'Pepperstone (cTrader)',
+    platform: 'ctrader',
+    note: 'cTrader Open API. Register an app at openapi.ctrader.com and grant it your cTrader account. Pepperstone MT5 accounts use the MT5 bridge instead.',
+  },
+  {
+    id: 'icmarkets',
+    name: 'IC Markets (cTrader)',
+    platform: 'ctrader',
+    note: 'cTrader Open API. Register an app at openapi.ctrader.com and grant it your cTrader account. IC Markets MT5 accounts use the MT5 bridge instead.',
+  },
+  {
+    id: 'fpmarkets',
+    name: 'FP Markets (cTrader)',
+    platform: 'ctrader',
+    note: 'cTrader Open API. Register an app at openapi.ctrader.com and grant it your cTrader account.',
+  },
+  {
+    id: 'fusion',
+    name: 'Fusion Markets (cTrader)',
+    platform: 'ctrader',
+    note: 'cTrader Open API. Register an app at openapi.ctrader.com and grant it your cTrader account.',
+  },
+  {
+    id: 'axi',
+    name: 'Axi (MT5)',
+    platform: 'mt5',
+    note: "Axi has no public trading API: run the MT5 bridge next to an MT5 terminal logged in to your Axi account. Axi's MCP server (mcp.axi.com) works only inside Claude.",
+  },
+  {
+    id: 'eightcap',
+    name: 'Eightcap (MT5)',
+    platform: 'mt5',
+    note: 'Run the MT5 bridge next to an MT5 terminal logged in to your Eightcap account.',
+  },
+  {
+    id: 'vantage',
+    name: 'Vantage (MT5)',
+    platform: 'mt5',
+    note: 'Run the MT5 bridge next to an MT5 terminal logged in to your Vantage account.',
+  },
+];
+
+/** A new connection form for `firm`: its platform, named after the firm. */
+export function formForFirm(firm: FirmPreset): FormState {
+  return { ...emptyForm(firm.platform), account: firm.id };
+}
 
 /**
  * Every supported broker, in the built-in priority order (the broker service
  * reports the order in effect). Mirrors BROKER_PRIORITY in
  * broker_service/connections.py; see docs/DEVELOPMENT.md, "Adding a broker".
  */
-export const BROKERS_BY_PRIORITY = ['oanda', 'mt5', 'ib', 'alpaca'];
+export const BROKERS_BY_PRIORITY = ['oanda', 'ig', 'ctrader', 'mt5', 'ib', 'alpaca'];
 
 const PLATFORM_NAME: Record<string, string> = {
   oanda: 'OANDA',
   mt5: 'MT5',
   ib: 'Interactive Brokers',
   alpaca: 'Alpaca',
+  ig: 'IG',
+  ctrader: 'cTrader',
 };
 
 /** Short names, where space is tight (the header health badge). */

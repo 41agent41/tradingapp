@@ -447,12 +447,56 @@ def test_place_order_limit_keeps_gfd_tif(oanda, monkeypatch):
     assert body["order"]["price"] == "1.08"
 
 
-def test_place_order_stop_limit_is_400(oanda, monkeypatch):
+def test_place_order_stop_limit_is_a_stop_with_a_price_bound(oanda, monkeypatch):
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        {"orderCreateTransaction": {"id": "44"}}
+    )
+    out = _adapter(oanda).place_order(
+        _OrderReq(order_type="STP_LMT", tif="GTC", stop_price=1.1, limit_price=1.102)
+    )
+    _method, _url, _headers, _params, body = FakeClient.calls[0]
+    assert body["order"]["type"] == "STOP"
+    assert body["order"]["price"] == "1.1"
+    assert body["order"]["priceBound"] == "1.102"
+    assert out["status"] == "submitted"
+
+
+def test_place_order_stop_limit_without_its_limit_is_400(oanda, monkeypatch):
     monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
     with pytest.raises(HTTPException) as exc:
-        _adapter(oanda).place_order(_OrderReq(order_type="STP_LMT", limit_price=1.08))
+        _adapter(oanda).place_order(_OrderReq(order_type="STP_LMT", stop_price=1.1))
     assert exc.value.status_code == 400
     assert FakeClient.calls == []
+
+
+def test_place_order_keeps_fractional_units(oanda, monkeypatch):
+    """Some OANDA CFDs trade fractional units; truncating 0.5 to "0" would be
+    rejected, and 1.5 to "1" would trade the wrong size."""
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+    FakeClient.handler = lambda method, url, params, json: FakeResponse({})
+    _adapter(oanda).place_order(_OrderReq(symbol="XAU.USD", action="SELL", quantity=1.5))
+    _method, _url, _headers, _params, body = FakeClient.calls[0]
+    assert body["order"]["units"] == "-1.5"
+
+
+def test_open_orders_report_a_bounded_stop_as_stop_limit(oanda):
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        {
+            "orders": [
+                {"id": "7", "instrument": "EUR_USD", "type": "STOP", "units": "100"},
+                {
+                    "id": "8",
+                    "instrument": "EUR_USD",
+                    "type": "STOP",
+                    "units": "100",
+                    "priceBound": "1.2",
+                },
+            ]
+        }
+    )
+    rows = _adapter(oanda).open_orders()
+    assert [r["order_type"] for r in rows] == ["STP", "STP_LMT"]
 
 
 def test_place_order_limit_without_price_is_400(oanda, monkeypatch):
@@ -516,6 +560,8 @@ def test_positions_and_account(oanda):
     assert row["position"] == 1000.0
     assert row["average_cost"] == 1.1050
     assert row["unrealized_pnl"] == 12.5
+    # No pricing answer: the position still reads, without a mark.
+    assert row["market_price"] is None
     # Normalised to the app's AccountSummary shape — OANDA's `NAV` is its
     # name for net liquidation.
     summary = adapter.account_summary()
@@ -928,3 +974,58 @@ def test_modify_position_stop_without_trades_is_404(oanda):
     with pytest.raises(HTTPException) as exc:
         _adapter(oanda).modify_position_stop("EUR.USD", stop_loss=1.095)
     assert exc.value.status_code == 404
+
+
+def test_positions_are_marked_with_one_pricing_call(oanda):
+    def handler(method, url, params, json):
+        if url.endswith("/openPositions"):
+            return FakeResponse(
+                {
+                    "positions": [
+                        {"instrument": "EUR_USD", "long": {"units": "1000"}, "short": {}},
+                        {"instrument": "USD_JPY", "long": {}, "short": {"units": "-500"}},
+                    ]
+                }
+            )
+        if url.endswith("/pricing"):
+            return FakeResponse(
+                {
+                    "prices": [
+                        {
+                            "instrument": "EUR_USD",
+                            "bids": [{"price": "1.1000"}],
+                            "asks": [{"price": "1.1002"}],
+                        },
+                        {
+                            "instrument": "USD_JPY",
+                            "bids": [{"price": "150.00"}],
+                            "asks": [{"price": "150.02"}],
+                        },
+                    ]
+                }
+            )
+        return FakeResponse({"trades": []})
+
+    FakeClient.handler = handler
+    rows = _adapter(oanda).positions()
+    pricing = [c for c in FakeClient.calls if c[1].endswith("/pricing")]
+    assert len(pricing) == 1
+    assert pricing[0][3]["instruments"] == "EUR_USD,USD_JPY"
+    assert rows[0]["market_price"] == pytest.approx(1.1001)
+    assert rows[1]["market_price"] == pytest.approx(150.01)
+
+
+def test_positions_survive_a_failed_pricing_call(oanda):
+    def handler(method, url, params, json):
+        if url.endswith("/openPositions"):
+            return FakeResponse(
+                {"positions": [{"instrument": "EUR_USD", "long": {"units": "1"}, "short": {}}]}
+            )
+        if url.endswith("/pricing"):
+            return FakeResponse({}, status_code=503)
+        return FakeResponse({"trades": []})
+
+    FakeClient.handler = handler
+    rows = _adapter(oanda).positions()
+    assert rows[0]["position"] == 1.0
+    assert rows[0]["market_price"] is None

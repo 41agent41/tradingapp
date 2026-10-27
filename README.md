@@ -1,9 +1,10 @@
 # TradingApp
 
 A self-hosted trading platform: charts, a market-data store, backtesting and
-systematic strategies, with paper and live trading through OANDA, MetaTrader
-5, Interactive Brokers and Alpaca. It runs as a Docker stack on one Linux
-host.
+systematic strategies, with paper and live trading through OANDA, IG,
+cTrader brokers (IC Markets, Pepperstone, FP Markets, Fusion), MetaTrader 5
+brokers (Axi, Eightcap, Vantage), Interactive Brokers and Alpaca. It runs as
+a Docker stack on one Linux host.
 
 ```
                       ┌──────────────────────────┐
@@ -21,7 +22,7 @@ host.
                    │ (FastAPI)      │──►         │
                    └─────────┬──────┘  └─────────┘
                              │  in priority order
-              OANDA ─ MT5 (sidecar) ─ IB Gateway ─ Alpaca
+     OANDA ─ IG ─ cTrader ─ MT5 (sidecar) ─ IB Gateway ─ Alpaca
 ```
 
 The database is the first dependency. Settings, logins, broker connections
@@ -53,7 +54,7 @@ on one container with its own database, see its
 
 | Guide | For |
 |---|---|
-| [docs/INSTALL.md](docs/INSTALL.md) | Installing on Proxmox VE, step by step: the database server, the app server, sign-in, brokers (OANDA, MT5, IB, Alpaca), market data, alerts, reverse proxy, firewall, monitoring, backups. Also the installer in detail, and installing without Proxmox. |
+| [docs/INSTALL.md](docs/INSTALL.md) | Installing on Proxmox VE, step by step: the database server, the app server, sign-in, brokers (OANDA, IG, cTrader, MT5, IB, Alpaca), market data, alerts, reverse proxy, firewall, monitoring, backups. Also the installer in detail, and installing without Proxmox. |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Running it: commands, settings, upgrades and rebuilds, going live, monitoring, backups, troubleshooting. |
 | [docs/PAPER_TRADING.md](docs/PAPER_TRADING.md) | Taking strategies through paper trading on two MT5 demo accounts, step by step. |
 | [docs/FEATURES.md](docs/FEATURES.md) | What the app does, and what is planned. |

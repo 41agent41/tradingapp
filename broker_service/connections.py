@@ -10,6 +10,7 @@ legacy variables working as a one-connection shorthand.
 Vocabulary, used consistently across the codebase:
 
   - **platform** — the protocol/integration: ``ib`` | ``mt5`` | ``alpaca`` | ``oanda``
+    | ``ig`` | ``ctrader``
   - **account**  — one set of credentials at one firm on one platform
   - **connection** — the addressable pair, written ``mt5:pepperstone-live``
 
@@ -76,12 +77,12 @@ from observability import get_logger
 
 logger = get_logger(__name__)
 
-SUPPORTED_PLATFORMS = ("ib", "mt5", "alpaca", "oanda")
+SUPPORTED_PLATFORMS = ("ib", "mt5", "alpaca", "oanda", "ig", "ctrader")
 # Broker priority, highest first: brokers with a direct API (OANDA, and those
 # that follow it), then MT5, IB and Alpaca. A request that names no platform
 # goes to the highest-ranked one that is configured, unless DEFAULT_BROKER
 # names one. Mirrored by BROKER_PRIORITY in backend/src/services/orderTypes.ts.
-BROKER_PRIORITY = ("oanda", "mt5", "ib", "alpaca")
+BROKER_PRIORITY = ("oanda", "ig", "ctrader", "mt5", "ib", "alpaca")
 DEFAULT_ACCOUNT = "default"
 ACCOUNT_MODES = ("paper", "live")
 
@@ -121,6 +122,8 @@ class Connection:
     api_secret: Optional[str] = None
     token: Optional[str] = None
     account_id: Optional[str] = None
+    # IG logs in with a username and password (api_secret) besides its key.
+    username: Optional[str] = None
     environment: Optional[str] = None
     paper: bool = True
     # IB Gateway address, for an ib connection added in the app (an ib
@@ -225,9 +228,10 @@ def _parse_entry(raw: Any, index: int, literal: bool = False) -> Connection:
         ),
         token=_literal(raw.get("token")) if literal else _env(raw.get("token_env")),
         account_id=(_literal(raw.get("account_id")) if literal else _env(raw.get("account_env"))),
-        # An app-added OANDA connection has no environment field: its paper or
-        # live mode picks practice or live, so a live account never lands on
-        # the practice server.
+        username=(_literal(raw.get("username")) if literal else _env(raw.get("username_env"))),
+        # An app-added OANDA, IG or cTrader connection has no environment
+        # field: its paper or live mode picks the demo or live server, so a
+        # live account never lands on the demo one.
         environment=(
             str(raw.get("environment")).strip()
             if raw.get("environment")
@@ -286,6 +290,29 @@ def _validate_platform_fields(conn: Connection, literal: bool = False) -> None:
                 if literal
                 else f"connection '{conn.account}': oanda requires 'token_env' and "
                 "'account_env' naming environment variables that are set"
+            )
+    elif conn.platform == "ig":
+        if not (conn.api_key and conn.username and conn.api_secret):
+            raise ManifestError(
+                f"connection '{conn.account}': ig requires an API key, username and password"
+                if literal
+                else f"connection '{conn.account}': ig requires 'key_env', 'username_env' and "
+                "'secret_key_env' (the password) naming environment variables that are set"
+            )
+    elif conn.platform == "ctrader":
+        if not (conn.api_key and conn.api_secret and conn.token and conn.account_id):
+            raise ManifestError(
+                f"connection '{conn.account}': ctrader requires the application's client id "
+                "and secret, an access token and the trading account id"
+                if literal
+                else f"connection '{conn.account}': ctrader requires 'key_env' (client id), "
+                "'secret_key_env' (client secret), 'token_env' and 'account_env' naming "
+                "environment variables that are set"
+            )
+        if not conn.account_id.isdigit():
+            raise ManifestError(
+                f"connection '{conn.account}': the ctrader account id is the numeric "
+                "ctidTraderAccountId, not the account login"
             )
     elif conn.platform == "ib" and literal:
         if not conn.host:

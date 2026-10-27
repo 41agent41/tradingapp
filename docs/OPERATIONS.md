@@ -85,7 +85,7 @@ How settings behave:
   `MT5_BRIDGE_URL`, `OANDA_API_TOKEN`, `ALPACA_API_KEY` and the rest) still
   define connections, and for that broker replace the ones added in the app,
   which then show as overridden. Use them only as a break-glass, or for the
-  symbol map gap in [INSTALL.md § 4.6](INSTALL.md#46-not-yet-on-the-form-symbol-maps-and-account-info-from).
+  symbol map gap in [INSTALL.md § 4.9](INSTALL.md#49-not-yet-on-the-form-symbol-maps-and-account-info-from).
 
 Settings you are most likely to look for (the page lists every key with its
 help text):
@@ -524,7 +524,7 @@ app re-checks every `BROKER_PROBE_INTERVAL_SECONDS`.
 | MT5 sidecar rejects requests | The connection's Bridge secret is not the sidecar's `MT5_BRIDGE_SECRET`. |
 | MT5 `/health` reports `trading_disabled` | Turn Algo Trading on in the terminal. |
 | MT5 quote times off by whole hours | `MT5_SERVER_TZ` on the sidecar is wrong. |
-| Symbol resolution says "ambiguous" | The broker lists several tiers of the pair; the connection needs a symbol map ([INSTALL.md § 4.6](INSTALL.md#46-not-yet-on-the-form-symbol-maps-and-account-info-from)). |
+| Symbol resolution says "ambiguous" | The broker lists several tiers of the pair; the connection needs a symbol map ([INSTALL.md § 4.9](INSTALL.md#49-not-yet-on-the-form-symbol-maps-and-account-info-from)). |
 | Log line `connection breaker open` | That connection is not answering. Others keep running; it is retried after the cooldown. |
 
 IB Gateway, checked from the app host with `nc -vz <gateway> 4002`:

@@ -37,9 +37,11 @@ know about:
     value is *signed* (positive = buy, negative = sell). `place_order()`
     combines `action` + `quantity` into that signed value.
 
-`STP_LMT` has no clean OANDA equivalent (OANDA's STOP order takes a single
-trigger price, not an independent stop + limit pair) — placing one raises a
-400, the same pattern MT5's adapter uses for an unmapped timeframe.
+`STP_LMT` maps onto OANDA's STOP order with a `priceBound`: the stop price
+triggers it and the limit price is the worst price it may fill at. Unlike a
+classic stop-limit, OANDA cancels whatever cannot fill inside the bound rather
+than leaving it resting as a limit order, which is the safer of the two for
+an unattended strategy.
 
 **Protection.** A stop loss and take profit ride on the entry order itself
 (`stopLossOnFill` / `takeProfitOnFill`), so OANDA creates them in the same
@@ -84,9 +86,9 @@ _TIMEFRAME_TO_GRANULARITY = {
     "1day": "D",
 }
 
-# App order_type -> OANDA order type. STP_LMT has no clean OANDA equivalent.
-_ORDER_TYPE_TO_OANDA = {"MKT": "MARKET", "LMT": "LIMIT", "STP": "STOP"}
-_OANDA_TO_ORDER_TYPE = {v: k for k, v in _ORDER_TYPE_TO_OANDA.items()}
+# App order_type -> OANDA order type. STP_LMT is a STOP with a priceBound.
+_ORDER_TYPE_TO_OANDA = {"MKT": "MARKET", "LMT": "LIMIT", "STP": "STOP", "STP_LMT": "STOP"}
+_OANDA_TO_ORDER_TYPE = {"MARKET": "MKT", "LIMIT": "LMT", "STOP": "STP"}
 # LIMIT/STOP accept the full OANDA TIF vocabulary; a MARKET order only
 # accepts FOK/IOC (OANDA rejects GTC/GFD/GTD on a MarketOrderRequest), so
 # DAY/GTC on a market order fold to FOK — "execute now or don't", the
@@ -487,14 +489,10 @@ class OANDAAdapter:
         order_body: Dict[str, Any] = {
             "type": order_type,
             "instrument": _to_instrument(request.symbol),
-            "units": str(int(signed_units)),
+            "units": _units(signed_units),
             "timeInForce": tif_map[request.tif],
         }
-        if order_type in ("LIMIT", "STOP"):
-            price = request.limit_price if order_type == "LIMIT" else request.stop_price
-            if price is None:
-                raise HTTPException(400, f"a price is required for order_type={request.order_type}")
-            order_body["price"] = str(price)
+        order_body.update(_entry_prices(request, required=True))
         client_id = client_order_id(getattr(request, "audit_id", None))
         if client_id:
             # Lets the fill be linked back to its audit row even if this call
@@ -669,13 +667,10 @@ class OANDAAdapter:
         order_body: Dict[str, Any] = {
             "type": order_type,
             "instrument": _to_instrument(request.symbol),
-            "units": str(int(signed_units)),
+            "units": _units(signed_units),
             "timeInForce": tif_map[tif],
         }
-        if order_type in ("LIMIT", "STOP"):
-            price = request.limit_price if order_type == "LIMIT" else request.stop_price
-            if price is not None:
-                order_body["price"] = str(price)
+        order_body.update(_entry_prices(request, required=False))
 
         resp = self._request(
             "PUT", self._account_path(f"/orders/{order_id}"), json={"order": order_body}
@@ -698,6 +693,7 @@ class OANDAAdapter:
         payload = self._get(self._account_path("/openPositions"))
         rows = payload.get("positions", []) if isinstance(payload, dict) else []
         trades = self._open_trades() if rows else []
+        marks = self._marks([str(r.get("instrument") or "") for r in rows if isinstance(r, dict)])
         positions: List[Dict[str, Any]] = []
         for row in rows if isinstance(rows, list) else []:
             if not isinstance(row, dict):
@@ -722,7 +718,11 @@ class OANDAAdapter:
                 {
                     "symbol": _from_instrument(instrument),
                     "position": size,
-                    "market_price": None,  # not carried on openPositions
+                    # openPositions carries no price; one pricing call marks
+                    # them all. The value is in the instrument's quote
+                    # currency, not the account's, so it is left to the venue's
+                    # own unrealised P&L figure.
+                    "market_price": marks.get(instrument),
                     "market_value": None,
                     "average_cost": _opt_float(open_leg.get("averagePrice")),
                     "unrealized_pnl": _opt_float(row.get("unrealizedPL")),
@@ -735,6 +735,29 @@ class OANDAAdapter:
                 }
             )
         return positions
+
+    def _marks(self, instruments: List[str]) -> Dict[str, float]:
+        """Mid prices for ``instruments`` in one pricing call. Best effort: a
+        position list without prices is still a correct position list, so a
+        failed price read leaves them out rather than failing the read."""
+        wanted = sorted({i for i in instruments if i})
+        if not wanted:
+            return {}
+        try:
+            payload = self._get(self._account_path("/pricing"), {"instruments": ",".join(wanted)})
+        except HTTPException as exc:
+            logger.warning("oanda_position_marks_unavailable", error=str(exc.detail))
+            return {}
+        marks: Dict[str, float] = {}
+        prices = payload.get("prices", []) if isinstance(payload, dict) else []
+        for p in prices if isinstance(prices, list) else []:
+            if not isinstance(p, dict):
+                continue
+            bid = _opt_float((p.get("bids") or [{}])[0].get("price"))
+            ask = _opt_float((p.get("asks") or [{}])[0].get("price"))
+            if bid is not None and ask is not None:
+                marks[str(p.get("instrument") or "")] = (bid + ask) / 2
+        return marks
 
     def probe(self) -> None:
         """Connectivity check for the in-app broker status: the cheapest
@@ -783,8 +806,12 @@ class OANDAAdapter:
                     "symbol": _from_instrument(str(row.get("instrument") or "")),
                     "action": "SELL" if units < 0 else "BUY",
                     "quantity": abs(units),
-                    "order_type": _OANDA_TO_ORDER_TYPE.get(
-                        str(row.get("type") or ""), str(row.get("type") or "MKT").upper()
+                    "order_type": (
+                        "STP_LMT"
+                        if row.get("type") == "STOP" and row.get("priceBound") is not None
+                        else _OANDA_TO_ORDER_TYPE.get(
+                            str(row.get("type") or ""), str(row.get("type") or "MKT").upper()
+                        )
                     ),
                     "status": str(row.get("state") or "PENDING"),
                     "filled_quantity": None,
@@ -877,6 +904,37 @@ class OANDAAdapter:
                     }
                 )
         return fills
+
+
+def _entry_prices(request: Any, *, required: bool) -> Dict[str, str]:
+    """The price fields of an entry order: ``price`` for a LIMIT or STOP, and
+    for a STP_LMT also ``priceBound``, the worst price the triggered stop may
+    fill at."""
+    order_type = request.order_type
+    if order_type == "MKT":
+        return {}
+    price = request.limit_price if order_type == "LMT" else request.stop_price
+    fields: Dict[str, str] = {}
+    if price is not None:
+        fields["price"] = str(price)
+    elif required:
+        raise HTTPException(400, f"a price is required for order_type={order_type}")
+    if order_type == "STP_LMT":
+        if request.limit_price is not None:
+            fields["priceBound"] = str(request.limit_price)
+        elif required:
+            raise HTTPException(400, "a limit_price is required for order_type=STP_LMT")
+    return fields
+
+
+def _units(value: float) -> str:
+    """Signed units as OANDA wants them. Whole numbers go as integers; CFDs
+    that trade fractional units (``tradeUnitsPrecision`` > 0) keep their
+    decimals instead of being truncated to zero."""
+    number = float(value)
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.6f}".rstrip("0").rstrip(".")
 
 
 def _price(value: float, digits: int) -> str:

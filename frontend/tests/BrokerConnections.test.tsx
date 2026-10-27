@@ -7,8 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import BrokerConnections from '../app/components/BrokerConnections';
 import {
+  FIRM_PRESETS,
+  PLATFORM_FORM,
   checkSummary,
   emptyForm,
+  formForFirm,
   formFromStored,
   movePlatform,
   requestBody,
@@ -158,6 +161,26 @@ describe('helpers', () => {
     });
     expect(requestBody({ ...form, values: { token: 't' } }).secrets).toEqual({ token: 't' });
     expect(formFromStored(STORED_ALPACA as any).values).toEqual({});
+  });
+
+  it('maps each firm to a platform the form knows', () => {
+    for (const firm of FIRM_PRESETS) {
+      expect(PLATFORM_FORM[firm.platform]).toBeDefined();
+    }
+    const axi = FIRM_PRESETS.find((f) => f.id === 'axi')!;
+    expect(axi.platform).toBe('mt5');
+    expect(formForFirm(axi)).toMatchObject({ platform: 'mt5', account: 'axi' });
+  });
+
+  it('keeps cTrader credentials secret and its account id in settings', () => {
+    const form = {
+      ...formForFirm(FIRM_PRESETS.find((f) => f.id === 'icmarkets')!),
+      values: { api_key: 'id', api_secret: 'secret', token: 'tok', account_id: '424242' },
+    };
+    const body = requestBody(form);
+    expect(body.platform).toBe('ctrader');
+    expect(body.settings).toEqual({ account_id: '424242' });
+    expect(body.secrets).toEqual({ api_key: 'id', api_secret: 'secret', token: 'tok' });
   });
 
   it("round-trips a connection's own limits and prop rules", () => {
