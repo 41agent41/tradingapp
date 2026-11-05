@@ -54,6 +54,9 @@ export const PLATFORM_FIELDS: Record<
     required: ['api_key', 'api_secret', 'token', 'account_id'],
     secrets: ['api_key', 'api_secret', 'token'],
   },
+  // IBKR Web API: the Client Portal Gateway's address and the account id
+  // (DU... for paper). The gateway holds the login, so nothing is secret here.
+  ibweb: { settings: ['url', 'account_id'], required: ['url', 'account_id'], secrets: [] },
 };
 
 /** The caps a connection can carry, all amounts in its currency but the first. */

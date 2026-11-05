@@ -109,6 +109,20 @@ export const PLATFORM_FORM: Record<string, Field[]> = {
       placeholder: '12345678 (not the login)',
     },
   ],
+  ibweb: [
+    {
+      name: 'url',
+      label: 'Client Portal Gateway URL',
+      required: true,
+      placeholder: 'https://10.0.0.30:5000',
+    },
+    {
+      name: 'account_id',
+      label: 'Account ID',
+      required: true,
+      placeholder: 'DU1234567 (paper) or U1234567 (live)',
+    },
+  ],
 };
 
 /**
@@ -156,6 +170,18 @@ export const FIRM_PRESETS: FirmPreset[] = [
     note: 'cTrader Open API. Register an app at openapi.ctrader.com and grant it your cTrader account.',
   },
   {
+    id: 'ibkr',
+    name: 'Interactive Brokers (Web API)',
+    platform: 'ibweb',
+    note: "Run the Client Portal Gateway and sign it in from a browser (paper login for a DU account). Several accounts, any market the account can trade, brackets attached at entry. IBKR's MCP server (api.ibkr.com/v1/api/mcp-public) works only inside an AI app such as Claude.",
+  },
+  {
+    id: 'ibkr-tws',
+    name: 'Interactive Brokers (IB Gateway)',
+    platform: 'ib',
+    note: 'TWS socket API through IB Gateway or TWS (port 4002 paper, 4001 live). One connection at a time; US stocks.',
+  },
+  {
     id: 'axi',
     name: 'Axi (MT5)',
     platform: 'mt5',
@@ -185,7 +211,7 @@ export function formForFirm(firm: FirmPreset): FormState {
  * reports the order in effect). Mirrors BROKER_PRIORITY in
  * broker_service/connections.py; see docs/DEVELOPMENT.md, "Adding a broker".
  */
-export const BROKERS_BY_PRIORITY = ['oanda', 'ig', 'ctrader', 'mt5', 'ib', 'alpaca'];
+export const BROKERS_BY_PRIORITY = ['oanda', 'ig', 'ctrader', 'ibweb', 'mt5', 'ib', 'alpaca'];
 
 const PLATFORM_NAME: Record<string, string> = {
   oanda: 'OANDA',
@@ -194,10 +220,11 @@ const PLATFORM_NAME: Record<string, string> = {
   alpaca: 'Alpaca',
   ig: 'IG',
   ctrader: 'cTrader',
+  ibweb: 'IBKR Web API',
 };
 
 /** Short names, where space is tight (the header health badge). */
-const PLATFORM_SHORT_NAME: Record<string, string> = { ib: 'IB' };
+const PLATFORM_SHORT_NAME: Record<string, string> = { ib: 'IB', ibweb: 'IBKR' };
 
 export function platformName(platform: string, short = false): string {
   return (short && PLATFORM_SHORT_NAME[platform]) || PLATFORM_NAME[platform] || platform;

@@ -34,6 +34,7 @@ ADAPTER_CLASSES = {
     "oanda": ("oanda_adapter", "OANDAAdapter"),
     "ig": ("ig_adapter", "IGAdapter"),
     "ctrader": ("ctrader_adapter", "CTraderAdapter"),
+    "ibweb": ("ibweb_adapter", "IBWebAdapter"),
 }
 
 

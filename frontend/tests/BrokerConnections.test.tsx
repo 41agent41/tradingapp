@@ -183,6 +183,17 @@ describe('helpers', () => {
     expect(body.secrets).toEqual({ api_key: 'id', api_secret: 'secret', token: 'tok' });
   });
 
+  it('sends an IBKR Web API connection as plain settings', () => {
+    const form = {
+      ...formForFirm(FIRM_PRESETS.find((f) => f.id === 'ibkr')!),
+      values: { url: 'https://10.0.0.30:5000', account_id: 'DU1234567' },
+    };
+    const body = requestBody(form);
+    expect(body.platform).toBe('ibweb');
+    expect(body.settings).toEqual({ url: 'https://10.0.0.30:5000', account_id: 'DU1234567' });
+    expect(body.secrets).toBeUndefined();
+  });
+
   it("round-trips a connection's own limits and prop rules", () => {
     const stored = {
       ...STORED_ALPACA,
