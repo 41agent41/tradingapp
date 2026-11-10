@@ -109,6 +109,38 @@ export interface BarColumns {
   v: number[];
 }
 
+/** Seconds in one bar of each timeframe a replay can show. */
+export const REPLAY_SECONDS: Record<string, number> = {
+  '1min': 60,
+  '5min': 300,
+  '15min': 900,
+  '30min': 1800,
+  '1hour': 3600,
+  '4hour': 14_400,
+  '1day': 86_400,
+};
+/** The most 1-minute bars one replay loads: about five weeks of FX. */
+export const REPLAY_MAX_MINUTES = 50_000;
+/** Bars shown before the replay starts, for context. */
+export const REPLAY_HISTORY_BARS = 300;
+
+/** What a bar replay plays (E-04). */
+export interface ReplayBars {
+  contract_id: number;
+  timeframe: string;
+  /** Where the replay starts: the asked-for time, moved back to the start of
+   *  its bar so the first candle forms whole. */
+  start: string;
+  /** Bars of the timeframe before `start`, oldest first. */
+  history: BarColumns;
+  /** The 1-minute bars from `start`, oldest first. */
+  minutes: BarColumns;
+  /** True when more 1-minute bars are stored after the last one sent. */
+  more: boolean;
+  /** The first and last 1-minute bar stored for the instrument at all. */
+  stored: { first: string | null; last: string | null };
+}
+
 export interface LoadedBars {
   bars: BarColumns;
   count: number;
@@ -158,6 +190,20 @@ export function barsHash(bars: BarColumns): string {
     hash.update(`${bars.t[i]},${bars.o[i]},${bars.h[i]},${bars.l[i]},${bars.c[i]},${bars.v[i]}\n`);
   }
   return hash.digest('hex');
+}
+
+/** Rows of t, o, h, l, c, v as one array per field. */
+function columns(rows: Array<Record<string, unknown>>): BarColumns {
+  const bars: BarColumns = { t: [], o: [], h: [], l: [], c: [], v: [] };
+  for (const r of rows) {
+    bars.t.push(Number(r.t));
+    bars.o.push(Number(r.o));
+    bars.h.push(Number(r.h));
+    bars.l.push(Number(r.l));
+    bars.c.push(Number(r.c));
+    bars.v.push(Number(r.v ?? 0));
+  }
+  return bars;
 }
 
 export interface BacktestDataDeps {
@@ -452,15 +498,7 @@ export class BacktestData {
         `That range holds more than ${MAX_BARS.toLocaleString('en-US')} bars. Shorten the range or use a longer timeframe.`
       );
     }
-    const bars: BarColumns = { t: [], o: [], h: [], l: [], c: [], v: [] };
-    for (const r of rows) {
-      bars.t.push(Number(r.t));
-      bars.o.push(Number(r.o));
-      bars.h.push(Number(r.h));
-      bars.l.push(Number(r.l));
-      bars.c.push(Number(r.c));
-      bars.v.push(Number(r.v ?? 0));
-    }
+    const bars = columns(rows);
     const iso = (s: number | undefined) =>
       s === undefined ? null : new Date(s * 1000).toISOString();
     return {
@@ -482,6 +520,99 @@ export class BacktestData {
     if (!contract) return null;
     const loaded = await this.load(contract.id, '1min', range);
     return loaded.count ? loaded : null;
+  }
+
+  /**
+   * The bars for a bar replay (E-04): the stored 1-minute bars from `start`,
+   * which the page plays one at a time, and the bars of the timeframe before
+   * it for context. Those come from the views built from the same 1-minute
+   * bars, on the same UTC boundaries the page forms its candles on, so the
+   * replayed candles continue the history exactly.
+   */
+  async replay(
+    inst: Instrument,
+    timeframe: string,
+    start: Date,
+    limit = REPLAY_MAX_MINUTES
+  ): Promise<ReplayBars> {
+    const seconds = REPLAY_SECONDS[timeframe];
+    if (!seconds) {
+      throw new BacktestDataError(
+        `A replay can show ${Object.keys(REPLAY_SECONDS).join(', ')}; not ${timeframe}.`
+      );
+    }
+    if (Number.isNaN(start.getTime())) {
+      throw new BacktestDataError('start must be a date and time.');
+    }
+    const count = Math.max(1, Math.min(REPLAY_MAX_MINUTES, Math.floor(limit) || 1));
+    const from = new Date(Math.floor(start.getTime() / (seconds * 1000)) * seconds * 1000);
+    const where = `${inst.symbol.toUpperCase()} at ${inst.broker}`;
+
+    // The contract with the most 1-minute bars in the stretch about to play.
+    const contract = await this.findContract(inst, '1min', {
+      start: from,
+      end: new Date(from.getTime() + 60 * DAY_MS),
+    });
+    if (!contract) {
+      throw new BacktestDataError(`No 1 minute bars are stored for ${where}.`, 404);
+    }
+    const span = await this.deps.db.query(
+      `SELECT min(timestamp) AS first, max(timestamp) AS last
+         FROM candlestick_data WHERE contract_id = $1 AND timeframe = '1min'`,
+      [contract.id]
+    );
+    const iso = (v: unknown) => (v ? new Date(v as string).toISOString() : null);
+    const stored = { first: iso(span.rows[0]?.first), last: iso(span.rows[0]?.last) };
+
+    const fields = `open::float8 AS o, high::float8 AS h, low::float8 AS l, close::float8 AS c,
+              volume::float8 AS v`;
+    const minuteRows = await this.deps.db.query(
+      `SELECT extract(epoch FROM timestamp)::bigint AS t, ${fields}
+         FROM candlestick_data
+        WHERE contract_id = $1 AND timeframe = '1min' AND timestamp >= $2
+        ORDER BY timestamp
+        LIMIT ${count + 1}`,
+      [contract.id, from]
+    );
+    if (!minuteRows.rows.length) {
+      const day = (v: string | null) => (v ? v.slice(0, 10) : '?');
+      throw new BacktestDataError(
+        stored.first
+          ? `No 1 minute bars are stored for ${where} from ${from.toISOString().slice(0, 16).replace('T', ' ')} UTC. They are stored from ${day(stored.first)} to ${day(stored.last)}.`
+          : `No 1 minute bars are stored for ${where}.`,
+        404
+      );
+    }
+
+    const view = BUILT_VIEWS[timeframe];
+    const historyRows = view
+      ? await this.deps.db.query(
+          `SELECT extract(epoch FROM bucket)::bigint AS t, ${fields}
+             FROM ${view}
+            WHERE contract_id = $1 AND bucket < $2
+            ORDER BY bucket DESC
+            LIMIT ${REPLAY_HISTORY_BARS}`,
+          [contract.id, from]
+        )
+      : await this.deps.db.query(
+          `SELECT extract(epoch FROM timestamp)::bigint AS t, ${fields}
+             FROM candlestick_data
+            WHERE contract_id = $1 AND timeframe = '1min' AND timestamp < $2
+            ORDER BY timestamp DESC
+            LIMIT ${REPLAY_HISTORY_BARS}`,
+          [contract.id, from]
+        );
+
+    const more = minuteRows.rows.length > count;
+    return {
+      contract_id: contract.id,
+      timeframe,
+      start: from.toISOString(),
+      history: columns([...historyRows.rows].reverse()),
+      minutes: columns(more ? minuteRows.rows.slice(0, count) : minuteRows.rows),
+      more,
+      stored,
+    };
   }
 
   /**

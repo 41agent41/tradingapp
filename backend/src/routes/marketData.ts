@@ -13,6 +13,7 @@ import realtimeRoutes from './marketData/realtime.js';
 import indicatorsRoutes from './marketData/indicators.js';
 import databaseRoutes from './marketData/database.js';
 import collectionRoutes from './marketData/collection.js';
+import replayRoutes from './marketData/replay.js';
 
 const router = express.Router();
 
@@ -24,5 +25,6 @@ router.use(realtimeRoutes);
 router.use(indicatorsRoutes);
 router.use(databaseRoutes);
 router.use(collectionRoutes);
+router.use(replayRoutes);
 
 export default router;
