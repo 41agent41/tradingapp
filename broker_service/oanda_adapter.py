@@ -171,6 +171,10 @@ def _from_instrument(instrument: str) -> str:
 class OANDAAdapter:
     """`MarketDataAdapter` + `BrokerAdapter` backed by the OANDA v20 REST API."""
 
+    # The price this venue builds its own bars from; the live recorder builds
+    # stream bars the same way (docs/plans/E-05-live-recorder.md, D5).
+    bar_basis = "mid"
+
     name = "oanda"
     # stopLossOnFill attaches the stop in the fill's own transaction (E-2).
     attaches_stops = True

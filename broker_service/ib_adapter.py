@@ -22,6 +22,10 @@ class IBAdapter:
     """Adapter over the existing IB sync workers. Implements both the
     market-data and broker protocols in ``adapters``."""
 
+    # The price this venue builds its own bars from; the live recorder builds
+    # stream bars the same way (docs/plans/E-05-live-recorder.md, D5).
+    bar_basis = "last"
+
     name = "ib"
 
     # -- BrokerAdapter ----------------------------------------------------- #

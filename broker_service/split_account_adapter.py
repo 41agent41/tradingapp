@@ -118,6 +118,11 @@ class SplitAccountAdapter:
             )
         return positions
 
+    @property
+    def bar_basis(self) -> str:
+        """Market data comes from the execution venue, so its bar basis does."""
+        return getattr(self._execution, "bar_basis", "mid")
+
     def _canonical_of_native(self, native: str) -> str:
         key = _canonical(native)
         return self._native_to_canonical.get(key, key)

@@ -3,7 +3,8 @@
 # behind the real sidecar, the broker service, and the backend with the
 # strategy runner executing on paper. Everything runs on loopback.
 #
-#   e2e/stack.sh start   # needs Postgres reachable via POSTGRES_* and a built backend
+#   e2e/stack.sh start   # needs Postgres reachable via POSTGRES_*, Redis on
+#                        # REDIS_HOST:REDIS_PORT (default 127.0.0.1:6379) and a built backend
 #   e2e/stack.sh stop
 #
 # Logs and pids go to $E2E_DIR (default /tmp/tradingapp-e2e).
@@ -61,6 +62,7 @@ start_broker() {
       {"id":"sim-b","platform":"mt5","url":"http://127.0.0.1:9102","secret_env":"E2E_SECRET_B",
        "account_mode":"paper","currency":"USD","symbol_map":{"EURUSD":"EURUSDm"}}]'
     export BROKER_SERVICE_TOKEN="$E2E_BROKER_TOKEN"
+    export REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
     exec "$PYTHON" -m uvicorn main:app --host 127.0.0.1 --port 8000 --log-level warning
   ) >"$E2E_DIR/broker.log" 2>&1 &
   echo $! >"$E2E_DIR/broker.pid"
@@ -74,6 +76,8 @@ start_backend() {
     export API_TOKEN="$E2E_API_TOKEN"
     export BROKER_SERVICE_URL=http://127.0.0.1:8000
     export BROKER_SERVICE_TOKEN="$E2E_BROKER_TOKEN"
+    # Redis serves the live recorder (e2e/test_recorder_flow.py); the cache stays off.
+    export REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
     export REDIS_ENABLED=false
     export BACKFILL_ENABLED=false
     export STREAMING_ENABLED=false
@@ -121,6 +125,10 @@ case "${1:-}" in
   stop)
     for name in backend broker calendar sidecar-a sidecar-b; do stop_one "$name"; done
     ;;
+  stop-one)
+    stop_one "$2"
+    sleep 1
+    ;;
   restart)
     # Restart one component in place: e2e/stack.sh restart backend|broker|sidecar-a|sidecar-b
     stop_one "$2"
@@ -134,7 +142,7 @@ case "${1:-}" in
     esac
     ;;
   *)
-    echo "usage: $0 start|stop|restart <component>" >&2
+    echo "usage: $0 start|stop|restart <component>|stop-one <component>" >&2
     exit 2
     ;;
 esac

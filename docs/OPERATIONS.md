@@ -35,7 +35,7 @@ in CT 110's Console, `su - tradingapp`, then `cd /opt/tradingapp`.
 | `restart` | Recreate the containers, so a change to `.env` takes effect. |
 | `logs [follow]` | Recent logs of every service, or follow them. |
 | `setup-code` | The code the first-run screen asks for. |
-| `doctor` | Docker, `.env`, containers, the database, schema and key as the backend sees them, and broker state. |
+| `doctor` | Docker, `.env`, containers, the database, schema and key as the backend sees them, broker state and the live recorder. |
 | `test` | Check the frontend, backend, broker service and readiness answer. |
 | `migrate` | Show the schema state and apply anything pending, without a restart. |
 | `settings-import` | Move Settings-page keys from `.env` into the app. |
@@ -96,7 +96,7 @@ help text):
 | Risk | `ORDER_MAX_QUANTITY`, `ORDER_MAX_PRICE`, `ORDER_MAX_POSITION`, `CONNECTION_MAX_*`, `PORTFOLIO_MAX_DAILY_LOSS`, `PORTFOLIO_BASE_CURRENCY`, `TRADING_DAY_TIMEZONE` |
 | Alerts and safety | `KILL_SWITCH_ACTION` (`notify`, `halt`, `flatten`), `KILL_SWITCH_EQUITY_FLOOR`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `HEARTBEAT_URL`, `HEARTBEAT_FAIL_URL` |
 | Strategies | `PROMOTION_*` gate thresholds, `PROMOTION_PAPER_GATE` |
-| Schedulers and data | Strategy runner timing, `BROKER_PROBE_INTERVAL_SECONDS`, `BACKFILL_*`, `EXECUTIONS_SYNC_*`, `REDIS_ENABLED`, `STREAMING_ENABLED`, `NEWS_CALENDAR_*`, the data collection table |
+| Schedulers and data | Strategy runner timing, `BROKER_PROBE_INTERVAL_SECONDS`, `BACKFILL_*`, `RECORDER_ENABLED`, `TICK_STREAM_MAXLEN`, `TICK_RETENTION_DAYS`, `EXECUTIONS_SYNC_*`, `REDIS_ENABLED`, `STREAMING_ENABLED`, `NEWS_CALENDAR_*`, the data collection table |
 | Security | Login password, API tokens, trading tokens, order MFA, `SESSION_TTL_HOURS`, `COOKIE_SECURE` |
 | Network | `CORS_ORIGINS`, `TRUST_PROXY` |
 | Connections | Broker priority, `IB_TIMEZONE` |
@@ -295,11 +295,15 @@ is [INSTALL.md step 5](INSTALL.md#5-market-data).
   chunks of about 20,000 bars, up to five per entry per pass. OANDA and Alpaca
   requests are paged past their per-request limits; MT5 answers a date range
   in one request. The History column shows progress.
-- TimescaleDB drops `tick_data` older than 30 days. Bars have no TimescaleDB
-  retention policy. `POST /api/market-data/database/clean` is the only thing
-  that deletes bars: it removes bars older than each entry's retention (run
-  it from cron with an API token), and always keeps bars from an entry's
-  history start on.
+- Bars and stored quotes have no TimescaleDB retention policy. The backend's
+  cleanup is the only thing that deletes them. It runs every day at 03:30
+  UTC, and on `POST /api/market-data/database/clean`. It removes bars older
+  than each entry's retention, always keeping bars from an entry's history
+  start on, and stored quotes older than `TICK_RETENTION_DAYS` (30 by
+  default), a whole day at a time.
+- With **Record live** ticked, the live recorder stores the instrument's
+  1-minute bars from its live prices, and with **Store ticks** each quote as
+  well. See [Live recorder](#live-recorder) below.
 - Upgrading from a version before migration `004_keep_bar_history`: the
   upgrade removes the old 2-year policy and, for every entry whose history
   start is more than two years back, resets its history cursor so the next
@@ -314,6 +318,38 @@ curl -fs -H "Authorization: Bearer $API_TOKEN" http://<host>:4000/api/market-dat
 ```
 
 ---
+
+### Live recorder
+
+What it does and how is in
+[FEATURES.md § Live recorder](FEATURES.md#live-recorder). Day to day:
+
+```bash
+./tradingapp.sh doctor        # its last section is the recorder
+curl -fs http://<host>:4000/api/health | jq .services.recorder
+curl -fs http://<host>:4000/api/market-data/recorder/status | jq
+```
+
+The line above the data collection table says the same in words, and the
+Live feed column shows each recorded instrument: streamed or polled, quotes
+in the last minute, the time of the last quote, or why it is not streaming.
+
+| You see | What to do |
+|---|---|
+| "Live recorder: off" | Turn on `RECORDER_ENABLED` on the same tab. |
+| "not running", with a reason | The backend cannot reach Redis, the database or the broker service. `docker compose ps`, then `docker compose logs backend redis broker_service`. It retries every 5 seconds by itself. |
+| "falling behind", lag growing | The database is slow or down. Quotes wait in Redis (up to `TICK_STREAM_MAXLEN`) and are stored when it returns. If lag grows with the database healthy, record fewer instruments with Store ticks, or raise `TICK_STREAM_MAXLEN` while you look. |
+| "not streaming: ..." on a row | The broker refused the symbol or is down; the text is the broker's reason. Fix the symbol or the connection. It is tried again every minute. |
+| "no quote yet" for minutes | The market is closed, or the broker sends nothing for that symbol. Open `/live` for the same symbol and connection to compare. |
+| A gap in recorded bars | The backfill fills it from the broker's history on its next pass, if the entry has Collect ticked. |
+
+A weekend or a closed market gives no quotes and no bars. That is normal and
+is not reported as a fault.
+
+**Upgrading from a version before migration `006_live_recorder`.** Live
+streams are now per broker connection, and their channel names changed.
+Reload any chart tab left open across the upgrade. Nothing is recorded
+until you tick Record live on an entry.
 
 ## Executions (fills) sync
 
@@ -362,11 +398,13 @@ curl -fs http://<host>:4000/api/health | jq
 opened by the key, and 503 with the reason otherwise. The backend's Docker
 health check uses it. Brokers and Redis do not count, so an outage there
 never marks the backend down. `/api/health` also reports the cache,
-streaming, backfill, fills sync and heartbeat.
+streaming, backfill, the live recorder, fills sync and heartbeat.
 
-Redis is a cache and the live-tick bus. If it is down, endpoints still work
-and charts fall back to one-off REST calls. Both can be switched off on
-Settings > Schedulers and data (`REDIS_ENABLED`, `STREAMING_ENABLED`).
+Redis is a cache, the live-tick bus and the queue of quotes waiting to be
+recorded. If it is down, endpoints still work, charts fall back to one-off
+REST calls, and live recording pauses until it returns. The cache, the chart
+stream and the recorder can each be switched off on Settings > Schedulers
+and data (`REDIS_ENABLED`, `STREAMING_ENABLED`, `RECORDER_ENABLED`).
 
 ### Prometheus and Grafana
 

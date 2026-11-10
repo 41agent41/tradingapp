@@ -23,6 +23,7 @@ KEYS = (
     "ORDER_PLACE_WAIT_SECONDS",
     "BROKER_PROBE_INTERVAL_SECONDS",
     "STREAM_POLL_SECONDS",
+    "TICK_STREAM_MAXLEN",
 )
 
 _values: Dict[str, str] = {}
@@ -68,6 +69,15 @@ def probe_interval_seconds() -> int:
         return max(0, int(get("BROKER_PROBE_INTERVAL_SECONDS") or "60"))
     except ValueError:
         return 60
+
+
+def tick_stream_maxlen() -> int:
+    """How many quotes the recorder's Redis Stream keeps (approximately)."""
+    try:
+        value = int(float(get("TICK_STREAM_MAXLEN") or "200000"))
+    except ValueError:
+        return 200_000
+    return value if value >= 1000 else 200_000
 
 
 def stream_poll_seconds() -> float:

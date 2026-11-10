@@ -6,6 +6,7 @@
  *   POST   /api/market-data/collection        add an instrument and timeframe
  *   PUT    /api/market-data/collection/:id    change its options
  *   DELETE /api/market-data/collection/:id    stop collecting (bars are kept)
+ *   GET    /api/market-data/recorder/status   the live recorder and each recorded instrument
  */
 import express from 'express';
 import type { Request, Response } from 'express';
@@ -18,9 +19,11 @@ import {
   CollectionConfigRepository,
 } from '../../services/collectionConfig.js';
 import { BROKERS } from '../../services/brokers.js';
+import { liveRecorder } from '../../services/liveRecorder.js';
 
 export function collectionRouter(
-  repo = new CollectionConfigRepository(dbService, marketDataService)
+  repo = new CollectionConfigRepository(dbService, marketDataService),
+  recorder: { status(): unknown } = liveRecorder
 ) {
   const router = express.Router();
 
@@ -48,6 +51,10 @@ export function collectionRouter(
     } catch (err) {
       fail(res, err, 'read');
     }
+  });
+
+  router.get('/recorder/status', (_req, res) => {
+    res.json(recorder.status());
   });
 
   router.post('/collection', async (req, res) => {

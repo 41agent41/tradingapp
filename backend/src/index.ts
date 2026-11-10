@@ -49,6 +49,9 @@ import { brokersFromHealth, defaultBrokerProblem } from './services/brokerStatus
 import brokersRoutes from './routes/brokers.js';
 import { brokerSync } from './services/brokerConnectionsRuntime.js';
 import { BROKER_SETTING_KEYS } from './services/brokerSync.js';
+import { liveRecorder, RECORDER_SETTING_KEYS } from './services/liveRecorder.js';
+import { DailyJob } from './services/dailyJob.js';
+import { marketDataService } from './services/marketDataService.js';
 import { credentials } from './services/credentials.js';
 import { announceSetupCode } from './services/setupCode.js';
 import { isLiveTradingEnabled, liveTradingSafeguardsMissing } from './services/orderTypes.js';
@@ -230,6 +233,7 @@ app.get('/api/health', async (_req, res) => {
         : { default: null, connections: [] },
       streaming: streamingBridge.status(),
       backfill: backfillScheduler.status(),
+      recorder: recorderHealth(),
       systematic: strategyRunner.status(),
       executions: executionsPoller.status(),
       heartbeat: heartbeat.status(),
@@ -318,6 +322,23 @@ const streamingBridge = createStreamingBridge(io);
 // services/backfillScheduler.ts.
 const backfillScheduler = createBackfillScheduler();
 
+// Live recorder: stores 1-minute bars and quotes from the quote stream for
+// every Data collection row with Record live ticked. See services/liveRecorder.ts.
+function recorderHealth() {
+  const { contracts, ...rest } = liveRecorder.status();
+  return { ...rest, recorded: contracts.length };
+}
+
+// Daily cleanup at 03:30 UTC: bars past their retention, and stored quotes
+// older than TICK_RETENTION_DAYS.
+const dailyCleanup = new DailyJob(3, 30, async () => {
+  const result = await marketDataService.cleanOldData();
+  logger.info(
+    { bars_deleted: result.deleted, tick_chunks_dropped: result.tickChunksDropped },
+    'daily data cleanup done'
+  );
+});
+
 // Strategy runner (Systematic Trading Phase 2, signal-only): evaluates every
 // running strategy against the latest closed bar and fans signals out over
 // `strategy:<runId>` Socket.IO rooms. Opt-in via SYSTEMATIC_ENABLED; it never
@@ -383,6 +404,8 @@ io.on('connection', (socket) => {
       socket.join(result.room);
       socket.emit('subscription-confirmed', {
         symbol: result.symbol,
+        source: result.platform,
+        account: result.account,
         timeframe,
         room: result.room,
         ref_count: result.refCount,
@@ -397,15 +420,15 @@ io.on('connection', (socket) => {
   });
 
   socket.on('unsubscribe-market-data', async (data) => {
-    const { symbol } = data || {};
+    const { symbol, source, account } = data || {};
     if (!symbol || typeof symbol !== 'string') {
       socket.emit('unsubscription-error', { error: 'symbol is required' });
       return;
     }
     console.log(`[socket ${socket.id}] unsubscribing from ${symbol}`);
     try {
-      const result = await streamingBridge.unsubscribe(socket.id, { symbol });
-      socket.leave(`market-data:${result.symbol}`);
+      const result = await streamingBridge.unsubscribe(socket.id, { symbol, source, account });
+      if (result.room) socket.leave(result.room);
       socket.emit('unsubscription-confirmed', {
         symbol: result.symbol,
         ref_count: result.refCount,
@@ -457,6 +480,13 @@ io.on('connection', (socket) => {
 // ---------------------------------------------------------------------------
 async function shutdown(signal: string) {
   console.log(`${signal} received, shutting down gracefully`);
+  // Before the database closes: stopping stores what the recorder has read.
+  try {
+    dailyCleanup.stop();
+    await liveRecorder.stop();
+  } catch (err) {
+    console.warn('Error stopping live recorder:', err);
+  }
   try {
     await dbService.close();
   } catch (err) {
@@ -558,6 +588,9 @@ function startServices(): void {
     });
     backfillScheduler.reconfigure(backfillSettings());
     backfillScheduler.start();
+    liveRecorder.reconfigure();
+    liveRecorder.start();
+    dailyCleanup.start();
     heartbeat.reconfigure(heartbeatOptionsFromEnv());
     heartbeat.start();
 
@@ -573,6 +606,10 @@ function startServices(): void {
     configService.subscribe(BACKFILL_SETTING_KEYS, () => {
       backfillScheduler.reconfigure(backfillSettings());
       backfillScheduler.start();
+    });
+    configService.subscribe(RECORDER_SETTING_KEYS, () => {
+      liveRecorder.reconfigure();
+      liveRecorder.start();
     });
     configService.subscribe(HEARTBEAT_SETTING_KEYS, () => {
       heartbeat.reconfigure(heartbeatOptionsFromEnv());

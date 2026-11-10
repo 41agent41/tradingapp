@@ -54,15 +54,23 @@ class StreamingAdapter:
             time.sleep(0.01)
 
 
-def _streamer(adapter, published):
+def _streamer(adapter, published, quotes=None):
     lock = threading.Lock()
 
-    def publish(symbol, tick_name, price=None, source=None):
+    def publish(symbol, tick_name, price=None, source=None, account=None):
         with lock:
             published.append((symbol, tick_name, price, source))
 
+    def quote(platform, account, symbol, **fields):
+        if quotes is not None:
+            with lock:
+                quotes.append((platform, account, symbol, fields))
+
     return VenueStreamer(
-        publish_tick=publish, resolve_adapter=lambda p, a: adapter, poll_seconds=0.01
+        publish_tick=publish,
+        resolve_adapter=lambda p, a: adapter,
+        poll_seconds=0.01,
+        publish_quote=quote,
     )
 
 
@@ -95,6 +103,86 @@ def test_refcount_and_worker_retires_when_empty():
         assert not streamer.holds("AAPL")
         assert _wait_for(lambda: not streamer._workers)
         assert streamer.unsubscribe("AAPL") is None
+    finally:
+        streamer.stop_all()
+
+
+def test_the_same_symbol_streams_from_two_connections():
+    published = []
+    streamer = _streamer(PollingAdapter({"EURUSD": (1.0, 1.2)}), published)
+    try:
+        streamer.subscribe("EURUSD", "oanda", "practice")
+        streamer.subscribe("EURUSD", "ctrader", "icmarkets")
+        assert _wait_for(lambda: {p[3] for p in published} == {"oanda", "ctrader"})
+        assert len(streamer.status()["subscriptions"]) == 2
+        # Dropping one connection's reference leaves the other streaming.
+        assert streamer.unsubscribe("EURUSD", "oanda", "practice").ref_count == 0
+        assert not streamer.holds("EURUSD", "oanda")
+        assert streamer.holds("EURUSD", "ctrader", "icmarkets")
+    finally:
+        streamer.stop_all()
+
+
+def test_recorded_set_holds_without_references_and_sends_quotes():
+    published, quotes = [], []
+    adapter = PollingAdapter({"EURUSD": (1.0, 1.2), "GBPUSD": (2.0, 2.2)})
+    adapter.bar_basis = "bid"
+    streamer = _streamer(adapter, published, quotes)
+    try:
+        wanted = {("mt5", "axi", "EURUSD"), ("mt5", "axi", "GBPUSD")}
+        assert streamer.set_recorded(wanted) == {}
+        assert streamer.set_recorded(wanted) == {}  # repeating changes nothing
+        assert streamer.recorded() == wanted
+        assert _wait_for(lambda: {q[2] for q in quotes} == {"EURUSD", "GBPUSD"})
+        platform, account, _symbol, fields = quotes[0]
+        assert (platform, account, fields["basis"]) == ("mt5", "axi", "bid")
+        assert set(fields) == {"bid", "ask", "last", "basis"}
+
+        # A chart's reference comes and goes without stopping the recording.
+        streamer.subscribe("EURUSD", "mt5", "axi")
+        assert streamer.unsubscribe("EURUSD", "mt5", "axi").recorded
+        assert streamer.holds("EURUSD", "mt5", "axi")
+
+        # Leaving it out of the set releases it; the other keeps recording.
+        streamer.set_recorded({("mt5", "axi", "GBPUSD")})
+        assert not streamer.holds("EURUSD")
+        assert streamer.recorded() == {("mt5", "axi", "GBPUSD")}
+        streamer.set_recorded(set())
+        assert _wait_for(lambda: not streamer._workers)
+    finally:
+        streamer.stop_all()
+
+
+def test_quotes_are_sent_only_for_recorded_subscriptions():
+    published, quotes = [], []
+    streamer = _streamer(PollingAdapter({"AAPL": (1.0, 2.0)}), published, quotes)
+    try:
+        streamer.subscribe("AAPL", "alpaca", "default")
+        assert _wait_for(lambda: len(published) >= 6)
+        assert quotes == []
+    finally:
+        streamer.stop_all()
+
+
+def test_recorded_set_reports_what_it_cannot_start():
+    def resolve(platform, account):
+        raise HTTPException(501, "nope is not configured")
+
+    streamer = VenueStreamer(publish_tick=lambda *a, **k: None, resolve_adapter=resolve)
+    errors = streamer.set_recorded({("nope", "default", "X")})
+    assert errors == {("nope", "default", "X"): "nope is not configured"}
+    assert streamer.recorded() == set()
+
+
+def test_recorded_set_reports_a_symbol_whose_fetch_keeps_failing():
+    streamer = _streamer(PollingAdapter({"AAPL": (1.0, 2.0)}), [], [])
+    try:
+        wanted = {("alpaca", "default", "AAPL"), ("alpaca", "default", "NOPE")}
+        streamer.set_recorded(wanted)
+        # It starts, then the broker says it has no such symbol.
+        assert _wait_for(
+            lambda: streamer.set_recorded(wanted) == {("alpaca", "default", "NOPE"): "unknown NOPE"}
+        )
     finally:
         streamer.stop_all()
 
@@ -268,11 +356,17 @@ def test_stream_subscribe_uses_the_default_non_ib_broker(two_brokers, monkeypatc
     import venue_streaming
     from routes import streaming as streaming_routes
 
-    subscribed = []
+    subscribed, unsubscribed = [], []
 
     class FakeStreamer:
         def retain(self, symbol):
             return None
+
+        def unsubscribe(self, symbol, platform=None, account=None):
+            unsubscribed.append((symbol, platform, account))
+            return venue_streaming.VenueSubscription(
+                symbol=symbol.upper(), platform=platform, account=account, ref_count=0
+            )
 
         def adapter_for(self, key):
             return object()
@@ -289,4 +383,68 @@ def test_stream_subscribe_uses_the_default_non_ib_broker(two_brokers, monkeypatc
     res = TestClient(app).post("/market-data/stream/subscribe", json={"symbol": "eur.usd"})
     assert res.status_code == 200
     assert res.json()["source"] == "oanda"
+    assert res.json()["account"] == "default"
+    assert res.json()["channel"] == "marketdata:tick:oanda:default:EUR.USD"
     assert subscribed == [("EUR.USD", "oanda", "default")]
+
+    # The backend hands the connection back when it drops the reference.
+    res = TestClient(app).post(
+        "/market-data/stream/unsubscribe",
+        json={"symbol": "EUR.USD", "source": "oanda", "account": "default"},
+    )
+    assert res.json()["status"] == "unsubscribed"
+    assert unsubscribed == [("EUR.USD", "oanda", "default")]
+
+
+def test_recorded_set_route_resolves_connections_and_reports_errors(two_brokers, monkeypatch):
+    import venue_streaming
+    from routes import streaming as streaming_routes
+
+    quiet = PollingAdapter({"AAPL": (1.0, 2.0), "EUR.USD": (1.0, 1.2)})
+    streamer = venue_streaming.VenueStreamer(
+        publish_tick=lambda *a, **k: None,
+        resolve_adapter=lambda p, a: quiet,
+        poll_seconds=60,
+        publish_quote=lambda *a, **k: None,
+    )
+    monkeypatch.setattr(streaming_routes, "venue_streamer", streamer)
+    app = FastAPI()
+    app.include_router(streaming_routes.router)
+    client = TestClient(app)
+    try:
+        body = {
+            "instruments": [
+                {"platform": "oanda", "symbol": "eur.usd"},
+                {"platform": "alpaca", "account": "default", "symbol": "AAPL"},
+                {"platform": "mt5", "symbol": "EURUSD"},
+            ]
+        }
+        res = client.put("/market-data/stream/recorded", json=body)
+        assert res.status_code == 200
+        assert res.json()["recorded"] == [
+            {"platform": "alpaca", "account": "default", "symbol": "AAPL"},
+            {"platform": "oanda", "account": "default", "symbol": "EUR.USD"},
+        ]
+        assert [e["platform"] for e in res.json()["errors"]] == ["mt5"]
+        # Each instrument that resolved, with the account its quotes carry.
+        assert res.json()["resolved"] == [
+            {
+                "platform": "oanda",
+                "account": None,
+                "symbol": "EUR.USD",
+                "stream_account": "default",
+                "mode": "polled",
+            },
+            {
+                "platform": "alpaca",
+                "account": "default",
+                "symbol": "AAPL",
+                "stream_account": "default",
+                "mode": "polled",
+            },
+        ]
+        # An empty set releases everything.
+        res = client.put("/market-data/stream/recorded", json={"instruments": []})
+        assert res.json() == {"recorded": [], "resolved": [], "errors": [], "poll_seconds": 60}
+    finally:
+        streamer.stop_all()

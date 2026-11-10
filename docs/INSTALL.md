@@ -936,9 +936,20 @@ On **Settings > Schedulers and data**:
    75,000 rows, roughly 10 MB, per instrument.
 3. Turn on the backfill scheduler (`BACKFILL_ENABLED`). It is off by default
    because it calls brokers on a timer. It starts without a restart.
+4. Optional, for instruments you will replay or backtest on 1-minute bars:
+   tick **Record live** on the instrument's row. The app then stores its
+   1-minute bars from live prices as they form, with no chart open. Tick
+   **Store ticks** as well only if you want every quote kept: a busy FX pair
+   is 15 to 25 MB a day, and quotes are deleted after 30 days
+   (`TICK_RETENTION_DAYS`, same tab). Both boxes apply to the instrument, so
+   they change on all of its rows. Leave Collect ticked too, so the backfill
+   replaces recorded bars with the broker's own and fills any gap.
 
 **Check:** the Getting started checklist shows the market data step done, and
-a chart of a collected instrument shows bars.
+a chart of a collected instrument shows bars. If you ticked Record live, the
+line above the table reads "Live recorder: on", and within a minute of the
+market being open the row's Live feed column shows "streamed" or "polled"
+with a count of quotes. "not streaming:" is followed by the broker's reason.
 
 ---
 

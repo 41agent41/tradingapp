@@ -1,7 +1,7 @@
 # Design record: live recorder and tick storage (E-05, E-06)
 
-Status: **revision 2, both open questions answered** (section 8). Nothing
-below is built yet. Revision 2 changed four things after a second review: bars
+Status: **built** (migration `006_live_recorder`), with the differences from
+this design listed in section 10. Revision 2 changed four things after a second review: bars
 follow each broker's own price basis (D5), database writes are exactly-once
 through a stored cursor (D7), live channels become per connection (D3), and
 unchanged quotes are not recorded (D2).
@@ -389,3 +389,24 @@ receives from the backend (`brokerSync.ts`). It is not another `.env` line.
   room `bars:<contract_id>`), so the live candle and the stored bar are the
   same bar on the broker's basis. That switch is a follow-up, not part of
   this build.
+
+## 10. As built: differences from this design
+
+The build follows sections 3 to 6 except where listed here. Each is a
+follow-up, not a change of direction.
+
+| Design | As built | Why |
+| --- | --- | --- |
+| D2: `ts` is the broker's quote time where the adapter gives one. | `ts` is the receive time in the broker service for every broker. | The adapters' stream callbacks pass prices without the broker's timestamp today. Carrying it through is a change to each adapter, left for E-11 to E-13, which rework those streams anyway. `recv_ts` is stored, so nothing is lost when `ts` improves. |
+| D5: `volume` is the sum of `last_size`. | Size is added only when the last price or size changed from the snapshot before. | A snapshot repeats the last trade when only the bid or ask moved, so a plain sum counts a trade many times. Two trades in a row at one price and size are counted once. The backfill replaces the bar with the broker's volume. |
+| D5: the backfill stops at the last completed minute. | The store (`storeCandlestickData`) leaves out the forming minute for the `1min` timeframe, whoever calls it. | One place instead of each caller. Other timeframes are unchanged: the recorder does not write them. |
+| D6: bars compressed after 7 days. | Not done. `quote_ticks` is compressed after 1 day as designed. | An upsert into a compressed chunk decompresses the rows it touches, and TimescaleDB caps that per transaction (`max_tuples_decompressed_per_dml_transaction`, 100,000 by default). A deep-history chunk is up to 20,000 bars in one transaction and a re-collection after a cursor reset rewrites many of them. That needs measuring against a real database before it is turned on. It moves to its own item with E-08, where bars become continuous aggregates. |
+| D6: migration 006 drops an empty `tick_data`. | `tick_data` is left in place, unused. | The baseline schema file creates it, and the baseline is applied again whenever it changes, so a dropped table would come back. Removing it from the baseline is a separate clean-up. |
+| D3: the `PUT` answer lists what is recorded. | It also returns `resolved`: for each instrument asked for, the account its quotes carry and whether it is streamed or polled. | A contract stored with account `default` streams under the connection's real name. The recorder needs that to match a quote to its contract, and does not read the stream until it has the answer. |
+| Section 4: a recorded contract with no quote for 5 minutes on a weekday is `degraded`. | Only lag over 60 seconds, or a failing database write, is `degraded`. The Live feed column shows the time of the last quote. | Without trading hours (E-26) that rule would report every closed market as a fault. |
+| Section 6, step 7: a fake adapter publishes the quotes. | The e2e test adds the quotes to the Redis Stream itself, in the broker service's format. | The result is exact (known open, high, low, close), and the broker service's side of the format is covered by its own tests. |
+
+Found while building, and not fixed here: live subscriptions put the symbol
+in upper case, so an MT5 symbol with a lower-case suffix (`EURUSD.a`) cannot
+be streamed or recorded. The live chart has the same limit. History and
+orders are not affected.

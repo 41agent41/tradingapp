@@ -57,12 +57,19 @@ class FakeRedis:
 
     def __init__(self) -> None:
         self.published: list[tuple[str, str]] = []
+        self.added: list[tuple] = []
         self.connected = True
 
     def publish(self, channel, payload):
         if not self.connected:
             raise RuntimeError("FakeRedis: not connected")
         self.published.append((channel, payload))
+
+    def xadd(self, stream, fields, maxlen=None, approximate=False):
+        if not self.connected:
+            raise RuntimeError("FakeRedis: not connected")
+        self.added.append((stream, dict(fields), maxlen, approximate))
+        return "1-0"
 
     def ping(self):
         if not self.connected:
@@ -204,7 +211,9 @@ def test_on_tick_publishes_price_payload(mgr_and_pieces):
     ticks = [c for c in redis.published if c[0].startswith(TICK_CHANNEL_PREFIX)]
     assert len(ticks) == 1
     channel, payload = ticks[0]
-    assert channel == f"{TICK_CHANNEL_PREFIX}MSFT"
+    assert channel == f"{TICK_CHANNEL_PREFIX}ib:default:MSFT"
+    assert '"platform": "ib"' in payload
+    assert '"account": "default"' in payload
     assert '"tick_type": "LAST"' in payload
     assert '"price": 380.25' in payload
     assert '"symbol": "MSFT"' in payload
@@ -290,3 +299,81 @@ def test_status_when_redis_unavailable_reports_disconnected():
     mgr = StreamingManager(redis_factory=lambda: None, clock=lambda: 1.0)
     info = mgr._redis_health()
     assert info["connected"] is False
+
+
+# ---------------------------------------------------------------------------
+# The recorder's hold and the quote stream
+# ---------------------------------------------------------------------------
+
+
+def test_record_holds_a_subscription_without_a_reference(mgr_and_pieces):
+    mgr, ib, _redis = mgr_and_pieces
+    sub = mgr.record("MSFT")
+    assert (sub.ref_count, sub.recorded) == (0, True)
+    assert mgr.record("MSFT") is sub  # repeating changes nothing
+    assert len(ib.req_calls) == 1
+
+    # A chart comes and goes; the recording keeps the stream.
+    mgr.subscribe("MSFT")
+    assert mgr.unsubscribe("MSFT").recorded
+    assert mgr.list_symbols() == ["MSFT"]
+    assert ib.cancel_calls == []
+
+    mgr.unrecord("MSFT")
+    assert mgr.list_symbols() == []
+    assert ib.cancel_calls == [sub.req_id]
+
+
+def test_unrecord_keeps_a_stream_a_chart_still_has(mgr_and_pieces):
+    mgr, ib, _redis = mgr_and_pieces
+    mgr.subscribe("MSFT")
+    mgr.record("MSFT")
+    mgr.unrecord("MSFT")
+    assert mgr.list_symbols() == ["MSFT"]
+    assert ib.cancel_calls == []
+
+
+def test_recorded_ticks_become_whole_quotes_on_the_stream(mgr_and_pieces):
+    mgr, _ib, redis = mgr_and_pieces
+    mgr.record("MSFT")
+    mgr.on_tick(BASE_STREAM_REQ_ID, tick_type=1, price=380.0)  # BID
+    mgr.on_tick(BASE_STREAM_REQ_ID, tick_type=2, price=380.2)  # ASK
+    mgr.on_tick(BASE_STREAM_REQ_ID, tick_type=5, size=100)  # LAST_SIZE adds nothing
+    mgr.on_tick(BASE_STREAM_REQ_ID, tick_type=4, price=380.1)  # LAST
+    mgr.on_tick(BASE_STREAM_REQ_ID, tick_type=4, price=380.1)  # unchanged
+    assert [a[0] for a in redis.added] == ["marketdata:quotes"] * 3
+    stream, fields, maxlen, approximate = redis.added[-1]
+    assert fields == {
+        "v": "1",
+        "platform": "ib",
+        "account": "default",
+        "symbol": "MSFT",
+        "bid": "380.0",
+        "ask": "380.2",
+        "last": "380.1",
+        "last_size": "100.0",
+        "basis": "last",
+        "ts": "1234567890000",
+        "recv_ts": "1234567890000",
+    }
+    assert (maxlen, approximate) == (200_000, True)
+    assert redis.added[0][1]["ask"] == ""
+    assert mgr.quotes_unchanged == 1
+
+
+def test_ticks_of_a_chart_only_subscription_stay_off_the_stream(mgr_and_pieces):
+    mgr, _ib, redis = mgr_and_pieces
+    mgr.subscribe("MSFT")
+    mgr.on_tick(BASE_STREAM_REQ_ID, tick_type=4, price=380.1)
+    assert redis.added == []
+
+
+def test_add_quote_survives_redis_being_down(mgr_and_pieces):
+    mgr, _ib, redis = mgr_and_pieces
+    redis.connected = False
+    assert mgr.add_quote("oanda", "practice", "EURUSD", bid=1.0, ask=1.2) is False
+    assert mgr.quotes_dropped == 1
+    redis.connected = True
+    # Not remembered as sent, so the same quote goes out once Redis is back.
+    assert mgr.add_quote("oanda", "practice", "EURUSD", bid=1.0, ask=1.2) is True
+    assert redis.added[0][1]["basis"] == "mid"

@@ -61,12 +61,15 @@ class FakeIBClient {
   subscribed: Array<Record<string, unknown>> = [];
   unsubscribed: Array<Record<string, unknown>> = [];
   throwOnSubscribe = false;
+  /** What the broker service answers: the connection it chose. */
+  answer: { source?: string; account?: string } | undefined = undefined;
 
   async subscribe(payload: Record<string, unknown>) {
     if (this.throwOnSubscribe) {
       throw new Error('IB unreachable');
     }
     this.subscribed.push(payload);
+    return this.answer;
   }
   async unsubscribe(payload: Record<string, unknown>) {
     this.unsubscribed.push(payload);
@@ -171,7 +174,55 @@ describe('StreamingBridge.subscribe', () => {
         account: undefined,
       },
     ]);
-    expect(r).toMatchObject({ symbol: 'MSFT', room: 'market-data:MSFT', refCount: 1 });
+    // An older broker service names no connection: IB's default is assumed.
+    expect(r).toMatchObject({ symbol: 'MSFT', room: 'market-data:ib:default:MSFT', refCount: 1 });
+  });
+
+  it('uses the connection the broker service chose for the room', async () => {
+    const { bridge, ibClient } = makeBridge();
+    ibClient.answer = { source: 'oanda', account: 'practice' };
+    const r = await bridge.subscribe('sock-1', { symbol: 'eurusd' });
+    expect(r).toMatchObject({
+      platform: 'oanda',
+      account: 'practice',
+      room: 'market-data:oanda:practice:EURUSD',
+    });
+    await bridge.unsubscribe('sock-1', { symbol: 'EURUSD' });
+    expect(ibClient.unsubscribed).toEqual([
+      { symbol: 'EURUSD', source: 'oanda', account: 'practice' },
+    ]);
+  });
+
+  it('streams one symbol from two connections separately', async () => {
+    const { bridge, ibClient } = makeBridge();
+    const a = await bridge.subscribe('s1', { symbol: 'EURUSD', source: 'oanda', account: 'p' });
+    const b = await bridge.subscribe('s1', { symbol: 'EURUSD', source: 'ctrader', account: 'ic' });
+    expect(ibClient.subscribed).toHaveLength(2);
+    expect(a.room).toBe('market-data:oanda:p:EURUSD');
+    expect(b.room).toBe('market-data:ctrader:ic:EURUSD');
+    const gone = await bridge.unsubscribe('s1', {
+      symbol: 'EURUSD',
+      source: 'oanda',
+      account: 'p',
+    });
+    expect(gone.room).toBe(a.room);
+    expect(bridge.status().subscriptions).toEqual([
+      expect.objectContaining({ symbol: 'EURUSD', connection: 'ctrader:ic' }),
+    ]);
+  });
+
+  it("keeps the room while another of the socket's streams resolved to it", async () => {
+    const { bridge, ibClient } = makeBridge();
+    ibClient.answer = { source: 'oanda', account: 'p' };
+    await bridge.subscribe('s1', { symbol: 'EURUSD' });
+    await bridge.subscribe('s1', { symbol: 'EURUSD', source: 'oanda', account: 'p' });
+    expect((await bridge.unsubscribe('s1', { symbol: 'EURUSD' })).room).toBeNull();
+    const last = await bridge.unsubscribe('s1', {
+      symbol: 'EURUSD',
+      source: 'oanda',
+      account: 'p',
+    });
+    expect(last.room).toBe('market-data:oanda:p:EURUSD');
   });
 
   it('passes the chosen connection through, and drops a name that is not plain', async () => {
@@ -240,7 +291,7 @@ describe('StreamingBridge.unsubscribe', () => {
     await bridge.subscribe('a', { symbol: 'MSFT' });
     const r = await bridge.unsubscribe('a', { symbol: 'MSFT' });
     expect(r.refCount).toBe(0);
-    expect(ibClient.unsubscribed).toEqual([{ symbol: 'MSFT' }]);
+    expect(ibClient.unsubscribed).toEqual([{ symbol: 'MSFT', source: 'ib', account: 'default' }]);
   });
 
   it('returns a no-op shape for unknown sockets / symbols', async () => {
@@ -266,10 +317,12 @@ describe('StreamingBridge.unsubscribe', () => {
 describe('handleTickMessage', () => {
   it('emits to the matching room when a socket is listening', () => {
     const { bridge, io } = makeBridge();
-    io.joinRoom('market-data:MSFT', 'sock-1');
+    io.joinRoom('market-data:alpaca:paper:MSFT', 'sock-1');
     bridge.handleTickMessage(
       JSON.stringify({
         symbol: 'MSFT',
+        platform: 'alpaca',
+        account: 'paper',
         type: 'tick',
         tick_type: 'LAST',
         tick_type_code: 4,
@@ -278,9 +331,9 @@ describe('handleTickMessage', () => {
         value: 380.25,
         timestamp: 1.0,
       }),
-      'marketdata:tick:MSFT'
+      'marketdata:tick:alpaca:paper:MSFT'
     );
-    const room = io.rooms.get('market-data:MSFT');
+    const room = io.rooms.get('market-data:alpaca:paper:MSFT');
     expect(room?.emitted).toHaveLength(1);
     expect(room?.emitted[0].event).toBe('market-data-update');
     expect((room?.emitted[0].payload as any).price).toBe(380.25);
@@ -292,20 +345,33 @@ describe('handleTickMessage', () => {
     const { bridge, io } = makeBridge();
     bridge.handleTickMessage(
       JSON.stringify({ symbol: 'MSFT', tick_type: 'LAST', value: 1, timestamp: 0 }),
-      'marketdata:tick:MSFT'
+      'marketdata:tick:ib:default:MSFT'
     );
-    expect(io.rooms.get('market-data:MSFT')).toBeUndefined();
+    expect(io.rooms.get('market-data:ib:default:MSFT')).toBeUndefined();
     expect(bridge.ticksDropped).toBe(1);
   });
 
-  it('parses the symbol from the channel when the payload omits it', () => {
+  it('routes by the payload, so a symbol may contain a colon', () => {
     const { bridge, io } = makeBridge();
-    io.joinRoom('market-data:AAPL', 'sock-1');
+    io.joinRoom('market-data:ibweb:default:BHP:ASX', 'sock-1');
     bridge.handleTickMessage(
-      JSON.stringify({ tick_type: 'LAST', value: 1, timestamp: 0 }),
-      'marketdata:tick:AAPL'
+      JSON.stringify({
+        symbol: 'BHP:ASX',
+        platform: 'ibweb',
+        account: 'default',
+        tick_type: 'LAST',
+        value: 1,
+        timestamp: 0,
+      }),
+      'marketdata:tick:ibweb:default:BHP:ASX'
     );
-    expect(io.rooms.get('market-data:AAPL')?.emitted).toHaveLength(1);
+    expect(io.rooms.get('market-data:ibweb:default:BHP:ASX')?.emitted).toHaveLength(1);
+  });
+
+  it('drops a payload with no symbol', () => {
+    const { bridge } = makeBridge();
+    bridge.handleTickMessage(JSON.stringify({ tick_type: 'LAST', value: 1 }), 'marketdata:tick:x');
+    expect(bridge.ticksDropped).toBe(1);
   });
 
   it('drops invalid JSON without throwing', () => {
@@ -316,10 +382,11 @@ describe('handleTickMessage', () => {
 });
 
 describe('handleStatusMessage', () => {
-  it('routes per-symbol status payloads to the matching room', () => {
+  it('routes per-symbol status payloads to the rooms streaming that symbol', async () => {
     const { bridge, io } = makeBridge();
+    await bridge.subscribe('sock-1', { symbol: 'MSFT' });
     bridge.handleStatusMessage(JSON.stringify({ event: 'stopped', symbol: 'MSFT' }));
-    const room = io.rooms.get('market-data:MSFT');
+    const room = io.rooms.get('market-data:ib:default:MSFT');
     expect(room?.emitted[0].event).toBe('market-data-status');
     expect((room?.emitted[0].payload as any).event).toBe('stopped');
   });

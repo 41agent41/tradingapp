@@ -230,7 +230,7 @@ jobs:
   e2e:
     name: e2e (paper run against simulated MT5)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     services:
       postgres:
         image: timescale/timescaledb:2.17.2-pg16
@@ -245,12 +245,24 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      # The quote stream the live recorder reads (e2e/test_recorder_flow.py).
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       POSTGRES_HOST: localhost
       POSTGRES_PORT: 5432
       POSTGRES_USER: tradingapp
       POSTGRES_PASSWORD: e2e-password
       POSTGRES_DB: tradingapp
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: 6379
     steps:
       - uses: actions/checkout@v4
 

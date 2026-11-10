@@ -11,10 +11,16 @@ import { apiFetch } from '../lib/api';
  * them for its retention period. With "History from" set it also walks back
  * to that date, a chunk at a time, for backtests. Removing an entry stops
  * collection; bars already stored stay.
+ *
+ * "Record live" has the live recorder store 1-minute bars from the
+ * instrument's price stream as they form, and "Store ticks" has it keep each
+ * quote too. Both belong to the instrument, so they apply to every timeframe
+ * row of it. The Live feed column shows what the recorder is receiving.
  */
 
 export type CollectionEntry = {
   id: number;
+  contract_id: number;
   broker: string;
   account: string;
   symbol: string;
@@ -30,7 +36,32 @@ export type CollectionEntry = {
   history_start: string | null;
   oldest_bar: string | null;
   backfilled_to: string | null;
+  record_live: boolean;
+  record_ticks: boolean;
 };
+
+export type RecordedContract = {
+  contract_id: number;
+  /** 'streamed' when the broker pushes prices, 'polled' when they are fetched. */
+  mode: string | null;
+  last_quote: string | null;
+  last_bar: string | null;
+  quotes_last_minute: number;
+  error: string | null;
+};
+
+export type RecorderStatus = {
+  enabled: boolean;
+  running: boolean;
+  degraded: boolean;
+  lag_seconds: number;
+  waiting: number;
+  last_error: string | null;
+  poll_seconds: number | null;
+  contracts: RecordedContract[];
+};
+
+const STATUS_REFRESH_MS = 15_000;
 
 type Payload = { entries: CollectionEntry[]; brokers: string[]; timeframes: string[] };
 
@@ -72,7 +103,43 @@ export function historyProgress(e: CollectionEntry): string {
   return `from ${e.history_start}: ${oldest ? `back to ${oldest} so far` : 'starting'}`;
 }
 
+/** One line on the recorder as a whole. */
+export function recorderSummary(status: RecorderStatus | null): string {
+  if (!status) return '';
+  if (!status.enabled) return 'Live recorder: off (turn it on below).';
+  if (!status.running) {
+    return `Live recorder: not running${status.last_error ? ` (${status.last_error})` : ''}.`;
+  }
+  const behind = `${Math.round(status.lag_seconds)} s behind the stream`;
+  if (status.degraded) {
+    return `Live recorder: falling behind, ${behind}${status.last_error ? ` (${status.last_error})` : ''}.`;
+  }
+  return `Live recorder: on, recording ${status.contracts.length}, ${behind}.`;
+}
+
+/** What the recorder is receiving for one entry. */
+export function liveFeed(e: CollectionEntry, status: RecorderStatus | null): string {
+  if (!e.record_live) return 'not recorded';
+  if (!e.enabled) return 'paused (entry disabled)';
+  if (!status) return '';
+  if (!status.enabled) return 'recorder is off';
+  const c = status.contracts.find((x) => x.contract_id === e.contract_id);
+  if (!c) return 'starting';
+  if (c.error) return `not streaming: ${c.error}`;
+  const mode =
+    c.mode === 'polled'
+      ? `polled every ${status.poll_seconds ?? 2} s`
+      : c.mode === 'streamed'
+        ? 'streamed'
+        : 'starting';
+  if (!c.last_quote) return `${mode}, no quote yet`;
+  return `${mode}, ${c.quotes_last_minute} quotes in the last minute, last at ${new Date(
+    c.last_quote
+  ).toLocaleTimeString()}`;
+}
+
 export default function DataCollection() {
+  const [status, setStatus] = useState<RecorderStatus | null>(null);
   const [payload, setPayload] = useState<Payload | null>(null);
   const [form, setForm] = useState(EMPTY);
   const [busy, setBusy] = useState(false);
@@ -86,9 +153,21 @@ export default function DataCollection() {
     }
   }, []);
 
+  const loadStatus = useCallback(async () => {
+    try {
+      const body = await readJson(await apiFetch('/api/market-data/recorder/status'));
+      setStatus(Array.isArray(body?.contracts) ? (body as RecorderStatus) : null);
+    } catch {
+      // The table still works without it; the next refresh tries again.
+    }
+  }, []);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadStatus();
+    const timer = setInterval(() => void loadStatus(), STATUS_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [load, loadStatus]);
 
   const send = async (path: string, method: string, body?: unknown, done?: string) => {
     setBusy(true);
@@ -103,6 +182,7 @@ export default function DataCollection() {
       );
       if (done) setMessage({ kind: 'ok', text: done });
       await load();
+      void loadStatus();
       return true;
     } catch (e) {
       setMessage({ kind: 'error', text: e instanceof Error ? e.message : String(e) });
@@ -139,6 +219,23 @@ export default function DataCollection() {
           from to also collect older bars back to that date, for backtests. Bars from that date on
           are kept whatever the entry&apos;s retention.
         </p>
+        <p className="mt-1 text-sm text-gray-600">
+          Tick Record live to store 1-minute bars from the instrument&apos;s live prices as they
+          form, with no chart open. Tick Store ticks to keep each quote as well. Both apply to the
+          instrument, so they change on every timeframe row of it.
+        </p>
+        {status && (
+          <p
+            data-testid="recorder-summary"
+            className={`mt-1 text-sm ${
+              status.enabled && (status.degraded || !status.running)
+                ? 'text-amber-700'
+                : 'text-gray-600'
+            }`}
+          >
+            {recorderSummary(status)}
+          </p>
+        )}
       </div>
 
       {message && (
@@ -170,6 +267,9 @@ export default function DataCollection() {
                 <th className="py-1 pr-3">Newest bar</th>
                 <th className="py-1 pr-3">History</th>
                 <th className="py-1 pr-3">Collect</th>
+                <th className="py-1 pr-3">Record live</th>
+                <th className="py-1 pr-3">Store ticks</th>
+                <th className="py-1 pr-3">Live feed</th>
                 <th className="py-1" />
               </tr>
             </thead>
@@ -200,6 +300,29 @@ export default function DataCollection() {
                       }
                     />
                   </td>
+                  <td className="py-1 pr-3">
+                    <input
+                      type="checkbox"
+                      aria-label={`Record ${e.symbol} live`}
+                      checked={e.record_live}
+                      disabled={busy}
+                      onChange={(ev) =>
+                        void send(`/${e.id}`, 'PUT', { record_live: ev.target.checked })
+                      }
+                    />
+                  </td>
+                  <td className="py-1 pr-3">
+                    <input
+                      type="checkbox"
+                      aria-label={`Store ${e.symbol} ticks`}
+                      checked={e.record_ticks}
+                      disabled={busy}
+                      onChange={(ev) =>
+                        void send(`/${e.id}`, 'PUT', { record_ticks: ev.target.checked })
+                      }
+                    />
+                  </td>
+                  <td className="py-1 pr-3 text-gray-600">{liveFeed(e, status)}</td>
                   <td className="py-1 text-right">
                     <button
                       type="button"

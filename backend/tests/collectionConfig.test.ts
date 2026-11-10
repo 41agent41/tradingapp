@@ -4,7 +4,7 @@
  */
 import express from 'express';
 import request from 'supertest';
-import { CollectionConfigRepository } from '../src/services/collectionConfig.js';
+import { CollectionConfigRepository, collectionEvents } from '../src/services/collectionConfig.js';
 import { collectionRouter } from '../src/routes/marketData/collection.js';
 
 function repoWith() {
@@ -111,9 +111,45 @@ describe('history_start', () => {
     const { repo, query } = repoWith();
     await repo.update(3, { history_start: '' });
     await repo.update(3, { retention_days: 30 });
-    const updates = query.mock.calls.filter(([sql]) => sql.includes('UPDATE'));
+    const updates = query.mock.calls.filter(([sql]) => sql.includes('SET enabled'));
     expect(updates[0][1]?.slice(-2)).toEqual([true, null]);
     expect(updates[1][1]?.slice(-2)).toEqual([false, null]);
+  });
+});
+
+describe('recording flags', () => {
+  const recording = (query: jest.Mock) =>
+    query.mock.calls.filter(([sql]) => sql.includes('SET record_live')).map(([, p]) => p);
+
+  it('are set on every row of the contract, and left alone when absent', async () => {
+    const { repo, query } = repoWith();
+    await repo.update(3, { record_live: true });
+    await repo.update(3, { record_ticks: true });
+    await repo.update(3, { retention_days: 30 });
+    // [contract, record_live, record_ticks]; the SQL turns Record live on with ticks.
+    expect(recording(query)).toEqual([
+      [9, true, null],
+      [9, null, true],
+      [9, null, null],
+    ]);
+  });
+
+  it('refuse storing ticks with Record live turned off', async () => {
+    const { repo } = repoWith();
+    await expect(repo.update(3, { record_live: false, record_ticks: true })).rejects.toThrow(
+      /needs Record live/
+    );
+    await expect(repo.update(3, { record_live: 'yes' })).rejects.toThrow(/true or false/);
+  });
+
+  it('tell the recorder when the list changes', async () => {
+    const { repo } = repoWith();
+    const changed = jest.fn();
+    collectionEvents.on('changed', changed);
+    await repo.update(3, { record_live: true });
+    await repo.remove(3);
+    collectionEvents.off('changed', changed);
+    expect(changed).toHaveBeenCalledTimes(2);
   });
 });
 

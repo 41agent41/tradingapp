@@ -754,6 +754,29 @@ if m:
     echo ""
     echo "=== Brokers (checked inside the app) ==="
     show_broker_summary
+
+    echo ""
+    echo "=== Live recorder ==="
+    body=$(curl -s --max-time 10 "http://127.0.0.1:$(backend_port)/api/health" 2>/dev/null || true)
+    if [[ -n $body ]] && command -v python3 &>/dev/null; then
+        echo "$body" | python3 -c '
+import json, sys
+r = (json.load(sys.stdin).get("services") or {}).get("recorder")
+if not r:
+    print("  not reported (the backend is older than the recorder, or still starting)")
+elif not r.get("enabled"):
+    print("  off (RECORDER_ENABLED, Settings > Schedulers and data)")
+else:
+    state = "degraded" if r.get("degraded") else ("running" if r.get("running") else "not running")
+    print("  state:", state)
+    print("  recording:", r.get("recorded"), "instrument(s)")
+    print("  behind the stream:", round(r.get("lag_seconds") or 0), "s;", r.get("waiting"), "quote(s) waiting")
+    if r.get("last_error"):
+        print("  last error:", r["last_error"])
+' 2>/dev/null || print_warning "The recorder state could not be read"
+    else
+        print_warning "The backend is not answering on port $(backend_port)"
+    fi
 }
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,11 @@ streaming publisher. The high-level picture::
                                     │  redis.publish
                                     ▼
                     redis://...                              ──▶  backend ──▶ Socket.IO ──▶ frontend
-                       channel = "marketdata:tick:<SYMBOL>"
+                       channel = "marketdata:tick:<platform>:<account>:<SYMBOL>"
+
+Quotes of recorded subscriptions are also added to the Redis Stream
+``marketdata:quotes`` (``add_quote``), which the backend's live recorder
+reads to build bars and store ticks (docs/plans/E-05-live-recorder.md).
 
 Design notes:
 
@@ -42,10 +46,18 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-# Channel prefix for tick payloads. The backend subscribes to
-# ``marketdata:tick:*`` so adding new symbols requires no backend
-# changes.
+# Channel prefix for tick payloads; the full channel is
+# ``marketdata:tick:<platform>:<account>:<SYMBOL>``. The backend subscribes
+# to ``marketdata:tick:*`` and routes by the payload's own ``platform``,
+# ``account`` and ``symbol`` (a symbol may itself contain a colon).
 TICK_CHANNEL_PREFIX = "marketdata:tick:"
+
+# The Redis Stream the live recorder reads: one entry per changed quote of a
+# recorded subscription. Format version 1; see add_quote.
+QUOTE_STREAM = "marketdata:quotes"
+QUOTE_FORMAT = "1"
+
+IB_PLATFORM = "ib"
 
 # Status channel for diagnostics (subscription started / stopped /
 # errored). The frontend doesn't need this, but the backend health
@@ -86,6 +98,14 @@ class Subscription:
     symbol: str
     req_id: int
     ref_count: int = 0
+    # Held by the live recorder, whatever the reference count.
+    recorded: bool = False
+    # Latest values, merged from IB's one-field-at-a-time callbacks into the
+    # quote snapshots the recorder reads.
+    bid: float | None = None
+    ask: float | None = None
+    last: float | None = None
+    last_size: float | None = None
     started_at: float = field(default_factory=time.time)
     tick_count: int = 0
     last_tick_at: float | None = None
@@ -133,6 +153,17 @@ class StreamingManager:
         self.ticks_total = 0
         self.ticks_published = 0
         self.ticks_dropped = 0
+
+        # The account name of the IB connection, for channels and quotes.
+        # There is one IB socket, so one name; routes/streaming.py sets it.
+        self.ib_account = "default"
+
+        # Quote stream bookkeeping: the last quote added per subscription
+        # (an unchanged one is not added again) and counters for /status.
+        self._last_quote: dict[tuple[str, str, str], tuple] = {}
+        self.quotes_added = 0
+        self.quotes_unchanged = 0
+        self.quotes_dropped = 0
 
     # ------------------------------------------------------------------
     # Wiring
@@ -190,6 +221,40 @@ class StreamingManager:
         repeated calls for the same symbol increment ``ref_count`` and
         do not start a new IB subscription.
         """
+        return self._hold(symbol, sec_type, exchange, currency, recorded=False)
+
+    def record(
+        self,
+        symbol: str,
+        sec_type: str = "STK",
+        exchange: str = "SMART",
+        currency: str = "USD",
+    ) -> Subscription:
+        """Hold ``symbol`` for the live recorder: it streams, and its quotes
+        go to the quote stream, until :meth:`unrecord`. Safe to repeat."""
+        return self._hold(symbol, sec_type, exchange, currency, recorded=True)
+
+    def unrecord(self, symbol: str) -> None:
+        """Release the recorder's hold; the stream stops if no chart has it."""
+        symbol = symbol.upper().strip()
+        with self._lock:
+            sub = self._subs.get(symbol)
+            if sub is None or not sub.recorded:
+                return
+            sub.recorded = False
+            if sub.ref_count > 0:
+                return
+            self._subs.pop(symbol, None)
+            self._req_to_symbol.pop(sub.req_id, None)
+        self._stop(sub)
+
+    def recorded_symbols(self) -> set[str]:
+        with self._lock:
+            return {s.symbol for s in self._subs.values() if s.recorded}
+
+    def _hold(
+        self, symbol: str, sec_type: str, exchange: str, currency: str, *, recorded: bool
+    ) -> Subscription:
         symbol = symbol.upper().strip()
         if not symbol:
             raise ValueError("symbol is required")
@@ -197,15 +262,23 @@ class StreamingManager:
         with self._lock:
             sub = self._subs.get(symbol)
             if sub is not None:
-                sub.ref_count += 1
-                logger.info(
-                    "Stream refcount %s for %s (req_id=%s)", sub.ref_count, symbol, sub.req_id
-                )
+                if recorded:
+                    sub.recorded = True
+                else:
+                    sub.ref_count += 1
+                    logger.info(
+                        "Stream refcount %s for %s (req_id=%s)", sub.ref_count, symbol, sub.req_id
+                    )
                 return sub
 
             req_id = self._next_req_id
             self._next_req_id += 1
-            sub = Subscription(symbol=symbol, req_id=req_id, ref_count=1)
+            sub = Subscription(
+                symbol=symbol,
+                req_id=req_id,
+                ref_count=0 if recorded else 1,
+                recorded=recorded,
+            )
             self._subs[symbol] = sub
             self._req_to_symbol[req_id] = symbol
 
@@ -235,7 +308,7 @@ class StreamingManager:
             if sub is None:
                 return None
             sub.ref_count = max(0, sub.ref_count - 1)
-            if sub.ref_count > 0:
+            if sub.ref_count > 0 or sub.recorded:
                 logger.info("Stream refcount %s for %s after unsubscribe", sub.ref_count, symbol)
                 return sub
             # refcount hit zero — pop it out before we make the IB call
@@ -243,14 +316,18 @@ class StreamingManager:
             self._subs.pop(symbol, None)
             self._req_to_symbol.pop(sub.req_id, None)
 
+        self._stop(sub)
+        return sub
+
+    def _stop(self, sub: Subscription) -> None:
+        """Cancel a subscription already removed from the books."""
         try:
-            self._cancel(symbol, sub=sub)
+            self._cancel(sub.symbol, sub=sub)
         except Exception as exc:
             sub.last_error = str(exc)
             logger.warning("cancelMktData(%s) failed: %s", sub.req_id, exc)
-
-        self._publish_status({"event": "stopped", "symbol": symbol, "req_id": sub.req_id})
-        return sub
+        self._last_quote.pop((IB_PLATFORM, self.ib_account, sub.symbol), None)
+        self._publish_status({"event": "stopped", "symbol": sub.symbol, "req_id": sub.req_id})
 
     def force_unsubscribe(self, symbol: str) -> Subscription | None:
         """Tear a subscription down regardless of refcount.
@@ -265,6 +342,7 @@ class StreamingManager:
                 return None
             self._req_to_symbol.pop(sub.req_id, None)
             sub.ref_count = 0
+            sub.recorded = False
         try:
             self._cancel(symbol, sub=sub)
         except Exception as exc:  # pragma: no cover
@@ -280,6 +358,7 @@ class StreamingManager:
                     "symbol": s.symbol,
                     "req_id": s.req_id,
                     "ref_count": s.ref_count,
+                    "recorded": s.recorded,
                     "started_at": s.started_at,
                     "tick_count": s.tick_count,
                     "last_tick_at": s.last_tick_at,
@@ -295,10 +374,14 @@ class StreamingManager:
                 "ticks_total": self.ticks_total,
                 "ticks_published": self.ticks_published,
                 "ticks_dropped": self.ticks_dropped,
+                "quotes_added": self.quotes_added,
+                "quotes_unchanged": self.quotes_unchanged,
+                "quotes_dropped": self.quotes_dropped,
             },
             "channels": {
                 "tick_prefix": TICK_CHANNEL_PREFIX,
                 "status": STATUS_CHANNEL,
+                "quote_stream": QUOTE_STREAM,
             },
         }
 
@@ -360,6 +443,8 @@ class StreamingManager:
 
         payload = {
             "symbol": symbol,
+            "platform": IB_PLATFORM,
+            "account": self.ib_account,
             "type": "tick",
             "tick_type": tick_name,
             "tick_type_code": tick_type,
@@ -369,7 +454,25 @@ class StreamingManager:
             "timestamp": now,
         }
 
-        self._publish(self._tick_channel(symbol), payload)
+        self._publish(self._tick_channel(IB_PLATFORM, self.ib_account, symbol), payload)
+
+        # IB sends one field per callback: keep the latest of each, and give
+        # the recorder a whole quote whenever a price changes.
+        if tick_name == "LAST_SIZE":
+            sub.last_size = numeric
+        elif tick_name in ("BID", "ASK", "LAST") and numeric > 0:
+            setattr(sub, tick_name.lower(), numeric)
+            if sub.recorded:
+                self.add_quote(
+                    IB_PLATFORM,
+                    self.ib_account,
+                    symbol,
+                    bid=sub.bid,
+                    ask=sub.ask,
+                    last=sub.last,
+                    last_size=sub.last_size if tick_name == "LAST" else None,
+                    basis="last",
+                )
 
     def publish_tick(
         self,
@@ -378,6 +481,7 @@ class StreamingManager:
         price: float | None = None,
         size: float | None = None,
         source: str | None = None,
+        account: str | None = None,
     ) -> None:
         """Publish one tick that did not come from IB (venue_streaming.py),
         in the same payload shape and channel as an IB tick, so the backend
@@ -387,8 +491,12 @@ class StreamingManager:
             self.ticks_dropped += 1
             return
         self.ticks_total += 1
+        platform = source or IB_PLATFORM
+        account = account or "default"
         payload = {
             "symbol": symbol.upper(),
+            "platform": platform,
+            "account": account,
             "type": "tick",
             "tick_type": tick_name,
             "tick_type_code": _TICK_NAME_TO_CODE.get(tick_name),
@@ -399,7 +507,75 @@ class StreamingManager:
         }
         if source:
             payload["source"] = source
-        self._publish(self._tick_channel(symbol), payload)
+        self._publish(self._tick_channel(platform, account, symbol), payload)
+
+    def add_quote(
+        self,
+        platform: str,
+        account: str,
+        symbol: str,
+        *,
+        bid: float | None = None,
+        ask: float | None = None,
+        last: float | None = None,
+        last_size: float | None = None,
+        basis: str = "mid",
+        ts: float | None = None,
+    ) -> bool:
+        """Add one quote of a recorded subscription to the quote stream.
+
+        ``basis`` is the price the broker builds its own bars from (``mid``,
+        ``bid`` or ``last``), so the recorder builds matching bars. ``ts`` is
+        the quote's own time in epoch seconds when the broker gave one, else
+        now. A quote equal to the last one added for that subscription is
+        not added again. Returns whether an entry was added.
+        """
+        symbol = symbol.upper()
+        key = (platform, account, symbol)
+        values = (bid, ask, last)
+        if all(v is None for v in values):
+            return False
+        if self._last_quote.get(key) == values:
+            self.quotes_unchanged += 1
+            return False
+        client = self._ensure_redis()
+        if client is None:
+            self.quotes_dropped += 1
+            return False
+        now = self._clock()
+
+        def text(value: float | None) -> str:
+            return "" if value is None else repr(float(value))
+
+        fields = {
+            "v": QUOTE_FORMAT,
+            "platform": platform,
+            "account": account,
+            "symbol": symbol,
+            "bid": text(bid),
+            "ask": text(ask),
+            "last": text(last),
+            "last_size": text(last_size),
+            "basis": basis,
+            "ts": str(int((ts if ts is not None else now) * 1000)),
+            "recv_ts": str(int(now * 1000)),
+        }
+        try:
+            client.xadd(QUOTE_STREAM, fields, maxlen=_stream_maxlen(), approximate=True)
+        except Exception as exc:
+            self.quotes_dropped += 1
+            logger.warning("Redis XADD to %s failed: %s", QUOTE_STREAM, exc)
+            with self._redis_lock:
+                self._redis = None
+            return False
+        self._last_quote[key] = values
+        self.quotes_added += 1
+        return True
+
+    def forget_quote(self, platform: str, account: str, symbol: str) -> None:
+        """Forget the last quote of a subscription that stopped, so its first
+        quote after a restart is recorded even when the price is the same."""
+        self._last_quote.pop((platform, account, symbol.upper()), None)
 
     # ------------------------------------------------------------------
     # Internal — Redis
@@ -480,8 +656,8 @@ class StreamingManager:
         }
 
     @staticmethod
-    def _tick_channel(symbol: str) -> str:
-        return f"{TICK_CHANNEL_PREFIX}{symbol.upper()}"
+    def _tick_channel(platform: str, account: str, symbol: str) -> str:
+        return f"{TICK_CHANNEL_PREFIX}{platform}:{account}:{symbol.upper()}"
 
     # ------------------------------------------------------------------
     # Internal — IB calls
@@ -515,6 +691,17 @@ class StreamingManager:
         except Exception as exc:
             sub.last_error = str(exc)
             raise
+
+
+def _stream_maxlen() -> int:
+    """TICK_STREAM_MAXLEN from the Settings page: how many quotes the stream
+    keeps, which is how far behind a stopped recorder can catch up."""
+    try:
+        import app_settings
+
+        return app_settings.tick_stream_maxlen()
+    except Exception:  # pragma: no cover — settings unavailable in a bare import
+        return 200_000
 
 
 def _is_nanish(value: float) -> bool:
