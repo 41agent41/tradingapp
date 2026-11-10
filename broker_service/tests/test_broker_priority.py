@@ -55,7 +55,7 @@ def _oanda():
 def test_priority_order():
     import connections
 
-    assert connections.BROKER_PRIORITY == ("oanda", "ig", "ctrader", "mt5", "ib", "alpaca")
+    assert connections.BROKER_PRIORITY == ("oanda", "ig", "ctrader", "ibweb", "mt5", "ib", "alpaca")
     assert set(connections.BROKER_PRIORITY) == set(connections.SUPPORTED_PLATFORMS)
 
 
@@ -126,7 +126,7 @@ def test_nothing_configured_defaults_to_top_of_list_and_501s(registry):
 def test_health_reports_default_and_priority(registry):
     health = registry(**_oanda()).provider_health()
     assert health["default"] == "oanda"
-    assert health["priority"] == ["oanda", "ig", "ctrader", "mt5", "ib", "alpaca"]
+    assert health["priority"] == ["oanda", "ig", "ctrader", "ibweb", "mt5", "ib", "alpaca"]
 
 
 def test_ib_connection_without_ib_host_is_a_clear_503(monkeypatch):

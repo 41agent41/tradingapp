@@ -1,0 +1,10 @@
+# Run on CT 130 next to (or instead of) IB Gateway: docs/INSTALL.md 4.10.
+services:
+  ibkr-gateway:
+    build: .
+    restart: always
+    environment:
+      # The app server and the computer you sign in from, comma separated.
+      GATEWAY_ALLOW: "${GATEWAY_ALLOW:-10.0.0.*}"
+    ports:
+      - "5000:5000"

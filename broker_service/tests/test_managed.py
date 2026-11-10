@@ -106,7 +106,7 @@ def test_priority_from_the_app_and_env(mods, monkeypatch):
     _, managed, adapters = mods
     managed.apply({"revision": "r", "priority": ["alpaca"], "connections": [OANDA, ALPACA]})
     health = adapters.provider_health()
-    assert health["priority"] == ["alpaca", "oanda", "ig", "ctrader", "mt5", "ib"]
+    assert health["priority"] == ["alpaca", "oanda", "ig", "ctrader", "ibweb", "mt5", "ib"]
     assert health["default"] == "alpaca"
     assert health["priority_from_env"] is False
 
