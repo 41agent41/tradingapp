@@ -34,6 +34,8 @@ export type StatusPayload = {
 export type StoredConnection = {
   id: number;
   platform: string;
+  /** Null on a connection saved before firms; the form asks for one. */
+  firm?: string | null;
   account: string;
   label: string;
   account_mode: 'paper' | 'live';
@@ -126,18 +128,25 @@ export const PLATFORM_FORM: Record<string, Field[]> = {
 };
 
 /**
- * Firms whose accounts the app can reach, and through which platform. Picking
- * one on the form only chooses the platform and explains how to connect; the
- * account itself decides what it can trade.
+ * The firms a connection can belong to, each with its one connection type:
+ * its web API when it has one, the MT5 bridge when it does not. Interactive
+ * Brokers alone has two entries, its Web API and the older IB Gateway. The
+ * backend refuses any other pairing.
+ * Mirrors FIRMS in backend/src/services/firms.ts (same ids, order and
+ * platforms; backend/tests/firms.test.ts checks it).
  */
 export type FirmPreset = { id: string; name: string; platform: string; note: string };
+
+const CTRADER_NOTE =
+  'cTrader Open API. Register an app at openapi.ctrader.com and grant it your cTrader account.';
+const WEB_API_ONLY = 'This firm has a web API, so its MT5 accounts cannot be added here.';
 
 export const FIRM_PRESETS: FirmPreset[] = [
   {
     id: 'oanda',
     name: 'OANDA',
     platform: 'oanda',
-    note: 'REST API. Create a token under Manage API Access in the OANDA hub.',
+    note: `REST API. Create a token under Manage API Access in the OANDA hub. ${WEB_API_ONLY}`,
   },
   {
     id: 'ig',
@@ -149,25 +158,31 @@ export const FIRM_PRESETS: FirmPreset[] = [
     id: 'pepperstone',
     name: 'Pepperstone (cTrader)',
     platform: 'ctrader',
-    note: 'cTrader Open API. Register an app at openapi.ctrader.com and grant it your cTrader account. Pepperstone MT5 accounts use the MT5 bridge instead.',
+    note: `${CTRADER_NOTE} ${WEB_API_ONLY}`,
   },
   {
     id: 'icmarkets',
     name: 'IC Markets (cTrader)',
     platform: 'ctrader',
-    note: 'cTrader Open API. Register an app at openapi.ctrader.com and grant it your cTrader account. IC Markets MT5 accounts use the MT5 bridge instead.',
+    note: `${CTRADER_NOTE} ${WEB_API_ONLY}`,
   },
   {
     id: 'fpmarkets',
     name: 'FP Markets (cTrader)',
     platform: 'ctrader',
-    note: 'cTrader Open API. Register an app at openapi.ctrader.com and grant it your cTrader account.',
+    note: `${CTRADER_NOTE} ${WEB_API_ONLY}`,
   },
   {
     id: 'fusion',
     name: 'Fusion Markets (cTrader)',
     platform: 'ctrader',
-    note: 'cTrader Open API. Register an app at openapi.ctrader.com and grant it your cTrader account.',
+    note: `${CTRADER_NOTE} ${WEB_API_ONLY}`,
+  },
+  {
+    id: 'other_ctrader',
+    name: 'Another cTrader firm',
+    platform: 'ctrader',
+    note: `${CTRADER_NOTE} Use this for a cTrader firm not listed above.`,
   },
   {
     id: 'ibkr',
@@ -176,10 +191,10 @@ export const FIRM_PRESETS: FirmPreset[] = [
     note: "Run the Client Portal Gateway and sign it in from a browser (paper login for a DU account). Several accounts, any market the account can trade, brackets attached at entry. IBKR's MCP server (api.ibkr.com/v1/api/mcp-public) works only inside an AI app such as Claude.",
   },
   {
-    id: 'ibkr-tws',
-    name: 'Interactive Brokers (IB Gateway)',
-    platform: 'ib',
-    note: 'TWS socket API through IB Gateway or TWS (port 4002 paper, 4001 live). One connection at a time; US stocks.',
+    id: 'alpaca',
+    name: 'Alpaca',
+    platform: 'alpaca',
+    note: 'REST API. Create a key pair on the Alpaca dashboard (paper keys for a paper account).',
   },
   {
     id: 'axi',
@@ -199,11 +214,33 @@ export const FIRM_PRESETS: FirmPreset[] = [
     platform: 'mt5',
     note: 'Run the MT5 bridge next to an MT5 terminal logged in to your Vantage account.',
   },
+  {
+    id: 'other_mt5',
+    name: 'Another MT5 firm (no web API)',
+    platform: 'mt5',
+    note: 'For a firm with no web API, a prop firm for example: run the MT5 bridge next to an MT5 terminal logged in to the account. A firm listed above cannot be added this way.',
+  },
+  {
+    id: 'ib',
+    name: 'Interactive Brokers (IB Gateway)',
+    platform: 'ib',
+    note: 'TWS socket API through IB Gateway or TWS (port 4002 paper, 4001 live). One connection at a time; US stocks. Prefer the Web API for a new connection.',
+  },
 ];
+
+/** The firm a platform implies when it serves only one, else ''. */
+export function impliedFirm(platform: string): string {
+  const firms = FIRM_PRESETS.filter((f) => f.platform === platform);
+  return firms.length === 1 ? firms[0].id : '';
+}
 
 /** A new connection form for `firm`: its platform, named after the firm. */
 export function formForFirm(firm: FirmPreset): FormState {
-  return { ...emptyForm(firm.platform), account: firm.id };
+  return {
+    ...emptyForm(firm.platform),
+    firm: firm.id,
+    account: firm.id.startsWith('other_') ? 'default' : firm.id,
+  };
 }
 
 /**
@@ -211,7 +248,7 @@ export function formForFirm(firm: FirmPreset): FormState {
  * reports the order in effect). Mirrors BROKER_PRIORITY in
  * broker_service/connections.py; see docs/DEVELOPMENT.md, "Adding a broker".
  */
-export const BROKERS_BY_PRIORITY = ['oanda', 'ig', 'ctrader', 'ibweb', 'mt5', 'ib', 'alpaca'];
+export const BROKERS_BY_PRIORITY = ['oanda', 'ig', 'ctrader', 'ibweb', 'alpaca', 'mt5', 'ib'];
 
 const PLATFORM_NAME: Record<string, string> = {
   oanda: 'OANDA',
@@ -282,6 +319,8 @@ export function movePlatform(order: string[], platform: string, by: -1 | 1): str
 
 export type FormState = {
   platform: string;
+  /** A FIRM_PRESETS id; '' until chosen. */
+  firm: string;
   account: string;
   account_mode: 'paper' | 'live';
   currency: string;
@@ -295,6 +334,7 @@ export type FormState = {
 export function emptyForm(platform = 'oanda'): FormState {
   return {
     platform,
+    firm: impliedFirm(platform),
     account: 'default',
     account_mode: 'paper',
     currency: 'USD',
@@ -308,6 +348,7 @@ export function emptyForm(platform = 'oanda'): FormState {
 export function formFromStored(c: StoredConnection): FormState {
   return {
     platform: c.platform,
+    firm: c.firm ?? '',
     account: c.account,
     account_mode: c.account_mode,
     currency: c.currency,
@@ -335,6 +376,7 @@ export function requestBody(form: FormState): Record<string, unknown> {
   }
   return {
     platform: form.platform,
+    ...(form.firm ? { firm: form.firm } : {}),
     account: form.account.trim().toLowerCase(),
     account_mode: form.account_mode,
     currency: form.currency.trim().toUpperCase(),

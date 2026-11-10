@@ -26,3 +26,11 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
     disconnect() {}
   } as unknown as typeof ResizeObserver;
 }
+
+// jsdom has no canvas. lightweight-charts v5 asks for a 2D context while it
+// builds a chart; answer null (what jsdom answers anyway) without jsdom's
+// "Not implemented" console error on every render.
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = (() =>
+    null) as typeof HTMLCanvasElement.prototype.getContext;
+}

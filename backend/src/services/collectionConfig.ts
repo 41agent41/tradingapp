@@ -48,9 +48,11 @@ export class CollectionConfigError extends Error {
   }
 }
 
-/** How far back history may go: TimescaleDB drops bars older than two years
- *  (the retention policy in timescaledb-schema.sql). */
-export const MAX_HISTORY_DAYS = 730;
+/** How far back history may go. Stored bars are kept from an entry's history
+ *  start on, so this is only a sanity bound: a broker with less history ends
+ *  the walk back at its own limit (the scheduler passes over empty ranges). */
+export const MAX_HISTORY_YEARS = 30;
+export const MAX_HISTORY_DAYS = Math.round(MAX_HISTORY_YEARS * 365.25);
 
 /** Timeframes the scheduler can fetch as bars (ticks are streamed, not backfilled). */
 export const COLLECTION_TIMEFRAMES = VALID_TIMEFRAMES.filter((t) => t !== 'tick');
@@ -126,7 +128,7 @@ function historyStart(value: unknown, now: Date): string | null | undefined {
   }
   if (now.getTime() - day > MAX_HISTORY_DAYS * 86_400_000) {
     throw new CollectionConfigError(
-      `history_start can go back at most ${MAX_HISTORY_DAYS} days: the database keeps two years of bars.`
+      `history_start can go back at most ${MAX_HISTORY_YEARS} years.`
     );
   }
   return raw;

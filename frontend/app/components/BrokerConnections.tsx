@@ -70,8 +70,11 @@ function ConnectionForm({
   onCancel: () => void;
 }) {
   const { form, id, stored } = editing;
-  const [firmId, setFirmId] = useState('');
-  const firm = FIRM_PRESETS.find((f) => f.id === firmId && f.platform === form.platform);
+  // A new connection may pick any firm (which sets the broker); an existing
+  // one keeps its broker and may only change to another firm of it.
+  const firms =
+    id === null ? FIRM_PRESETS : FIRM_PRESETS.filter((f) => f.platform === form.platform);
+  const firm = FIRM_PRESETS.find((f) => f.id === form.firm && f.platform === form.platform);
   const set = (patch: Partial<FormState>) => onChange({ ...form, ...patch });
   const setValue = (name: string, value: string) =>
     onChange({ ...form, values: { ...form.values, [name]: value } });
@@ -85,39 +88,41 @@ function ConnectionForm({
         onSave();
       }}
     >
-      {id === null && (
-        <div>
-          <label className="text-sm text-gray-700 block">
-            Firm (optional)
-            <select
-              className={INPUT}
-              value={firm ? firm.id : ''}
-              onChange={(e) => {
-                const picked = FIRM_PRESETS.find((f) => f.id === e.target.value);
-                setFirmId(picked ? picked.id : '');
-                if (picked) onChange(formForFirm(picked));
-              }}
-            >
-              <option value="">Choose a firm to fill in the platform</option>
-              {FIRM_PRESETS.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          {firm && <p className="mt-1 text-xs text-gray-600">{firm.note}</p>}
-        </div>
-      )}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <label className="text-sm text-gray-700">
-          Broker
+      <div>
+        <label className="text-sm text-gray-700 block">
+          Firm
           <select
             className={INPUT}
-            value={form.platform}
-            disabled={id !== null}
-            onChange={(e) => onChange({ ...emptyForm(e.target.value) })}
+            required
+            value={firm ? firm.id : ''}
+            onChange={(e) => {
+              const picked = FIRM_PRESETS.find((f) => f.id === e.target.value);
+              if (!picked) return;
+              onChange(id === null ? formForFirm(picked) : { ...form, firm: picked.id });
+            }}
           >
+            <option value="" disabled>
+              Choose the firm the account is with
+            </option>
+            {firms.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        {firm ? (
+          <p className="mt-1 text-xs text-gray-600">{firm.note}</p>
+        ) : (
+          <p className="mt-1 text-xs text-amber-800">
+            Each firm connects one way only: its web API if it has one, else the MT5 bridge.
+          </p>
+        )}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className="text-sm text-gray-700">
+          Broker (set by the firm)
+          <select className={INPUT} value={form.platform} disabled>
             {DEFAULT_ORDER.map((p) => (
               <option key={p} value={p}>
                 {platformName(p)}
@@ -219,7 +224,7 @@ function ConnectionForm({
         </p>
       )}
       <div className="flex gap-2">
-        <button type="submit" disabled={busy} className={BUTTON}>
+        <button type="submit" disabled={busy || !firm} className={BUTTON}>
           {busy ? 'Saving…' : 'Save'}
         </button>
         <button type="button" onClick={onCancel} className={BUTTON}>
@@ -590,7 +595,7 @@ export default function BrokerConnections() {
           type="button"
           className={BUTTON}
           disabled={!stored}
-          onClick={() => setEditing({ id: null, form: emptyForm() })}
+          onClick={() => setEditing({ id: null, form: { ...emptyForm(), firm: '' } })}
         >
           Add connection
         </button>

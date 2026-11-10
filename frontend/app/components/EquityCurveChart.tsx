@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef } from 'react';
-import { createChart, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
+import { AreaSeries, createChart, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
 import { useChartResize } from '../lib/useChartResize';
 
 export interface EquityPoint {
@@ -42,7 +42,7 @@ export default function EquityCurveChart({ data, height = 320 }: EquityCurveChar
       },
     });
 
-    const series = chart.addAreaSeries({
+    const series = chart.addSeries(AreaSeries, {
       lineColor: '#2563eb',
       lineWidth: 2,
       topColor: 'rgba(37, 99, 235, 0.35)',

@@ -111,7 +111,7 @@ const io = new SocketIOServer(server, {
 });
 
 // The frontend server forwards the browser's /api and /socket.io requests
-// (frontend/proxy.js) and passes the browser's address in X-Forwarded-For.
+// (frontend/backendProxy.js) and passes the browser's address in X-Forwarded-For.
 // That header is believed only from the frontend container and the proxies
 // listed in TRUST_PROXY (services/network.ts), so a caller reaching this port
 // directly cannot pick the address that login lockout and the audit log see.
@@ -363,7 +363,7 @@ io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
 
   socket.on('subscribe-market-data', async (data) => {
-    const { symbol, secType, exchange, currency, timeframe } = data || {};
+    const { symbol, secType, exchange, currency, timeframe, source, account } = data || {};
     if (!symbol || typeof symbol !== 'string') {
       socket.emit('subscription-error', { error: 'symbol is required' });
       return;
@@ -377,6 +377,8 @@ io.on('connection', (socket) => {
         secType,
         exchange,
         currency,
+        source,
+        account,
       });
       socket.join(result.room);
       socket.emit('subscription-confirmed', {

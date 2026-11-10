@@ -19,8 +19,8 @@ describe('broker priority', () => {
     else process.env.DEFAULT_BROKER = saved;
   });
 
-  it('ranks API brokers, then MT5, IB and Alpaca', () => {
-    expect(BROKER_PRIORITY).toEqual(['oanda', 'ig', 'ctrader', 'ibweb', 'mt5', 'ib', 'alpaca']);
+  it('ranks the web API brokers, then MT5, then IB Gateway', () => {
+    expect(BROKER_PRIORITY).toEqual(['oanda', 'ig', 'ctrader', 'ibweb', 'alpaca', 'mt5', 'ib']);
   });
 
   it('defaults to the top of the list before the broker service answers', () => {

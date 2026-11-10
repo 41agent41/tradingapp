@@ -59,8 +59,8 @@ diagnostics.txt
 # tradingapp.sh state files
 .tradingapp.with-db
 
-# Auto-generated lockfiles (kept locally; tracked lockfiles are a separate hygiene PR)
-package-lock.json
+# npm's package-lock.json files are tracked (builds use `npm ci`); other
+# package managers' lockfiles are not used here.
 yarn.lock
 pnpm-lock.yaml
 

@@ -149,7 +149,7 @@ export const SETTINGS: readonly SettingDef[] = [
     apply: 'immediate',
     stepUp: true,
     editable: true,
-    help: 'Venue used when an order or a run does not name one. Unset uses the highest-priority configured broker: OANDA, then MT5, IB, Alpaca.',
+    help: 'Venue used when an order or a run does not name one. Unset uses the highest-priority configured broker: OANDA, IG, cTrader, Alpaca, then MT5, then IB.',
   },
 
   // --- Risk ----------------------------------------------------------------
@@ -776,7 +776,7 @@ export const SETTINGS: readonly SettingDef[] = [
     apply: 'immediate',
     stepUp: true,
     editable: true,
-    help: 'Brokers highest first, comma separated (for example oanda,ig,ctrader,ibweb,mt5,ib,alpaca). Sets the default broker and the display order. Set it with the arrows on the Connections tab.',
+    help: 'Brokers highest first, comma separated (for example oanda,ig,ctrader,ibweb,alpaca,mt5,ib). Sets the default broker and the display order. Set it with the arrows on the Connections tab.',
   },
   {
     key: 'BROKER_CONNECTIONS',

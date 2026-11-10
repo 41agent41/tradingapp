@@ -1,26 +1,26 @@
 # Frontend Dockerfile
-FROM node:20-alpine
+# Node.js 24 LTS. Dependencies come from package-lock.json exactly (npm ci).
+FROM node:24-alpine
 
 ARG NODE_ENV=production
 
 WORKDIR /app
-COPY package*.json ./
+COPY package.json package-lock.json ./
 
-# Force install ALL dependencies including devDependencies
-# Use --include=dev to ensure devDependencies are installed regardless of NODE_ENV
-RUN npm install --include=dev
+# All dependencies, including the dev tools the build needs, whatever NODE_ENV is.
+RUN npm ci --include=dev --no-audit --no-fund
 
 COPY . .
 
 # Nothing about the deployment is baked into the build: the page calls the
 # API on its own address, and server.js forwards /api and /socket.io to
 # BACKEND_INTERNAL_URL, read when the container starts.
-RUN npm run build
+RUN npm run build && npm prune --omit=dev
 
 # Now set NODE_ENV for runtime
 ENV NODE_ENV=$NODE_ENV
 
 EXPOSE 3000
 
-# server.js runs Next.js and the /api forwarding (see proxy.js).
+# server.js runs Next.js and the /api forwarding (see backendProxy.js).
 CMD ["npm", "start"]

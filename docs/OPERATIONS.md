@@ -143,6 +143,30 @@ Migrations apply themselves when the backend starts. On a host set up by an
 older version, `install` also removes `.env` lines nothing reads any more
 (after a backup to `.env.bak.<timestamp>`).
 
+**Upgrading from a version before migration `005_connection_firm`.** Each
+connection now names its firm, and each firm connects one way only. The
+migration fills in the firm for OANDA, IG, Alpaca and IB connections, and for
+cTrader and MT5 connections named after their firm. After the upgrade, open
+Settings > Getting started: the **Add a broker connection** item lists every
+connection still without a firm. For each one, on Settings > Connections:
+
+1. Press **Edit**, choose its **Firm**, and press **Save**.
+2. If saving says the firm "connects only through" another broker (an IC
+   Markets account on MT5, for example), press **Remove** on that connection
+   and add the account again with that firm, which sets the right broker.
+
+**MT5 sidecars upgrade separately.** They run on the MT5 VM, not in the
+Docker stack. After an upgrade that changes `mt5_sidecar/requirements.txt`
+(the November 2026 dependency upgrade did), on VM 120 for each sidecar:
+
+1. Stop its service.
+2. Update the code (`git pull` in `C:\tradingapp`, or copy the new
+   `mt5_sidecar/` folder over the old one).
+3. Run `python -m pip install -r requirements.txt` in `mt5_sidecar`.
+4. Start the service again.
+5. Check it from the app server, as in
+   [INSTALL.md § 4.2](INSTALL.md#check-it-from-the-app-server).
+
 ### Rebuild on a new host, keeping an external database
 
 Build the new app server as in [INSTALL.md step 2](INSTALL.md#2-app-server-ct-110),
@@ -271,11 +295,16 @@ is [INSTALL.md step 5](INSTALL.md#5-market-data).
   chunks of about 20,000 bars, up to five per entry per pass. OANDA and Alpaca
   requests are paged past their per-request limits; MT5 answers a date range
   in one request. The History column shows progress.
-- TimescaleDB drops `candlestick_data` chunks older than 2 years and
-  `tick_data` older than 30 days. `POST /api/market-data/database/clean`
-  deletes bars older than each entry's retention (run it from cron with an
-  API token for tighter limits); bars from an entry's history start on are
-  kept.
+- TimescaleDB drops `tick_data` older than 30 days. Bars have no TimescaleDB
+  retention policy. `POST /api/market-data/database/clean` is the only thing
+  that deletes bars: it removes bars older than each entry's retention (run
+  it from cron with an API token), and always keeps bars from an entry's
+  history start on.
+- Upgrading from a version before migration `004_keep_bar_history`: the
+  upgrade removes the old 2-year policy and, for every entry whose history
+  start is more than two years back, resets its history cursor so the next
+  backfill passes re-collect any bars the policy dropped. Watch the History
+  column; nothing else is needed.
 
 Check it:
 

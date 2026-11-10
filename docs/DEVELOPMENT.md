@@ -37,12 +37,12 @@ app for real are in [INSTALL.md](INSTALL.md) and
                    │ (FastAPI, Py)  │──►         │
                    └─────────┬──────┘  └─────────┘
                              │  adapters, in priority order
-  OANDA ─ IG ─ cTrader ─ IBKR Web API ─ MT5 (sidecar) ─ IB Gateway ─ Alpaca
+  OANDA ─ IG ─ cTrader ─ IBKR Web API ─ Alpaca ─ MT5 (sidecar) ─ IB Gateway
 ```
 
 - **frontend** (`frontend/`): Next.js 14 pages under `app/`, served by
   `server.js`, which also proxies `/api` and `/socket.io` to the backend
-  (`proxy.js`), so the browser only ever talks to one address.
+  (`backendProxy.js`), so the browser only ever talks to one address.
 - **backend** (`backend/`): Express + TypeScript. Owns the database: it waits
   for it, migrates it and checks the encryption key before serving
   (`services/startupGate.ts`). Holds auth, settings, the order path and
@@ -79,7 +79,7 @@ features are in [`docs/plans/`](plans/).
 | `backend/src/index.ts` | App entry; `routes/`, `services/`, `middleware/`, `config/` (settings registry), `cli/` (migrate, importSettings, forgetSecrets) |
 | `backend/src/database/` | `timescaledb-schema.sql` (baseline), `migrations/`, `archive/` (old SQL, not used) |
 | `backend/tests/` | Jest; `*.db.test.ts` need a real database |
-| `frontend/app/` | Pages (`settings`, `systematic`, `backtest`, `trade`, `historical`, `download`, `watchlist`, `account`, `msft`), `components/`, `lib/` |
+| `frontend/app/` | Pages (`settings`, `systematic`, `backtest`, `trade`, `historical`, `download`, `watchlist`, `account`, `live`; `msft` redirects to `live`), `components/`, `lib/` |
 | `broker_service/` | `main.py`, `routes/`, adapters, `connections.py` (manifest and priority), `managed.py`, `rule_strategy.py`, `backtesting.py`, `jesse/`, `jesse_strategies/`, `templates/`, `tests/` |
 | `mt5_sidecar/` | `server.py`, `terminal.py`, `deploy/` (Task Scheduler and systemd launchers), `tests/` |
 | `e2e/` | End-to-end paper run against simulated MT5 terminals |
@@ -90,7 +90,7 @@ features are in [`docs/plans/`](plans/).
 
 ## Run it locally
 
-You need Node 20, Python 3.11 and a PostgreSQL with TimescaleDB. The quickest
+You need Node.js 24 LTS (22.12 or later also works), Python 3.11 and a PostgreSQL with TimescaleDB. The quickest
 database:
 
 ```bash
@@ -127,7 +127,7 @@ BROKER_SERVICE_URL=http://127.0.0.1:8000
 BROKER_SERVICE_TOKEN=dev-broker-token-0123456789abcdef
 REDIS_ENABLED=false
 EOF
-npm install
+npm ci
 npm run dev
 ```
 
@@ -144,7 +144,7 @@ Set `API_TOKEN` (or choose a password on first visit) to exercise auth.
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev        # BACKEND_INTERNAL_URL defaults to http://localhost:4000
 ```
 
@@ -183,8 +183,41 @@ stack on its own for poking at.
 
 **CI** (`.github/workflows/ci.yml`) runs on every push and pull request to
 `master` (and `main`): a job per component with lint, format, types, tests
-and build (the backend job adds the database tests against TimescaleDB), and
-the end-to-end paper run.
+and build (the backend job adds the database tests against TimescaleDB), the
+end-to-end paper run, and a dependency audit (`npm audit` on both lockfiles'
+production dependencies, `pip-audit` on both Python locks) that fails on a
+known high-severity vulnerability.
+
+### Dependencies
+
+Every build installs exactly the versions in a lock file, so what was tested
+is what runs.
+
+| Component | You edit | Lock file (generated, committed) | Install |
+|---|---|---|---|
+| backend, frontend | `package.json` | `package-lock.json` | `npm ci` |
+| broker_service | `requirements.in`, `requirements-dev.in` | `requirements.txt`, `requirements-dev.txt` | `pip install -r requirements.txt -r requirements-dev.txt` |
+| mt5_sidecar | `requirements.in`, `requirements-dev.in` | `requirements.txt`, `requirements-dev.txt` | the same |
+
+To change a Node dependency, run `npm install <package>@<version>` in that
+directory and commit both `package.json` and `package-lock.json`.
+
+To change a Python dependency, edit the `.in` file, then regenerate the locks
+with [uv](https://docs.astral.sh/uv/) from the repository root, broker service
+first, because the sidecar's lock is held to the same shared versions (CI's
+end-to-end job installs both into one environment):
+
+```bash
+cd broker_service
+uv pip compile requirements.in --python-version 3.11 --universal -o requirements.txt
+uv pip compile requirements-dev.in --python-version 3.11 --universal -o requirements-dev.txt
+cd ../mt5_sidecar
+uv pip compile requirements.in -c ../broker_service/requirements.txt --python-version 3.11 --universal -o requirements.txt
+uv pip compile requirements-dev.in -c ../broker_service/requirements.txt --python-version 3.11 --universal -o requirements-dev.txt
+```
+
+Then run that component's tests and commit the `.in` and `.txt` files
+together.
 
 ---
 
@@ -235,7 +268,7 @@ What the schema holds, in short (read the files for the full list):
 | Object | Notes |
 |---|---|
 | `contracts` | One row per resolved instrument |
-| `candlestick_data` | OHLCV bars; hypertable, 1-day chunks, dropped after 2 years |
+| `candlestick_data` | OHLCV bars; hypertable, 1-day chunks; no retention policy, only `cleanOldData` deletes, and never from an entry's `history_start` on |
 | `tick_data` | Ticks; hypertable, 1-hour chunks, dropped after 30 days |
 | `daily_candlestick_data` | Continuous aggregate, refreshed hourly over the last 3 days |
 | `data_collection_config` | The Settings page's collection table, with `history_start` and progress |
@@ -336,12 +369,18 @@ Tests: copy `tests/test_oanda_adapter.py`, which serves the venue with
   checked on save. Names must match the broker service's `Connection` fields;
   derive anything else in `managedEntries` (as OANDA's `environment` is
   derived from the paper/live mode).
+- `src/services/firms.ts`: an entry in `FIRMS` for each firm the broker
+  serves (`id`, `name`, `platform`). Every platform needs at least one firm;
+  a platform with exactly one gets it filled in automatically. A firm has
+  one platform only: its web API if it has one, else MT5.
 
 ### 4. Frontend
 
 In `app/lib/brokerConnections.ts`: `BROKERS_BY_PRIORITY` (same order),
 `PLATFORM_FORM` (mirrors `PLATFORM_FIELDS`, with `secret: true` on encrypted
-fields), `PLATFORM_NAME` and, for a long name, `PLATFORM_SHORT_NAME`.
+fields), `FIRM_PRESETS` (the same ids, names, platforms and order as `FIRMS`,
+plus a `note` on how to connect; `backend/tests/firms.test.ts` fails if they
+differ), `PLATFORM_NAME` and, for a long name, `PLATFORM_SHORT_NAME`.
 
 ### 5. Check
 

@@ -136,7 +136,8 @@ export default function DataCollection() {
         <p className="text-sm text-gray-600">
           Instruments whose bars are fetched and stored automatically while the backfill scheduler
           is on (below). Each is fetched when its newest bar is older than its interval. Set History
-          from to also collect older bars back to that date (up to two years), for backtests.
+          from to also collect older bars back to that date, for backtests. Bars from that date on
+          are kept whatever the entry&apos;s retention.
         </p>
       </div>
 

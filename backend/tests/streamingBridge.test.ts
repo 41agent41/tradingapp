@@ -162,9 +162,28 @@ describe('StreamingBridge.subscribe', () => {
     const { bridge, ibClient } = makeBridge();
     const r = await bridge.subscribe('sock-1', { symbol: 'MSFT' });
     expect(ibClient.subscribed).toEqual([
-      { symbol: 'MSFT', secType: undefined, exchange: undefined, currency: undefined },
+      {
+        symbol: 'MSFT',
+        secType: undefined,
+        exchange: undefined,
+        currency: undefined,
+        source: undefined,
+        account: undefined,
+      },
     ]);
     expect(r).toMatchObject({ symbol: 'MSFT', room: 'market-data:MSFT', refCount: 1 });
+  });
+
+  it('passes the chosen connection through, and drops a name that is not plain', async () => {
+    const { bridge, ibClient } = makeBridge();
+    await bridge.subscribe('sock-1', { symbol: 'eurusd', source: 'oanda', account: 'practice' });
+    await bridge.subscribe('sock-2', { symbol: 'GBPUSD', source: 'OANDA; drop', account: '../x' });
+    expect(ibClient.subscribed[0]).toMatchObject({
+      symbol: 'EURUSD',
+      source: 'oanda',
+      account: 'practice',
+    });
+    expect(ibClient.subscribed[1]).toMatchObject({ source: undefined, account: undefined });
   });
 
   it('refcounts multiple sockets for the same symbol without re-calling IB', async () => {

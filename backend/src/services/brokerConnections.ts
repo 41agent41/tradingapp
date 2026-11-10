@@ -16,6 +16,10 @@
  * reads them, with `CONNECTION_MAX_*__<CONN>` / `PROP_RULES__<CONN>` in
  * `.env` still winning when set.
  *
+ * Each row names its firm (`firm`, services/firms.ts), and the firm decides
+ * the platform: one connection type per firm, so an OANDA or IC Markets
+ * account cannot be added through the MT5 bridge.
+ *
  * Every write is audited in `settings_audit` under `broker_connection:<label>`,
  * with secrets recorded only as "(secret)".
  */
@@ -23,6 +27,7 @@ import type { Querier } from './backtestRunRepository.js';
 import { encryptionKey, openSecret, sealSecret } from '../config/secretBox.js';
 import { logger } from './logger.js';
 
+import { findFirm, firmsFor, impliedFirm } from './firms.js';
 import { BROKER_PRIORITY, type Broker } from './orderTypes.js';
 import { parsePropRules } from './propRules.js';
 
@@ -79,12 +84,14 @@ export interface StoredConnectionLimits {
 const ACCOUNT_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const INTEGER_SETTINGS = new Set(['port', 'client_id']);
 const SECRET_MARK = '(secret)';
-const COLUMNS = `id, platform, account, account_mode, currency, is_default, settings, limits,
+const COLUMNS = `id, platform, firm, account, account_mode, currency, is_default, settings, limits,
   prop_rules, ciphertext, updated_at, updated_by`;
 
 export interface BrokerConnectionView {
   id: number;
   platform: Platform;
+  /** The firm's id (services/firms.ts); null on a row saved before firms. */
+  firm: string | null;
   account: string;
   label: string;
   account_mode: AccountMode;
@@ -103,6 +110,8 @@ export interface BrokerConnectionView {
 
 export interface BrokerConnectionInput {
   platform?: unknown;
+  /** A firm id from services/firms.ts; optional where the platform implies it. */
+  firm?: unknown;
   account?: unknown;
   account_mode?: unknown;
   currency?: unknown;
@@ -134,6 +143,7 @@ export class BrokerConnectionError extends Error {
 interface Row {
   id: number;
   platform: Platform;
+  firm?: string | null;
   account: string;
   account_mode: AccountMode;
   currency: string;
@@ -150,6 +160,7 @@ export const CREATE_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS broker_connections (
     id BIGSERIAL PRIMARY KEY,
     platform VARCHAR(16) NOT NULL,
+    firm VARCHAR(32),
     account VARCHAR(64) NOT NULL,
     account_mode VARCHAR(8) NOT NULL DEFAULT 'paper',
     currency VARCHAR(8) NOT NULL DEFAULT 'USD',
@@ -243,6 +254,42 @@ function parseStoredPropRules(
   return parsed as Record<string, unknown>;
 }
 
+/**
+ * The connection's firm, checked against its platform: each firm has one
+ * connection type (services/firms.ts). Also refuses a name that is another
+ * platform's firm id, so "icmarkets" cannot be added as "Another MT5 firm".
+ */
+function checkFirm(platform: Platform, account: string, firmId: string | null): string {
+  const choices = firmsFor(platform);
+  if (!firmId) {
+    throw new BrokerConnectionError(
+      `Choose the firm this ${platform} account is with: ${choices.map((f) => f.id).join(', ')}.`,
+      400
+    );
+  }
+  const firm = findFirm(firmId);
+  if (!firm) {
+    throw new BrokerConnectionError(
+      `Unknown firm "${firmId}". For ${platform} choose one of: ${choices.map((f) => f.id).join(', ')}.`,
+      400
+    );
+  }
+  if (firm.platform !== platform) {
+    throw new BrokerConnectionError(
+      `${firm.name} connects only through ${firm.platform}, not ${platform}. Add it with the broker set to ${firm.platform}.`,
+      400
+    );
+  }
+  const named = findFirm(account);
+  if (named && named.platform !== platform) {
+    throw new BrokerConnectionError(
+      `"${account}" is ${named.name}, which connects only through ${named.platform}. Add it with the broker set to ${named.platform}.`,
+      400
+    );
+  }
+  return firm.id;
+}
+
 export class BrokerConnectionStore {
   private ready = false;
 
@@ -285,6 +332,7 @@ export class BrokerConnectionStore {
     return {
       id: Number(row.id),
       platform: row.platform,
+      firm: row.firm ?? null,
       account: row.account,
       label: `${row.platform}:${row.account}`,
       account_mode: row.account_mode,
@@ -330,7 +378,9 @@ export class BrokerConnectionStore {
     input: BrokerConnectionInput,
     existing?: { row: Row; secrets: Record<string, string> }
   ) {
-    const platform = (existing?.row.platform ?? text(input.platform).toLowerCase()) as Platform;
+    const firmGiven = text(input.firm).toLowerCase();
+    const platform = (existing?.row.platform ??
+      (text(input.platform).toLowerCase() || findFirm(firmGiven)?.platform || '')) as Platform;
     if (!PLATFORMS.includes(platform)) {
       throw new BrokerConnectionError(`Broker must be one of: ${PLATFORMS.join(', ')}.`, 400);
     }
@@ -341,6 +391,10 @@ export class BrokerConnectionStore {
         400
       );
     }
+    // A row saved before firms existed may stay without one until it is
+    // given one (the Getting started checklist lists it); a new row may not.
+    const firmId = firmGiven || existing?.row.firm || impliedFirm(platform);
+    const firm = !firmId && existing ? null : checkFirm(platform, account, firmId);
     const modeRaw = text(input.account_mode ?? existing?.row.account_mode ?? 'paper').toLowerCase();
     if (modeRaw !== 'paper' && modeRaw !== 'live') {
       throw new BrokerConnectionError('Mode must be paper or live.', 400);
@@ -399,6 +453,7 @@ export class BrokerConnectionStore {
     const propRules = parseStoredPropRules(input.prop_rules, existing?.row.prop_rules ?? null);
     return {
       platform,
+      firm,
       account,
       accountMode,
       currency,
@@ -430,6 +485,7 @@ export class BrokerConnectionStore {
   }
 
   private describe(v: {
+    firm?: string | null;
     accountMode: string;
     currency: string;
     isDefault: boolean;
@@ -439,6 +495,7 @@ export class BrokerConnectionStore {
     secretsChanged?: boolean;
   }): string {
     const parts = [
+      ...(v.firm ? [`firm=${v.firm}`] : []),
       `mode=${v.accountMode}`,
       `currency=${v.currency}`,
       ...Object.entries(v.settings).map(([k, val]) => `${k}=${val}`),
@@ -466,8 +523,8 @@ export class BrokerConnectionStore {
       const { rows } = await this.db.query(
         `INSERT INTO broker_connections
            (platform, account, account_mode, currency, is_default, settings, limits, prop_rules,
-            ciphertext, updated_by)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10)
+            ciphertext, updated_by, firm)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11)
          RETURNING ${COLUMNS}`,
         [
           v.platform,
@@ -480,6 +537,7 @@ export class BrokerConnectionStore {
           v.propRules ? JSON.stringify(v.propRules) : null,
           v.ciphertext,
           ctx.actor,
+          v.firm,
         ]
       );
       inserted = rows[0] as Row;
@@ -513,7 +571,7 @@ export class BrokerConnectionStore {
       `UPDATE broker_connections
           SET account_mode = $2, currency = $3, is_default = $4, settings = $5::jsonb,
               limits = $6::jsonb, prop_rules = $7::jsonb, ciphertext = $8, updated_at = NOW(),
-              updated_by = $9
+              updated_by = $9, firm = $10
         WHERE id = $1
         RETURNING ${COLUMNS}`,
       [
@@ -526,6 +584,7 @@ export class BrokerConnectionStore {
         v.propRules ? JSON.stringify(v.propRules) : null,
         v.ciphertext,
         ctx.actor,
+        v.firm,
       ]
     );
     if (v.isDefault) await this.clearOtherDefaults(v.platform, id);
@@ -534,6 +593,7 @@ export class BrokerConnectionStore {
       label,
       'update',
       this.describe({
+        firm: row.firm ?? null,
         accountMode: row.account_mode,
         currency: row.currency,
         isDefault: row.is_default,

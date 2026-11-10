@@ -12,9 +12,9 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY requirements.txt ./
 
-# Install Python dependencies with verbose output for debugging
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements.txt --verbose
+# Install exactly the pinned versions in requirements.txt (compiled from
+# requirements.in), so every build gets the reviewed set.
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Production stage
 FROM python:3.11-slim
@@ -49,9 +49,9 @@ COPY . .
 # Fix ownership after copying all files
 RUN chown -R ibservice:ibservice /app
 
-# Verify that fastapi is installed
-RUN python -c "import fastapi; print('FastAPI version:', fastapi.__version__)" || \
-    pip install fastapi uvicorn ibapi --no-cache-dir
+# Fail the build if the pinned install is incomplete, rather than
+# installing unpinned packages on top.
+RUN python -c "import fastapi, ibapi, uvicorn; print('FastAPI version:', fastapi.__version__)"
 
 # Switch to non-root user
 USER ibservice

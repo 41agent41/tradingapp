@@ -17,6 +17,11 @@ export interface ChecklistState {
   mfa: boolean;
   /** Broker connections the broker service has, or null when it did not answer. */
   connections: number | null;
+  /**
+   * Connections added here that do not name their firm yet (saved before
+   * firms, E-31), as platform:account labels.
+   */
+  withoutFirm?: string[];
   /** Enabled data collection entries. */
   collecting: number;
   backfillEnabled: boolean;
@@ -58,13 +63,14 @@ export function checklist(s: ChecklistState): ChecklistItem[] {
     {
       id: 'broker',
       title: 'Add a broker connection',
-      done: (s.connections ?? 0) > 0,
-      detail:
-        s.connections === null
+      done: (s.connections ?? 0) > 0 && !s.withoutFirm?.length,
+      detail: s.withoutFirm?.length
+        ? `Choose the firm for ${s.withoutFirm.join(', ')} (Edit on the Connections tab). Each firm connects one way only; remove a connection its firm does not allow.`
+        : s.connections === null
           ? 'The broker service is not answering, so connections cannot be counted.'
           : s.connections > 0
             ? `${s.connections} connected.`
-            : 'Add one (OANDA, MT5, IB or Alpaca); it is tested when saved.',
+            : 'Add one (OANDA, IG, cTrader, Alpaca, MT5 or IB); it is tested when saved.',
       tab: 'connections',
     },
     {
@@ -117,20 +123,35 @@ async function countCollecting(db: Querier): Promise<number> {
   return Number(rows[0]?.n ?? 0);
 }
 
+/** Connections without a firm; none when the table or column is not there yet. */
+async function listWithoutFirm(db: Querier): Promise<string[]> {
+  try {
+    const { rows } = await db.query(
+      `SELECT platform || ':' || account AS label FROM broker_connections
+        WHERE firm IS NULL ORDER BY platform, account`
+    );
+    return rows.map((r: { label: string }) => r.label);
+  } catch {
+    return [];
+  }
+}
+
 /** Reads the state from the app, the database and the broker service. */
 export async function loadChecklistState(
   brokerServiceUrl: string,
   db: Querier = dbService
 ): Promise<ChecklistState> {
-  const [connections, collecting] = await Promise.all([
+  const [connections, collecting, withoutFirm] = await Promise.all([
     countConnections(brokerServiceUrl),
     countCollecting(db),
+    listWithoutFirm(db),
   ]);
   return {
     passwordSet: credentials.hasPassword(),
     tradingToken: credentials.hasTokens('trading'),
     mfa: Boolean(credentials.mfaSecret()),
     connections,
+    withoutFirm,
     collecting,
     backfillEnabled: (configService.get('BACKFILL_ENABLED') ?? 'false').toLowerCase() === 'true',
     telegram: isSet('TELEGRAM_BOT_TOKEN') && isSet('TELEGRAM_CHAT_ID'),

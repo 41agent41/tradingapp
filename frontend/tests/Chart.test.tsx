@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 
 import Chart, { __test, type ChartBar, type ChartMarker } from '../app/components/Chart';
 
-const { sortAndDedupe, prepareMarkers } = __test;
+const { sortAndDedupe, prepareMarkers, paneLayout } = __test;
 
 describe('sortAndDedupe', () => {
   it('orders rows by time ascending', () => {
@@ -63,6 +63,22 @@ describe('prepareMarkers', () => {
   });
 });
 
+describe('paneLayout', () => {
+  it('gives each oscillator scale its own pane below the candles, shared by its series', () => {
+    const panes = paneLayout([
+      { key: 'sma', values: [] },
+      { key: 'macd', priceScaleId: 'macd', values: [] },
+      { key: 'rsi', priceScaleId: 'rsi', values: [] },
+      { key: 'macd_signal', priceScaleId: 'macd', values: [] },
+      { key: 'ema', priceScaleId: 'right', values: [] },
+    ]);
+    expect(Array.from(panes.entries())).toEqual([
+      ['macd', 1],
+      ['rsi', 2],
+    ]);
+  });
+});
+
 describe('<Chart> smoke render', () => {
   it('renders a labelled container without throwing', () => {
     const bars: ChartBar[] = [
@@ -88,6 +104,24 @@ describe('<Chart> smoke render', () => {
         ]}
       />
     );
+    expect(getByLabelText('Chart')).toBeInTheDocument();
+  });
+
+  it('re-lays out panes and draws markers without throwing', () => {
+    const bars: ChartBar[] = [
+      { time: 1700000000, open: 1, high: 2, low: 0.5, close: 1.5, volume: 100 },
+      { time: 1700000060, open: 1.5, high: 2.5, low: 1, close: 2, volume: 120 },
+    ];
+    const rsi = { key: 'rsi', priceScaleId: 'rsi', values: [50, 55] };
+    const macd = { key: 'macd', priceScaleId: 'macd', values: [0.1, 0.2] };
+    const markers: ChartMarker[] = [
+      { time: 1700000060, position: 'belowBar', shape: 'arrowUp', color: '#0f0', text: 'Buy' },
+    ];
+    const { rerender, getByLabelText } = render(
+      <Chart data={bars} indicators={[rsi, macd]} markers={markers} />
+    );
+    rerender(<Chart data={bars} indicators={[macd]} markers={[]} />);
+    rerender(<Chart data={bars} indicators={[]} />);
     expect(getByLabelText('Chart')).toBeInTheDocument();
   });
 });

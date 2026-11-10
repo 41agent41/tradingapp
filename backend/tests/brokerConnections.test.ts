@@ -31,6 +31,7 @@ function fakeDb() {
         prop_rules,
         ciphertext,
         by,
+        firm,
       ] = params;
       if (rows.some((r) => r.platform === platform && r.account === account)) {
         throw Object.assign(new Error('duplicate'), { code: '23505' });
@@ -38,6 +39,7 @@ function fakeDb() {
       const row = {
         id: nextId++,
         platform,
+        firm,
         account,
         account_mode,
         currency,
@@ -69,6 +71,7 @@ function fakeDb() {
         prop_rules: params[6] ? JSON.parse(params[6]) : null,
         ciphertext: params[7],
         updated_by: params[8],
+        firm: params[9],
       });
       return { rows: [row] };
     }
@@ -143,13 +146,68 @@ describe('BrokerConnectionStore', () => {
     [{ platform: 'oanda', account: 'Bad Name' }, /Name must be/],
     [{ ...OANDA, account_mode: 'demo' }, /paper or live/],
     [{ platform: 'oanda', settings: { account_id: '1' } }, /needs: token/],
-    [{ platform: 'mt5', settings: { url: 'ftp://x' } }, /http/],
+    [{ platform: 'mt5', firm: 'axi', settings: { url: 'ftp://x' } }, /http/],
     [{ platform: 'ib', settings: { host: 'h', port: 'abc' } }, /whole number/],
   ])('rejects %j', async (input, message) => {
     const { db } = fakeDb();
     const store = new BrokerConnectionStore(db, { SETTINGS_ENCRYPTION_KEY: KEY });
     await expect(store.create(input as any, ctx)).rejects.toThrow(message);
     await expect(store.create(input as any, ctx)).rejects.toBeInstanceOf(BrokerConnectionError);
+  });
+
+  it('fills in the firm a platform implies, and takes the platform from the firm', async () => {
+    const { db, audit } = fakeDb();
+    const store = new BrokerConnectionStore(db, { SETTINGS_ENCRYPTION_KEY: KEY });
+    expect((await store.create(OANDA, ctx)).firm).toBe('oanda');
+    expect(audit[0][3]).toContain('firm=oanda');
+    const ic = await store.create(
+      {
+        firm: 'icmarkets',
+        account: 'icmarkets',
+        settings: { account_id: '424242' },
+        secrets: { api_key: 'id', api_secret: 's', token: 't' },
+      },
+      ctx
+    );
+    expect(ic).toMatchObject({ platform: 'ctrader', firm: 'icmarkets' });
+  });
+
+  it.each([
+    [{ platform: 'mt5', settings: { url: 'http://x' } }, /Choose the firm this mt5 account/],
+    [{ platform: 'mt5', firm: 'nope', settings: { url: 'http://x' } }, /Unknown firm "nope"/],
+    [
+      { platform: 'mt5', firm: 'icmarkets', settings: { url: 'http://x' } },
+      /IC Markets \(cTrader\) connects only through ctrader, not mt5/,
+    ],
+    [
+      { platform: 'mt5', firm: 'oanda', settings: { url: 'http://x' } },
+      /OANDA connects only through oanda/,
+    ],
+    [
+      { platform: 'mt5', firm: 'other_mt5', account: 'pepperstone', settings: { url: 'http://x' } },
+      /"pepperstone" is Pepperstone \(cTrader\), which connects only through ctrader/,
+    ],
+    [{ ...OANDA, firm: 'axi' }, /Axi \(MT5\) connects only through mt5, not oanda/],
+  ])('allows one connection type per firm: refuses %j', async (input, message) => {
+    const { db } = fakeDb();
+    const store = new BrokerConnectionStore(db, { SETTINGS_ENCRYPTION_KEY: KEY });
+    await expect(store.create(input as any, ctx)).rejects.toThrow(message);
+  });
+
+  it('lets a row saved before firms be edited, and checks a firm given to it', async () => {
+    const { db, rows } = fakeDb();
+    const store = new BrokerConnectionStore(db, { SETTINGS_ENCRYPTION_KEY: KEY });
+    const created = await store.create(
+      { platform: 'mt5', firm: 'axi', account: 'ftmo', settings: { url: 'http://x' } },
+      ctx
+    );
+    rows[0].firm = null;
+    const kept = await store.update(created.id, { account_mode: 'live' }, ctx);
+    expect(kept.firm).toBeNull();
+    await expect(store.update(created.id, { firm: 'icmarkets' }, ctx)).rejects.toThrow(
+      /connects only through ctrader/
+    );
+    expect((await store.update(created.id, { firm: 'other_mt5' }, ctx)).firm).toBe('other_mt5');
   });
 
   it('keeps stored secrets when an update leaves them blank', async () => {

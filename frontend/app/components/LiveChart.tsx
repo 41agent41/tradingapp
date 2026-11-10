@@ -9,7 +9,20 @@ import DataframeViewer from './DataframeViewer';
 import { useTradingAccount } from '../contexts/TradingAccountContext';
 import { apiFetch } from '../lib/api';
 import { useRealtimeStream, TickPayload } from '../lib/useRealtimeStream';
+import { EMPTY_LIVE, LiveState, applyTick, timeframeSeconds } from '../lib/liveCandles';
 import ChartSkeleton from './ChartSkeleton';
+
+/** The instrument and the connection it is charted from. */
+export interface LiveInstrument {
+  symbol: string;
+  /** Broker platform (oanda, ig, ...); empty lets the broker priority choose. */
+  source?: string;
+  /** Account on that platform; empty for its default. */
+  account?: string;
+  secType?: string;
+  exchange?: string;
+  currency?: string;
+}
 
 interface RealtimeData {
   symbol: string;
@@ -81,6 +94,12 @@ const INDICATOR_CONFIGS: Record<string, { color: string; label: string; priceSca
   rsi: { color: '#9333ea', label: 'RSI', priceScaleId: 'rsi' },
 };
 
+/** Enough decimals for FX (1.08345) without padding stock prices. */
+function formatPrice(value: number): string {
+  const abs = Math.abs(value);
+  return value.toFixed(abs === 0 || abs >= 100 ? 2 : abs >= 10 ? 3 : 5);
+}
+
 const INDICATOR_FIELDS = [
   'sma_20',
   'sma_50',
@@ -101,7 +120,19 @@ const INDICATOR_FIELDS = [
   'volume_sma',
 ] as const;
 
-export default function MSFTRealtimeChart() {
+/**
+ * A live chart for any symbol on any connection (E-21): history from the
+ * database or the broker, then the tick stream moving the last candle (E-20).
+ */
+export default function LiveChart({ instrument }: { instrument: LiveInstrument }) {
+  const {
+    symbol,
+    source = '',
+    account = '',
+    secType = 'STK',
+    exchange = '',
+    currency = '',
+  } = instrument;
   const { accountMode, dataType } = useTradingAccount();
 
   // Simple periods array - always fresh
@@ -133,7 +164,7 @@ export default function MSFTRealtimeChart() {
   // Data switch states
   const [dataQueryEnabled, setDataQueryEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('msft-chart-data-enabled');
+      const saved = localStorage.getItem('live-chart-data-enabled');
       return saved !== null ? JSON.parse(saved) : true; // Default to true (enabled)
     }
     return true; // Default to true (enabled)
@@ -142,7 +173,7 @@ export default function MSFTRealtimeChart() {
   // Indicator states
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('msft-chart-indicators');
+      const saved = localStorage.getItem('live-chart-indicators');
       return saved ? JSON.parse(saved) : [];
     }
     return [];
@@ -166,7 +197,7 @@ export default function MSFTRealtimeChart() {
   const handleDataSwitchToggle = (enabled: boolean) => {
     setDataQueryEnabled(enabled);
     if (typeof window !== 'undefined') {
-      localStorage.setItem('msft-chart-data-enabled', JSON.stringify(enabled));
+      localStorage.setItem('live-chart-data-enabled', JSON.stringify(enabled));
     }
     if (!enabled) {
       setError(null);
@@ -179,7 +210,7 @@ export default function MSFTRealtimeChart() {
   const handleIndicatorChange = (indicators: string[]) => {
     setSelectedIndicators(indicators);
     if (typeof window !== 'undefined') {
-      localStorage.setItem('msft-chart-indicators', JSON.stringify(indicators));
+      localStorage.setItem('live-chart-indicators', JSON.stringify(indicators));
     }
   };
 
@@ -195,7 +226,17 @@ export default function MSFTRealtimeChart() {
 
     try {
       // Simple query building (apiFetch resolves it on the page origin)
-      let url = `/api/market-data/history?symbol=MSFT&timeframe=${currentTimeframe}&account_mode=${accountMode}`;
+      const params = new URLSearchParams({
+        symbol,
+        timeframe: currentTimeframe,
+        account_mode: accountMode,
+        secType,
+      });
+      if (source) params.set('source', source);
+      if (account) params.set('account', account);
+      if (exchange) params.set('exchange', exchange);
+      if (currency) params.set('currency', currency);
+      let url = `/api/market-data/history?${params.toString()}`;
 
       if (useCustomDateRange && startDate && endDate) {
         url += `&start_date=${startDate}&end_date=${endDate}`;
@@ -302,7 +343,12 @@ export default function MSFTRealtimeChart() {
     }
     try {
       const response = await apiFetch(
-        `/api/market-data/realtime?symbol=MSFT&account_mode=${accountMode}`,
+        `/api/market-data/realtime?${new URLSearchParams({
+          symbol,
+          account_mode: accountMode,
+          ...(source ? { source } : {}),
+          ...(account ? { account } : {}),
+        }).toString()}`,
         {
           method: 'GET',
           headers: {
@@ -335,7 +381,18 @@ export default function MSFTRealtimeChart() {
       fetchHistoricalData();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTimeframe, currentPeriod, dataQueryEnabled, selectedIndicators]);
+  }, [
+    currentTimeframe,
+    currentPeriod,
+    dataQueryEnabled,
+    selectedIndicators,
+    symbol,
+    source,
+    account,
+    secType,
+    exchange,
+    currency,
+  ]);
 
   // Seed the price display once on mount / when the dependencies
   // change. Live updates come from the streaming hook below; we do
@@ -349,19 +406,28 @@ export default function MSFTRealtimeChart() {
     }
     refreshRealtimeOnce();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataQueryEnabled, useCustomDateRange, accountMode]);
+  }, [dataQueryEnabled, useCustomDateRange, accountMode, symbol, source, account]);
 
   // Real-time tick stream from the backend Socket.IO bridge. The hook
   // owns the Socket.IO connection and per-symbol subscribe/unsubscribe;
   // we just consume the latest tick payload as it arrives.
   const streamEnabled = dataQueryEnabled && !useCustomDateRange;
   const stream = useRealtimeStream({
-    symbol: streamEnabled ? 'MSFT' : null,
-    secType: 'STK',
-    exchange: 'SMART',
-    currency: 'USD',
+    symbol: streamEnabled ? symbol : null,
+    secType,
+    exchange: exchange || undefined,
+    currency: currency || undefined,
+    source: source || undefined,
+    account: account || undefined,
     enabled: streamEnabled,
   });
+
+  // The forming candle. Reset whenever the history it continues changes.
+  const [live, setLive] = useState<LiveState>(EMPTY_LIVE);
+  const lastBarRef = useRef<ChartBar | null>(null);
+  useEffect(() => {
+    setLive(EMPTY_LIVE);
+  }, [chartData, currentTimeframe]);
 
   // Merge each incoming tick into the synthetic RealtimeData shape so
   // the rest of the chart (which expects bid/ask/last/volume) doesn't
@@ -400,9 +466,12 @@ export default function MSFTRealtimeChart() {
       }
       return merged;
     });
+    if (timeframeSeconds(currentTimeframe) !== null) {
+      setLive((prev) => applyTick(prev, tick, currentTimeframe, lastBarRef.current));
+    }
     setLastUpdate(new Date());
     setError(null);
-  }, [stream.latestTick]);
+  }, [stream.latestTick, currentTimeframe]);
 
   // Surface stream-level errors (Socket.IO connect_error, subscribe
   // failures) on the existing error banner.
@@ -425,6 +494,9 @@ export default function MSFTRealtimeChart() {
       })),
     [chartData]
   );
+  useEffect(() => {
+    lastBarRef.current = bars.length ? bars[bars.length - 1] : null;
+  }, [bars]);
 
   const indicators = useMemo<ChartIndicatorSeries[]>(() => {
     const out: ChartIndicatorSeries[] = [];
@@ -473,10 +545,11 @@ export default function MSFTRealtimeChart() {
       {/* Header */}
       <div className="bg-gradient-to-r from-blue-600 to-purple-600 text-white p-3 sm:p-4">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-2 sm:space-y-0">
-          <h2 className="text-lg sm:text-xl font-bold">MSFT - Microsoft Corporation</h2>
+          <h2 className="text-lg sm:text-xl font-bold">{symbol}</h2>
           <div className="text-xs sm:text-sm opacity-90">
-            NASDAQ • {dataType === 'real-time' ? 'Live Data' : 'Delayed Data (15-20 min)'} •{' '}
-            {accountMode.toUpperCase()} Mode
+            {source ? `${source}${account ? `:${account}` : ''}` : 'Broker by priority'} •{' '}
+            {dataType === 'real-time' ? 'Live Data' : 'Delayed Data'} • {accountMode.toUpperCase()}{' '}
+            Mode • {stream.connected ? 'Streaming' : 'Not streaming'}
           </div>
         </div>
       </div>
@@ -488,8 +561,8 @@ export default function MSFTRealtimeChart() {
           <DataSwitch
             enabled={dataQueryEnabled}
             onToggle={handleDataSwitchToggle}
-            label="IB Gateway Data Query"
-            description="Enable or disable real-time and historical data fetching from IB Gateway"
+            label="Data query"
+            description="Enable or disable live and historical data fetching from the broker"
             size="medium"
           />
         </div>
@@ -613,12 +686,12 @@ export default function MSFTRealtimeChart() {
             <div className="bg-gray-50 p-2 sm:p-3 rounded">
               <p className="text-xs sm:text-sm text-gray-600">Last Price</p>
               <p className={`text-lg sm:text-xl font-bold ${getPriceChangeColor()}`}>
-                ${currentData.last.toFixed(2)}
+                {formatPrice(currentData.last)}
               </p>
               {getPriceChange() && (
                 <p className={`text-xs sm:text-sm ${getPriceChangeColor()}`}>
                   {getPriceChange()!.change > 0 ? '+' : ''}
-                  {getPriceChange()!.change.toFixed(2)}(
+                  {formatPrice(getPriceChange()!.change)}(
                   {getPriceChange()!.changePercent > 0 ? '+' : ''}
                   {getPriceChange()!.changePercent.toFixed(2)}%)
                 </p>
@@ -628,14 +701,14 @@ export default function MSFTRealtimeChart() {
             <div className="bg-gray-50 p-2 sm:p-3 rounded">
               <p className="text-xs sm:text-sm text-gray-600">Bid</p>
               <p className="text-base sm:text-lg font-semibold text-gray-900">
-                ${currentData.bid.toFixed(2)}
+                {formatPrice(currentData.bid)}
               </p>
             </div>
 
             <div className="bg-gray-50 p-2 sm:p-3 rounded">
               <p className="text-xs sm:text-sm text-gray-600">Ask</p>
               <p className="text-base sm:text-lg font-semibold text-gray-900">
-                ${currentData.ask.toFixed(2)}
+                {formatPrice(currentData.ask)}
               </p>
             </div>
 
@@ -680,10 +753,10 @@ export default function MSFTRealtimeChart() {
         </div>
 
         {isLoadingHistorical && chartData.length === 0 ? (
-          <ChartSkeleton height={500} label="Loading MSFT history…" />
+          <ChartSkeleton height={500} label={`Loading ${symbol} history…`} />
         ) : (
           <div className="border border-gray-200 rounded">
-            <Chart data={bars} indicators={indicators} height={500} />
+            <Chart data={bars} indicators={indicators} height={500} liveBar={live.bar} />
           </div>
         )}
 
@@ -745,7 +818,7 @@ export default function MSFTRealtimeChart() {
               ...(bar.vwap && { vwap: bar.vwap }),
               ...(bar.volume_sma && { volume_sma: bar.volume_sma }),
             }))}
-            title="MSFT Historical Data"
+            title={`${symbol} Historical Data`}
             description={`${chartData.length} data points for ${currentTimeframe} timeframe`}
             maxHeight="400px"
             showExport={true}

@@ -18,7 +18,7 @@ app in [OPERATIONS.md](OPERATIONS.md).
 1. [Currently Available](#currently-available)
    - [Market data search](#market-data-search)
    - [Historical charts](#historical-charts)
-   - [Real-time MSFT view](#real-time-msft-view)
+   - [Live chart](#live-chart)
    - [Real-time streaming pipeline](#real-time-streaming-pipeline)
    - [Technical indicators](#technical-indicators)
    - [Backtesting](#backtesting)
@@ -81,7 +81,10 @@ Other brokers search their own catalogues through the same panel and API
 ### Historical charts
 
 A TradingView **lightweight-charts** candlestick chart with volume bars,
-served from the `/historical` and per-symbol pages.
+served from the `/historical` and per-symbol pages. The library is pinned at
+an exact version (5.2.1) in `frontend/package.json`; every chart goes through
+`frontend/app/components/Chart.tsx` (and `EquityCurveChart.tsx` for equity
+curves).
 
 - **Timeframes shipped:** `tick`, `1min`, `5min`, `15min`, `30min`, `1hour`,
   `4hour`, `8hour`, `1day`.
@@ -93,18 +96,21 @@ served from the `/historical` and per-symbol pages.
 - **Interactions:** zoom, pan, crosshair, auto-fit, all built into
   `lightweight-charts`.
 
-### Real-time MSFT view
+### Live chart
 
-A dedicated `/msft` page implements the `.cursorrules` brief: an MSFT chart
-that you can switch across the 5m / 15m / 30m / 1h / 4h / 8h / 1d
-timeframes with up to 12 months of history.
+The `/live` page charts any symbol on any broker connection
+(`/live?symbol=EURUSD&source=oanda&account=practice&secType=CASH`; `/msft`
+redirects to `/live?symbol=MSFT`). Pick the symbol, the connection (or "By
+broker priority"), the type and, optionally, the currency, then **Show**.
+The address holds the choice, so a chart can be bookmarked.
 
-The page now consumes a true real-time tick stream: the broker service
-calls `reqMktData` on IB Gateway and publishes every tick to Redis,
-the backend forwards each tick into a Socket.IO room, and the page's
-`useRealtimeStream` hook updates the price display as ticks arrive.
-A one-shot REST call seeds the badge before the first tick lands and
-acts as a fallback when streaming is disabled.
+History loads from the database first, then the broker. The tick stream then
+moves the last candle (`frontend/app/lib/liveCandles.ts`): it follows trades
+(`LAST`) when the feed sends them, otherwise the mid of the latest bid and
+ask, and starts a new candle when a tick falls in the next bucket. Live
+candles are drawn for 1-minute to daily timeframes; indicator lines are not
+recomputed live. One stream serves each symbol: the first chart to open a
+symbol picks its connection, and later charts share it until it stops.
 
 ### Real-time streaming pipeline
 
@@ -147,7 +153,8 @@ IB Gateway ──reqMktData──▶ broker_service ──redis.publish──▶
 These are exposed via `GET /api/market-data/indicators` (backend) and
 `GET /indicators/available` (broker service). The frontend
 `IndicatorSelector` and `TechnicalIndicatorsFilter` components let users
-toggle them on the chart.
+toggle them on the chart. Overlays (moving averages, bands, VWAP) are drawn
+on the candles; oscillators (MACD, RSI) each get their own pane below them.
 
 ### Backtesting
 
@@ -269,8 +276,9 @@ topped up and pruned on its own:
   `GET /api/market-data/database/stats`.
 - **Retention cleanup with real counts.** `POST /api/market-data/database/clean`
   deletes bars older than each row's `retention_days` and reports the
-  actual number removed (per config). This complements TimescaleDB's own
-  chunk-dropping retention policy.
+  actual number removed (per config). Bars from an entry's history start on
+  are always kept. This is the only thing that deletes bars: TimescaleDB has
+  no retention policy on them (it would drop deep history by age).
 
 The "Getting started" checklist on the Settings page counts this step done
 once at least one entry is collected and the backfill scheduler is on.
@@ -587,7 +595,8 @@ describes adding another.
 
 - **Connections in the app:** brokers are added on Settings > Connections,
   one connection per account, in priority order OANDA, IG, cTrader, the
-  IBKR Web API, MT5, IB Gateway, then Alpaca (the order can be changed there). Each connection has a name,
+  IBKR Web API, Alpaca, MT5, then IB Gateway (the order can be changed
+  there). Each connection has a name,
   a mode (`paper` or `live`), a currency, the broker's own fields and
   optional risk limits and prop-firm rules. Credentials are stored
   encrypted in the database. Each connection is tested when saved, and the
@@ -666,11 +675,16 @@ describes adding another.
   (as distances on a market order), position stops, positions netted across
   a hedged account, account equity and fills. Quantities are in units.
   Access tokens last about 30 days and are renewed by hand.
-- **Firms on the form:** Settings > Connections has a **Firm** list (OANDA,
-  IG, IC Markets, Pepperstone, FP Markets, Fusion, Axi, Eightcap, Vantage)
-  that picks the platform and says how to connect. Axi has no public trading
-  API, and its MCP server serves Claude only, so Axi accounts go through the
-  MT5 sidecar.
+- **One connection type per firm:** every connection names its firm
+  (OANDA, IG, IC Markets, Pepperstone, FP Markets, Fusion, another cTrader
+  firm, Interactive Brokers, Alpaca, Axi, Eightcap, Vantage, another MT5
+  firm), and the firm sets the platform: its web API when it has one, the
+  MT5 sidecar when it does not. Interactive Brokers alone has two entries,
+  its Web API and the older IB Gateway. The
+  backend refuses any other pairing (`backend/src/services/firms.ts`). Axi
+  has no public trading API, and its MCP server serves Claude only, so Axi
+  accounts go through the MT5 sidecar. Connections saved before firms are
+  listed on Getting started until each is given its firm.
 - **Provider health:** the broker service exposes `/providers` (and folds
   provider status into `/health`) so operators can see which venues are
   registered.
@@ -815,7 +829,8 @@ Cache health surfaces in `/api/health` under `services.cache`. Turn
   the broker only for what is missing, so repeat loads are fast and avoid
   broker rate limits.
 - **TimescaleDB.** Bars and ticks live in hypertables (time-chunked), with a
-  daily continuous aggregate and retention policies that drop old chunks.
+  daily continuous aggregate. Ticks are dropped after 30 days; bars are kept
+  until the app's own retention cleanup removes them.
 - **Redis cache.** The busiest read endpoints go through a read-through
   cache that degrades to a miss when Redis is down.
 - **Streaming, not polling.** Live ticks are pushed over Socket.IO, with one
@@ -894,6 +909,9 @@ Cache health surfaces in `/api/health` under `services.cache`. Turn
 Not yet implemented. Design records for the larger pieces are in
 [`plans/`](plans/); deferred decisions are registered in
 [`FUTURE_DECISION_POINTS.md`](plans/FUTURE_DECISION_POINTS.md).
+The current review, with every planned enhancement in priority order and
+which model can do each, is
+[`ENHANCEMENT_PLAN.md`](plans/ENHANCEMENT_PLAN.md).
 
 ### Known gaps in what ships
 

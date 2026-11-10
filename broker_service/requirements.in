@@ -1,0 +1,34 @@
+# Broker service: direct dependencies. Edit this file, then regenerate the
+# pinned lock (requirements.txt) with:
+#   uv pip compile requirements.in --python-version 3.11 --universal -o requirements.txt
+# The image and CI install requirements.txt only, so every build gets exactly
+# the versions that were reviewed and tested.
+
+# Web framework. FastAPI brings Starlette; both are kept current for security
+# fixes (S-01 in docs/plans/ENHANCEMENT_PLAN.md).
+fastapi>=0.162,<0.163
+uvicorn[standard]>=0.54,<0.55
+pydantic>=2.14,<3
+python-multipart>=0.0.33
+
+# Interactive Brokers TWS API client.
+ibapi==9.81.1.post1
+
+# Data analysis and indicators.
+pandas>=2.2,<3
+numpy>=2.0,<3
+python-dateutil>=2.9
+pytz>=2025.1
+
+# Real-time pipeline.
+redis>=5.0.1,<7
+
+# HTTP client for the web API brokers and the MT5 sidecar.
+httpx>=0.28,<0.29
+
+# cTrader Open API (JSON over WebSocket).
+websockets>=12
+
+# Observability (structured logging and Prometheus metrics).
+structlog>=24.1.0
+prometheus-fastapi-instrumentator>=8,<9

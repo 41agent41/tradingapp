@@ -1,0 +1,8 @@
+# MT5 sidecar: test and lint tools. Tests run on any OS against
+# tests/fake_mt5.py; no terminal needed. Regenerate the lock with:
+#   uv pip compile requirements-dev.in -c requirements.txt --python-version 3.11 --universal -o requirements-dev.txt
+-c requirements.txt
+pytest>=8,<10
+ruff==0.6.9
+black>=24.8,<25
+httpx>=0.28,<0.29

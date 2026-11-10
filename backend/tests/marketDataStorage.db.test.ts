@@ -34,6 +34,14 @@ run('bar storage (real database)', () => {
     await dbService.close();
   });
 
+  it('has no age-based retention policy on bars, which would drop deep history', async () => {
+    const result = await dbService.query(
+      `SELECT count(*)::int AS n FROM timescaledb_information.jobs
+        WHERE proc_name = 'policy_retention' AND hypertable_name = 'candlestick_data'`
+    );
+    expect(result.rows[0].n).toBe(0);
+  });
+
   it('finds the same contract again when expiry, strike and right are empty', async () => {
     const contract = { broker: 'oanda', symbol: sym('EU'), secType: 'CASH', currency: 'USD' };
     const first = await marketDataService.getOrCreateContract(contract);
