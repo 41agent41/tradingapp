@@ -57,9 +57,12 @@ app for real are in [INSTALL.md](INSTALL.md) and
   `/metrics` needs the `X-Broker-Service-Token`.
 - **mt5_sidecar** (`mt5_sidecar/`): runs next to an MT5 terminal on Windows
   or Wine and speaks HTTP to `mt5_adapter.py`.
-- **Redis**: a read-through cache and the live-tick bus
+- **Redis**: a read-through cache, the live-tick bus
   (`broker_service/streaming.py` publishes, `backend/src/services/streamingBridge.ts`
-  fans out to Socket.IO rooms). Everything works without it.
+  fans out to Socket.IO rooms) and the quote stream the live recorder reads
+  (`marketdata:quotes`, written by `add_quote` in `streaming.py`, read by
+  `backend/src/services/liveRecorder.ts`). Everything but live charts and
+  live recording works without it.
 
 Broker connections are stored by the backend (`broker_connections`, secrets
 encrypted) and pushed to the broker service with `PUT /connections/managed`
@@ -176,9 +179,12 @@ DB_TESTS=1 ... npx jest --runInBand '\.db\.test\.ts$'
 behind the real sidecar code (`e2e/sim_sidecar.py`), the broker service, and
 the backend with the strategy runner executing on paper, then runs
 `e2e/test_paper_flow.py`: deploying a strategy, orders with stops attached,
-trailing, fills, limits, prop rules, the kill switch and restarts. It needs
-`POSTGRES_*` pointing at a TimescaleDB, the backend built, and both services'
-Python requirements. `e2e/stack.sh start|stop|restart <component>` runs the
+trailing, fills, limits, prop rules, the kill switch and restarts. Then
+`e2e/test_recorder_flow.py` marks an instrument Record live, adds known
+quotes to the quote stream, and reads the bar and the quotes back from the
+database, across a backend restart. It needs `POSTGRES_*` pointing at a
+TimescaleDB, Redis on `REDIS_HOST`:`REDIS_PORT` (default `127.0.0.1:6379`),
+`psql`, the backend built, and both services' Python requirements. `e2e/stack.sh start|stop|restart <component>` runs the
 stack on its own for poking at.
 
 **CI** (`.github/workflows/ci.yml`) runs on every push and pull request to
@@ -269,9 +275,12 @@ What the schema holds, in short (read the files for the full list):
 |---|---|
 | `contracts` | One row per resolved instrument |
 | `candlestick_data` | OHLCV bars; hypertable, 1-day chunks; no retention policy, only `cleanOldData` deletes, and never from an entry's `history_start` on |
-| `tick_data` | Ticks; hypertable, 1-hour chunks, dropped after 30 days |
+| `candlestick_data.source` | `broker` (the broker's history) or `stream` (built by the live recorder); a broker bar replaces a stream bar, never the reverse |
+| `quote_ticks` | Quotes stored by the live recorder (bid, ask, last); hypertable, 1-day chunks, compressed after a day, whole days dropped by `cleanOldData` after `TICK_RETENTION_DAYS` |
+| `recorder_cursor` | One row: the last quote-stream entry stored, written in the same transaction as its bars and quotes |
+| `tick_data` | Unused. An earlier design's table, left in place; `quote_ticks` replaced it |
 | `daily_candlestick_data` | Continuous aggregate, refreshed hourly over the last 3 days |
-| `data_collection_config` | The Settings page's collection table, with `history_start` and progress |
+| `data_collection_config` | The Settings page's collection table, with `history_start` and progress, and `record_live` / `record_ticks` (kept the same on every row of a contract) |
 | `data_quality_metrics` | Per-day bar counts and a quality score, written on every store path |
 | `broker_connections`, `app_settings`, `settings_audit`, `auth_credentials`, `app_meta` | Connections, settings and their history, login and tokens; `app_meta` holds the value that proves the encryption key |
 | `order_audit`, `order_executions` | Every order attempt; venue fills, unique on `(broker, broker_account, exec_id)` |
@@ -327,6 +336,7 @@ is the one it returns.
 | `probe()` | Background connectivity checks, the Test button, the heartbeat |
 | `search_contracts`, `historical_bars`, `realtime_quote`, `tick` | Search, charts, quotes, backtests |
 | `stream_prices` (optional) | Live prices; without it `tick` is polled every `STREAM_POLL_SECONDS` |
+| `bar_basis` (attribute) | `mid`, `bid` or `last`: the price the broker builds its own bars from, so the live recorder builds its bars the same way |
 | `place_order`, `cancel_order`, `modify_order` | Orders and the strategy runner |
 | `positions`, `account_summary`, `open_orders`, `executions` | Account pages, reconciliation, `pct_equity` sizing |
 | `instrument_spec` | Converting a size into the venue's units |

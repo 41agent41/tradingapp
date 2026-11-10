@@ -174,6 +174,19 @@ def test_recorded_set_reports_what_it_cannot_start():
     assert streamer.recorded() == set()
 
 
+def test_recorded_set_reports_a_symbol_whose_fetch_keeps_failing():
+    streamer = _streamer(PollingAdapter({"AAPL": (1.0, 2.0)}), [], [])
+    try:
+        wanted = {("alpaca", "default", "AAPL"), ("alpaca", "default", "NOPE")}
+        streamer.set_recorded(wanted)
+        # It starts, then the broker says it has no such symbol.
+        assert _wait_for(
+            lambda: streamer.set_recorded(wanted) == {("alpaca", "default", "NOPE"): "unknown NOPE"}
+        )
+    finally:
+        streamer.stop_all()
+
+
 def test_a_failing_symbol_records_its_error_and_keeps_the_rest():
     published = []
     streamer = _streamer(PollingAdapter({"AAPL": (1.0, 2.0)}), published)
@@ -387,9 +400,10 @@ def test_recorded_set_route_resolves_connections_and_reports_errors(two_brokers,
     import venue_streaming
     from routes import streaming as streaming_routes
 
+    quiet = PollingAdapter({"AAPL": (1.0, 2.0), "EUR.USD": (1.0, 1.2)})
     streamer = venue_streaming.VenueStreamer(
         publish_tick=lambda *a, **k: None,
-        resolve_adapter=lambda p, a: object(),
+        resolve_adapter=lambda p, a: quiet,
         poll_seconds=60,
         publish_quote=lambda *a, **k: None,
     )

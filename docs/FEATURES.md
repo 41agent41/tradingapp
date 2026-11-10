@@ -109,8 +109,9 @@ moves the last candle (`frontend/app/lib/liveCandles.ts`): it follows trades
 (`LAST`) when the feed sends them, otherwise the mid of the latest bid and
 ask, and starts a new candle when a tick falls in the next bucket. Live
 candles are drawn for 1-minute to daily timeframes; indicator lines are not
-recomputed live. One stream serves each symbol: the first chart to open a
-symbol picks its connection, and later charts share it until it stops.
+recomputed live. Streams are per broker connection, so EURUSD from OANDA and
+EURUSD from an MT5 account can be charted side by side. A chart left on "By
+broker priority" joins the stream a symbol already has, if there is one.
 
 ### Real-time streaming pipeline
 
@@ -126,15 +127,18 @@ IB Gateway ──reqMktData──▶ broker_service ──redis.publish──▶
 
 - **Publisher:** `broker_service/streaming.py` runs an in-process
   `StreamingManager` that opens `reqMktData` subscriptions and publishes
-  every tick to `marketdata:tick:<SYMBOL>` on Redis.
+  every tick to `marketdata:tick:<platform>:<account>:<SYMBOL>` on Redis.
+  The other brokers go through `broker_service/venue_streaming.py`, which
+  streams where the broker has a price stream and polls where it does not,
+  and publishes to the same channels.
 - **Bridge:** `backend/src/services/streamingBridge.ts` holds a second
   Redis client in subscribe mode and forwards each tick to the
-  `market-data:<SYMBOL>` Socket.IO room.
+  `market-data:<platform>:<account>:<SYMBOL>` Socket.IO room.
 - **Consumer:** the frontend `useRealtimeStream` hook
   (`frontend/app/lib/useRealtimeStream.ts`) joins the room and updates the
   price display as ticks arrive.
-- **Refcounting & cleanup:** both sides refcount per symbol, so multiple
-  browsers on one symbol create a single IB subscription; on disconnect the
+- **Refcounting & cleanup:** both sides refcount per connection and symbol,
+  so multiple browsers on one symbol create a single broker subscription; on disconnect the
   bridge `releaseSocket()`s and `cancelMktData`s anything that hits zero.
 - **Controls:** turn `STREAMING_ENABLED` off (Settings > Schedulers and data) to disable the bridge (charts
   fall back to one-shot REST seeding). Health is reported under
@@ -269,16 +273,72 @@ topped up and pruned on its own:
   its collection interval, over the recent `BACKFILL_PERIOD` window, from
   the entry's broker, and upserts it. Progress is visible under
   `services.backfill` in `/api/health`.
+- **Live recording.** Tick **Record live** on an entry and the backend
+  stores the instrument's 1-minute bars from its live prices as they form,
+  with no chart open. Tick **Store ticks** to keep each quote as well
+  (`quote_ticks`, kept `TICK_RETENTION_DAYS`, 30 by default). Both belong to
+  the instrument, so they change on every timeframe row of it, and both are
+  off until ticked. See [Live recorder](#live-recorder) below.
 - **Data-quality metrics.** Every store path (manual upload, the
   `/history` cache-on-fetch and the backfill worker) records per-day
   total / missing / duplicate / invalid bar counts and a quality score
   into `data_quality_metrics`. They surface through
   `GET /api/market-data/database/stats`.
-- **Retention cleanup with real counts.** `POST /api/market-data/database/clean`
-  deletes bars older than each row's `retention_days` and reports the
-  actual number removed (per config). Bars from an entry's history start on
-  are always kept. This is the only thing that deletes bars: TimescaleDB has
-  no retention policy on them (it would drop deep history by age).
+- **Retention cleanup with real counts.** Every day at 03:30 UTC, and on
+  `POST /api/market-data/database/clean`, the backend deletes bars older
+  than each row's `retention_days` and stored quotes older than
+  `TICK_RETENTION_DAYS`, and reports the actual numbers. Bars from an
+  entry's history start on are always kept. This is the only thing that
+  deletes bars: TimescaleDB has no retention policy on them (it would drop
+  deep history by age).
+
+#### Live recorder
+
+```
+broker_service ──XADD──▶ Redis Stream marketdata:quotes ──XREAD──▶ backend recorder
+ (recorded instruments only)                                        │ every 5 s, and at each minute end
+                                                                    ▼
+                                   one transaction: 1-minute bars + quotes + the cursor
+```
+
+- **What is recorded.** The backend sends the broker service the full list
+  of recorded instruments at start, on every change to the table, and every
+  minute (`PUT /market-data/stream/recorded`). Those instruments stream
+  whether or not a chart is open, and each change of bid, ask or last is
+  added to the Redis Stream `marketdata:quotes` (capped at
+  `TICK_STREAM_MAXLEN` entries). A quote identical to the one before is not
+  added, so a quiet minute has no bar.
+- **How a bar is built.** On the price the broker builds its own history
+  from, so a recorded bar matches the broker's bar: the mid for OANDA and
+  IG, the bid for cTrader and MT5, the last trade for Alpaca, IB Gateway
+  and the IBKR Web API. Recorded bars are marked `source = 'stream'` in
+  `candlestick_data`. A bar fetched from the broker (`source = 'broker'`)
+  replaces a recorded one, and a recorded bar never replaces a broker bar.
+  The backfill does not store the minute still forming.
+- **Nothing twice, nothing skipped.** The recorder stores the ID of the last
+  stream entry it has written (`recorder_cursor`) in the same transaction as
+  the bars and quotes from it, and resumes from there after any restart. A
+  stopped backend catches up from the stream when it returns. Quotes are
+  lost only if more than `TICK_STREAM_MAXLEN` of them arrive while it is
+  down; the next backfill fills those minutes from the broker's history.
+- **Polled brokers.** A broker without a price stream is polled every
+  `STREAM_POLL_SECONDS`, so a high or low between two polls is missed and
+  its recorded bars are approximate until the backfill replaces them. The
+  Live feed column says which instruments are streamed and which polled.
+- **Limits today.** The time on a quote is when the broker service received
+  it, not the broker's own timestamp. Volume on trade-built bars is
+  approximate. Live MT5 symbols are sent in upper case, so a symbol with a
+  lower-case suffix (`EURUSD.a`) cannot be streamed or recorded yet; the
+  Live feed column shows "not found" for it.
+- **Status.** The Live feed column and the line above the table come from
+  `GET /api/market-data/recorder/status`. `/api/health` reports
+  `services.recorder`, `degraded` when the recorder is more than 60 seconds
+  behind the stream or a write to the database is failing. Prometheus:
+  `recorder_entries_total{result}`, `recorder_lag_seconds`,
+  `recorder_flush_seconds`.
+- **Controls.** `RECORDER_ENABLED` (on by default; nothing is recorded until
+  an entry is ticked), `TICK_STREAM_MAXLEN` and `TICK_RETENTION_DAYS`, all
+  on Settings > Schedulers and data.
 
 The "Getting started" checklist on the Settings page counts this step done
 once at least one entry is collected and the backfill scheduler is on.
@@ -717,6 +777,7 @@ describes adding another.
 | `/api/brokers/connections` | GET·POST | List / add broker connections |
 | `/api/brokers/connections/:id` | PUT·DELETE | Edit / remove a connection |
 | `/api/market-data/collection` | GET·POST | Data collection entries (`data_collection_config`) |
+| `/api/market-data/recorder/status` | GET | The live recorder: lag, totals, and each recorded instrument's feed |
 | `/api/backtesting/strategies` | GET | Available backtest strategies (cached 1h) |
 | `/api/backtesting/run` | POST | Run a backtest: by `strategy` key, saved `definition_id` or inline `rule_set` |
 | `/api/backtesting/runs` | GET | List persisted runs (filterable, paginated) |
@@ -742,7 +803,7 @@ Socket.IO is mounted on the backend at the default path and its handshake
 is authenticated (see [Authentication & CORS](#authentication--cors)).
 Clients call `subscribe-market-data` / `unsubscribe-market-data` for a
 given symbol; the backend's streaming bridge refcounts the subscription,
-joins the socket to the `market-data:<SYMBOL>` room and fans every Redis
+joins the socket to the `market-data:<platform>:<account>:<SYMBOL>` room and fans every Redis
 tick out to that room. The full pipeline is described under
 [Real-time streaming pipeline](#real-time-streaming-pipeline).
 

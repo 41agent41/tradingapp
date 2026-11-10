@@ -58,11 +58,12 @@ const RESEND_MS = 60_000;
 /** Health is degraded when the recorder is this far behind the stream. */
 export const LAG_DEGRADED_SECONDS = 60;
 
-export const RECORDER_SETTING_KEYS = ['RECORDER_ENABLED', 'REDIS_ENABLED'] as const;
+export const RECORDER_SETTING_KEYS = ['RECORDER_ENABLED'] as const;
 
-/** Recording needs Redis: the quote stream lives there. */
+/** From `.env` or the Settings page. (REDIS_ENABLED is the cache's switch;
+ *  like the streaming bridge, the recorder uses Redis regardless.) */
 export function recorderEnabled(env: EnvLike = configService.asEnv()): boolean {
-  return readBool(env, 'RECORDER_ENABLED', true) && readBool(env, 'REDIS_ENABLED', true);
+  return readBool(env, 'RECORDER_ENABLED', true);
 }
 
 /** An instrument to record: a contract, and whether its quotes are stored. */
@@ -818,7 +819,8 @@ function defaultDeps(): RecorderDeps {
         {
           instruments: targets.map((t) => ({
             platform: t.platform,
-            account: t.account,
+            // 'default' on a contract means the broker's default account.
+            account: t.account === 'default' ? undefined : t.account,
             symbol: t.symbol,
             secType: t.secType,
             exchange: t.exchange ?? undefined,

@@ -273,7 +273,9 @@ class VenueStreamer:
     def set_recorded(self, wanted: Set[SubKey]) -> Dict[SubKey, str]:
         """Make the recorded set exactly ``wanted`` (platform, account,
         SYMBOL): hold what is new, release what is gone. Safe to repeat.
-        Returns the keys that could not be started, with why."""
+        Returns the keys that are not streaming, with why: those that could
+        not be started, and those whose last fetch failed (a symbol the
+        account does not have, a broker that is down)."""
         errors: Dict[SubKey, str] = {}
         with self._lock:
             current = {k for k, sub in self._subs.items() if sub.recorded}
@@ -288,6 +290,11 @@ class VenueStreamer:
             except Exception as exc:  # noqa: BLE001 — report it, keep the rest
                 detail = getattr(exc, "detail", None)
                 errors[(platform, account, symbol)] = str(detail if detail is not None else exc)
+        with self._lock:
+            for key in wanted:
+                sub = self._subs.get(key)
+                if sub is not None and sub.last_error and key not in errors:
+                    errors[key] = sub.last_error
         return errors
 
     def recorded(self) -> Set[SubKey]:
