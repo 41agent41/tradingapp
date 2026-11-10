@@ -93,3 +93,27 @@ export const stopsTightened = new Counter({
   labelNames: ['connection'],
   registers: [registry],
 });
+
+// --------------------------------------------------------------------------- //
+// Live recorder (services/liveRecorder.ts)
+// --------------------------------------------------------------------------- //
+
+export const recorderEntries = new Counter({
+  name: 'recorder_entries_total',
+  help: 'Quote stream entries the live recorder handled, by what became of them',
+  labelNames: ['result'],
+  registers: [registry],
+});
+
+export const recorderLagSeconds = new Gauge({
+  name: 'recorder_lag_seconds',
+  help: 'Seconds between the newest quote in the stream and the last one stored',
+  registers: [registry],
+});
+
+export const recorderFlushSeconds = new Histogram({
+  name: 'recorder_flush_seconds',
+  help: 'Time to store one batch of bars, quotes and the cursor',
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
+  registers: [registry],
+});

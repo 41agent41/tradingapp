@@ -200,6 +200,7 @@ async def stream_recorded(req: RecordedSetRequest):
     from adapters import resolve_connection
 
     errors: list[dict] = []
+    resolved: list[dict] = []
     venue_wanted: set[tuple[str, str, str]] = set()
     ib_wanted: dict[str, RecordedInstrument] = {}
     for item in req.instruments:
@@ -208,9 +209,22 @@ async def stream_recorded(req: RecordedSetRequest):
         try:
             if platform == "ib":
                 ib_wanted[symbol] = item
+                stream_account, mode = _ib_account(item.account), "streamed"
             else:
                 key = resolve_connection(platform, item.account).key
                 venue_wanted.add((key[0], key[1], symbol))
+                stream_account, mode = key[1], _feed_mode(key)
+            # The account as asked for (often "default") and the one the
+            # quotes carry, so the backend can match a quote to its contract.
+            resolved.append(
+                {
+                    "platform": platform,
+                    "account": item.account,
+                    "symbol": symbol,
+                    "stream_account": stream_account,
+                    "mode": mode,
+                }
+            )
         except Exception as exc:  # noqa: BLE001 — report it, keep the rest
             errors.append(_record_error(platform, item.account, symbol, exc))
 
@@ -237,7 +251,20 @@ async def stream_recorded(req: RecordedSetRequest):
         {"platform": "ib", "account": streaming_manager.ib_account, "symbol": s}
         for s in sorted(streaming_manager.recorded_symbols())
     ]
-    return {"recorded": recorded, "errors": errors}
+    return {
+        "recorded": recorded,
+        "resolved": resolved,
+        "errors": errors,
+        "poll_seconds": venue_streamer.poll_seconds,
+    }
+
+
+def _feed_mode(key: tuple[str, str]) -> str:
+    """``streamed`` when the broker pushes prices, ``polled`` when they are fetched."""
+    try:
+        return "streamed" if hasattr(venue_streamer.adapter_for(key), "stream_prices") else "polled"
+    except Exception:  # noqa: BLE001 — the start error is reported by set_recorded
+        return "polled"
 
 
 def _record_ib(item: RecordedInstrument):

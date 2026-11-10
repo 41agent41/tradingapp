@@ -9,7 +9,13 @@
  * set, the scheduler also walks back to that date a chunk at a time, and bars
  * from it on are kept whatever the retention. A disabled row is kept but
  * ignored by both.
+ *
+ * `record_live` has the live recorder (liveRecorder.ts) build 1-minute bars
+ * from the instrument's stream, and `record_ticks` has it store each quote as
+ * well. Both belong to the instrument, not the timeframe, so setting either
+ * on one row sets it on every row of that contract.
  */
+import { EventEmitter } from 'events';
 import type { Querier } from './backtestRunRepository.js';
 import type { Contract } from './marketDataService.js';
 import { BROKERS } from './brokers.js';
@@ -36,8 +42,15 @@ export interface CollectionRow {
   oldest_bar: string | null;
   /** How far back the scheduler has asked the broker so far. */
   backfilled_to: string | null;
+  /** The live recorder stores 1-minute bars from this instrument's stream. */
+  record_live: boolean;
+  /** It stores each quote as well. */
+  record_ticks: boolean;
   updated_at: string | null;
 }
+
+/** Emits `changed` after any write, so the recorder re-reads what to record. */
+export const collectionEvents = new EventEmitter();
 
 export class CollectionConfigError extends Error {
   constructor(
@@ -62,6 +75,7 @@ const SELECT = `
          c.exchange, c.currency, dcc.timeframe, dcc.enabled, dcc.auto_collect,
          dcc.collection_interval_minutes, dcc.retention_days, dcc.updated_at,
          to_char(dcc.history_start, 'YYYY-MM-DD') AS history_start, dcc.backfilled_to,
+         dcc.record_live, dcc.record_ticks,
          (SELECT MAX(cd.timestamp) FROM candlestick_data cd
            WHERE cd.contract_id = dcc.contract_id AND cd.timeframe = dcc.timeframe) AS latest_bar,
          (SELECT MIN(cd.timestamp) FROM candlestick_data cd
@@ -88,6 +102,8 @@ function toRow(r: any): CollectionRow {
     history_start: r.history_start ?? null,
     oldest_bar: r.oldest_bar ? new Date(r.oldest_bar).toISOString() : null,
     backfilled_to: r.backfilled_to ? new Date(r.backfilled_to).toISOString() : null,
+    record_live: Boolean(r.record_live),
+    record_ticks: Boolean(r.record_ticks),
     updated_at: r.updated_at ? new Date(r.updated_at).toISOString() : null,
   };
 }
@@ -135,7 +151,14 @@ function historyStart(value: unknown, now: Date): string | null | undefined {
 }
 
 function options(input: Record<string, unknown>, now = new Date()) {
+  const recordLive = flag(input.record_live, 'record_live');
+  const recordTicks = flag(input.record_ticks, 'record_ticks');
+  if (recordLive === false && recordTicks === true) {
+    throw new CollectionConfigError('Storing ticks needs Record live.');
+  }
   return {
+    recordLive,
+    recordTicks,
     historyStart: historyStart(input.history_start, now),
     enabled: flag(input.enabled, 'enabled'),
     autoCollect: flag(input.auto_collect, 'auto_collect'),
@@ -230,12 +253,35 @@ export class CollectionConfigRepository {
         opts.historyStart ?? null,
       ]
     );
+    await this.setRecording(contractId, opts);
+    collectionEvents.emit('changed');
     return this.get(Number(rows[0].id));
+  }
+
+  /**
+   * Recording belongs to the contract, so every row of it is given the same
+   * two flags: what was asked for, else what its other rows already have.
+   * Storing ticks turns Record live on; turning Record live off stops both.
+   */
+  private async setRecording(
+    contractId: number,
+    opts: { recordLive?: boolean; recordTicks?: boolean }
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE data_collection_config d
+          SET record_live = f.live, record_ticks = f.live AND f.ticks
+         FROM (SELECT (COALESCE($2::boolean, bool_or(record_live)) OR COALESCE($3::boolean, false)) AS live,
+                      COALESCE($3::boolean, bool_or(record_ticks)) AS ticks
+                 FROM data_collection_config WHERE contract_id = $1) f
+        WHERE d.contract_id = $1
+          AND (d.record_live, d.record_ticks) IS DISTINCT FROM (f.live, f.live AND f.ticks)`,
+      [contractId, opts.recordLive ?? null, opts.recordTicks ?? null]
+    );
   }
 
   /** Changes a row's options. The instrument and timeframe are fixed. */
   async update(id: number, input: Record<string, unknown>): Promise<CollectionRow> {
-    await this.get(id);
+    const row = await this.get(id);
     const opts = options(input);
     await this.db.query(
       `UPDATE data_collection_config
@@ -255,6 +301,8 @@ export class CollectionConfigRepository {
         opts.historyStart ?? null,
       ]
     );
+    await this.setRecording(row.contract_id, opts);
+    collectionEvents.emit('changed');
     return this.get(id);
   }
 
@@ -262,5 +310,6 @@ export class CollectionConfigRepository {
   async remove(id: number): Promise<void> {
     await this.get(id);
     await this.db.query(`DELETE FROM data_collection_config WHERE id = $1`, [id]);
+    collectionEvents.emit('changed');
   }
 }

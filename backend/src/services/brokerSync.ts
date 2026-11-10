@@ -9,7 +9,7 @@
  *
  * The same push carries the settings the broker service enforces itself (the
  * live-trading gate, the default broker, the base currency, the IB status
- * wait and the broker-check and price-poll intervals), so a change on the
+ * wait, the broker-check and price-poll intervals and the quote stream length), so a change on the
  * Settings page reaches it too. Until the first push it knows only `.env`, so
  * live orders fail closed.
  *
@@ -44,6 +44,7 @@ export const BROKER_SETTING_KEYS = [
   'ORDER_PLACE_WAIT_SECONDS',
   'BROKER_PROBE_INTERVAL_SECONDS',
   'STREAM_POLL_SECONDS',
+  'TICK_STREAM_MAXLEN',
   // Live trading is only in effect with the trader role and MFA set up.
   'TRADING_TOKENS',
   'ORDER_MFA_SECRET',
@@ -60,6 +61,7 @@ export function brokerSettings(): Record<string, string> {
     'ORDER_PLACE_WAIT_SECONDS',
     'BROKER_PROBE_INTERVAL_SECONDS',
     'STREAM_POLL_SECONDS',
+    'TICK_STREAM_MAXLEN',
   ]) {
     const value = configService.get(key);
     if (value !== undefined) out[key] = value;

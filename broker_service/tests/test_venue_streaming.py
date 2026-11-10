@@ -412,8 +412,25 @@ def test_recorded_set_route_resolves_connections_and_reports_errors(two_brokers,
             {"platform": "oanda", "account": "default", "symbol": "EUR.USD"},
         ]
         assert [e["platform"] for e in res.json()["errors"]] == ["mt5"]
+        # Each instrument that resolved, with the account its quotes carry.
+        assert res.json()["resolved"] == [
+            {
+                "platform": "oanda",
+                "account": None,
+                "symbol": "EUR.USD",
+                "stream_account": "default",
+                "mode": "polled",
+            },
+            {
+                "platform": "alpaca",
+                "account": "default",
+                "symbol": "AAPL",
+                "stream_account": "default",
+                "mode": "polled",
+            },
+        ]
         # An empty set releases everything.
         res = client.put("/market-data/stream/recorded", json={"instruments": []})
-        assert res.json() == {"recorded": [], "errors": []}
+        assert res.json() == {"recorded": [], "resolved": [], "errors": [], "poll_seconds": 60}
     finally:
         streamer.stop_all()

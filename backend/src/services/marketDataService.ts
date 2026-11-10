@@ -2,6 +2,8 @@ import { dbService } from './database.js';
 import { logger } from './logger.js';
 import { PoolClient } from 'pg';
 import { defaultBroker } from './orderTypes.js';
+import { configService } from '../config/configService.js';
+import { readInt } from '../config/read.js';
 
 // Interfaces for market data
 export interface CandlestickBar {
@@ -148,6 +150,16 @@ export class MarketDataService {
     let updated = 0;
     let errors = 0;
 
+    // The minute still forming is left to the live recorder. Stored here it
+    // would be a part-built broker bar, which the recorder may not correct.
+    if (timeframe === '1min') {
+      const formingFrom = Math.floor(Date.now() / 60_000) * 60_000;
+      bars = bars.filter((b) => new Date(b.timestamp).getTime() < formingFrom);
+    }
+
+    // A bar stored here is the broker's own, so it replaces whatever is there,
+    // including a bar the live recorder built (source 'stream'). The column
+    // defaults to 'broker' on insert.
     const UPSERT_SET = `
       ON CONFLICT (contract_id, timestamp, timeframe)
       DO UPDATE SET
@@ -157,7 +169,8 @@ export class MarketDataService {
         close = EXCLUDED.close,
         volume = EXCLUDED.volume,
         wap = EXCLUDED.wap,
-        count = EXCLUDED.count
+        count = EXCLUDED.count,
+        source = 'broker'
       RETURNING (xmax = 0) AS inserted`;
 
     // One bar at a time, each in a savepoint: without it one bad bar aborts
@@ -664,12 +677,15 @@ export class MarketDataService {
    * `clean_old_data()` SQL function that does not exist in the canonical
    * TimescaleDB schema and always reported `0`).
    *
-   * Note: this complements — it does not replace — TimescaleDB's own
-   * `add_retention_policy` chunk-dropping. It exists so an operator can
-   * enforce a tighter, per-symbol retention than the coarse global policy.
+   * Bars have no TimescaleDB retention policy (migration 004), so this is
+   * what removes them. It also drops whole chunks of stored quotes
+   * (`quote_ticks`) older than TICK_RETENTION_DAYS. `index.ts` runs it daily;
+   * `POST /api/market-data/database/clean` runs it on request.
    */
   async cleanOldData(): Promise<{
     deleted: number;
+    /** Chunks (days) of stored quotes dropped. */
+    tickChunksDropped: number;
     byConfig: Array<{ symbol: string; timeframe: string; retentionDays: number; deleted: number }>;
   }> {
     const configs = await this.getActiveCollectionConfigs();
@@ -706,7 +722,13 @@ export class MarketDataService {
       });
     }
 
-    return { deleted, byConfig };
+    const tickDays = readInt(configService.asEnv(), 'TICK_RETENTION_DAYS', 30, 1, 3650);
+    const dropped = await dbService.query(
+      `SELECT drop_chunks('quote_ticks', older_than => NOW() - make_interval(days => $1::int))`,
+      [tickDays]
+    );
+
+    return { deleted, tickChunksDropped: dropped.rowCount ?? 0, byConfig };
   }
 
   // Upload historical data to database
