@@ -111,7 +111,7 @@ const io = new SocketIOServer(server, {
 });
 
 // The frontend server forwards the browser's /api and /socket.io requests
-// (frontend/proxy.js) and passes the browser's address in X-Forwarded-For.
+// (frontend/backendProxy.js) and passes the browser's address in X-Forwarded-For.
 // That header is believed only from the frontend container and the proxies
 // listed in TRUST_PROXY (services/network.ts), so a caller reaching this port
 // directly cannot pick the address that login lockout and the audit log see.

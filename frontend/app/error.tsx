@@ -48,6 +48,8 @@ export default function GlobalError({
               >
                 Try again
               </button>
+              {/* A full page load on purpose: after an error, start from a fresh app state. */}
+              {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
               <a
                 href="/"
                 className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500"

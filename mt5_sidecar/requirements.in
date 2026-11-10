@@ -1,0 +1,13 @@
+# MT5 sidecar: direct dependencies. Runs on Windows Python 3.11, natively or
+# under Wine. Edit this file, then regenerate the pinned lock with:
+#   uv pip compile requirements.in -c ../broker_service/requirements.txt --python-version 3.11 --universal -o requirements.txt
+# The constraint keeps shared packages at the broker service's versions, so
+# both install into one environment (the CI end-to-end job does this).
+fastapi>=0.162,<0.163
+uvicorn>=0.54,<0.55
+pydantic>=2.14,<3
+# The MetaTrader5 package only ships Windows wheels.
+MetaTrader5>=5.0.45; sys_platform == "win32"
+numpy>=2.0,<3
+# zoneinfo has no system time-zone database on Windows.
+tzdata>=2024.1

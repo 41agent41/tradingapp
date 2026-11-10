@@ -16,6 +16,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests.route_paths import served_paths
+
 BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
 
 
@@ -36,7 +38,7 @@ def _pattern(route_path: str) -> re.Pattern[str]:
 def test_every_path_the_backend_calls_is_served():
     import main
 
-    served = [_pattern(r.path) for r in main.app.routes if hasattr(r, "path")]
+    served = [_pattern(path) for path in served_paths(main.app)]
     called = _backend_paths()
     assert "/contract/search" in called
     missing = sorted(

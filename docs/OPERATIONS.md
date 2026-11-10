@@ -143,6 +143,18 @@ Migrations apply themselves when the backend starts. On a host set up by an
 older version, `install` also removes `.env` lines nothing reads any more
 (after a backup to `.env.bak.<timestamp>`).
 
+**MT5 sidecars upgrade separately.** They run on the MT5 VM, not in the
+Docker stack. After an upgrade that changes `mt5_sidecar/requirements.txt`
+(the November 2026 dependency upgrade did), on VM 120 for each sidecar:
+
+1. Stop its service.
+2. Update the code (`git pull` in `C:\tradingapp`, or copy the new
+   `mt5_sidecar/` folder over the old one).
+3. Run `python -m pip install -r requirements.txt` in `mt5_sidecar`.
+4. Start the service again.
+5. Check it from the app server, as in
+   [INSTALL.md § 4.2](INSTALL.md#check-it-from-the-app-server).
+
 ### Rebuild on a new host, keeping an external database
 
 Build the new app server as in [INSTALL.md step 2](INSTALL.md#2-app-server-ct-110),

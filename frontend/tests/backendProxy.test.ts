@@ -1,5 +1,5 @@
 /**
- * The frontend server's /api and /socket.io forwarding (proxy.js), against a
+ * The frontend server's /api and /socket.io forwarding (backendProxy.js), against a
  * real local backend stand-in.
  *
  * @vitest-environment node
@@ -7,8 +7,8 @@
 import http from 'http';
 import type { AddressInfo } from 'net';
 import { afterEach, describe, expect, it } from 'vitest';
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { createBackendProxy, isBackendPath } = require('../proxy.js');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { createBackendProxy, isBackendPath } = require('../backendProxy.js');
 
 const servers: http.Server[] = [];
 const sockets = new Set<import('net').Socket>();

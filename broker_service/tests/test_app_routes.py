@@ -11,6 +11,7 @@ checked (conftest defaults IB_HOST so the import succeeds).
 from __future__ import annotations
 
 import main
+from tests.route_paths import served_paths
 
 # Every business path the service is expected to expose, grouped by module.
 EXPECTED_PATHS = {
@@ -56,7 +57,7 @@ EXPECTED_PATHS = {
 
 
 def _registered_paths() -> set[str]:
-    return {route.path for route in main.app.routes}
+    return served_paths(main.app)
 
 
 def test_all_expected_routes_are_registered():

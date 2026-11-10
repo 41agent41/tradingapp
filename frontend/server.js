@@ -1,6 +1,6 @@
 /**
  * Serves the app and forwards `/api` and `/socket.io` to the backend on the
- * same address (see proxy.js), so the page never needs the backend's URL.
+ * same address (see backendProxy.js), so the page never needs the backend's URL.
  *
  *   node server.js          production (after `next build`)
  *   node server.js --dev    development, with hot reload
@@ -10,7 +10,7 @@
  */
 const http = require('http');
 const next = require('next');
-const { createBackendProxy } = require('./proxy');
+const { createBackendProxy } = require('./backendProxy');
 
 const dev = process.argv.includes('--dev');
 const hostname = process.env.HOST || '0.0.0.0';
