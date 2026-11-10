@@ -248,18 +248,14 @@ END $$;
 -- DATA RETENTION POLICIES (TIMESCALEDB FEATURE)
 -- ==============================================
 
--- Set up automated data retention policies for raw data (only if not exists)
+-- Bars (candlestick_data) have no TimescaleDB retention policy: a policy drops
+-- whole chunks by age and cannot honour a collection entry's history_start, so
+-- it deleted the deep history kept for backtests. Bars are removed only by the
+-- app's own cleanup (marketDataService.cleanOldData), which keeps every bar from
+-- an entry's history_start on. Migration 004 removes the policy from databases
+-- built before this change.
 DO $$
 BEGIN
-    -- Add retention policy for candlestick_data if not exists
-    IF NOT EXISTS (
-        SELECT 1 FROM timescaledb_information.jobs 
-        WHERE proc_name = 'policy_retention' 
-        AND hypertable_name = 'candlestick_data'
-    ) THEN
-        PERFORM add_retention_policy('candlestick_data', INTERVAL '2 years');
-    END IF;
-    
     -- Add retention policy for tick_data if not exists
     IF NOT EXISTS (
         SELECT 1 FROM timescaledb_information.jobs 

@@ -812,11 +812,13 @@ On **Settings > Schedulers and data**:
 1. In the data collection table, add an entry per instrument and timeframe:
    the broker, the symbol, the timeframe, how often to collect, and how many
    days of bars to keep.
-2. For backtests, set **History from** on an entry, up to two years back. The
-   scheduler then also walks back to that date, 20,000 bars at a time and up
-   to five chunks per entry per pass, so a year of 5-minute bars arrives in
-   two passes. The History column shows how far it has got. Bars from the
-   history start on are kept whatever the entry's retention.
+2. For backtests, set **History from** on an entry, as far back as the broker
+   has bars (the form accepts up to 30 years). The scheduler then also walks
+   back to that date, 20,000 bars at a time and up to five chunks per entry
+   per pass, so a year of 5-minute bars arrives in two passes. The History
+   column shows how far it has got. Bars from the history start on are kept
+   whatever the entry's retention. A year of 5-minute FX bars is about
+   75,000 rows, roughly 10 MB, per instrument.
 3. Turn on the backfill scheduler (`BACKFILL_ENABLED`). It is off by default
    because it calls brokers on a timer. It starts without a restart.
 

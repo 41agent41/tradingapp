@@ -269,8 +269,9 @@ topped up and pruned on its own:
   `GET /api/market-data/database/stats`.
 - **Retention cleanup with real counts.** `POST /api/market-data/database/clean`
   deletes bars older than each row's `retention_days` and reports the
-  actual number removed (per config). This complements TimescaleDB's own
-  chunk-dropping retention policy.
+  actual number removed (per config). Bars from an entry's history start on
+  are always kept. This is the only thing that deletes bars: TimescaleDB has
+  no retention policy on them (it would drop deep history by age).
 
 The "Getting started" checklist on the Settings page counts this step done
 once at least one entry is collected and the backfill scheduler is on.
@@ -803,7 +804,8 @@ Cache health surfaces in `/api/health` under `services.cache`. Turn
   the broker only for what is missing, so repeat loads are fast and avoid
   broker rate limits.
 - **TimescaleDB.** Bars and ticks live in hypertables (time-chunked), with a
-  daily continuous aggregate and retention policies that drop old chunks.
+  daily continuous aggregate. Ticks are dropped after 30 days; bars are kept
+  until the app's own retention cleanup removes them.
 - **Redis cache.** The busiest read endpoints go through a read-through
   cache that degrades to a miss when Redis is down.
 - **Streaming, not polling.** Live ticks are pushed over Socket.IO, with one
@@ -882,6 +884,9 @@ Cache health surfaces in `/api/health` under `services.cache`. Turn
 Not yet implemented. Design records for the larger pieces are in
 [`plans/`](plans/); deferred decisions are registered in
 [`FUTURE_DECISION_POINTS.md`](plans/FUTURE_DECISION_POINTS.md).
+The current review, with every planned enhancement in priority order and
+which model can do each, is
+[`ENHANCEMENT_PLAN.md`](plans/ENHANCEMENT_PLAN.md).
 
 ### Known gaps in what ships
 

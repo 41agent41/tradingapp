@@ -235,7 +235,7 @@ What the schema holds, in short (read the files for the full list):
 | Object | Notes |
 |---|---|
 | `contracts` | One row per resolved instrument |
-| `candlestick_data` | OHLCV bars; hypertable, 1-day chunks, dropped after 2 years |
+| `candlestick_data` | OHLCV bars; hypertable, 1-day chunks; no retention policy, only `cleanOldData` deletes, and never from an entry's `history_start` on |
 | `tick_data` | Ticks; hypertable, 1-hour chunks, dropped after 30 days |
 | `daily_candlestick_data` | Continuous aggregate, refreshed hourly over the last 3 days |
 | `data_collection_config` | The Settings page's collection table, with `history_start` and progress |

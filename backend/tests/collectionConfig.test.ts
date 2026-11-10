@@ -69,8 +69,8 @@ describe('CollectionConfigRepository.add', () => {
       /past/,
     ],
     [
-      { broker: 'oanda', symbol: 'EUR_USD', timeframe: '5min', history_start: '2000-01-01' },
-      /730 days/,
+      { broker: 'oanda', symbol: 'EUR_USD', timeframe: '5min', history_start: '1980-01-01' },
+      /30 years/,
     ],
   ])('refuses %j', async (input, message) => {
     const { repo, contracts } = repoWith();
@@ -92,6 +92,19 @@ describe('history_start', () => {
     });
     const insert = query.mock.calls.find(([sql]) => sql.includes('INSERT'));
     expect(insert?.[1]?.slice(-2)).toEqual([true, recent]);
+  });
+
+  it('may reach back more than two years, since bars are kept from it on', async () => {
+    const { repo, query } = repoWith();
+    const tenYears = new Date(Date.now() - 3650 * 86_400_000).toISOString().slice(0, 10);
+    await repo.add({
+      broker: 'oanda',
+      symbol: 'EUR_USD',
+      timeframe: '5min',
+      history_start: tenYears,
+    });
+    const insert = query.mock.calls.find(([sql]) => sql.includes('INSERT'));
+    expect(insert?.[1]?.slice(-1)).toEqual([tenYears]);
   });
 
   it('is cleared by an empty value and left alone when absent', async () => {

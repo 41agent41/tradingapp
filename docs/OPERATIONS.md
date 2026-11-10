@@ -271,11 +271,16 @@ is [INSTALL.md step 5](INSTALL.md#5-market-data).
   chunks of about 20,000 bars, up to five per entry per pass. OANDA and Alpaca
   requests are paged past their per-request limits; MT5 answers a date range
   in one request. The History column shows progress.
-- TimescaleDB drops `candlestick_data` chunks older than 2 years and
-  `tick_data` older than 30 days. `POST /api/market-data/database/clean`
-  deletes bars older than each entry's retention (run it from cron with an
-  API token for tighter limits); bars from an entry's history start on are
-  kept.
+- TimescaleDB drops `tick_data` older than 30 days. Bars have no TimescaleDB
+  retention policy. `POST /api/market-data/database/clean` is the only thing
+  that deletes bars: it removes bars older than each entry's retention (run
+  it from cron with an API token), and always keeps bars from an entry's
+  history start on.
+- Upgrading from a version before migration `004_keep_bar_history`: the
+  upgrade removes the old 2-year policy and, for every entry whose history
+  start is more than two years back, resets its history cursor so the next
+  backfill passes re-collect any bars the policy dropped. Watch the History
+  column; nothing else is needed.
 
 Check it:
 
