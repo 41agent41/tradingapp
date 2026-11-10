@@ -4,13 +4,17 @@
  * Sits between the IB service (which publishes ticks to Redis) and the
  * Socket.IO clients (which subscribe to per-symbol updates):
  *
- *      broker_service ──redis.publish──▶ marketdata:tick:<SYMBOL>
+ *      broker_service ──redis.publish──▶ marketdata:tick:<platform>:<account>:<SYMBOL>
  *                                            │
  *                                            ▼
  *                       StreamingBridge.handleMessage
  *                                            │
  *                                            ▼
- *               io.to('market-data:<SYMBOL>').emit('market-data-update', ...)
+ *      io.to('market-data:<platform>:<account>:<SYMBOL>').emit('market-data-update', ...)
+ *
+ * A stream belongs to one broker connection, so the same symbol can be
+ * charted from two firms at once (docs/plans/E-05-live-recorder.md, D3). A
+ * chart that names no connection gets the one the broker service chose.
  *
  * The bridge owns:
  *
@@ -55,6 +59,10 @@ const STATUS_EVENT = 'market-data-status';
 
 export interface TickPayload {
   symbol: string;
+  /** The connection the tick came from. */
+  platform?: string;
+  account?: string;
+  source?: string;
   type: 'tick';
   tick_type: string;
   tick_type_code: number;
@@ -64,10 +72,36 @@ export interface TickPayload {
   timestamp: number;
 }
 
+/**
+ * One stream as charts asked for it: a symbol on a named connection, or on
+ * "whichever the broker priority gives" (no source). Keyed by `requestKey`.
+ */
 interface SymbolState {
+  symbol: string;
   refCount: number;
-  /** Sockets that currently hold a reference to this symbol. */
+  /** Sockets that currently hold a reference to this stream. */
   sockets: Set<string>;
+  /** The connection the broker service answered with. */
+  platform: string;
+  account: string;
+  /** Settles when the broker service has answered the first subscribe. */
+  ready: Promise<void>;
+}
+
+export interface StreamSubscription {
+  symbol: string;
+  platform: string;
+  account: string;
+  room: string;
+  refCount: number;
+}
+
+function requestKey(symbol: string, source?: string, account?: string): string {
+  return `${source ?? ''}|${account ?? ''}|${symbol}`;
+}
+
+export function streamRoom(platform: string, account: string, symbol: string): string {
+  return `${ROOM_PREFIX}${platform}:${account}:${symbol}`;
 }
 
 /** What a chart asks to stream: the symbol and, optionally, its connection. */
@@ -87,20 +121,24 @@ function connectionPart(value: unknown): string | undefined {
   return typeof value === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(value) ? value : undefined;
 }
 
+/** Which connection the broker service started (or shared) the stream on. */
+type StreamAnswer = { source?: string; account?: string } | void;
+
 interface IBClientLike {
-  subscribe(payload: StreamRequest): Promise<void>;
-  unsubscribe(payload: { symbol: string }): Promise<void>;
+  subscribe(payload: StreamRequest): Promise<StreamAnswer>;
+  unsubscribe(payload: { symbol: string; source?: string; account?: string }): Promise<void>;
 }
 
 /** HTTP implementation that calls into the IB service. */
 class HttpIBClient implements IBClientLike {
-  async subscribe(payload: StreamRequest): Promise<void> {
-    await axios.post(`${BROKER_SERVICE_URL}/market-data/stream/subscribe`, payload, {
+  async subscribe(payload: StreamRequest): Promise<StreamAnswer> {
+    const res = await axios.post(`${BROKER_SERVICE_URL}/market-data/stream/subscribe`, payload, {
       timeout: 5000,
     });
+    return res?.data ?? undefined;
   }
 
-  async unsubscribe(payload: { symbol: string }): Promise<void> {
+  async unsubscribe(payload: { symbol: string; source?: string; account?: string }): Promise<void> {
     await axios.post(`${BROKER_SERVICE_URL}/market-data/stream/unsubscribe`, payload, {
       timeout: 5000,
     });
@@ -137,9 +175,9 @@ export class StreamingBridge {
   private connecting: Promise<void> | null = null;
   private lastError: string | null = null;
 
-  /** Per-symbol state, keyed by uppercase symbol. */
+  /** Per-stream state, keyed by `requestKey`. */
   private readonly bySymbol: Map<string, SymbolState> = new Map();
-  /** Per-socket symbol set, so disconnects can clean up cleanly. */
+  /** Per-socket set of request keys, so disconnects can clean up cleanly. */
   private readonly bySocket: Map<string, Set<string>> = new Map();
 
   /** Diagnostics. */
@@ -214,103 +252,142 @@ export class StreamingBridge {
   // -------------------------------------------------------------------
   // Subscription API — driven by Socket.IO handlers in index.ts
   // -------------------------------------------------------------------
-  async subscribe(
-    socketId: string,
-    payload: StreamRequest
-  ): Promise<{ symbol: string; room: string; refCount: number }> {
+  async subscribe(socketId: string, payload: StreamRequest): Promise<StreamSubscription> {
     const symbol = payload.symbol?.toUpperCase().trim();
     if (!symbol) throw new Error('symbol is required');
+    const source = connectionPart(payload.source);
+    const account = connectionPart(payload.account);
+    const key = requestKey(symbol, source, account);
 
     const sockets = this.bySocket.get(socketId) ?? new Set<string>();
     this.bySocket.set(socketId, sockets);
 
-    let state = this.bySymbol.get(symbol);
-    const first = !state;
+    let state = this.bySymbol.get(key);
     if (!state) {
-      state = { refCount: 0, sockets: new Set<string>() };
-      this.bySymbol.set(symbol, state);
-    }
-
-    // Skip duplicate subscribes from the same socket — idempotent.
-    if (!state.sockets.has(socketId)) {
-      state.sockets.add(socketId);
-      state.refCount++;
-      sockets.add(symbol);
-    }
-
-    if (first) {
-      try {
-        await this.ibClient.subscribe({
+      const created: SymbolState = {
+        symbol,
+        refCount: 0,
+        sockets: new Set<string>(),
+        platform: source ?? '',
+        account: account ?? '',
+        ready: Promise.resolve(),
+      };
+      created.ready = this.ibClient
+        .subscribe({
           symbol,
           secType: payload.secType,
           exchange: payload.exchange,
           currency: payload.currency,
-          // The first chart on a symbol picks its connection; later charts
-          // share that stream until it stops (one stream per symbol, see
-          // docs/plans/E-05-live-recorder.md D3).
-          source: connectionPart(payload.source),
-          account: connectionPart(payload.account),
+          source,
+          account,
+        })
+        .then((answer) => {
+          created.platform = connectionPart(answer?.source) ?? source ?? 'ib';
+          created.account = connectionPart(answer?.account) ?? account ?? 'default';
         });
-      } catch (err) {
-        // Roll back the bookkeeping if the IB call fails.
+      state = created;
+      this.bySymbol.set(key, state);
+    }
+
+    // Skip duplicate subscribes from the same socket — idempotent.
+    const added = !state.sockets.has(socketId);
+    if (added) {
+      state.sockets.add(socketId);
+      state.refCount++;
+      sockets.add(key);
+    }
+
+    try {
+      await state.ready;
+    } catch (err) {
+      // The broker service refused: nobody holds this stream.
+      if (added) {
         state.sockets.delete(socketId);
         state.refCount = Math.max(0, state.refCount - 1);
-        sockets.delete(symbol);
-        if (state.refCount === 0) this.bySymbol.delete(symbol);
-        throw err;
+        sockets.delete(key);
       }
+      if (this.bySymbol.get(key) === state) this.bySymbol.delete(key);
+      throw err;
     }
 
     return {
       symbol,
-      room: ROOM_PREFIX + symbol,
+      platform: state.platform,
+      account: state.account,
+      room: streamRoom(state.platform, state.account, symbol),
       refCount: state.refCount,
     };
   }
 
+  /**
+   * Drops the socket's reference. `room` is the room to leave, or null when
+   * the socket holds another stream that resolved to the same connection
+   * (one asked for by name, one by priority) and so still needs it.
+   */
   async unsubscribe(
     socketId: string,
-    payload: { symbol: string }
-  ): Promise<{ symbol: string; refCount: number }> {
+    payload: { symbol: string; source?: string; account?: string }
+  ): Promise<{ symbol: string; refCount: number; room: string | null }> {
     const symbol = payload.symbol?.toUpperCase().trim();
     if (!symbol) throw new Error('symbol is required');
+    return this.release(
+      socketId,
+      requestKey(symbol, connectionPart(payload.source), connectionPart(payload.account)),
+      symbol
+    );
+  }
 
-    const state = this.bySymbol.get(symbol);
+  private async release(
+    socketId: string,
+    key: string,
+    symbol: string
+  ): Promise<{ symbol: string; refCount: number; room: string | null }> {
+    const state = this.bySymbol.get(key);
     if (!state || !state.sockets.has(socketId)) {
-      return { symbol, refCount: state?.refCount ?? 0 };
+      return { symbol, refCount: state?.refCount ?? 0, room: null };
     }
 
     state.sockets.delete(socketId);
     state.refCount = Math.max(0, state.refCount - 1);
-    this.bySocket.get(socketId)?.delete(symbol);
+    const held = this.bySocket.get(socketId);
+    held?.delete(key);
+
+    const room = streamRoom(state.platform, state.account, symbol);
+    const stillNeeded = Array.from(held ?? []).some((other) => {
+      const o = this.bySymbol.get(other);
+      return !!o && streamRoom(o.platform, o.account, o.symbol) === room;
+    });
 
     if (state.refCount === 0) {
-      this.bySymbol.delete(symbol);
+      this.bySymbol.delete(key);
       try {
-        await this.ibClient.unsubscribe({ symbol });
+        await this.ibClient.unsubscribe({
+          symbol,
+          source: state.platform,
+          account: state.account,
+        });
       } catch (err) {
-        // Keep the room torn down even if the IB call fails — the IB
-        // service has its own refcount and will catch up on the next
-        // healthcheck.
+        // Keep the room torn down even if the call fails — the broker
+        // service has its own refcount.
         logger.warn({ symbol, err: String(err) }, 'broker_service unsubscribe failed');
       }
     }
 
-    return { symbol, refCount: state.refCount };
+    return { symbol, refCount: state.refCount, room: stillNeeded ? null : room };
   }
 
   /** Called from Socket.IO's `disconnect` event. Drops every sub the
    * socket held. Safe to call for unknown sockets. */
   async releaseSocket(socketId: string): Promise<void> {
-    const symbols = this.bySocket.get(socketId);
-    if (!symbols || symbols.size === 0) {
+    const keys = this.bySocket.get(socketId);
+    if (!keys || keys.size === 0) {
       this.bySocket.delete(socketId);
       return;
     }
-    this.bySocket.delete(socketId);
-    for (const symbol of Array.from(symbols)) {
+    for (const key of Array.from(keys)) {
+      const symbol = this.bySymbol.get(key)?.symbol ?? '';
       try {
-        await this.unsubscribe(socketId, { symbol });
+        await this.release(socketId, key, symbol);
       } catch (err) {
         logger.warn(
           { socket_id: socketId, symbol, err: String(err) },
@@ -318,6 +395,7 @@ export class StreamingBridge {
         );
       }
     }
+    this.bySocket.delete(socketId);
   }
 
   // -------------------------------------------------------------------
@@ -338,17 +416,21 @@ export class StreamingBridge {
       return;
     }
 
-    const expectedChannel = channel.startsWith('marketdata:tick:') ? channel : null;
+    // The payload names its own connection and symbol. The channel is not
+    // parsed: a symbol may contain a colon (BHP:ASX).
+    void channel;
     const symbol =
-      (payload && typeof payload.symbol === 'string' && payload.symbol.toUpperCase()) ||
-      (expectedChannel ? expectedChannel.slice('marketdata:tick:'.length).toUpperCase() : null);
-
+      payload && typeof payload.symbol === 'string' ? payload.symbol.toUpperCase() : null;
     if (!symbol) {
       this.ticksDropped++;
       return;
     }
 
-    const room = ROOM_PREFIX + symbol;
+    const room = streamRoom(
+      payload.platform ?? payload.source ?? 'ib',
+      payload.account ?? 'default',
+      symbol
+    );
     if (this.io.sockets.adapter.rooms.get(room) === undefined) {
       // Nobody listening — no point in emitting.
       this.ticksDropped++;
@@ -363,7 +445,15 @@ export class StreamingBridge {
     try {
       const payload = JSON.parse(message) as { event?: string; symbol?: string };
       if (typeof payload?.symbol === 'string') {
-        this.io.to(ROOM_PREFIX + payload.symbol.toUpperCase()).emit(STATUS_EVENT, payload);
+        // A status names only the symbol: tell every stream of it.
+        const symbol = payload.symbol.toUpperCase();
+        const rooms = new Set<string>();
+        for (const state of this.bySymbol.values()) {
+          if (state.symbol === symbol && state.platform) {
+            rooms.add(streamRoom(state.platform, state.account, symbol));
+          }
+        }
+        for (const room of rooms) this.io.to(room).emit(STATUS_EVENT, payload);
       } else {
         this.io.emit(STATUS_EVENT, payload);
       }
@@ -376,9 +466,19 @@ export class StreamingBridge {
   // Diagnostics
   // -------------------------------------------------------------------
   status() {
-    const subs: Array<{ symbol: string; refCount: number; sockets: number }> = [];
-    for (const [symbol, state] of this.bySymbol.entries()) {
-      subs.push({ symbol, refCount: state.refCount, sockets: state.sockets.size });
+    const subs: Array<{
+      symbol: string;
+      connection: string;
+      refCount: number;
+      sockets: number;
+    }> = [];
+    for (const state of this.bySymbol.values()) {
+      subs.push({
+        symbol: state.symbol,
+        connection: `${state.platform}:${state.account}`,
+        refCount: state.refCount,
+        sockets: state.sockets.size,
+      });
     }
     return {
       enabled: streamingEnabled(),

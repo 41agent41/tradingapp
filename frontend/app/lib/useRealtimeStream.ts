@@ -89,6 +89,8 @@ export function useRealtimeStream(opts: UseRealtimeStreamOptions): UseRealtimeSt
   const subscribedSymbolRef = useRef<string | null>(null);
   /** Symbol, source and account of the live subscription. */
   const subscribedKeyRef = useRef<string | null>(null);
+  /** The connection asked for, sent again on unsubscribe so the server drops the same stream. */
+  const subscribedConnRef = useRef<{ source?: string; account?: string }>({});
 
   const [connected, setConnected] = useState(false);
   const [latestTick, setLatestTick] = useState<TickPayload | null>(null);
@@ -154,7 +156,7 @@ export function useRealtimeStream(opts: UseRealtimeStreamOptions): UseRealtimeSt
       // If we just lost a symbol, also drop the active subscription.
       const old = subscribedSymbolRef.current;
       if (socket && old) {
-        socket.emit('unsubscribe-market-data', { symbol: old });
+        socket.emit('unsubscribe-market-data', { symbol: old, ...subscribedConnRef.current });
         subscribedSymbolRef.current = null;
         setLatestTick(null);
       }
@@ -173,7 +175,7 @@ export function useRealtimeStream(opts: UseRealtimeStreamOptions): UseRealtimeSt
 
     const previous = subscribedSymbolRef.current;
     if (previous) {
-      socket.emit('unsubscribe-market-data', { symbol: previous });
+      socket.emit('unsubscribe-market-data', { symbol: previous, ...subscribedConnRef.current });
     }
 
     socket.emit('subscribe-market-data', {
@@ -186,6 +188,7 @@ export function useRealtimeStream(opts: UseRealtimeStreamOptions): UseRealtimeSt
     });
     subscribedSymbolRef.current = normalisedSymbol;
     subscribedKeyRef.current = key;
+    subscribedConnRef.current = { source, account };
     setLatestTick(null);
 
     return () => {
@@ -200,7 +203,8 @@ export function useRealtimeStream(opts: UseRealtimeStreamOptions): UseRealtimeSt
   const unsubscribe = () => {
     const socket = socketRef.current;
     const old = subscribedSymbolRef.current;
-    if (socket && old) socket.emit('unsubscribe-market-data', { symbol: old });
+    if (socket && old)
+      socket.emit('unsubscribe-market-data', { symbol: old, ...subscribedConnRef.current });
     subscribedSymbolRef.current = null;
     setLatestTick(null);
   };

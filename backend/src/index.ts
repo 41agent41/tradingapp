@@ -383,6 +383,8 @@ io.on('connection', (socket) => {
       socket.join(result.room);
       socket.emit('subscription-confirmed', {
         symbol: result.symbol,
+        source: result.platform,
+        account: result.account,
         timeframe,
         room: result.room,
         ref_count: result.refCount,
@@ -397,15 +399,15 @@ io.on('connection', (socket) => {
   });
 
   socket.on('unsubscribe-market-data', async (data) => {
-    const { symbol } = data || {};
+    const { symbol, source, account } = data || {};
     if (!symbol || typeof symbol !== 'string') {
       socket.emit('unsubscription-error', { error: 'symbol is required' });
       return;
     }
     console.log(`[socket ${socket.id}] unsubscribing from ${symbol}`);
     try {
-      const result = await streamingBridge.unsubscribe(socket.id, { symbol });
-      socket.leave(`market-data:${result.symbol}`);
+      const result = await streamingBridge.unsubscribe(socket.id, { symbol, source, account });
+      if (result.room) socket.leave(result.room);
       socket.emit('unsubscription-confirmed', {
         symbol: result.symbol,
         ref_count: result.refCount,
