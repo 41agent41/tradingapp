@@ -51,6 +51,9 @@ export interface UseRealtimeStreamOptions {
   secType?: string;
   exchange?: string;
   currency?: string;
+  /** Broker platform and account to stream from; omitted, the broker priority chooses. */
+  source?: string;
+  account?: string;
   /** If false, the hook does nothing — useful for tests / SSR. */
   enabled?: boolean;
 }
@@ -80,10 +83,12 @@ const STATUS_EVENT = 'market-data-status';
  * unsubscribe + re-subscribe under the hood.
  */
 export function useRealtimeStream(opts: UseRealtimeStreamOptions): UseRealtimeStreamResult {
-  const { symbol, secType, exchange, currency, enabled = true } = opts;
+  const { symbol, secType, exchange, currency, source, account, enabled = true } = opts;
 
   const socketRef = useRef<Socket | null>(null);
   const subscribedSymbolRef = useRef<string | null>(null);
+  /** Symbol, source and account of the live subscription. */
+  const subscribedKeyRef = useRef<string | null>(null);
 
   const [connected, setConnected] = useState(false);
   const [latestTick, setLatestTick] = useState<TickPayload | null>(null);
@@ -160,8 +165,11 @@ export function useRealtimeStream(opts: UseRealtimeStreamOptions): UseRealtimeSt
     // `connected` is false we'll re-run when it flips true.
     if (!connected) return;
 
-    // Already subscribed? Just refresh the latest tick state.
-    if (subscribedSymbolRef.current === normalisedSymbol) return;
+    // Already subscribed to this symbol on this connection? Nothing to do.
+    const key = `${normalisedSymbol}|${source ?? ''}|${account ?? ''}`;
+    if (subscribedSymbolRef.current === normalisedSymbol && subscribedKeyRef.current === key) {
+      return;
+    }
 
     const previous = subscribedSymbolRef.current;
     if (previous) {
@@ -173,8 +181,11 @@ export function useRealtimeStream(opts: UseRealtimeStreamOptions): UseRealtimeSt
       secType,
       exchange,
       currency,
+      source,
+      account,
     });
     subscribedSymbolRef.current = normalisedSymbol;
+    subscribedKeyRef.current = key;
     setLatestTick(null);
 
     return () => {
@@ -182,7 +193,7 @@ export function useRealtimeStream(opts: UseRealtimeStreamOptions): UseRealtimeSt
       // next subscription change, so we don't unsubscribe just because
       // React re-ran the effect.
     };
-  }, [enabled, normalisedSymbol, secType, exchange, currency, connected]);
+  }, [enabled, normalisedSymbol, secType, exchange, currency, source, account, connected]);
 
   // Imperative tear-down for callers that want to stop streaming
   // without unmounting the whole tree.

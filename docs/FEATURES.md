@@ -18,7 +18,7 @@ app in [OPERATIONS.md](OPERATIONS.md).
 1. [Currently Available](#currently-available)
    - [Market data search](#market-data-search)
    - [Historical charts](#historical-charts)
-   - [Real-time MSFT view](#real-time-msft-view)
+   - [Live chart](#live-chart)
    - [Real-time streaming pipeline](#real-time-streaming-pipeline)
    - [Technical indicators](#technical-indicators)
    - [Backtesting](#backtesting)
@@ -96,18 +96,21 @@ curves).
 - **Interactions:** zoom, pan, crosshair, auto-fit, all built into
   `lightweight-charts`.
 
-### Real-time MSFT view
+### Live chart
 
-A dedicated `/msft` page implements the `.cursorrules` brief: an MSFT chart
-that you can switch across the 5m / 15m / 30m / 1h / 4h / 8h / 1d
-timeframes with up to 12 months of history.
+The `/live` page charts any symbol on any broker connection
+(`/live?symbol=EURUSD&source=oanda&account=practice&secType=CASH`; `/msft`
+redirects to `/live?symbol=MSFT`). Pick the symbol, the connection (or "By
+broker priority"), the type and, optionally, the currency, then **Show**.
+The address holds the choice, so a chart can be bookmarked.
 
-The page now consumes a true real-time tick stream: the broker service
-calls `reqMktData` on IB Gateway and publishes every tick to Redis,
-the backend forwards each tick into a Socket.IO room, and the page's
-`useRealtimeStream` hook updates the price display as ticks arrive.
-A one-shot REST call seeds the badge before the first tick lands and
-acts as a fallback when streaming is disabled.
+History loads from the database first, then the broker. The tick stream then
+moves the last candle (`frontend/app/lib/liveCandles.ts`): it follows trades
+(`LAST`) when the feed sends them, otherwise the mid of the latest bid and
+ask, and starts a new candle when a tick falls in the next bucket. Live
+candles are drawn for 1-minute to daily timeframes; indicator lines are not
+recomputed live. One stream serves each symbol: the first chart to open a
+symbol picks its connection, and later charts share it until it stops.
 
 ### Real-time streaming pipeline
 

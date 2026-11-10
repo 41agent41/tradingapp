@@ -70,24 +70,31 @@ interface SymbolState {
   sockets: Set<string>;
 }
 
+/** What a chart asks to stream: the symbol and, optionally, its connection. */
+export type StreamRequest = {
+  symbol: string;
+  secType?: string;
+  exchange?: string;
+  currency?: string;
+  /** Broker platform; omitted, the broker service follows the priority. */
+  source?: string;
+  /** Account on that platform; omitted, its default. */
+  account?: string;
+};
+
+/** A platform or account name as the broker service accepts it, else undefined. */
+function connectionPart(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(value) ? value : undefined;
+}
+
 interface IBClientLike {
-  subscribe(payload: {
-    symbol: string;
-    secType?: string;
-    exchange?: string;
-    currency?: string;
-  }): Promise<void>;
+  subscribe(payload: StreamRequest): Promise<void>;
   unsubscribe(payload: { symbol: string }): Promise<void>;
 }
 
 /** HTTP implementation that calls into the IB service. */
 class HttpIBClient implements IBClientLike {
-  async subscribe(payload: {
-    symbol: string;
-    secType?: string;
-    exchange?: string;
-    currency?: string;
-  }): Promise<void> {
+  async subscribe(payload: StreamRequest): Promise<void> {
     await axios.post(`${BROKER_SERVICE_URL}/market-data/stream/subscribe`, payload, {
       timeout: 5000,
     });
@@ -209,7 +216,7 @@ export class StreamingBridge {
   // -------------------------------------------------------------------
   async subscribe(
     socketId: string,
-    payload: { symbol: string; secType?: string; exchange?: string; currency?: string }
+    payload: StreamRequest
   ): Promise<{ symbol: string; room: string; refCount: number }> {
     const symbol = payload.symbol?.toUpperCase().trim();
     if (!symbol) throw new Error('symbol is required');
@@ -238,6 +245,11 @@ export class StreamingBridge {
           secType: payload.secType,
           exchange: payload.exchange,
           currency: payload.currency,
+          // The first chart on a symbol picks its connection; later charts
+          // share that stream until it stops (one stream per symbol, see
+          // docs/plans/E-05-live-recorder.md D3).
+          source: connectionPart(payload.source),
+          account: connectionPart(payload.account),
         });
       } catch (err) {
         // Roll back the bookkeeping if the IB call fails.

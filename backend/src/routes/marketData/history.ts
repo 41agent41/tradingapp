@@ -64,6 +64,7 @@ router.get('/history', async (req: Request, res: Response) => {
       use_database = 'true',
       source,
       broker,
+      account,
     } = req.query as Partial<
       MarketDataQuery & {
         start_date?: string;
@@ -76,6 +77,7 @@ router.get('/history', async (req: Request, res: Response) => {
         use_database?: string;
         source?: string;
         broker?: string;
+        account?: string;
       }
     >;
     const venue = resolveBroker(source ?? broker);
@@ -175,6 +177,9 @@ router.get('/history', async (req: Request, res: Response) => {
         currency: currency,
         include_indicators: include_indicators,
         source: venue,
+        // The account on that broker; the broker service uses its default
+        // when it is omitted or not a valid name.
+        account: account && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(account) ? account : undefined,
       },
       timeout: 60000, // 60 second timeout for historical data
       headers: {

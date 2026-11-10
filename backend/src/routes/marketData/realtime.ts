@@ -16,6 +16,12 @@ const router = express.Router();
 router.get('/realtime', async (req: Request, res: Response) => {
   try {
     const { symbol, account_mode } = req.query;
+    // Optional connection: the broker platform and its account. Anything
+    // that is not a plain name is dropped, so the broker priority decides.
+    const name = (v: unknown) =>
+      typeof v === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(v) ? v : undefined;
+    const source = name(req.query.source);
+    const account = name(req.query.account);
 
     // Validate required parameters
     if (!symbol) {
@@ -35,10 +41,16 @@ router.get('/realtime', async (req: Request, res: Response) => {
     // Short-TTL cache so we don't hammer IB Gateway when many clients
     // poll the same quote at once. A cache miss falls straight through
     // to the IB service call.
-    const key = cacheKey(['rt', String(symbol), String(account_mode || '')]);
+    const key = cacheKey([
+      'rt',
+      String(symbol),
+      String(account_mode || ''),
+      source ?? '',
+      account ?? '',
+    ]);
     const data = await cacheService.wrap(key, realtimeCacheTtl(), async () => {
       const response = await axios.get(`${BROKER_SERVICE_URL}/market-data/realtime`, {
-        params: { symbol, account_mode },
+        params: { symbol, account_mode, source, account },
         timeout: 10000,
         headers: { Connection: 'close' },
       });

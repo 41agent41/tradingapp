@@ -363,7 +363,7 @@ io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
 
   socket.on('subscribe-market-data', async (data) => {
-    const { symbol, secType, exchange, currency, timeframe } = data || {};
+    const { symbol, secType, exchange, currency, timeframe, source, account } = data || {};
     if (!symbol || typeof symbol !== 'string') {
       socket.emit('subscription-error', { error: 'symbol is required' });
       return;
@@ -377,6 +377,8 @@ io.on('connection', (socket) => {
         secType,
         exchange,
         currency,
+        source,
+        account,
       });
       socket.join(result.room);
       socket.emit('subscription-confirmed', {

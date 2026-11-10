@@ -71,6 +71,12 @@ export interface ChartProps {
   height?: number;
   /** Disable user interactions (pan / zoom). Useful for snapshots. */
   readOnly?: boolean;
+  /**
+   * The candle being formed from live ticks (lib/liveCandles.ts). It updates
+   * the last candle, or adds one after it, without redrawing `data`. Ignored
+   * when it is older than the last bar of `data`.
+   */
+  liveBar?: ChartBar | null;
 }
 
 const DEFAULT_HEIGHT = 400;
@@ -157,6 +163,7 @@ export default function Chart({
   showVolume = true,
   height = DEFAULT_HEIGHT,
   readOnly = false,
+  liveBar = null,
 }: ChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -165,6 +172,8 @@ export default function Chart({
   const indicatorSeriesRef = useRef<Map<string, ISeriesApi<'Line'>>>(new Map());
   const layoutRef = useRef('');
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  /** Time of the last bar drawn, so a stale live bar is never sent. */
+  const lastTimeRef = useRef<number | null>(null);
 
   // Create the chart once on mount.
   useEffect(() => {
@@ -231,6 +240,7 @@ export default function Chart({
 
     const candles = sortAndDedupe(data.map(toCandle));
     candleSeriesRef.current.setData(candles);
+    lastTimeRef.current = candles.length ? Number(candles[candles.length - 1].time) : null;
 
     if (volumeSeriesRef.current) {
       volumeSeriesRef.current.setData(sortAndDedupe(data.map(toVolume)));
@@ -303,6 +313,17 @@ export default function Chart({
       chart.panes().forEach((p, i) => p.setStretchFactor(i === 0 ? PRICE_PANE_STRETCH : 1));
     }
   }, [indicators, data]);
+
+  // Move the forming candle. `update` replaces the last bar when the time
+  // matches and appends otherwise; an older time would throw, so skip it.
+  useEffect(() => {
+    const candles = candleSeriesRef.current;
+    if (!candles || !liveBar || !Number.isFinite(liveBar.time)) return;
+    if (lastTimeRef.current !== null && liveBar.time < lastTimeRef.current) return;
+    candles.update(toCandle(liveBar));
+    volumeSeriesRef.current?.update(toVolume(liveBar));
+    lastTimeRef.current = liveBar.time;
+  }, [liveBar]);
 
   // Reconcile candle-series markers (strategy signals).
   useEffect(() => {

@@ -79,7 +79,7 @@ features are in [`docs/plans/`](plans/).
 | `backend/src/index.ts` | App entry; `routes/`, `services/`, `middleware/`, `config/` (settings registry), `cli/` (migrate, importSettings, forgetSecrets) |
 | `backend/src/database/` | `timescaledb-schema.sql` (baseline), `migrations/`, `archive/` (old SQL, not used) |
 | `backend/tests/` | Jest; `*.db.test.ts` need a real database |
-| `frontend/app/` | Pages (`settings`, `systematic`, `backtest`, `trade`, `historical`, `download`, `watchlist`, `account`, `msft`), `components/`, `lib/` |
+| `frontend/app/` | Pages (`settings`, `systematic`, `backtest`, `trade`, `historical`, `download`, `watchlist`, `account`, `live`; `msft` redirects to `live`), `components/`, `lib/` |
 | `broker_service/` | `main.py`, `routes/`, adapters, `connections.py` (manifest and priority), `managed.py`, `rule_strategy.py`, `backtesting.py`, `jesse/`, `jesse_strategies/`, `templates/`, `tests/` |
 | `mt5_sidecar/` | `server.py`, `terminal.py`, `deploy/` (Task Scheduler and systemd launchers), `tests/` |
 | `e2e/` | End-to-end paper run against simulated MT5 terminals |
