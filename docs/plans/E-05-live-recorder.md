@@ -1,6 +1,10 @@
 # Design record: live recorder and tick storage (E-05, E-06)
 
-Status: **proposed**, waiting for Sean's sign-off. Nothing below is built yet.
+Status: **proposed, revision 2**, waiting for Sean's sign-off. Nothing below
+is built yet. Revision 2 changed four things after a second review: bars
+follow each broker's own price basis (D5), database writes are exactly-once
+through a stored cursor (D7), live channels become per connection (D3), and
+unchanged quotes are not recorded (D2).
 Parent plan: [ENHANCEMENT_PLAN.md](ENHANCEMENT_PLAN.md), "Streaming, storage,
 replay and backtesting", steps 2 to 5.
 
@@ -45,9 +49,9 @@ Each decision gives the choice made, and the main alternative turned down.
   It defaults to 200000 (about 40 MB of Redis memory, and about 5 hours at 10
   quotes a second). It is the window a stopped backend can catch up from.
 
-Why: a consumer group gives at-least-once delivery across backend restarts,
-which pub/sub cannot. One stream rather than one per symbol keeps to a single
-`XREADGROUP` call and a single consumer group. Rejected: Kafka or NATS. A new
+Why: a stream keeps entries until they are trimmed, so a restarted backend
+can read what it missed, which pub/sub cannot give. One stream rather than
+one per symbol means one read call and one cursor (D7). Rejected: Kafka or NATS. A new
 service on the LAN host is not justified at this volume.
 
 ### D2. The stream entry is a quote snapshot, not a tick type
@@ -61,6 +65,7 @@ Each entry has these fields, all strings, as Redis stores them:
 | `symbol` | Upper case, as subscribed. |
 | `bid`, `ask`, `last` | Latest values; empty when the broker has not sent one. |
 | `last_size` | Size of the last trade; empty when unknown. |
+| `basis` | `mid`, `bid` or `last`: the price the broker builds its own bars from (D5). |
 | `ts` | Event time in epoch milliseconds: the broker's own quote time when the adapter gives one (OANDA `time`, cTrader spot timestamp), otherwise the receive time. |
 | `recv_ts` | Receive time in the broker service, epoch milliseconds. |
 
@@ -70,16 +75,26 @@ Each entry has these fields, all strings, as Redis stores them:
 - Venue workers already have bid, ask and last together, so they add one
   snapshot per update.
 
+- A snapshot whose bid, ask and last all equal the previous one for that
+  subscription is not added. A broker polled every 2 seconds would otherwise
+  fill the stream and the tick table with repeats. A minute with no change
+  then has no bar, which is also what brokers' own histories do.
+
 Why: bars and stored ticks both need bid and ask at the same instant. Merging
 per-type messages in the backend would repeat work for every broker.
 
 ### D3. Subscriptions: per connection, and held, not counted, by the recorder
 
 - Venue subscriptions become keyed by `(platform, account, symbol)` instead of
-  symbol alone, in `VenueStreamer` and in `StreamingManager` (IB). The
-  pub/sub channel stays `marketdata:tick:<SYMBOL>`. When two connections
-  stream the same symbol, both publish on it. The chart already follows only
-  its own connection's symbol, and E-21 makes the channel per connection.
+  symbol alone, in `VenueStreamer` and in `StreamingManager` (IB).
+- The pub/sub channel becomes
+  `marketdata:tick:<platform>:<account>:<SYMBOL>`, and the tick payload gains
+  `platform` and `account`. `streamingBridge.ts` keys its reference counts
+  and its Socket.IO rooms the same way (`market-data:<platform>:<account>:<SYMBOL>`),
+  and the subscribe answer tells the chart which connection it got when it
+  asked for "by broker priority". This removes today's limit, noted on the
+  live chart shipped in E-21, that the first chart on a symbol decides the
+  connection for every later one.
 - New endpoint `PUT /market-data/stream/recorded` takes the full list of
   recorded instruments: `[{platform, account, symbol, secType, exchange,
   currency}]`. The broker service replaces its recorded set with that list,
@@ -117,47 +132,64 @@ stream.
 
 ### D5. Building 1-minute bars in the backend
 
-- **Price:** mid, `(bid + ask) / 2` when both are present. Otherwise `last`.
-  An entry with neither is skipped. US stocks on Alpaca and IB have bid and
-  ask, so they get mid bars too. Trade-price bars come with broker bars in
-  E-13 and E-18.
+- **Price basis follows the broker's own history.** The nightly reconcile
+  (E-07) overwrites stream bars with broker bars, so a stream bar should be
+  built the way the broker builds its own. Otherwise every bar changes
+  overnight and a backtest disagrees with what the chart showed. Each
+  adapter declares a `bar_basis`, which the stream entry carries as `basis`:
+
+  | Platform | History today (verified) | `bar_basis` |
+  | --- | --- | --- |
+  | OANDA | `price=M` candles (`oanda_adapter.py`) | `mid` |
+  | IG | mid of bid and ask per price point (`ig_adapter.py` `_mid`) | `mid` |
+  | cTrader | trendbars, which Spotware builds from bid | `bid` |
+  | MT5 | `copy_rates`, which MetaTrader builds from bid | `bid` |
+  | Alpaca | `/v2/stocks/{symbol}/bars`, built from trades | `last` |
+  | IB | `reqHistoricalData` with `TRADES` (`routes/market_data.py`) | `last` |
+
+  The bar price is that field of the snapshot. With `mid`, both bid and ask
+  must be present. An entry without the needed field is skipped for bars
+  (and still stored as a tick).
 - **Bucket:** the UTC minute of `ts`.
 - **Fields:**
   - `open` is the first price in the minute, `high` the highest, `low` the
     lowest, and `close` the last.
-  - `count` is the number of quotes.
-  - `volume` is the sum of `last_size` when the broker gives sizes, else 0.
+  - `count` is the number of entries used.
+  - `volume` is the sum of `last_size` for `last`-basis bars when the broker
+    gives sizes, else 0.
   - `timeframe` is `1min`, the existing name.
-- **Writing:** the forming bar of every recorded contract is upserted every
-  5 seconds, and once more when the minute ends. A crash loses at most about
-  5 seconds, and the next flush covers it again because entries are
-  acknowledged only after they are written (D7).
-- **Merge rule:** the upsert merges, so a re-delivered entry cannot spoil a
-  bar:
+- **One writer, memory is the truth for open bars.** The recorder keeps each
+  contract's bars for the last 10 minutes in memory. Every 5 seconds, and
+  when a minute ends, it writes every bar that changed, in the same
+  transaction as the ticks and the cursor (D7):
 
   ```sql
   INSERT INTO candlestick_data (contract_id, timestamp, timeframe, open, high, low, close, volume, count, source)
-  VALUES (...,'1min', ..., 'stream')
+  VALUES (..., '1min', ..., 'stream')
   ON CONFLICT (contract_id, timestamp, timeframe) DO UPDATE SET
-    high   = GREATEST(candlestick_data.high, EXCLUDED.high),
-    low    = LEAST(candlestick_data.low, EXCLUDED.low),
-    close  = EXCLUDED.close,
-    volume = GREATEST(candlestick_data.volume, EXCLUDED.volume),
-    count  = GREATEST(candlestick_data.count, EXCLUDED.count)
+    open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+    close = EXCLUDED.close, volume = EXCLUDED.volume, count = EXCLUDED.count
   WHERE candlestick_data.source = 'stream';
   ```
 
-  `open` is never changed by a merge. `volume` and `count` take the larger
-  value, so replaying the same entries cannot double them.
-- **Late entries:** an entry for a minute already closed is merged by the
-  same upsert. Entries older than 10 minutes are counted and dropped,
-  because they would only make a closed bar worse.
+- **Restart:** the recorder loads the stream bars of the last 10 minutes
+  from the database into memory before it reads the stream. Because the
+  cursor (D7) makes it resume exactly after the last entry it stored, those
+  bars continue with nothing missed and nothing counted twice.
+- **Late entries:** an entry is applied in arrival order to its own minute
+  while that minute is within the 10-minute window. It can raise the high
+  or lower the low, and it sets the close only if its `ts` is not older
+  than the newest entry already in that bar. Older entries are counted as
+  `late` and dropped.
 - **Precedence:** the `WHERE` clause means a stream bar never replaces a
   broker bar. Migration 006 adds
   `source VARCHAR(8) NOT NULL DEFAULT 'broker'` to `candlestick_data`, so
   every existing bar and every backfill bar is `broker`. The backfill upsert
   changes to set `source = 'broker'` and to always overwrite, so broker
   history replaces stream bars. That is what E-07's nightly job relies on.
+  The backfill must not fetch the minute still forming, or it would freeze
+  a part-built broker bar that the stream can no longer correct. It stops
+  at the last completed minute.
 
 Why in the backend: only the backend writes to the database, and the plan
 keeps that split. Rejected: building bars in the broker service, which would
@@ -181,11 +213,10 @@ need a database writer there.
   CREATE INDEX ON quote_ticks (contract_id, ts DESC);
   ```
 
-  It has no unique key, because the same instant can carry two quotes. A
-  re-delivered entry can therefore store a duplicate row. Replay and
-  backtests tolerate that, and it happens only after a crash.
-- Writes are batched, with one multi-row `INSERT` per second or per 1000
-  rows, whichever comes first.
+  It has no unique key, because the same instant can carry two quotes.
+  Duplicates are prevented by the cursor in D7, not by a constraint.
+- Writes go in the recorder's flush transaction (D7), as one multi-row
+  `INSERT`. A flush also happens early when 5000 rows are waiting.
 - **Compression after 1 day:**
   `ALTER TABLE quote_ticks SET (timescaledb.compress, timescaledb.compress_segmentby = 'contract_id', timescaledb.compress_orderby = 'ts')`,
   then `add_compression_policy('quote_ticks', INTERVAL '1 day')`.
@@ -210,23 +241,40 @@ need a database writer there.
   backfill, the fallback is to compress after 30 days. That is a one-line
   change to the policy.
 
-### D7. Reading the stream: one consumer, acknowledged after the write
+### D7. Reading the stream: exactly-once into the database
 
-- Consumer group `recorder` on `marketdata:quotes`. It is created at start
-  with `XGROUP CREATE marketdata:quotes recorder $ MKSTREAM`, and the
-  `BUSYGROUP` reply is ignored. The consumer name is `backend`, because one
-  backend runs per install.
-- On start the recorder first reads its pending entries (ID `0`), then new
-  ones (`>`), with `XREADGROUP ... COUNT 1000 BLOCK 1000`.
-- An entry is acknowledged (`XACK`) only after both its bar upsert and its
-  tick insert have committed. Delivery is therefore at least once, and D5's
-  merge rule and D6's tolerance make a repeat harmless.
-- If the database is down, the recorder stops acknowledging and retries every
-  5 seconds. Entries wait in the stream up to `TICK_STREAM_MAXLEN`. After
-  that the oldest are trimmed, and those minutes show as gaps for E-07 to
-  fill from broker history.
+- **The cursor.** Migration 006 adds a one-row table,
+  `recorder_cursor (id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id), last_entry_id TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`.
+  Each flush is one database transaction that writes the changed bars, the
+  waiting ticks, and the ID of the last stream entry they include. Either
+  all three are stored or none is.
+- **Reading.** The recorder reads with
+  `XREAD COUNT 1000 BLOCK 1000 STREAMS marketdata:quotes <id>`, starting
+  from the stored cursor. With no cursor yet it starts from `$`, new entries
+  only. No consumer group is needed: the database, not Redis, remembers the
+  position, and it moves in the same commit as the data.
+- **Result.** After any restart, of the backend, Redis or the database, the
+  recorder resumes at the entry after the last one stored. Nothing is
+  written twice. Entries are lost only if they were trimmed from the stream
+  (`TICK_STREAM_MAXLEN`) while the backend was down, and those minutes show
+  as gaps for E-07 to fill from broker history.
+- **A cursor ahead of the stream.** If Redis lost its data, its newest entry
+  ID can be older than the cursor. Stream IDs start with the Redis server's
+  clock in milliseconds, so this happens only with an emptied Redis and a
+  clock set back. The recorder checks `XINFO STREAM` at start. When the
+  stream's last ID is below the cursor, it logs a warning and restarts from
+  `$`.
+- **Database down.** The flush fails, the cursor does not move, and the
+  recorder retries every 5 seconds while entries wait in the stream.
+  It stops reading once 50000 rows are waiting in memory, so memory stays
+  bounded and Redis holds the backlog.
 - The recorder uses its own Redis connection, separate from the pub/sub
   subscriber in `streamingBridge.ts` and from `cacheService`.
+
+Rejected: a consumer group with `XACK` after the write. It gives
+at-least-once delivery, which needs merge rules to make repeats harmless and
+still stores duplicate ticks after a crash. The cursor costs one extra row
+per flush and removes both problems.
 
 ### D8. Polled brokers give approximate bars
 
@@ -243,8 +291,8 @@ The Data collection table shows each recorded contract's feed mode
 ## 4. Status and visibility
 
 - `GET /api/market-data/recorder/status` returns:
-  - whether the recorder is on, and the stream length and lag (entries not
-    yet acknowledged);
+  - whether the recorder is on, the stream length, and the lag (seconds
+    between the newest stream entry and the stored cursor);
   - per contract: the last quote time, the last bar written, quotes in the
     last minute, the feed mode, and the last error;
   - totals of entries dropped as too late or invalid.
@@ -255,7 +303,7 @@ The Data collection table shows each recorded contract's feed mode
   an alert, until E-26 adds trading-hours awareness.
 - Prometheus metrics in the backend:
   - `recorder_entries_total{result="written|late|invalid"}`
-  - `recorder_lag_entries`
+  - `recorder_lag_seconds`
   - `recorder_flush_seconds`
 
 ## 5. Settings added
@@ -271,23 +319,29 @@ receives from the backend (`brokerSync.ts`). It is not another `.env` line.
 
 ## 6. Build order (one commit each, all in one PR)
 
-1. **Broker service, subscriptions.** Key venue and IB subscriptions by
-   connection (D3), and add the recorded set and its endpoint.
-   Tests: two connections streaming one symbol, and repeated identical
-   `PUT`s changing nothing.
+1. **Subscriptions per connection.** Key venue and IB subscriptions by
+   connection, rename the channel and rooms, and carry the connection
+   through `streamingBridge.ts` and `useRealtimeStream.ts` (D3). Add the
+   recorded set and its endpoint.
+   Tests: two connections streaming one symbol to two charts, and repeated
+   identical `PUT`s changing nothing.
 2. **Broker service, stream.** Add the quote snapshot and `XADD` (D1, D2),
-   including IB merging per-type callbacks into snapshots.
+   including IB merging per-type callbacks into snapshots, and `bar_basis`
+   on every adapter (D5).
    Tests: entry fields, `MAXLEN` passed, nothing added for browser-only
-   symbols.
+   symbols or unchanged quotes.
 3. **Migration 006.** Add the flags, `candlestick_data.source`,
-   `quote_ticks` and compression, and drop an empty `tick_data`. The
-   backfill upsert sets `source = 'broker'`.
+   `quote_ticks`, `recorder_cursor` and compression, and drop an empty
+   `tick_data`. The backfill upsert sets `source = 'broker'` and stops at
+   the last completed minute.
    DB tests: an upsert into a compressed chunk, and stream-never-beats-broker.
-4. **Backend recorder.** Add the consumer group, bar builder, tick batches,
-   status endpoint, metrics and the 60-second resend of the recorded set.
-   Unit tests with a fake Redis and a fake database. These cover redelivery,
-   late entries, a minute rollover, the database being down, and a broker
-   bar arriving first.
+4. **Backend recorder.** Add the stream reader, bar builder, the flush
+   transaction with its cursor, status endpoint, metrics and the 60-second
+   resend of the recorded set.
+   Unit tests with a fake Redis and a fake database. These cover a crash
+   between flushes (no repeat, no loss), each price basis, late entries, a
+   minute rollover, the database being down, a cursor ahead of the stream,
+   and a broker bar arriving first.
 5. **Settings UI.** Add the two checkboxes, feed mode and recorder status to
    the collection table, and the three settings.
 6. **Clean-up and docs.** `cleanOldData` drops `quote_ticks` chunks and
@@ -306,8 +360,9 @@ receives from the backend (`brokerSync.ts`). It is not another `.env` line.
 | Redis memory grows with `MAXLEN` | Approximate trimming (`~`); the default is about 40 MB; the setting can lower it. |
 | Upserts into compressed chunks are slow for deep backfill | DB test measures it; fallback is compressing after 30 days (D6). |
 | Clock skew between broker time and receive time | `ts` prefers broker time; `recv_ts` is kept so skew can be measured. |
-| Two connections on one symbol confuse the live chart's pub/sub channel | Only for a user streaming the same symbol from two firms at once, until E-21 makes channels per connection. |
-| The recorder falls behind on a busy instrument set | Batches of 1000 and one flush every 5 seconds per contract. Lag is shown and alerted (section 4). |
+| Changing the pub/sub channel and room names breaks a browser tab left open across the upgrade | The tab reconnects and resubscribes on reload; OPERATIONS says to reload open charts after upgrading. |
+| A broker's history basis is declared wrongly, so stream bars differ from broker bars | E-07 logs how far each replaced bar moved. A basis that is wrong shows up as a large, steady difference on the first night. |
+| The recorder falls behind on a busy instrument set | Reads of 1000 and one flush every 5 seconds for all contracts together. Lag is shown and alerted (section 4). |
 
 ## 8. Questions for Sean
 
@@ -331,6 +386,9 @@ Defaults are proposed. Say if any should differ.
   capability).
 - **E-15:** bid and ask bars can be rebuilt from `quote_ticks` for the
   retention window. Older data comes from the broker (`price=BA`).
-- **E-20:** the recorder emits each forming bar on Socket.IO
-  (`bar-update`, room `bars:<contract_id>`), so a live chart moves its last
-  candle without building bars itself.
+- **E-20 (shipped):** the live chart builds its forming candle in the
+  browser from ticks, on the mid or last price. Once the recorder runs, the
+  chart can take the recorder's forming bar instead (Socket.IO `bar-update`,
+  room `bars:<contract_id>`), so the live candle and the stored bar are the
+  same bar on the broker's basis. That switch is a follow-up, not part of
+  this build.
