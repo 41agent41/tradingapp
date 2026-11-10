@@ -143,6 +143,18 @@ Migrations apply themselves when the backend starts. On a host set up by an
 older version, `install` also removes `.env` lines nothing reads any more
 (after a backup to `.env.bak.<timestamp>`).
 
+**Upgrading from a version before migration `005_connection_firm`.** Each
+connection now names its firm, and each firm connects one way only. The
+migration fills in the firm for OANDA, IG, Alpaca and IB connections, and for
+cTrader and MT5 connections named after their firm. After the upgrade, open
+Settings > Getting started: the **Add a broker connection** item lists every
+connection still without a firm. For each one, on Settings > Connections:
+
+1. Press **Edit**, choose its **Firm**, and press **Save**.
+2. If saving says the firm "connects only through" another broker (an IC
+   Markets account on MT5, for example), press **Remove** on that connection
+   and add the account again with that firm, which sets the right broker.
+
 **MT5 sidecars upgrade separately.** They run on the MT5 VM, not in the
 Docker stack. After an upgrade that changes `mt5_sidecar/requirements.txt`
 (the November 2026 dependency upgrade did), on VM 120 for each sidecar:

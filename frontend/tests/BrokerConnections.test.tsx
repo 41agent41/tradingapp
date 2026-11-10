@@ -146,6 +146,7 @@ describe('helpers', () => {
     };
     expect(requestBody(form)).toEqual({
       platform: 'oanda',
+      firm: 'oanda',
       account: 'practice',
       account_mode: 'paper',
       currency: 'USD',
@@ -249,14 +250,56 @@ describe('BrokerConnections', () => {
     await waitFor(() => screen.getByRole('button', { name: 'Add connection' }));
     fireEvent.click(screen.getByRole('button', { name: 'Add connection' }));
     const form = screen.getByRole('form', { name: 'Add a broker connection' });
+    expect(within(form).getByRole('button', { name: 'Save' })).toBeDisabled();
+    fireEvent.change(within(form).getByLabelText('Firm'), { target: { value: 'oanda' } });
     fireEvent.change(within(form).getByLabelText(/Account ID/), { target: { value: '101-9' } });
     fireEvent.change(within(form).getByLabelText(/API token/), { target: { value: 'secret' } });
     fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(screen.getByText('Connection added.')).toBeInTheDocument());
     expect(writes[0]).toMatchObject({
       method: 'POST',
-      body: { platform: 'oanda', settings: { account_id: '101-9' }, secrets: { token: 'secret' } },
+      body: {
+        platform: 'oanda',
+        firm: 'oanda',
+        settings: { account_id: '101-9' },
+        secrets: { token: 'secret' },
+      },
     });
+  });
+
+  it("sets the broker from the firm, and offers only that broker's firms on an edit", async () => {
+    mockApi({
+      stored: {
+        ...STORED,
+        connections: [
+          {
+            ...STORED_ALPACA,
+            id: 9,
+            platform: 'mt5',
+            account: 'ftmo',
+            label: 'mt5:ftmo',
+            firm: null,
+          },
+        ],
+      },
+    });
+    render(<BrokerConnections />);
+    await waitFor(() => screen.getByRole('button', { name: 'Add connection' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add connection' }));
+    let form = screen.getByRole('form', { name: 'Add a broker connection' });
+    fireEvent.change(within(form).getByLabelText('Firm'), { target: { value: 'icmarkets' } });
+    expect(within(form).getByLabelText(/Broker/)).toHaveValue('ctrader');
+    expect(within(form).getByLabelText('Name')).toHaveValue('icmarkets');
+    fireEvent.click(within(form).getByRole('button', { name: 'Cancel' }));
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit MT5 ftmo' })[0]);
+    form = screen.getByRole('form', { name: 'Edit mt5:ftmo' });
+    const options = within(within(form).getByLabelText('Firm'))
+      .getAllByRole('option')
+      .map((o) => (o as HTMLOptionElement).value)
+      .filter(Boolean);
+    expect(options).toEqual(['axi', 'eightcap', 'vantage', 'other_mt5']);
+    expect(within(form).getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
   it('shows an app connection that .env overrides as ignored', async () => {

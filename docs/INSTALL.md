@@ -381,12 +381,18 @@ The app asks brokers in this order of priority. Add only the ones you use.
 | 1 | OANDA (FX, CFDs) | none, a cloud API | A practice account: API token and account id |
 | 2 | IG (CFDs) | none, a cloud API | A demo login and an API key |
 | 3 | cTrader (IC Markets, Pepperstone, FP Markets, Fusion and other cTrader brokers) | none, a cloud API | A demo cTrader account, a cTrader Open API application and an access token |
-| 4 | MetaTrader 5 (Axi, Eightcap, Vantage and other MT5 brokers) | VM 120 | A demo account: login, password, server, and the server's time zone |
-| 5 | Interactive Brokers | CT 130 | A paper account: username and password |
-| 6 | Alpaca (US stocks, options) | none, a cloud API | A paper API key and secret |
+| 4 | Alpaca (US stocks, options) | none, a cloud API | A paper API key and secret |
+| 5 | MetaTrader 5 (Axi, Eightcap, Vantage and other firms with no web API) | VM 120 | A demo account: login, password, server, and the server's time zone |
+| 6 | Interactive Brokers | CT 130 | A paper account: username and password |
 
-Every broker is added the same way, on **Settings > Connections**: choose the
-broker, fill in the form, and save. The app tests the connection as it saves
+Each firm connects one way only: through its web API when it has one, through
+MT5 when it does not, and through IB Gateway only for Interactive Brokers
+([4.7](#47-which-platform-for-which-firm) lists them). The app refuses any
+other pairing, so an OANDA or IC Markets MT5 account cannot be added.
+
+Every broker is added the same way, on **Settings > Connections**: press
+**Add connection**, choose the **Firm** (this sets the broker), fill in the
+form, and save. The app tests the connection as it saves
 it, shows the result, and keeps checking it on a timer
 (`BROKER_PROBE_INTERVAL_SECONDS` on Settings > Schedulers and data). Secrets
 are stored encrypted with the key from step 2.4.
@@ -402,8 +408,8 @@ Every form has these fields:
 | Limits, prop rules | Optional per-account risk limits; see [step 6](#6-alerts-and-safety-nets). |
 
 Add one broker at a time and check it before the next, so a failure has one
-cause. The form's **Firm** list picks the platform for a named firm (Axi,
-IC Markets, Pepperstone and others; see [4.7](#47-which-platform-for-which-firm)).
+cause. **Firm** is required: the **Save** button stays greyed out until one is
+chosen.
 
 ### 4.1 OANDA
 
@@ -411,7 +417,7 @@ A cloud API, with no server to build.
 
 1. In OANDA's account portal, generate an API token for your practice
    account and note its account id.
-2. On Settings > Connections, add **OANDA**, Mode **paper**, with the
+2. On Settings > Connections, add a connection with Firm **OANDA**, Mode **paper**, with the
    **Account ID** and **API token**. Paper connections use OANDA's practice
    environment.
 
@@ -570,7 +576,9 @@ Note the exact symbol names `/symbols` returns (`EURUSD`, `EURUSD.a`,
 
 #### Add the connection
 
-On Settings > Connections, add **MetaTrader 5**, Mode **paper**:
+On Settings > Connections, add a connection with Firm set to the account's
+firm (**Axi (MT5)**, **Eightcap (MT5)**, **Vantage (MT5)**, or **Another MT5
+firm (no web API)** for any other, such as a prop firm), Mode **paper**:
 
 - **Bridge URL**: `http://<mt5-address>:9100`
 - **Bridge secret**: the sidecar's `MT5_BRIDGE_SECRET`
@@ -670,7 +678,7 @@ nc -vz <ib-address> 4002
 
 #### Add the connection
 
-On Settings > Connections, add **Interactive Brokers**, Mode **paper**:
+On Settings > Connections, add a connection with Firm **Interactive Brokers**, Mode **paper**:
 **Gateway host** `<ib-address>`, **Port** `4002`, and a **Client ID** that no
 other program uses on that Gateway (`1` if nothing else connects).
 
@@ -687,7 +695,7 @@ step 6.
 A cloud API, with no server to build.
 
 1. In Alpaca's paper dashboard, generate an API key and secret.
-2. On Settings > Connections, add **Alpaca**, Mode **paper**, with the
+2. On Settings > Connections, add a connection with Firm **Alpaca**, Mode **paper**, with the
    **API key** and **API secret**. Paper connections use Alpaca's paper
    endpoint.
 
@@ -701,7 +709,7 @@ A cloud API, with no server to build.
 1. Log in to IG's web platform with your demo login. Under **My IG >
    Settings > API keys**, create a key. A demo key works only with a demo
    login, and a live key only with a live one.
-2. On Settings > Connections, add **IG**, Mode **paper**, with the **API
+2. On Settings > Connections, add a connection with Firm **IG**, Mode **paper**, with the **API
    key**, **Username** and **Password** of that login. Leave **Account ID**
    blank to trade the login's default account, or enter another account's id
    (such as `Z3ABCD`) from My IG.
@@ -730,7 +738,10 @@ the account you grant access to.
    scope and copy the **access token**. The playground also lists your
    accounts with their `ctidTraderAccountId`, the number to enter as the
    account id (it is not the account login).
-4. On Settings > Connections, add **cTrader**, Mode **paper**, with the
+4. On Settings > Connections, add a connection with Firm set to the account's
+   firm (**IC Markets (cTrader)**, **Pepperstone (cTrader)**, **FP Markets
+   (cTrader)**, **Fusion Markets (cTrader)**, or **Another cTrader firm**),
+   Mode **paper**, with the
    client ID, client secret, access token and ctidTraderAccountId.
 
 Quantities on cTrader are in units, as on OANDA (100,000 EURUSD units is one
@@ -749,13 +760,21 @@ on port 5036.
 
 ### 4.7 Which platform for which firm
 
-| Firm | Platform in the app | Notes |
+Each firm has exactly one connection type. The app refuses to save any other
+pairing, and also refuses a connection named after a firm of another type
+(an MT5 connection named `icmarkets`, for example).
+
+| Firm on the form | Broker it sets | Notes |
 |---|---|---|
-| OANDA | OANDA | Native REST API. An OANDA MT5 account can also use MT5. |
+| OANDA | OANDA | Native REST API. OANDA MT5 accounts cannot be added. |
 | IG | IG | Native REST API. |
-| IC Markets, Pepperstone, FP Markets, Fusion Markets | cTrader | For a cTrader account. Their MT5 accounts use MT5 instead. |
-| Axi | MT5 | Axi has no public trading API. Its MCP server (`mcp.axi.com`, in alpha) connects an Axi MT5 account to Claude only, not to other applications, so the app reaches Axi through the MT5 sidecar. |
-| Eightcap, Vantage and other MT5 brokers | MT5 | Through the MT5 sidecar. |
+| IC Markets, Pepperstone, FP Markets, Fusion Markets (each "(cTrader)") | cTrader | cTrader Open API. Their MT5 accounts cannot be added; open a cTrader account with the firm instead. |
+| Another cTrader firm | cTrader | Any other firm on cTrader. |
+| Alpaca | Alpaca | Native REST API. |
+| Axi (MT5) | MT5 | Axi has no public trading API. Its MCP server (`mcp.axi.com`, in alpha) connects an Axi MT5 account to Claude only, not to other applications, so the app reaches Axi through the MT5 sidecar. |
+| Eightcap (MT5), Vantage (MT5) | MT5 | Through the MT5 sidecar. |
+| Another MT5 firm (no web API) | MT5 | Any firm with no web API, prop firms included. Not for a firm listed above. |
+| Interactive Brokers | IB | Through IB Gateway. |
 
 ### 4.8 Priority and the default broker
 

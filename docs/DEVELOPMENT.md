@@ -369,12 +369,18 @@ Tests: copy `tests/test_oanda_adapter.py`, which serves the venue with
   checked on save. Names must match the broker service's `Connection` fields;
   derive anything else in `managedEntries` (as OANDA's `environment` is
   derived from the paper/live mode).
+- `src/services/firms.ts`: an entry in `FIRMS` for each firm the broker
+  serves (`id`, `name`, `platform`). Every platform needs at least one firm;
+  a platform with exactly one gets it filled in automatically. A firm has
+  one platform only: its web API if it has one, else MT5.
 
 ### 4. Frontend
 
 In `app/lib/brokerConnections.ts`: `BROKERS_BY_PRIORITY` (same order),
 `PLATFORM_FORM` (mirrors `PLATFORM_FIELDS`, with `secret: true` on encrypted
-fields), `PLATFORM_NAME` and, for a long name, `PLATFORM_SHORT_NAME`.
+fields), `FIRM_PRESETS` (the same ids, names, platforms and order as `FIRMS`,
+plus a `note` on how to connect; `backend/tests/firms.test.ts` fails if they
+differ), `PLATFORM_NAME` and, for a long name, `PLATFORM_SHORT_NAME`.
 
 ### 5. Check
 

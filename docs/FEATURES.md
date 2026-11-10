@@ -655,11 +655,15 @@ describes adding another.
   (as distances on a market order), position stops, positions netted across
   a hedged account, account equity and fills. Quantities are in units.
   Access tokens last about 30 days and are renewed by hand.
-- **Firms on the form:** Settings > Connections has a **Firm** list (OANDA,
-  IG, IC Markets, Pepperstone, FP Markets, Fusion, Axi, Eightcap, Vantage)
-  that picks the platform and says how to connect. Axi has no public trading
-  API, and its MCP server serves Claude only, so Axi accounts go through the
-  MT5 sidecar.
+- **One connection type per firm:** every connection names its firm
+  (OANDA, IG, IC Markets, Pepperstone, FP Markets, Fusion, another cTrader
+  firm, Alpaca, Axi, Eightcap, Vantage, another MT5 firm, Interactive
+  Brokers), and the firm sets the platform: its web API when it has one, the
+  MT5 sidecar when it does not, IB Gateway only for Interactive Brokers. The
+  backend refuses any other pairing (`backend/src/services/firms.ts`). Axi
+  has no public trading API, and its MCP server serves Claude only, so Axi
+  accounts go through the MT5 sidecar. Connections saved before firms are
+  listed on Getting started until each is given its firm.
 - **Provider health:** the broker service exposes `/providers` (and folds
   provider status into `/health`) so operators can see which venues are
   registered.

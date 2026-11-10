@@ -18,7 +18,7 @@ run('connection limits (real database)', () => {
   const ctx = { actor: 'test' };
 
   afterAll(async () => {
-    await dbService.query('DELETE FROM broker_connections WHERE account = $1', [account]);
+    await dbService.query('DELETE FROM broker_connections WHERE account LIKE $1', [`${account}%`]);
     await dbService.close();
   });
 
@@ -45,5 +45,30 @@ run('connection limits (real database)', () => {
 
     await store.update(created.id, { limits: null, prop_rules: null }, ctx);
     expect(await store.limitsFor('ib', account)).toEqual({ limits: {}, prop_rules: null });
+  });
+
+  it('stores the firm (migration 005) and backfills one the platform implies', async () => {
+    const created = await store.create(
+      { platform: 'mt5', firm: 'other_mt5', account: `${account}m`, settings: { url: 'http://x' } },
+      ctx
+    );
+    expect(created.firm).toBe('other_mt5');
+    await dbService.query(`UPDATE broker_connections SET firm = NULL WHERE account LIKE $1`, [
+      `${account}%`,
+    ]);
+    // The migration's backfill, re-run: IB gets its own firm, the MT5 row
+    // (not named after a firm) stays without one.
+    await dbService.query(
+      `UPDATE broker_connections SET firm = platform
+        WHERE firm IS NULL AND platform IN ('oanda', 'ig', 'alpaca', 'ib')`
+    );
+    const { rows } = await dbService.query(
+      `SELECT platform, firm FROM broker_connections WHERE account LIKE $1 ORDER BY platform`,
+      [`${account}%`]
+    );
+    expect(rows).toEqual([
+      { platform: 'ib', firm: 'ib' },
+      { platform: 'mt5', firm: null },
+    ]);
   });
 });

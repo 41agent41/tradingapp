@@ -79,6 +79,12 @@ describe('checklist', () => {
     expect(items.collection.detail).toMatch(/turn the backfill scheduler on/);
   });
 
+  it('asks for the firm of a connection saved without one', () => {
+    const items = byId({ ...READY, withoutFirm: ['mt5:ftmo'] });
+    expect(items.broker.done).toBe(false);
+    expect(items.broker.detail).toMatch(/^Choose the firm for mt5:ftmo/);
+  });
+
   it('says so when the broker service cannot be asked', () => {
     const items = byId({ ...READY, connections: null });
     expect(items.broker.done).toBe(false);
@@ -87,7 +93,11 @@ describe('checklist', () => {
 });
 
 describe('loadChecklistState', () => {
-  const db = () => ({ query: jest.fn(async () => ({ rows: [{ n: 4 }] })) });
+  const db = () => ({
+    query: jest.fn(async (sql: string) =>
+      sql.includes('firm IS NULL') ? { rows: [{ label: 'mt5:ftmo' }] } : { rows: [{ n: 4 }] }
+    ),
+  });
 
   it('counts connections from the broker service and collection rows from the database', async () => {
     mockedAxios.get.mockResolvedValue({ data: { connections: { 'oanda:a': {}, 'mt5:b': {} } } });
@@ -99,6 +109,7 @@ describe('loadChecklistState', () => {
     expect(mockedAxios.get).toHaveBeenCalledWith('http://broker/providers', expect.anything());
     expect(state).toMatchObject({
       connections: 2,
+      withoutFirm: ['mt5:ftmo'],
       collecting: 4,
       backfillEnabled: true,
       telegram: true,
