@@ -333,6 +333,10 @@ def _venue_error(reply: Dict[str, Any], status: int = 502) -> HTTPException:
 class CTraderAdapter:
     """`MarketDataAdapter` + `BrokerAdapter` over the cTrader Open API."""
 
+    # The price this venue builds its own bars from; the live recorder builds
+    # stream bars the same way (docs/plans/E-05-live-recorder.md, D5).
+    bar_basis = "bid"
+
     name = "ctrader"
     # Stops ride on the entry order (as distances on a market order).
     attaches_stops = True

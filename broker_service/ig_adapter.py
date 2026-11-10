@@ -152,6 +152,10 @@ def _ig_time(moment: datetime) -> str:
 class IGAdapter:
     """`MarketDataAdapter` + `BrokerAdapter` backed by IG's REST trading API."""
 
+    # The price this venue builds its own bars from; the live recorder builds
+    # stream bars the same way (docs/plans/E-05-live-recorder.md, D5).
+    bar_basis = "mid"
+
     name = "ig"
     # stopLevel / limitLevel ride on the entry, in the deal itself.
     attaches_stops = True

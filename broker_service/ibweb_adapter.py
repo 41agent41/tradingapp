@@ -191,6 +191,10 @@ def _amount(summary: Dict[str, Any], key: str) -> Optional[float]:
 class IBWebAdapter:
     """``MarketDataAdapter`` + ``BrokerAdapter`` over the IBKR Web API."""
 
+    # The price this venue builds its own bars from; the live recorder builds
+    # stream bars the same way (docs/plans/E-05-live-recorder.md, D5).
+    bar_basis = "last"
+
     name = "ibweb"
     # A bracket (stop and target) is placed with the entry in one call.
     attaches_stops = True

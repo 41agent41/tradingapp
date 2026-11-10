@@ -47,6 +47,23 @@ class StreamSubscribeRequest(BaseModel):
 
 class StreamSymbolRequest(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=20)
+    # The connection the subscribe answer named. Omitted (an older backend),
+    # the reference is dropped from whichever connection streams the symbol.
+    source: str = Field(default="")
+    account: Optional[str] = None
+
+
+class RecordedInstrument(BaseModel):
+    platform: str = Field(..., min_length=1, max_length=16)
+    account: Optional[str] = None
+    symbol: str = Field(..., min_length=1, max_length=20)
+    secType: str = Field(default="STK")
+    exchange: str = Field(default="SMART")
+    currency: str = Field(default="USD")
+
+
+class RecordedSetRequest(BaseModel):
+    instruments: list[RecordedInstrument] = Field(default_factory=list, max_length=500)
 
 
 def _attach_streaming_if_needed() -> None:
@@ -64,8 +81,19 @@ def _attach_streaming_if_needed() -> None:
     streaming_manager.attach(ib, _resolve)
 
 
+def _ib_account(account: Optional[str] = None) -> str:
+    """The IB connection's account name, for channels and recorded quotes."""
+    from adapters import resolve_connection
+
+    try:
+        return resolve_connection("ib", account).key[1]
+    except Exception:  # noqa: BLE001 — IB configured the old way, with no named account
+        return account or "default"
+
+
 def _subscribe_ib(req: StreamSubscribeRequest):
     _attach_streaming_if_needed()
+    streaming_manager.ib_account = _ib_account(req.account)
     return streaming_manager.subscribe(
         req.symbol, sec_type=req.secType, exchange=req.exchange, currency=req.currency
     )
@@ -78,15 +106,15 @@ async def stream_subscribe(req: StreamSubscribeRequest):
 
     symbol = req.symbol.upper()
     try:
-        # Already streaming (from whichever broker): just take a reference.
-        held = venue_streamer.retain(symbol)
-        if held is not None:
-            return _venue_answer(held)
-
         candidates = market_data_candidates(req.source, req.account)
-        if symbol in streaming_manager.list_symbols():
-            # Already streaming from IB: take a reference there, not a second feed.
-            candidates = [("ib", None)]
+        if not req.source.strip():
+            # No connection named: if the symbol already streams somewhere,
+            # take a reference there instead of starting a second feed.
+            held = venue_streamer.retain(symbol)
+            if held is not None:
+                return _venue_answer(held)
+            if symbol in streaming_manager.list_symbols():
+                candidates = [("ib", None)]
         first_error: Exception | None = None
         for platform, account in candidates:
             try:
@@ -96,9 +124,10 @@ async def stream_subscribe(req: StreamSubscribeRequest):
                         "status": "subscribed",
                         "symbol": sub.symbol,
                         "source": "ib",
+                        "account": streaming_manager.ib_account,
                         "req_id": sub.req_id,
                         "ref_count": sub.ref_count,
-                        "channel": f"marketdata:tick:{sub.symbol}",
+                        "channel": f"marketdata:tick:ib:{streaming_manager.ib_account}:{sub.symbol}",
                     }
                 conn = resolve_connection(platform, account)
                 venue_streamer.adapter_for(conn.key)  # fails now if it has no market data
@@ -124,8 +153,9 @@ def _venue_answer(sub) -> dict:
         "status": "subscribed",
         "symbol": sub.symbol,
         "source": sub.platform,
+        "account": sub.account,
         "ref_count": sub.ref_count,
-        "channel": f"marketdata:tick:{sub.symbol}",
+        "channel": f"marketdata:tick:{sub.platform}:{sub.account}:{sub.symbol}",
     }
 
 
@@ -133,7 +163,12 @@ def _venue_answer(sub) -> dict:
 async def stream_unsubscribe(req: StreamSymbolRequest):
     """Drop one reference on a streaming subscription."""
     try:
-        if venue_streamer.holds(req.symbol):
+        platform = req.source.strip().lower() or None
+        if platform == "ib":
+            sub = streaming_manager.unsubscribe(req.symbol)
+        elif platform is not None:
+            sub = venue_streamer.unsubscribe(req.symbol, platform, req.account or None)
+        elif venue_streamer.holds(req.symbol):
             sub = venue_streamer.unsubscribe(req.symbol)
         else:
             sub = streaming_manager.unsubscribe(req.symbol)
@@ -150,6 +185,77 @@ async def stream_unsubscribe(req: StreamSymbolRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to unsubscribe from {req.symbol}: {exc}",
         )
+
+
+@router.put("/market-data/stream/recorded")
+async def stream_recorded(req: RecordedSetRequest):
+    """Replace the set of instruments streamed for the backend's live recorder.
+
+    The backend sends the whole set it wants and re-sends it every minute, so
+    a call is safe to repeat and a restart here is repaired by the next one.
+    Recorded instruments stream whether or not a chart is open, and their
+    quotes go to the ``marketdata:quotes`` Redis Stream. An instrument that
+    cannot be started is reported in ``errors`` and tried again next call.
+    """
+    from adapters import resolve_connection
+
+    errors: list[dict] = []
+    venue_wanted: set[tuple[str, str, str]] = set()
+    ib_wanted: dict[str, RecordedInstrument] = {}
+    for item in req.instruments:
+        symbol = item.symbol.upper().strip()
+        platform = item.platform.strip().lower()
+        try:
+            if platform == "ib":
+                ib_wanted[symbol] = item
+            else:
+                key = resolve_connection(platform, item.account).key
+                venue_wanted.add((key[0], key[1], symbol))
+        except Exception as exc:  # noqa: BLE001 — report it, keep the rest
+            errors.append(_record_error(platform, item.account, symbol, exc))
+
+    for (platform, account, symbol), message in venue_streamer.set_recorded(venue_wanted).items():
+        errors.append(
+            {"platform": platform, "account": account, "symbol": symbol, "error": message}
+        )
+
+    for symbol in streaming_manager.recorded_symbols() - set(ib_wanted):
+        streaming_manager.unrecord(symbol)
+    held = streaming_manager.recorded_symbols()
+    for symbol, item in ib_wanted.items():
+        if symbol in held:
+            continue
+        try:
+            await run_tws_operation(lambda item=item: _record_ib(item))
+        except Exception as exc:  # noqa: BLE001 — report it, keep the rest
+            errors.append(_record_error("ib", item.account, symbol, exc))
+
+    recorded = [
+        {"platform": p, "account": a, "symbol": s}
+        for (p, a, s) in sorted(venue_streamer.recorded())
+    ] + [
+        {"platform": "ib", "account": streaming_manager.ib_account, "symbol": s}
+        for s in sorted(streaming_manager.recorded_symbols())
+    ]
+    return {"recorded": recorded, "errors": errors}
+
+
+def _record_ib(item: RecordedInstrument):
+    _attach_streaming_if_needed()
+    streaming_manager.ib_account = _ib_account(item.account)
+    return streaming_manager.record(
+        item.symbol, sec_type=item.secType, exchange=item.exchange, currency=item.currency
+    )
+
+
+def _record_error(platform: str, account: Optional[str], symbol: str, exc: BaseException) -> dict:
+    detail = getattr(exc, "detail", None)
+    return {
+        "platform": platform,
+        "account": account,
+        "symbol": symbol,
+        "error": str(detail if detail is not None else exc)[:300],
+    }
 
 
 @router.get("/market-data/stream/status")

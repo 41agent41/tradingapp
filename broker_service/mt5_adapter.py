@@ -143,6 +143,10 @@ def _to_unix_seconds(value: Any) -> float:
 class MT5Adapter:
     """`MarketDataAdapter` + `BrokerAdapter` backed by the MT5 sidecar over HTTP."""
 
+    # The price this venue builds its own bars from; the live recorder builds
+    # stream bars the same way (docs/plans/E-05-live-recorder.md, D5).
+    bar_basis = "bid"
+
     name = "mt5"
     # The sidecar attaches SL/TP to the entry atomically (E-2).
     attaches_stops = True
