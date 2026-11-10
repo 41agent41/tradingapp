@@ -24,7 +24,7 @@ import {
 
 const emptyCondition = (): ConditionForm => ({ left: 'sma_20', op: '>', right: 'sma_50' });
 
-// Broker priority order (API brokers, then MT5, IB, Alpaca). The form starts on
+// Broker priority order (web API brokers, then MT5, then IB). The form starts on
 // the server's default broker, the highest-priority one that is configured.
 const BROKERS = BROKERS_BY_PRIORITY;
 

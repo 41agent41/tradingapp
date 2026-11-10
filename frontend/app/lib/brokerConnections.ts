@@ -185,7 +185,7 @@ export function formForFirm(firm: FirmPreset): FormState {
  * reports the order in effect). Mirrors BROKER_PRIORITY in
  * broker_service/connections.py; see docs/DEVELOPMENT.md, "Adding a broker".
  */
-export const BROKERS_BY_PRIORITY = ['oanda', 'ig', 'ctrader', 'mt5', 'ib', 'alpaca'];
+export const BROKERS_BY_PRIORITY = ['oanda', 'ig', 'ctrader', 'alpaca', 'mt5', 'ib'];
 
 const PLATFORM_NAME: Record<string, string> = {
   oanda: 'OANDA',

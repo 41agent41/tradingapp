@@ -22,7 +22,7 @@ a Docker stack on one Linux host.
                    │ (FastAPI)      │──►         │
                    └─────────┬──────┘  └─────────┘
                              │  in priority order
-     OANDA ─ IG ─ cTrader ─ MT5 (sidecar) ─ IB Gateway ─ Alpaca
+     OANDA ─ IG ─ cTrader ─ Alpaca ─ MT5 (sidecar) ─ IB Gateway
 ```
 
 The database is the first dependency. Settings, logins, broker connections

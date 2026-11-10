@@ -37,7 +37,7 @@ app for real are in [INSTALL.md](INSTALL.md) and
                    │ (FastAPI, Py)  │──►         │
                    └─────────┬──────┘  └─────────┘
                              │  adapters, in priority order
-     OANDA ─ IG ─ cTrader ─ MT5 (sidecar) ─ IB Gateway ─ Alpaca
+     OANDA ─ IG ─ cTrader ─ Alpaca ─ MT5 (sidecar) ─ IB Gateway
 ```
 
 - **frontend** (`frontend/`): Next.js 14 pages under `app/`, served by

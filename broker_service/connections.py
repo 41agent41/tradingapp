@@ -78,11 +78,11 @@ from observability import get_logger
 logger = get_logger(__name__)
 
 SUPPORTED_PLATFORMS = ("ib", "mt5", "alpaca", "oanda", "ig", "ctrader")
-# Broker priority, highest first: brokers with a direct API (OANDA, and those
-# that follow it), then MT5, IB and Alpaca. A request that names no platform
+# Broker priority, highest first: the web API brokers (OANDA, IG, cTrader,
+# Alpaca), then MT5 through its sidecar, then IB Gateway. A request that names no platform
 # goes to the highest-ranked one that is configured, unless DEFAULT_BROKER
 # names one. Mirrored by BROKER_PRIORITY in backend/src/services/orderTypes.ts.
-BROKER_PRIORITY = ("oanda", "ig", "ctrader", "mt5", "ib", "alpaca")
+BROKER_PRIORITY = ("oanda", "ig", "ctrader", "alpaca", "mt5", "ib")
 DEFAULT_ACCOUNT = "default"
 ACCOUNT_MODES = ("paper", "live")
 

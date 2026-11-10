@@ -760,9 +760,11 @@ on port 5036.
 ### 4.8 Priority and the default broker
 
 A request that names no broker goes to the highest-priority one that has a
-connection: OANDA, then IG, cTrader, MT5, IB and Alpaca. Change the order on the
-Connections tab, or pin one with `DEFAULT_BROKER` on Settings > Trading. A
-broker with no connection answers 501.
+connection: the web API brokers OANDA, IG, cTrader and Alpaca, then MT5, then
+IB. Change the order on the Connections tab, or pin one with `DEFAULT_BROKER`
+on Settings > Trading. A broker with no connection answers 501. An order you
+saved on the Connections tab is kept on upgrade; only the built-in default
+changed.
 
 **Check:** each connection shows as connected on Settings > Connections, the
 header's health badge agrees, and the Getting started checklist shows the

@@ -31,11 +31,12 @@ function setting(key: string): string | undefined {
 }
 
 /**
- * Broker priority, highest first: brokers with a direct API (OANDA, and those
- * that follow it), then MT5, IB and Alpaca. Mirrors `BROKER_PRIORITY` in
+ * Broker priority, highest first: the web API brokers (OANDA, IG, cTrader,
+ * Alpaca), then MT5 through its sidecar, then IB Gateway (E-30 in
+ * docs/plans/ENHANCEMENT_PLAN.md). Mirrors `BROKER_PRIORITY` in
  * `broker_service/connections.py`, which owns the choice of default.
  */
-export const BROKER_PRIORITY: readonly Broker[] = ['oanda', 'ig', 'ctrader', 'mt5', 'ib', 'alpaca'];
+export const BROKER_PRIORITY: readonly Broker[] = ['oanda', 'ig', 'ctrader', 'alpaca', 'mt5', 'ib'];
 
 /**
  * What a persisted row with no broker means. Every row written before the

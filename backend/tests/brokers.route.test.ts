@@ -101,7 +101,7 @@ describe('/api/brokers/connections', () => {
     const res = await request(buildApp()).get('/api/brokers/connections');
     expect(res.status).toBe(200);
     expect(res.body.connections[0].label).toBe('oanda:practice');
-    expect(res.body.platforms).toEqual(['oanda', 'ig', 'ctrader', 'mt5', 'ib', 'alpaca']);
+    expect(res.body.platforms).toEqual(['oanda', 'ig', 'ctrader', 'alpaca', 'mt5', 'ib']);
   });
 
   it('adds one, sends the set to the broker service and checks it', async () => {
