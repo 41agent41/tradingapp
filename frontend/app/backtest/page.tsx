@@ -5,7 +5,7 @@ import BackToHome from '../components/BackToHome';
 import ChartSkeleton from '../components/ChartSkeleton';
 import DataframeViewer from '../components/DataframeViewer';
 import EquityCurveChart, { EquityPoint } from '../components/EquityCurveChart';
-import { describeRunData, type RunData } from '../lib/backtestData';
+import { describeFills, describeRunData, type RunData, type RunFills } from '../lib/backtestData';
 import { apiFetch } from '../lib/api';
 import JesseHyperparameterFields from '../components/backtest/JesseHyperparameterFields';
 import {
@@ -72,6 +72,8 @@ interface BacktestResults {
   /** Engine-specific extras — populated by the Jesse engine (see
    *  `jesse.metrics`), absent for rule-based strategies. */
   metrics?: Record<string, unknown>;
+  /** How a protective stop was filled; absent without a stop. */
+  fills?: RunFills;
 }
 
 interface BacktestResponse {
@@ -809,6 +811,12 @@ export default function BacktestPage() {
               {describeRunData(response?.data) && (
                 <p className="mb-4 text-xs text-gray-500" data-testid="result-data">
                   {describeRunData(response?.data)}
+                </p>
+              )}
+
+              {describeFills(results.fills) && (
+                <p className="mb-4 text-xs text-gray-500" data-testid="result-fills">
+                  {describeFills(results.fills)}
                 </p>
               )}
 

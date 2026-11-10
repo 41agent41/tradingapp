@@ -216,6 +216,22 @@ plus every **saved rule-set** authored in the `/systematic` rule builder. See
   the start of the hash. Two runs with the same hash ran on identical bars;
   a different hash means a bar was added or changed in between (the nightly
   reconcile replacing a recorded bar, for example).
+- **Stops fill inside the bar.** A rule-set with a `stop` block is backtested
+  the way it trades. The stop is set at the entry, held while the next bar
+  forms, and tightened (never loosened) at each bar close, as the live runner
+  does with the stop the broker holds. When price reaches it the trade closes
+  there, not at the bar's close. On a timeframe above 1 minute the backend
+  sends the stored 1-minute bars with the run (`"intrabar": false` turns
+  that off), and the stop fills on the minute that reached it: at the stop,
+  or at that minute's open when price gapped through. Where no 1-minute bars
+  are stored the bar's own range decides, and a bar that opens beyond the
+  stop fills at its open. An entry whose stop cannot be set is refused, as it
+  is live. `risk_pct` sizing is simulated from the distance to the stop. The
+  results say which of the two the stops were filled against, how many
+  trades closed on the stop, and each such trade's exit reason. Entries and
+  rule exits still fill at the close of the bar that signalled them.
+  Rule-sets without a `stop` block, the built-in strategies and Jesse
+  strategies are unchanged.
 - **Straight from the broker, storing nothing:** `data: "broker"` in the API
   has the broker service fetch the bars itself, as every run did before. It
   is limited to 365 days and is not offered on the page.
@@ -1045,10 +1061,10 @@ The authoring loop (build a rule-set → backtest it → deploy it live on any
 instrument or venue) ships today. What remains, in priority order. See
 [`SYSTEMATIC_TRADING_ROADMAP.md`](plans/SYSTEMATIC_TRADING_ROADMAP.md) §9:
 
-- **Intrabar fills.** The backtester fills at the bar close; live fills happen
-  at the market. Sessions, multi-timeframe operands, position-aware rules,
-  sizing and scale-outs now share one code path between the two engines, so
-  this is the main remaining source of backtest↔live drift.
+- **Entry and exit fills at the market.** Protective stops now fill inside
+  the bar (see [Backtesting](#backtesting)). Entries and rule exits still
+  fill at the close of the signal bar, where live they fill at the next
+  price; with 1-minute bars stored that could be the next minute's open.
 - **Futures / options contract multipliers on IB.** The IB instrument spec is
   the whole-share constant: right for the equity path the app trades, but a
   futures contract's multiplier would need `reqContractDetails`.

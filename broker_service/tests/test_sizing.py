@@ -41,14 +41,30 @@ class TestFallsBackToTheEngineDefault:
         assert quantity is None
         assert "kelly" in reason
 
-    def test_risk_pct_defers_with_a_reason(self) -> None:
-        """risk_pct needs the stop distance at each entry, which the backtester
-        does not have; it defers rather than inventing a size."""
+    def test_risk_pct_without_a_stop_is_refused_as_it_is_live(self) -> None:
+        """risk_pct sizes from the distance to the stop; with no stop there is
+        no distance, and the entry is refused rather than sized another way."""
         quantity, reason = resolve_backtest_quantity(
             {"type": "risk_pct", "size": 0.5}, price=100.0, equity=100_000.0
         )
-        assert quantity is None
-        assert "risk_pct" in reason
+        assert quantity == 0
+        assert "stop" in reason
+
+    def test_risk_pct_sizes_from_the_distance_to_the_stop(self) -> None:
+        # 0.5% of 100,000 is 500 at risk; 2.00 away from the stop is 250 shares.
+        quantity, _ = resolve_backtest_quantity(
+            {"type": "risk_pct", "size": 0.5}, price=100.0, equity=100_000.0, stop_price=98.0
+        )
+        assert quantity == 250
+        # The same risk on a short, and through a venue's contract size.
+        lots, _ = resolve_backtest_quantity(
+            {"type": "risk_pct", "size": 1},
+            price=1.1000,
+            equity=100_000.0,
+            spec={"unit": "lots", "contract_size": 100_000, "size_step": 0.01, "min_size": 0.01},
+            stop_price=1.1050,
+        )
+        assert lots == 2.0
 
 
 class TestFixed:

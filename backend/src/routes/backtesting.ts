@@ -196,6 +196,7 @@ router.post('/run', async (req: Request, res: Response) => {
       account: rawAccount,
       data: rawData,
       on_missing: rawOnMissing,
+      intrabar: rawIntrabar,
     } = req.body || {};
 
     const dataMode = String(rawData || 'stored');
@@ -322,6 +323,8 @@ router.post('/run', async (req: Request, res: Response) => {
     // asked to, and load the bars to send with the run.
     let coverage: Coverage | null = null;
     let loaded: LoadedBars | null = null;
+    let minutes: LoadedBars | null = null;
+    let minutesSkipped: string | null = null;
     if (dataMode === 'stored') {
       const range = resolveRange({ period, start_date, end_date });
       const instrument = {
@@ -355,11 +358,26 @@ router.post('/run', async (req: Request, res: Response) => {
         });
       }
       loaded = await barData.load(coverage.contract_id, timeframe, range, coverage.built_from);
+
+      // A rule-set with a protective stop fills it inside the bar. Send the
+      // stored 1-minute bars with the run so the stop fills on the minute
+      // that reached it; without them the bar's own range decides.
+      const hasStop = !!ruleSet && typeof ruleSet.stop === 'object' && ruleSet.stop !== null;
+      if (hasStop && timeframe !== '1min' && rawIntrabar !== false) {
+        try {
+          minutes = await barData.minutes(instrument, range);
+        } catch (err) {
+          if (!(err instanceof BacktestDataError)) throw err;
+          // More 1-minute bars than one run may hold: run without them.
+          minutesSkipped = err.message;
+        }
+      }
     }
 
     const body = {
       ...(ruleSet ? { rule_set: ruleSet } : {}),
       ...(loaded ? { bars: loaded.bars } : {}),
+      ...(minutes ? { minute_bars: minutes.bars } : {}),
     };
     const response = await axios.post(
       `${BROKER_SERVICE_URL}/backtesting/run`,
@@ -399,6 +417,8 @@ router.post('/run', async (req: Request, res: Response) => {
             hash: loaded.hash,
             complete: coverage.complete,
             ...(coverage.built_from ? { built_from: coverage.built_from } : {}),
+            ...(minutes ? { minute_bars: minutes.count, minute_hash: minutes.hash } : {}),
+            ...(minutesSkipped ? { minute_bars_skipped: minutesSkipped } : {}),
           }
         : { source: 'broker', bars: payload.data_points ?? null };
 

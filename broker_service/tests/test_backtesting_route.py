@@ -330,3 +330,80 @@ def test_too_few_supplied_bars_is_insufficient_data(monkeypatch):
     )
     assert res.status_code == 400
     assert "insufficient" in res.json()["detail"].lower()
+
+
+# --------------------------------------------------------------------------- #
+# 1-minute bars supplied for stop fills
+# --------------------------------------------------------------------------- #
+
+STOP_RULES = {
+    "name": "Stop rules",
+    # In on the bar that closes at 110; never out by rule.
+    "entry": {
+        "all": [
+            {"left": "close", "op": ">=", "right": 110},
+            {"left": "close", "op": "<=", "right": 110},
+        ]
+    },
+    "exit": {"all": [{"left": "close", "op": "<", "right": 0}]},
+    "sizing": {"type": "fixed", "size": 10},
+    "stop": {"type": "fixed", "distance": 2},
+}
+
+
+def test_supplied_minute_bars_decide_where_a_stop_fills(monkeypatch):
+    client = _no_broker_client(monkeypatch)
+    bars = _columns()
+    # Bar 10 closes at 110 and enters with a stop at 108. Bar 11 dips to 107.
+    bars["l"][11] = 107.0
+    start = bars["t"][11]
+    minute_bars = {
+        "t": [start, start + 60, start + 120],
+        "o": [110.5, 110.4, 107.5],
+        "h": [110.6, 110.5, 107.6],
+        "l": [110.3, 109.0, 107.0],
+        "c": [110.4, 109.2, 107.2],
+        "v": [1.0, 1.0, 1.0],
+    }
+    params = {"symbol": "EURUSD", "timeframe": "1hour"}
+
+    on_bars = client.post(
+        "/backtesting/run", params=params, json={"rule_set": STOP_RULES, "bars": bars}
+    )
+    assert on_bars.status_code == 200, on_bars.text
+    results = on_bars.json()["results"]
+    assert results["trades_summary"][0]["exit_price"] == 108.0
+    assert results["fills"]["model"] == "bar"
+
+    on_minutes = client.post(
+        "/backtesting/run",
+        params=params,
+        json={"rule_set": STOP_RULES, "bars": bars, "minute_bars": minute_bars},
+    )
+    assert on_minutes.status_code == 200, on_minutes.text
+    results = on_minutes.json()["results"]
+    # The third minute opened below the stop, so the fill is that open.
+    assert results["trades_summary"][0]["exit_price"] == 107.5
+    assert results["fills"]["model"] == "1min"
+    assert results["fills"]["stop_exits_on_minutes"] == 1
+
+
+def test_minute_bars_that_do_not_line_up_are_refused(monkeypatch):
+    client = _no_broker_client(monkeypatch)
+    res = client.post(
+        "/backtesting/run",
+        params={"symbol": "EURUSD", "timeframe": "1hour"},
+        json={
+            "rule_set": STOP_RULES,
+            "bars": _columns(),
+            "minute_bars": {
+                "t": [1, 2],
+                "o": [1.0],
+                "h": [1.0, 1.0],
+                "l": [1.0, 1.0],
+                "c": [1.0, 1.0],
+            },
+        },
+    )
+    assert res.status_code == 400
+    assert "minute_bars: t, o, h, l and c" in res.json()["detail"]

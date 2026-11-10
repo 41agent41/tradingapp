@@ -473,6 +473,18 @@ export class BacktestData {
   }
 
   /**
+   * The stored 1-minute bars of an instrument in a range, for filling a stop
+   * inside each bar of a longer timeframe (E-03). Null when none are stored;
+   * holes are fine, because a bar with no minutes fills on its own range.
+   */
+  async minutes(inst: Instrument, range: DataRange): Promise<LoadedBars | null> {
+    const contract = await this.findContract(inst, '1min', range);
+    if (!contract) return null;
+    const loaded = await this.load(contract.id, '1min', range);
+    return loaded.count ? loaded : null;
+  }
+
+  /**
    * Brings a view up to date over a range before it is read. The view computes
    * recent bars on the fly, but 1-minute bars stored or replaced further back
    * (a backfill, the nightly reconcile) only show once that stretch is

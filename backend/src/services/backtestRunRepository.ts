@@ -41,6 +41,12 @@ export interface BacktestRunData {
   complete?: boolean | null;
   /** Set when the bars were built from stored 1-minute bars (E-08). */
   built_from?: '1min' | null;
+  /** 1-minute bars sent with the run to fill its stop inside each bar
+   *  (E-03), and their hash. Absent when none were stored or needed. */
+  minute_bars?: number | null;
+  minute_hash?: string | null;
+  /** Why stored 1-minute bars were left out, when they were. */
+  minute_bars_skipped?: string | null;
 }
 
 export interface BacktestRunRow {
