@@ -10,13 +10,18 @@ Instrument scope: ``sec_type`` / ``exchange`` / ``currency`` select the
 contract (previously hardcoded to STK/SMART/USD) and ``source=`` dispatches
 the data fetch through the broker-scoped adapter registry, so a backtest can
 run on any instrument any configured venue serves bars for.
+
+Bars normally arrive with the request (``bars`` in the body): the backend
+reads them from the database, checks the range is covered and records a hash
+of them with the run. Without ``bars`` the service fetches them from the
+broker itself, which stores nothing and is limited to 365 days.
 """
 
 from __future__ import annotations
 
 import time
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import pandas as pd
 from fastapi import APIRouter, Body, HTTPException, status
@@ -58,6 +63,52 @@ class BacktestRunBody(BaseModel):
     """
 
     rule_set: Dict[str, Any] | None = None
+    bars: BarColumns | None = None
+
+
+class BarColumns(BaseModel):
+    """Bars to run on, one list per field, oldest first. ``t`` is unix seconds."""
+
+    t: List[int]
+    o: List[float]
+    h: List[float]
+    l: List[float]  # noqa: E741 — the field name is the wire format
+    c: List[float]
+    v: List[float] = []
+
+
+BacktestRunBody.model_rebuild()
+
+
+def _supplied_bars(bars: BarColumns) -> pd.DataFrame:
+    """The bars sent with the request as the frame the engine takes."""
+
+    n = len(bars.t)
+    if not (len(bars.o) == len(bars.h) == len(bars.l) == len(bars.c) == n):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="bars: t, o, h, l and c must be lists of the same length.",
+        )
+    if bars.v and len(bars.v) != n:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="bars: v must be empty or as long as t.",
+        )
+    if any(b <= a for a, b in zip(bars.t, bars.t[1:], strict=False)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="bars: t must be strictly increasing (oldest bar first).",
+        )
+    return pd.DataFrame(
+        {
+            "timestamp": bars.t,
+            "open": bars.o,
+            "high": bars.h,
+            "low": bars.l,
+            "close": bars.c,
+            "volume": [int(x) for x in bars.v] if bars.v else [0] * n,
+        }
+    )
 
 
 @router.get("/backtesting/strategies")
@@ -276,9 +327,15 @@ async def run_backtest(
             f"in {currency}, source={provider}), {timeframe}, {period}"
         )
 
+        supplied = body.bars if body else None
+
         # Determine date range
         has_date_range = start_date and end_date
-        if has_date_range:
+        if supplied is not None:
+            # The backend chose the range and read the bars; nothing to fetch.
+            end_date_str = ""
+            ib_duration = ""
+        elif has_date_range:
             # Validate date range
             start_dt = datetime.strptime(start_date, "%Y-%m-%d")
             end_dt = datetime.strptime(end_date, "%Y-%m-%d")
@@ -302,7 +359,9 @@ async def run_backtest(
             end_date_str = ""
             ib_duration = convert_period(period)
 
-        if provider == "ib":
+        if supplied is not None:
+            bars_data = _supplied_bars(supplied)
+        elif provider == "ib":
             ib_timeframe = TIMEFRAME_MAP.get(timeframe, "1 hour")
             bars_data = _fetch_ib_bars(
                 symbol.upper(),
@@ -327,7 +386,7 @@ async def run_backtest(
                 ),
             )
 
-        df = pd.DataFrame(bars_data)
+        df = bars_data if isinstance(bars_data, pd.DataFrame) else pd.DataFrame(bars_data)
         df.index = pd.to_datetime(df["timestamp"], unit="s")
 
         # Create backtest engine with specified parameters

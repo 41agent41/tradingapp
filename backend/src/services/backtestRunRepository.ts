@@ -24,6 +24,21 @@ export interface BacktestRunInput {
   metrics: Record<string, unknown>;
   equity_curve: unknown[];
   trades: unknown[];
+  /** The bars the run used; see migration 007. */
+  data?: BacktestRunData | null;
+}
+
+/** What a run's bars were: enough to repeat it on the same data. */
+export interface BacktestRunData {
+  source: 'stored' | 'broker';
+  contract_id?: number | null;
+  bars?: number | null;
+  first_bar?: string | null;
+  last_bar?: string | null;
+  /** sha256 of the bars (backtestData.ts `barsHash`). */
+  hash?: string | null;
+  /** False when the run went ahead with bars missing from its range. */
+  complete?: boolean | null;
 }
 
 export interface BacktestRunRow {
@@ -43,6 +58,7 @@ export interface BacktestRunRow {
   trades: unknown[];
   trade_count: number;
   final_equity: string | null;
+  data: BacktestRunData | null;
   created_at: string;
 }
 
@@ -99,11 +115,11 @@ export class BacktestRunRepository {
       INSERT INTO backtest_runs (
         strategy, symbol, timeframe, period, start_date, end_date,
         initial_capital, commission, params, params_hash, metrics,
-        equity_curve, trades, trade_count, final_equity
+        equity_curve, trades, trade_count, final_equity, data
       ) VALUES (
         $1, $2, $3, $4, $5, $6,
         $7, $8, $9::jsonb, $10, $11::jsonb,
-        $12::jsonb, $13::jsonb, $14, $15
+        $12::jsonb, $13::jsonb, $14, $15, $16::jsonb
       )
       RETURNING *
     `;
@@ -123,6 +139,7 @@ export class BacktestRunRepository {
       JSON.stringify(trades),
       trades.length,
       finalEquity(input),
+      input.data ? JSON.stringify(input.data) : null,
     ];
     const result = await this.db.query(sql, values);
     return result.rows[0] as BacktestRunRow;
@@ -158,7 +175,7 @@ export class BacktestRunRepository {
     const sql = `
       SELECT id, strategy, symbol, timeframe, period, start_date, end_date,
              initial_capital, commission, params, params_hash, metrics,
-             trade_count, final_equity, created_at
+             trade_count, final_equity, data, created_at
       FROM backtest_runs
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY created_at DESC

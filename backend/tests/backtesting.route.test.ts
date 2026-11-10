@@ -13,6 +13,12 @@ jest.mock('axios');
 jest.mock('../src/services/database.js', () => ({
   dbService: { query: jest.fn() },
 }));
+jest.mock('../src/services/marketDataService.js', () => ({
+  marketDataService: {
+    getOrCreateContract: jest.fn().mockResolvedValue(31),
+    storeCandlestickData: jest.fn().mockResolvedValue({ inserted: 0, updated: 0, errors: 0 }),
+  },
+}));
 jest.mock('../src/services/cache.js', () => ({
   cacheService: {
     wrap: async (_key: string, _ttl: number, factory: () => Promise<unknown>) => factory(),
@@ -36,6 +42,7 @@ jest.mock('../src/services/strategyRepository.js', () => {
 });
 
 import axios from 'axios';
+import { dbService } from '../src/services/database.js';
 import backtestingRouter from '../src/routes/backtesting.js';
 
 const axiosMock = axios as jest.Mocked<typeof axios>;
@@ -44,6 +51,9 @@ const axiosMock = axios as jest.Mocked<typeof axios>;
 // `jest.requireMock(...)` hand back a fresh instance the route never uses.
 const repoMock = jest.requireMock('../src/services/backtestRunRepository.js') as {
   __insert: jest.Mock;
+};
+const marketDataMock = jest.requireMock('../src/services/marketDataService.js') as {
+  marketDataService: { storeCandlestickData: jest.Mock };
 };
 const defRepoMock = jest.requireMock('../src/services/strategyRepository.js') as {
   __findDefinition: jest.Mock;
@@ -131,7 +141,7 @@ describe('POST /api/backtesting/run — validation', () => {
 
     const res = await request(buildApp())
       .post('/api/backtesting/run')
-      .send({ symbol: 'MSFT', strategy: 'ma_crossover', timeframe: '1day' });
+      .send({ data: 'broker', symbol: 'MSFT', strategy: 'ma_crossover', timeframe: '1day' });
 
     expect(res.status).toBe(200);
     expect(res.body.persisted_id).toBe(99);
@@ -175,7 +185,9 @@ describe('POST /api/backtesting/run — validation', () => {
       },
     });
 
-    const res = await request(buildApp()).post('/api/backtesting/run').send({ definition_id: 7 });
+    const res = await request(buildApp())
+      .post('/api/backtesting/run')
+      .send({ data: 'broker', definition_id: 7 });
 
     expect(res.status).toBe(200);
     expect(defRepoMock.__findDefinition).toHaveBeenCalledWith(7);
@@ -208,7 +220,9 @@ describe('POST /api/backtesting/run — validation', () => {
 
   it('returns 404 when the definition does not exist', async () => {
     defRepoMock.__findDefinition.mockResolvedValueOnce(null);
-    const res = await request(buildApp()).post('/api/backtesting/run').send({ definition_id: 99 });
+    const res = await request(buildApp())
+      .post('/api/backtesting/run')
+      .send({ data: 'broker', definition_id: 99 });
     expect(res.status).toBe(404);
     expect(res.body.error).toMatch(/Definition not found/i);
   });
@@ -225,7 +239,10 @@ describe('POST /api/backtesting/run — validation', () => {
 
     const res = await request(buildApp())
       .post('/api/backtesting/run')
-      .send({ rule_set: { symbol: 'AAPL', timeframe: '1day', entry: { all: [] } } });
+      .send({
+        data: 'broker',
+        rule_set: { symbol: 'AAPL', timeframe: '1day', entry: { all: [] } },
+      });
 
     expect(res.status).toBe(200);
     expect(axiosMock.post).toHaveBeenCalledWith(
@@ -254,7 +271,7 @@ describe('POST /api/backtesting/run — validation', () => {
     const ruleSet = { engine: 'jesse', strategy: 'SMACrossover', hyperparameters: { fast: 5 } };
     const res = await request(buildApp())
       .post('/api/backtesting/run')
-      .send({ symbol: 'MSFT', timeframe: '1hour', rule_set: ruleSet });
+      .send({ data: 'broker', symbol: 'MSFT', timeframe: '1hour', rule_set: ruleSet });
 
     expect(res.status).toBe(200);
     expect(axiosMock.post).toHaveBeenCalledWith(
@@ -286,7 +303,7 @@ describe('POST /api/backtesting/run — validation', () => {
 
     const res = await request(buildApp())
       .post('/api/backtesting/run')
-      .send({ symbol: 'MSFT', strategy: 'ma_crossover', timeframe: '1day' });
+      .send({ data: 'broker', symbol: 'MSFT', strategy: 'ma_crossover', timeframe: '1day' });
 
     expect(res.status).toBe(200);
     expect(res.body.persisted_id).toBeNull();
@@ -318,5 +335,219 @@ describe('GET /api/backtesting/strategies', () => {
     const res = await request(buildApp()).get('/api/backtesting/strategies');
     expect(res.status).toBe(503);
     expect(res.body.error).toMatch(/strategies/i);
+  });
+});
+
+// --------------------------------------------------------------------------- //
+// Stored bars (the default): coverage, the choice when bars are missing, the hash
+// --------------------------------------------------------------------------- //
+
+const HOUR = 3600;
+const T0 = Date.UTC(2026, 0, 5) / 1000;
+
+/** A database holding `count` hourly bars from `first` for contract 31. */
+function storedBars(opts: { count: number; first?: number; contract?: boolean }) {
+  const first = opts.first ?? T0;
+  const rows = Array.from({ length: opts.count }, (_, i) => ({
+    t: first + i * HOUR,
+    o: 1.1,
+    h: 1.2,
+    l: 1.0,
+    c: 1.15,
+    v: 10,
+  }));
+  (dbService.query as jest.Mock).mockImplementation(async (sql: string) => {
+    if (sql.includes('FROM contracts')) {
+      return {
+        rows:
+          opts.contract === false
+            ? []
+            : [
+                {
+                  id: 31,
+                  broker_account: 'default',
+                  sec_type: 'CASH',
+                  exchange: null,
+                  currency: 'USD',
+                },
+              ],
+      };
+    }
+    if (sql.includes('min(timestamp)')) {
+      return {
+        rows: [
+          {
+            bars: rows.length,
+            first: rows.length ? new Date(first * 1000) : null,
+            last: rows.length ? new Date(rows[rows.length - 1].t * 1000) : null,
+          },
+        ],
+      };
+    }
+    if (sql.includes('lag(timestamp)')) return { rows: [] };
+    if (sql.includes('extract(epoch')) return { rows };
+    return { rows: [] };
+  });
+  return rows;
+}
+
+const RANGE = { start_date: '2026-01-05', end_date: '2026-01-09' };
+const OK = {
+  data: { success: true, results: { equity_curve: [], trades_summary: [] }, data_points: 96 },
+};
+
+describe('POST /api/backtesting/run on stored bars', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('sends the stored bars with the run and records their range and hash', async () => {
+    const rows = storedBars({ count: 96 });
+    axiosMock.post.mockResolvedValueOnce(OK);
+
+    const res = await request(buildApp())
+      .post('/api/backtesting/run')
+      .send({ symbol: 'eur_usd', strategy: 'ma_crossover', source: 'oanda', ...RANGE });
+
+    expect(res.status).toBe(200);
+    const [, body, config] = axiosMock.post.mock.calls[0];
+    expect((body as any).bars.t).toHaveLength(96);
+    expect((body as any).bars.t[0]).toBe(rows[0].t);
+    expect((config as any).maxBodyLength).toBe(Infinity);
+    expect(res.body.data).toMatchObject({
+      source: 'stored',
+      contract_id: 31,
+      bars: 96,
+      first_bar: '2026-01-05T00:00:00.000Z',
+      complete: true,
+    });
+    expect(res.body.data.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(repoMock.__insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ source: 'stored', bars: 96, hash: res.body.data.hash }),
+      })
+    );
+
+    // The same bars again give the same hash.
+    axiosMock.post.mockResolvedValueOnce(OK);
+    const again = await request(buildApp())
+      .post('/api/backtesting/run')
+      .send({ symbol: 'EUR_USD', strategy: 'ma_crossover', source: 'oanda', ...RANGE });
+    expect(again.body.data.hash).toBe(res.body.data.hash);
+  });
+
+  it('answers 409 with the coverage and the choices when bars are missing', async () => {
+    storedBars({ count: 24 });
+    const res = await request(buildApp()).post('/api/backtesting/run').send({
+      symbol: 'EUR_USD',
+      strategy: 'ma_crossover',
+      source: 'oanda',
+      start_date: '2025-06-01',
+      end_date: '2026-01-06',
+    });
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({
+      error: 'coverage_incomplete',
+      choices: ['fetch', 'use_stored'],
+      coverage: { bars: 24, complete: false },
+    });
+    expect(res.body.detail).toMatch(/Missing: 2025-06-01 to 2026-01-05/);
+    expect(axiosMock.post).not.toHaveBeenCalled();
+  });
+
+  it('runs on what is stored when asked to, and marks the run incomplete', async () => {
+    storedBars({ count: 60 });
+    axiosMock.post.mockResolvedValueOnce(OK);
+    const res = await request(buildApp()).post('/api/backtesting/run').send({
+      symbol: 'EUR_USD',
+      strategy: 'ma_crossover',
+      source: 'oanda',
+      start_date: '2025-06-01',
+      end_date: '2026-01-08',
+      on_missing: 'use_stored',
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ source: 'stored', bars: 60, complete: false });
+    expect(axiosMock.get).not.toHaveBeenCalled();
+  });
+
+  it('fetches what is missing from the broker and stores it before running', async () => {
+    storedBars({ count: 60 });
+    axiosMock.get.mockResolvedValue({
+      data: { bars: [{ timestamp: T0 - HOUR, open: 1, high: 1, low: 1, close: 1, volume: 1 }] },
+    });
+    axiosMock.post.mockResolvedValueOnce(OK);
+    const res = await request(buildApp()).post('/api/backtesting/run').send({
+      symbol: 'EUR_USD',
+      strategy: 'ma_crossover',
+      source: 'oanda',
+      start_date: '2025-12-01',
+      end_date: '2026-01-08',
+      on_missing: 'fetch',
+    });
+    expect(res.status).toBe(200);
+    // The missing stretch, in whole days, from the instrument's own broker.
+    expect(axiosMock.get).toHaveBeenCalledWith(
+      expect.stringContaining('/market-data/history'),
+      expect.objectContaining({
+        params: expect.objectContaining({
+          source: 'oanda',
+          symbol: 'EUR_USD',
+          timeframe: '1hour',
+          secType: 'CASH',
+          start_date: '2025-12-01',
+          end_date: '2026-01-05',
+        }),
+      })
+    );
+    expect(marketDataMock.marketDataService.storeCandlestickData).toHaveBeenCalledWith(
+      31,
+      '1hour',
+      [expect.objectContaining({ timestamp: new Date((T0 - HOUR) * 1000) })]
+    );
+  });
+
+  it('says so when nothing is stored and nothing may be fetched', async () => {
+    storedBars({ count: 0, contract: false });
+    const res = await request(buildApp())
+      .post('/api/backtesting/run')
+      .send({ symbol: 'EUR_USD', strategy: 'ma_crossover', ...RANGE, on_missing: 'use_stored' });
+    expect(res.status).toBe(400);
+    expect(res.body.detail).toMatch(/No bars are stored/);
+  });
+
+  it('refuses a bad range or choice', async () => {
+    const base = { symbol: 'EUR_USD', strategy: 'ma_crossover' };
+    const bad = [
+      [{ ...base, start_date: '2026-01-09', end_date: '2026-01-05' }, /before end_date/],
+      [{ ...base, start_date: '2026-01-05' }, /both be dates/],
+      [{ ...base, period: 'forever' }, /period must be/],
+      [{ ...base, on_missing: 'guess' }, /on_missing/],
+      [{ ...base, data: 'elsewhere' }, /data must be/],
+    ] as const;
+    for (const [body, message] of bad) {
+      const res = await request(buildApp()).post('/api/backtesting/run').send(body);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(message);
+    }
+  });
+});
+
+describe('GET /api/backtesting/coverage', () => {
+  it('reports what is stored for a range', async () => {
+    storedBars({ count: 96 });
+    const res = await request(buildApp())
+      .get('/api/backtesting/coverage')
+      .query({ symbol: 'eur_usd', source: 'oanda', timeframe: '1hour', ...RANGE });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      message: null,
+      coverage: { contract_id: 31, bars: 96, complete: true, missing: [] },
+    });
+  });
+
+  it('needs a symbol', async () => {
+    const res = await request(buildApp()).get('/api/backtesting/coverage');
+    expect(res.status).toBe(400);
   });
 });

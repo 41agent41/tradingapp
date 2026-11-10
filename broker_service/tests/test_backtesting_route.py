@@ -234,3 +234,99 @@ def test_run_dispatches_a_non_ib_source_through_the_adapter(monkeypatch):
 
     assert res.status_code == 200
     assert res.json()["data_points"] == 60
+
+
+# --------------------------------------------------------------------------- #
+# Bars supplied with the request (read from the database by the backend)
+# --------------------------------------------------------------------------- #
+
+
+def _columns(n: int = 60, step: int = 3600) -> dict:
+    start = 1_700_000_000
+    closes = [100.0 + i for i in range(n)]
+    return {
+        "t": [start + i * step for i in range(n)],
+        "o": [c - 0.5 for c in closes],
+        "h": [c + 1 for c in closes],
+        "l": [c - 1 for c in closes],
+        "c": closes,
+        "v": [1000.0] * n,
+    }
+
+
+def _no_broker_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    """A client for which any fetch from a broker is a test failure."""
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("bars were supplied; nothing should be fetched")
+
+    monkeypatch.setattr(bt_routes, "get_ib_connection", refuse)
+    monkeypatch.setattr(adapters, "get_market_data_adapter", refuse)
+    app = FastAPI()
+    app.include_router(bt_routes.router)
+    return TestClient(app)
+
+
+def test_run_uses_supplied_bars_and_fetches_nothing(monkeypatch):
+    client = _no_broker_client(monkeypatch)
+    res = client.post(
+        "/backtesting/run",
+        params={"symbol": "EURUSD", "timeframe": "1hour", "source": "ib"},
+        json={"rule_set": MA_RULES, "bars": _columns()},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["data_points"] == 60
+    # The equity curve runs over the supplied bars' own times.
+    curve = body["results"]["equity_curve"]
+    assert curve[0]["time"] >= 1_700_000_000
+    assert curve[-1]["time"] == 1_700_000_000 + 59 * 3600
+
+
+def test_supplied_bars_may_span_more_than_a_year(monkeypatch):
+    client = _no_broker_client(monkeypatch)
+    res = client.post(
+        "/backtesting/run",
+        params={
+            "symbol": "EURUSD",
+            "strategy": "ma_crossover",
+            "timeframe": "1day",
+            "start_date": "2020-01-01",
+            "end_date": "2024-01-01",
+        },
+        json={"bars": _columns(n=800, step=86_400)},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["data_points"] == 800
+
+
+@pytest.mark.parametrize(
+    "change, message",
+    [
+        (lambda b: b["c"].pop(), "same length"),
+        (lambda b: b["v"].pop(), "v must be"),
+        (lambda b: b["t"].__setitem__(5, b["t"][4]), "strictly increasing"),
+    ],
+)
+def test_supplied_bars_that_do_not_line_up_are_refused(monkeypatch, change, message):
+    client = _no_broker_client(monkeypatch)
+    bars = _columns()
+    change(bars)
+    res = client.post(
+        "/backtesting/run",
+        params={"symbol": "EURUSD", "strategy": "ma_crossover"},
+        json={"bars": bars},
+    )
+    assert res.status_code == 400
+    assert message in res.json()["detail"]
+
+
+def test_too_few_supplied_bars_is_insufficient_data(monkeypatch):
+    client = _no_broker_client(monkeypatch)
+    res = client.post(
+        "/backtesting/run",
+        params={"symbol": "EURUSD", "strategy": "ma_crossover"},
+        json={"bars": _columns(n=10)},
+    )
+    assert res.status_code == 400
+    assert "insufficient" in res.json()["detail"].lower()
