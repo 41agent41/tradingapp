@@ -232,7 +232,7 @@ There are 47 items, sorted by priority. P1 means do next, P2 soon after, and P3 
 | E-04 | Bar replay: play, pause, step, speed, forming candles, optional strategy signals | P2 | L | Opus 5.5 | Sonnet 5.5 (supervised) | Haiku 5.5 |
 | E-07 | Nightly reconciliation of stream bars with broker history, gaps logged | P2 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | E-08 | Continuous aggregates for 5m, 15m, 1h, 4h, 1d from 1-minute bars | P2 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
-| E-10 | OANDA transaction stream for instant fills | P2 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
+| E-10 | OANDA transaction stream for instant fills (built: fills are stored as they happen while Fills sync is on; the poll stays on as the record) | P2 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
 | E-11 | IG Lightstreamer: prices, candles, trade confirms, account updates | P2 | L | Opus 5.5 | Sonnet 5.5 (supervised) | Haiku 5.5 |
 | E-13 | Alpaca WebSockets: market data and `trade_updates` | P2 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | E-15 | Bid and ask bars (OANDA `price=BA` and others) and spread-aware backtests | P2 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |

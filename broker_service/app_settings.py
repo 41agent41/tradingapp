@@ -24,6 +24,7 @@ KEYS = (
     "BROKER_PROBE_INTERVAL_SECONDS",
     "STREAM_POLL_SECONDS",
     "TICK_STREAM_MAXLEN",
+    "FILL_STREAM_ENABLED",
 )
 
 _values: Dict[str, str] = {}
@@ -54,6 +55,12 @@ def get(name: str) -> Optional[str]:
 
 def live_trading_enabled() -> bool:
     return (get("LIVE_TRADING_ENABLED") or "false").lower() == "true"
+
+
+def fill_stream_enabled() -> bool:
+    """Whether fills are streamed. The backend sends true while its executions
+    sync is on; until it has, nothing is streamed."""
+    return (get("FILL_STREAM_ENABLED") or "false").lower() == "true"
 
 
 def order_place_wait_seconds() -> int:

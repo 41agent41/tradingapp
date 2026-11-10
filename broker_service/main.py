@@ -24,6 +24,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from fill_streaming import fill_stream_loop, fill_streamer
 from ib_client import IB_CLIENT_ID, IB_HOST, IB_PORT, disconnect_ib
 from observability import attach_observability, get_logger
 from orders import router as orders_router
@@ -49,13 +50,17 @@ async def lifespan(app: FastAPI):
 
     # Broker connectivity is checked here, inside the app, never at deploy.
     probe_task = asyncio.create_task(probe_loop())
+    # Fills from brokers that stream them (OANDA), while executions sync is on.
+    fill_task = asyncio.create_task(fill_stream_loop())
 
     yield
 
     logger.info("Shutting down Broker Service...")
-    probe_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await probe_task
+    for task in (probe_task, fill_task):
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    fill_streamer.stop_all()
     venue_streamer.stop_all()
     disconnect_ib()
 

@@ -454,6 +454,12 @@ Schedulers and data) the backend closes that gap:
   `execDetails` + `commissionReport`, Alpaca via `FILL` activities, OANDA via
   `ORDER_FILL` transactions, MT5 via the sidecar's deals). A backend poller
   pulls each active venue on a timer into the `order_executions` table.
+- **Fills as they happen (OANDA).** While the sync is on, the broker service
+  also listens to OANDA's transaction stream on each OANDA connection and
+  passes every fill to the backend, which stores it within a second or so
+  instead of at the next poll. The stream adds speed only: the poll stays on
+  and picks up anything the stream missed, and a fill that arrives both ways
+  is stored once. Other brokers are polled only.
 - **Idempotent by design.** Every poll re-reads an overlapping window, because
   a fill can be reported late and IB delivers a fill's commission on a callback
   separate from the fill itself. Rows upsert on `(broker, exec_id)`, so

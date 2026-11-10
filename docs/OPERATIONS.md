@@ -431,6 +431,14 @@ and the run places nothing), or if you want `/api/account/executions` and
 - It polls only venues the app has traded at recently or has a running
   strategy on. The window overlaps on purpose so late fills are picked up;
   rows upsert on `(broker, broker_account, exec_id)`.
+- OANDA fills also arrive as they happen, over OANDA's transaction stream,
+  while the sync is on. To check it, `GET /account/executions/stream/status`
+  on the broker service lists each OANDA connection with `listening`, a fill
+  count and its `last_error`; `/api/health` on the backend shows the same
+  under `services.executions.stream` (`listening`, `received`, `stored`). A stream
+  that is down costs nothing but speed: the poll still records every fill.
+  Fills streamed while Redis or the backend is down are not replayed; the
+  next poll brings them in.
 - A position is the recorded fills plus the unfilled part of working orders.
   `ORDER_MAX_POSITION` caps the whole account, so manual trades count.
 - IB reports times in the Gateway's zone (`IB_TIMEZONE`, default UTC). Run

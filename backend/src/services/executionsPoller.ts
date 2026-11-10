@@ -293,46 +293,7 @@ export class ExecutionsPoller {
     const label = connectionLabel(broker, brokerAccount);
     try {
       const rows = await this.deps.fetchExecutions(connection, this.lookbackDays);
-      const accountMode = defaultAccountMode();
-      this.fetched += rows.length;
-      let newRows = 0;
-      for (const row of rows) {
-        if (!row?.exec_id || !row?.symbol) continue;
-        try {
-          const { inserted } = await this.deps.upsert({
-            broker: row.broker || broker,
-            // Always the connection we polled, never a value from the payload:
-            // the venue reports its own fill ids without knowing which of our
-            // accounts it is, and mis-attributing one would recreate the
-            // collision the connection-scoped key exists to prevent.
-            broker_account: brokerAccount,
-            account_mode: accountMode,
-            exec_id: String(row.exec_id),
-            broker_order_id: row.order_id != null ? String(row.order_id) : null,
-            order_audit_id_hint:
-              typeof row.audit_id === 'number' && row.audit_id > 0 ? row.audit_id : null,
-            symbol: row.symbol,
-            side: row.side,
-            quantity: Number(row.quantity),
-            price: Number(row.price),
-            commission: row.commission ?? null,
-            realized_pnl: row.realized_pnl ?? null,
-            currency: row.currency ?? 'USD',
-            executed_at: row.executed_at,
-            raw: row as unknown as Record<string, unknown>,
-          });
-          if (inserted) newRows++;
-        } catch (rowErr) {
-          // One malformed fill must not abandon the rest of the batch.
-          this.errors++;
-          this.lastError = rowErr instanceof Error ? rowErr.message : String(rowErr);
-          logger.error(
-            { connection: label, exec_id: row.exec_id, err: this.lastError },
-            'execution upsert failed'
-          );
-        }
-      }
-      this.inserted += newRows;
+      const newRows = await this.store(connection, rows);
       if (newRows > 0) {
         logger.info(
           { connection: label, new_fills: newRows, seen: rows.length },
@@ -343,6 +304,77 @@ export class ExecutionsPoller {
       this.errors++;
       this.lastError = err instanceof Error ? err.message : String(err);
       logger.error({ connection: label, err: this.lastError }, 'executions sync failed');
+    }
+  }
+
+  /** Upsert fills from one connection; returns how many were new. */
+  private async store(connection: Connection, rows: RemoteExecution[]): Promise<number> {
+    const { broker, brokerAccount } = connection;
+    const label = connectionLabel(broker, brokerAccount);
+    const accountMode = defaultAccountMode();
+    this.fetched += rows.length;
+    let newRows = 0;
+    for (const row of rows) {
+      if (!row?.exec_id || !row?.symbol) continue;
+      try {
+        const { inserted } = await this.deps.upsert({
+          broker: row.broker || broker,
+          // Always the connection we polled, never a value from the payload:
+          // the venue reports its own fill ids without knowing which of our
+          // accounts it is, and mis-attributing one would recreate the
+          // collision the connection-scoped key exists to prevent.
+          broker_account: brokerAccount,
+          account_mode: accountMode,
+          exec_id: String(row.exec_id),
+          broker_order_id: row.order_id != null ? String(row.order_id) : null,
+          order_audit_id_hint:
+            typeof row.audit_id === 'number' && row.audit_id > 0 ? row.audit_id : null,
+          symbol: row.symbol,
+          side: row.side,
+          quantity: Number(row.quantity),
+          price: Number(row.price),
+          commission: row.commission ?? null,
+          realized_pnl: row.realized_pnl ?? null,
+          currency: row.currency ?? 'USD',
+          executed_at: row.executed_at,
+          raw: row as unknown as Record<string, unknown>,
+        });
+        if (inserted) newRows++;
+      } catch (rowErr) {
+        // One malformed fill must not abandon the rest of the batch.
+        this.errors++;
+        this.lastError = rowErr instanceof Error ? rowErr.message : String(rowErr);
+        logger.error(
+          { connection: label, exec_id: row.exec_id, err: this.lastError },
+          'execution upsert failed'
+        );
+      }
+    }
+    this.inserted += newRows;
+    return newRows;
+  }
+
+  /**
+   * Store fills the broker pushed (see fillStream.ts) without waiting for the
+   * next poll, then link them to their orders. Never throws. The poll still
+   * runs and remains the record; a fill seen both ways is stored once.
+   */
+  async ingest(connection: Connection, rows: RemoteExecution[]): Promise<number> {
+    try {
+      const newRows = await this.store(connection, rows);
+      if (newRows > 0) this.relinked += await this.deps.relinkOrphans();
+      return newRows;
+    } catch (err) {
+      this.errors++;
+      this.lastError = err instanceof Error ? err.message : String(err);
+      logger.error(
+        {
+          connection: connectionLabel(connection.broker, connection.brokerAccount),
+          err: this.lastError,
+        },
+        'streamed fill could not be stored'
+      );
+      return 0;
     }
   }
 
