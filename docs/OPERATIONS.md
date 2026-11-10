@@ -368,6 +368,21 @@ To have the bars there already, add the instrument and timeframe to the data
 collection table with **History from** set
 ([INSTALL.md step 5](INSTALL.md#5-market-data)).
 
+A 5-minute to 1-hour backtest needs no fetch when the range is covered by
+1-minute bars: it runs on bars built from them, and the results header says
+so. These bars come from the views `bars_5min`, `bars_15min`, `bars_30min`,
+`bars_1hour`, `bars_4hour` and `bars_1day`, which TimescaleDB keeps up to
+date by itself. To see them:
+
+```bash
+docker compose exec postgres psql -U tradingapp -d tradingapp -c \
+  "SELECT view_name, materialized_only FROM timescaledb_information.continuous_aggregates;"
+```
+
+After the upgrade that adds them (migration `008_built_bars`) the views are
+filled in the background within the hour. They answer correctly before that,
+only more slowly.
+
 To check two runs used the same data, compare the data hash in their results
 headers, or `data.hash` from `GET /api/backtesting/runs/<id>`.
 

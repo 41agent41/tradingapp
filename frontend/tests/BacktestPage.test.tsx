@@ -130,5 +130,13 @@ describe('describeRunData', () => {
         complete: true,
       })
     ).toBe('Stored bars, 2026-01-05 to 2026-02-01. Data hash 0123456789ab');
+    expect(
+      describeRunData({
+        source: 'stored',
+        built_from: '1min',
+        first_bar: '2026-01-05T00:00:00.000Z',
+        last_bar: '2026-02-01T00:00:00.000Z',
+      })
+    ).toBe('Bars built from stored 1 minute bars, 2026-01-05 to 2026-02-01');
   });
 });

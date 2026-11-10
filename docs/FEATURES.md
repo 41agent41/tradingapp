@@ -197,6 +197,19 @@ plus every **saved rule-set** authored in the `/systematic` rule builder. See
   API) or `start_date` and `end_date`. One run can load up to 2,000,000
   bars. The backend reads the bars and sends them to the broker service
   with the run; the broker service has no access to the database.
+- **Bars built from 1 minute.** The database keeps 5-minute, 15-minute,
+  30-minute, 1-hour, 4-hour and daily bars built from the stored 1-minute
+  bars (the views `bars_5min` to `bars_1day`): first open, highest high,
+  lowest low, last close and summed volume of the minutes inside each bar.
+  They follow the 1-minute bars within the hour, and at once for a backtest.
+  A backtest on 5 minutes to 1 hour uses the broker's own bars for that
+  timeframe when they cover the range. When they do not and the 1-minute
+  bars do, it runs on the built bars and asks nothing; the results header
+  then reads "Bars built from stored 1 minute bars" and the run records
+  `built_from: "1min"`. So an instrument recorded or collected at 1 minute
+  needs no other intraday timeframe collected. Built bars start on UTC
+  boundaries. A broker's 4-hour and daily bars follow its server or session
+  time, so a backtest on those timeframes always uses the broker's own.
 - **A run can be repeated on the same data.** Each run records where its bars
   came from, how many, the first and last bar, and a SHA-256 of exactly
   those bars (`backtest_runs.data`). The results header shows the range and

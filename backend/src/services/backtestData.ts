@@ -9,6 +9,12 @@
  *
  * The backend sends the bars to the broker service with the run; the broker
  * service never reads the database.
+ *
+ * Built bars (E-08): migration 008 keeps 5-minute to daily bars built from
+ * the stored 1-minute bars. A backtest on 5 minutes to 1 hour can run on
+ * those, so an instrument recorded at 1 minute needs no other timeframe
+ * collected. Which kind a run prefers is `PREFER`; the run records which it
+ * used (`built_from`).
  */
 import { createHash } from 'crypto';
 
@@ -23,6 +29,29 @@ export const GAP_DAYS = 5;
 /** The most bars one run may load: over 5 years of 1-minute FX. */
 export const MAX_BARS = 2_000_000;
 const MAX_GAPS = 50;
+
+/** The view of bars built from 1-minute bars, per timeframe (migration 008). */
+export const BUILT_VIEWS: Record<string, string> = {
+  '5min': 'bars_5min',
+  '15min': 'bars_15min',
+  '30min': 'bars_30min',
+  '1hour': 'bars_1hour',
+  '4hour': 'bars_4hour',
+  '1day': 'bars_1day',
+};
+/**
+ * The timeframes a backtest may run on built bars. Built bars start on UTC
+ * boundaries, which is where every broker starts these. A broker's 4-hour and
+ * daily bars follow its server or session time, so a built one is a different
+ * bar from the one a live strategy sees; those two are never substituted.
+ */
+export const BUILT_FOR_BACKTESTS = new Set(['5min', '15min', '30min', '1hour']);
+/**
+ * Which bars a backtest uses when both kinds cover its range: the broker's
+ * own for the timeframe (what a live strategy reads), or the built ones.
+ * Either way the other kind is used when the preferred one has holes.
+ */
+export const PREFER: 'broker' | 'built' = 'broker';
 
 export class BacktestDataError extends Error {
   constructor(
@@ -65,6 +94,9 @@ export interface Coverage {
   /** Stretches longer than GAP_DAYS with no stored bar. */
   missing: MissingRange[];
   complete: boolean;
+  /** Set when this describes the 1-minute bars the timeframe's bars would be
+   *  built from; `bars` then counts 1-minute bars. */
+  built_from?: '1min';
 }
 
 /** Bars as the broker service takes them: one array per field, oldest first. */
@@ -194,9 +226,44 @@ export class BacktestData {
     };
   }
 
-  async coverage(inst: Instrument, timeframe: string, range: DataRange): Promise<Coverage> {
+  /**
+   * How well stored bars cover a range, for the kind of bars a run would use:
+   * the preferred kind when it covers the range, the other kind when only
+   * that one does, and otherwise the broker's own (the kind a fetch fills).
+   */
+  async coverage(
+    inst: Instrument,
+    timeframe: string,
+    range: DataRange,
+    prefer: 'broker' | 'built' = PREFER
+  ): Promise<Coverage> {
+    const own = await this.ownCoverage(inst, timeframe, range);
+    if (!BUILT_FOR_BACKTESTS.has(timeframe)) return own;
+    if (prefer === 'broker' && own.complete) return own;
+    const built = await this.builtCoverage(inst, timeframe, range);
+    if (built.complete) return built;
+    return own;
+  }
+
+  /** Coverage by the broker's own bars for the timeframe. */
+  private async ownCoverage(
+    inst: Instrument,
+    timeframe: string,
+    range: DataRange
+  ): Promise<Coverage> {
     const contract = await this.findContract(inst, timeframe, range);
     return this.coverageOf(contract?.id ?? null, timeframe, range);
+  }
+
+  /** Coverage by the 1-minute bars a timeframe's bars are built from. */
+  private async builtCoverage(
+    inst: Instrument,
+    timeframe: string,
+    range: DataRange
+  ): Promise<Coverage> {
+    const contract = await this.findContract(inst, '1min', range);
+    const base = await this.coverageOf(contract?.id ?? null, '1min', range);
+    return { ...base, timeframe, built_from: '1min' };
   }
 
   private async coverageOf(
@@ -278,9 +345,10 @@ export class BacktestData {
    * (it predates the broker's history) stays missing.
    */
   async fetchMissing(inst: Instrument, timeframe: string, range: DataRange): Promise<Coverage> {
+    const chosen = await this.coverage(inst, timeframe, range);
+    if (chosen.complete) return chosen;
     let contract = await this.findContract(inst, timeframe, range);
     const before = await this.coverageOf(contract?.id ?? null, timeframe, range);
-    if (before.complete) return before;
 
     if (!contract) {
       const account = inst.account ?? 'default';
@@ -344,17 +412,41 @@ export class BacktestData {
     return this.coverageOf(contract.id, timeframe, range);
   }
 
-  /** The stored bars of a contract in a range, oldest first, with their hash. */
-  async load(contractId: number, timeframe: string, range: DataRange): Promise<LoadedBars> {
-    const { rows } = await this.deps.db.query(
-      `SELECT extract(epoch FROM timestamp)::bigint AS t, open::float8 AS o, high::float8 AS h,
-              low::float8 AS l, close::float8 AS c, volume::float8 AS v
-         FROM candlestick_data
-        WHERE contract_id = $1 AND timeframe = $2 AND timestamp >= $3 AND timestamp < $4
-        ORDER BY timestamp
-        LIMIT ${MAX_BARS + 1}`,
-      [contractId, timeframe, range.start, range.end]
-    );
+  /**
+   * The stored bars of a contract in a range, oldest first, with their hash.
+   * With `builtFrom`, the bars built from the contract's 1-minute bars.
+   */
+  async load(
+    contractId: number,
+    timeframe: string,
+    range: DataRange,
+    builtFrom?: '1min'
+  ): Promise<LoadedBars> {
+    const fields = `open::float8 AS o, high::float8 AS h, low::float8 AS l, close::float8 AS c,
+              volume::float8 AS v`;
+    let rows: Array<Record<string, unknown>>;
+    if (builtFrom) {
+      const view = BUILT_VIEWS[timeframe];
+      if (!view) throw new BacktestDataError(`No built bars for timeframe ${timeframe}.`);
+      await this.refreshBuilt(view, range);
+      ({ rows } = await this.deps.db.query(
+        `SELECT extract(epoch FROM bucket)::bigint AS t, ${fields}
+           FROM ${view}
+          WHERE contract_id = $1 AND bucket >= $2 AND bucket < $3
+          ORDER BY bucket
+          LIMIT ${MAX_BARS + 1}`,
+        [contractId, range.start, range.end]
+      ));
+    } else {
+      ({ rows } = await this.deps.db.query(
+        `SELECT extract(epoch FROM timestamp)::bigint AS t, ${fields}
+           FROM candlestick_data
+          WHERE contract_id = $1 AND timeframe = $2 AND timestamp >= $3 AND timestamp < $4
+          ORDER BY timestamp
+          LIMIT ${MAX_BARS + 1}`,
+        [contractId, timeframe, range.start, range.end]
+      ));
+    }
     if (rows.length > MAX_BARS) {
       throw new BacktestDataError(
         `That range holds more than ${MAX_BARS.toLocaleString('en-US')} bars. Shorten the range or use a longer timeframe.`
@@ -378,5 +470,22 @@ export class BacktestData {
       last_bar: iso(bars.t[bars.t.length - 1]),
       hash: barsHash(bars),
     };
+  }
+
+  /**
+   * Brings a view up to date over a range before it is read. The view computes
+   * recent bars on the fly, but 1-minute bars stored or replaced further back
+   * (a backfill, the nightly reconcile) only show once that stretch is
+   * refreshed, which the view's own policy does on a schedule. A refresh with
+   * nothing to do returns at once. It cannot run inside a transaction.
+   */
+  private async refreshBuilt(view: string, range: DataRange): Promise<void> {
+    // Whole UTC days cover whole buckets of every timeframe.
+    const from = Math.floor(range.start.getTime() / DAY_MS) * DAY_MS;
+    const to = (Math.floor(range.end.getTime() / DAY_MS) + 1) * DAY_MS;
+    await this.deps.db.query(
+      `CALL refresh_continuous_aggregate('${view}', $1::timestamptz, $2::timestamptz)`,
+      [new Date(from), new Date(to)]
+    );
   }
 }

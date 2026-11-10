@@ -39,6 +39,8 @@ export interface BacktestRunData {
   hash?: string | null;
   /** False when the run went ahead with bars missing from its range. */
   complete?: boolean | null;
+  /** Set when the bars were built from stored 1-minute bars (E-08). */
+  built_from?: '1min' | null;
 }
 
 export interface BacktestRunRow {

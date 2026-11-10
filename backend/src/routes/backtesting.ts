@@ -354,7 +354,7 @@ router.post('/run', async (req: Request, res: Response) => {
           coverage,
         });
       }
-      loaded = await barData.load(coverage.contract_id, timeframe, range);
+      loaded = await barData.load(coverage.contract_id, timeframe, range, coverage.built_from);
     }
 
     const body = {
@@ -398,6 +398,7 @@ router.post('/run', async (req: Request, res: Response) => {
             last_bar: loaded.last_bar,
             hash: loaded.hash,
             complete: coverage.complete,
+            ...(coverage.built_from ? { built_from: coverage.built_from } : {}),
           }
         : { source: 'broker', bars: payload.data_points ?? null };
 

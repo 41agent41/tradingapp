@@ -507,6 +507,61 @@ describe('POST /api/backtesting/run on stored bars', () => {
     );
   });
 
+  it('runs on bars built from 1-minute bars when the timeframe itself is not stored', async () => {
+    const built = Array.from({ length: 96 }, (_, i) => ({
+      t: T0 + i * HOUR,
+      o: 1.1,
+      h: 1.2,
+      l: 1.0,
+      c: 1.15,
+      v: 600,
+    }));
+    const calls: string[] = [];
+    (dbService.query as jest.Mock).mockImplementation(async (sql: string, params: unknown[]) => {
+      calls.push(sql);
+      if (sql.includes('FROM contracts')) {
+        return { rows: [{ id: 31, broker_account: 'default', sec_type: 'CASH' }] };
+      }
+      if (sql.includes('min(timestamp)')) {
+        // Nothing stored at 1 hour; every minute of the range at 1 minute.
+        return {
+          rows: [
+            params[1] === '1min'
+              ? {
+                  bars: 5760,
+                  first: new Date(T0 * 1000),
+                  last: new Date((T0 + 96 * HOUR - 60) * 1000),
+                }
+              : { bars: 0, first: null, last: null },
+          ],
+        };
+      }
+      if (sql.includes('FROM bars_1hour')) return { rows: built };
+      return { rows: [] };
+    });
+    axiosMock.post.mockResolvedValueOnce(OK);
+
+    const res = await request(buildApp())
+      .post('/api/backtesting/run')
+      .send({ symbol: 'EUR_USD', strategy: 'ma_crossover', source: 'oanda', ...RANGE });
+
+    expect(res.status).toBe(200);
+    expect((axiosMock.post.mock.calls[0][1] as any).bars.v[0]).toBe(600);
+    expect(res.body.data).toMatchObject({
+      source: 'stored',
+      built_from: '1min',
+      bars: 96,
+      complete: true,
+    });
+    // The view is brought up to date over the range before it is read.
+    const refresh = calls.findIndex((q) => q.includes("refresh_continuous_aggregate('bars_1hour'"));
+    expect(refresh).toBeGreaterThan(-1);
+    expect(refresh).toBeLessThan(calls.findIndex((q) => q.includes('FROM bars_1hour')));
+    expect(repoMock.__insert).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ built_from: '1min' }) })
+    );
+  });
+
   it('says so when nothing is stored and nothing may be fetched', async () => {
     storedBars({ count: 0, contract: false });
     const res = await request(buildApp())
