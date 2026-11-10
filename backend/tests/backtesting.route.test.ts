@@ -289,6 +289,18 @@ describe('POST /api/backtesting/run — validation', () => {
     );
   });
 
+  it('does not keep a run sent with save: false', async () => {
+    axiosMock.post.mockResolvedValueOnce({
+      data: { success: true, results: { equity_curve: [], trades_summary: [] }, data_points: 5 },
+    });
+    const res = await request(buildApp())
+      .post('/api/backtesting/run')
+      .send({ symbol: 'MSFT', strategy: 'ma_crossover', data: 'broker', save: false });
+    expect(res.status).toBe(200);
+    expect(res.body.persisted_id).toBeNull();
+    expect(repoMock.__insert).not.toHaveBeenCalled();
+  });
+
   it('still returns 200 even if the persistence insert throws', async () => {
     repoMock.__insert.mockRejectedValueOnce(new Error('db down'));
 

@@ -32,6 +32,7 @@ a configuration impossibility rather than something operators must remember.
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 from fastapi import HTTPException
@@ -115,6 +116,10 @@ _broker: Dict[tuple[str, str], BrokerAdapter] = {}
 _connections: Dict[tuple[str, str], Connection] = {}
 _defaults: Dict[str, str] = {}  # platform -> default account
 _bootstrapped = False
+# Requests run on worker threads. Without this, a reset arriving while another
+# thread is registering leaves the registry empty but marked as built, and
+# every connection stays unavailable until the next reset.
+_registry_lock = threading.RLock()
 
 
 def register(
@@ -215,6 +220,14 @@ def _bootstrap() -> None:
     global _bootstrapped
     if _bootstrapped:
         return
+    with _registry_lock:
+        _bootstrap_locked()
+
+
+def _bootstrap_locked() -> None:
+    global _bootstrapped
+    if _bootstrapped:
+        return
 
     import managed
 
@@ -278,11 +291,12 @@ def reset_registry() -> None:
     """Drop all registrations so the next resolve re-bootstraps. Test-only —
     lets a test change the manifest and re-derive availability."""
     global _bootstrapped
-    _market_data.clear()
-    _broker.clear()
-    _connections.clear()
-    _defaults.clear()
-    _bootstrapped = False
+    with _registry_lock:
+        _market_data.clear()
+        _broker.clear()
+        _connections.clear()
+        _defaults.clear()
+        _bootstrapped = False
 
 
 # --------------------------------------------------------------------------- #

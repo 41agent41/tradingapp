@@ -201,6 +201,47 @@ run('backtest data (real database)', () => {
       expect(await data.minutes({ ...built, symbol: `NO${tag}` }, two)).toBeNull();
     });
 
+    it('gives a replay its 1-minute bars and the built bars before them', async () => {
+      // Asked for 01:20 on the second day at 1 hour: starts at 01:00.
+      const start = new Date(T0 + DAY + 80 * MIN);
+      const r = await data.replay(built, '1hour', start, 90);
+      expect(r.contract_id).toBe(id);
+      expect(r.start).toBe(new Date(T0 + DAY + HOUR).toISOString());
+      expect(r.minutes.t).toHaveLength(90);
+      expect(r.minutes.t[0]).toBe((T0 + DAY + HOUR) / 1000);
+      expect(r.more).toBe(true);
+      expect(r.stored).toEqual({
+        first: new Date(T0).toISOString(),
+        last: new Date(T0 + 2 * DAY - MIN).toISOString(),
+      });
+      // The 25 hours before it, oldest first, built from the minutes.
+      expect(r.history.t).toHaveLength(25);
+      expect(r.history.t[0]).toBe(T0 / 1000);
+      expect(r.history.t[24]).toBe((T0 + DAY) / 1000);
+      expect(r.history.o[24]).toBe(100 + 24 * 60);
+      expect(r.history.c[24]).toBe(100.5 + 24 * 60 + 59);
+
+      // To the end of what is stored; at 1 minute the history is the minutes.
+      const tail = await data.replay(built, '1min', new Date(T0 + 2 * DAY - 10 * MIN));
+      expect(tail.minutes.t).toHaveLength(10);
+      expect(tail.more).toBe(false);
+      expect(tail.history.t).toHaveLength(300);
+      expect(tail.history.t[299]).toBe((T0 + 2 * DAY - 11 * MIN) / 1000);
+    });
+
+    it('says what is stored when a replay starts past it, or nothing is', async () => {
+      await expect(data.replay(built, '5min', new Date(T0 + 3 * DAY))).rejects.toMatchObject({
+        status: 404,
+        message: expect.stringContaining('They are stored from 2025-03-03 to 2025-03-04'),
+      });
+      await expect(
+        data.replay({ ...built, symbol: `NO${tag}` }, '5min', new Date(T0))
+      ).rejects.toMatchObject({ status: 404 });
+      await expect(data.replay(built, '8hour', new Date(T0))).rejects.toMatchObject({
+        status: 400,
+      });
+    });
+
     it('never substitutes a 4-hour or daily bar', async () => {
       for (const timeframe of ['4hour', '1day']) {
         const c = await data.coverage(built, timeframe, two);

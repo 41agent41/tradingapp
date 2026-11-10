@@ -399,6 +399,25 @@ streams are now per broker connection, and their channel names changed.
 Reload any chart tab left open across the upgrade. Nothing is recorded
 until you tick Record live on an entry.
 
+### Bar replay
+
+The Bar Replay page ([FEATURES.md § Bar replay](FEATURES.md#bar-replay))
+plays stored 1-minute bars.
+
+- **"No 1 minute bars are stored for ..."** The instrument has none at that
+  broker. Tick **Record live** for it, or add it to the data collection
+  table at 1 minute with **History from** set, and choose the same
+  connection on the replay page.
+- **"... They are stored from A to B."** The start is after the last stored
+  bar. Choose a start inside that range.
+- **The candles before the start are missing or few.** They come from the
+  views built from 1-minute bars, so there are only as many as there is
+  1-minute history before the start.
+- **A strategy's trades could not be worked out.** The message gives the
+  backtest's reason. On 4-hour and daily candles a backtest needs the
+  broker's own bars for that timeframe stored; on 5 minutes to 1 hour the
+  stored 1-minute bars are enough.
+
 ## Executions (fills) sync
 
 Without the sync, positions and P&L are estimated from submitted orders,

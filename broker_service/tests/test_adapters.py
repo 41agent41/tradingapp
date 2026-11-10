@@ -135,3 +135,29 @@ def test_ib_adapter_cancel_and_modify_delegate(monkeypatch):
     adapter = IBAdapter()
     assert adapter.cancel_order(42) == {"order_id": 42, "cancel": True}
     assert adapter.modify_order(42, {"symbol": "MSFT"}) == {"order_id": 42, "modify": True}
+
+
+def test_a_reset_during_registration_does_not_leave_the_registry_empty(adapters_mod):
+    """The app's connections arrive (and reset the registry) while another
+    request is still registering: the registry must be rebuilt afterwards, not
+    left empty and marked as built."""
+    import threading
+
+    resets = []
+
+    class ResetWhileLogging:
+        def info(self, event, **_):
+            if event == "connections_registered" and not resets:
+                t = threading.Thread(target=adapters_mod.reset_registry)
+                resets.append(t)
+                t.start()
+                t.join(timeout=0.3)  # blocked until registration finishes
+
+        def __getattr__(self, _name):
+            return lambda *a, **k: None
+
+    adapters_mod.logger = ResetWhileLogging()
+    assert [c.platform for c in adapters_mod.list_connections()] == ["ib"]
+    resets[0].join(timeout=5)
+    assert not resets[0].is_alive()
+    assert [c.platform for c in adapters_mod.list_connections()] == ["ib"]

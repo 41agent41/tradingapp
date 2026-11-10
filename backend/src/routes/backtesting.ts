@@ -37,10 +37,8 @@ import { BacktestRunRepository, type BacktestRunData } from '../services/backtes
 import { StrategyRepository } from '../services/strategyRepository.js';
 import { backtestRunsPersisted } from '../services/metrics.js';
 import { defaultBroker } from '../services/orderTypes.js';
-import { marketDataService } from '../services/marketDataService.js';
-import { fetchBrokerHistory, historyChunkDays } from '../services/backfillScheduler.js';
+import { storedBars as barData } from '../services/storedBars.js';
 import {
-  BacktestData,
   BacktestDataError,
   resolveRange,
   type Coverage,
@@ -79,14 +77,6 @@ const VALID_SEC_TYPES = new Set([
 
 const runs = new BacktestRunRepository(dbService);
 const definitions = new StrategyRepository(dbService);
-const barData = new BacktestData({
-  db: dbService,
-  getOrCreateContract: (c) => marketDataService.getOrCreateContract(c),
-  fetchHistory: fetchBrokerHistory,
-  storeCandlestickData: (id, timeframe, bars) =>
-    marketDataService.storeCandlestickData(id, timeframe, bars),
-  chunkDays: historyChunkDays,
-});
 
 const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
 
@@ -197,6 +187,7 @@ router.post('/run', async (req: Request, res: Response) => {
       data: rawData,
       on_missing: rawOnMissing,
       intrabar: rawIntrabar,
+      save: rawSave,
     } = req.body || {};
 
     const dataMode = String(rawData || 'stored');
@@ -432,6 +423,12 @@ router.post('/run', async (req: Request, res: Response) => {
     // insert errors — the run itself succeeded; the persistence is a side
     // effect, not the user's contract.
     let persisted_id: number | null = null;
+    // `save: false` runs without keeping the run: the bar replay asks for a
+    // strategy's trades over a short stretch, which is not a result to list
+    // beside real backtests or to count toward a definition's promotion.
+    if (rawSave === false) {
+      return res.json({ ...payload, persisted_id, data: { ...runData, coverage } });
+    }
     try {
       const row = await runs.insert({
         strategy: strategyLabel,

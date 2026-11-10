@@ -113,6 +113,38 @@ recomputed live. Streams are per broker connection, so EURUSD from OANDA and
 EURUSD from an MT5 account can be charted side by side. A chart left on "By
 broker priority" joins the stream a symbol already has, if there is one.
 
+### Bar replay
+
+`/replay` plays stored 1-minute bars back onto a chart, so each candle forms
+minute by minute as it did at the time. Nothing is fetched from a broker: a
+replay shows what the database holds, so the instrument needs 1-minute bars
+stored (recorded live, or collected at 1 minute).
+
+- **Choose** a symbol, a connection, the candle size (1 minute to 1 day) and
+  a start time in UTC. The start is moved back to the start of its candle.
+  The address holds the choice, so a replay can be bookmarked.
+- **Controls:** Play and Pause, Step one minute, Step one bar, Back one bar,
+  Restart, a position slider, and a speed from 1x to 100x. 1x plays one
+  minute of market each second. The line under the controls shows the
+  replay's clock and the forming candle's open, high, low and close.
+- **What is drawn.** The 300 candles before the start come from the bars
+  built from 1-minute bars (`bars_5min` to `bars_1day`), and the replayed
+  candles are formed on the same UTC boundaries, so they continue the
+  history exactly. A replay never draws anything from after its clock.
+- **One load** holds up to 50,000 1-minute bars, about five weeks of FX.
+  When more is stored after that, the page offers to continue from there.
+- **A strategy's trades.** Pick a saved definition under "Show a strategy's
+  trades" and the page backtests it on the stored bars at the replay's
+  candle size, starting 300 candles early to warm its indicators up. Each
+  entry and exit appears when the replay reaches it: a rule's decision when
+  its candle has closed, a stop on the minute it filled. That backtest is
+  not saved (`"save": false`), so it does not show among backtest runs or
+  count toward a definition's promotion.
+- **API:** `GET /api/market-data/replay?symbol=&timeframe=&start=` with
+  optional `source`, `account`, `secType` and `limit`. It answers `minutes`
+  and `history` as columns, `more`, and the first and last 1-minute bar
+  stored; `404` with what is stored when nothing is stored from `start`.
+
 ### Real-time streaming pipeline
 
 A genuine end-to-end tick stream backs the real-time views (no polling):
@@ -847,6 +879,7 @@ describes adding another.
 | `/api/backtesting/strategies` | GET | Available backtest strategies (cached 1h) |
 | `/api/backtesting/run` | POST | Run a backtest on stored bars: by `strategy` key, saved `definition_id` or inline `rule_set`; `409` with the coverage when bars are missing |
 | `/api/backtesting/coverage` | GET | How well stored bars cover an instrument, timeframe and range |
+| `/api/market-data/replay` | GET | Stored 1-minute bars from a start time, and the candles before it, for bar replay |
 | `/api/backtesting/runs` | GET | List persisted runs (filterable, paginated) |
 | `/api/backtesting/runs/:id` | GET | Full record for a persisted run |
 | `/api/export/parquet` | POST | Convert `{ columns, rows }` to a Parquet download |
