@@ -64,6 +64,9 @@ class BacktestRunBody(BaseModel):
 
     rule_set: Dict[str, Any] | None = None
     bars: BarColumns | None = None
+    # 1-minute bars over the same range, for filling a protective stop on the
+    # minute that reached it (see ``BacktestEngine.run_backtest``).
+    minute_bars: BarColumns | None = None
 
 
 class BarColumns(BaseModel):
@@ -80,24 +83,24 @@ class BarColumns(BaseModel):
 BacktestRunBody.model_rebuild()
 
 
-def _supplied_bars(bars: BarColumns) -> pd.DataFrame:
+def _supplied_bars(bars: BarColumns, name: str = "bars") -> pd.DataFrame:
     """The bars sent with the request as the frame the engine takes."""
 
     n = len(bars.t)
     if not (len(bars.o) == len(bars.h) == len(bars.l) == len(bars.c) == n):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="bars: t, o, h, l and c must be lists of the same length.",
+            detail=f"{name}: t, o, h, l and c must be lists of the same length.",
         )
     if bars.v and len(bars.v) != n:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="bars: v must be empty or as long as t.",
+            detail=f"{name}: v must be empty or as long as t.",
         )
     if any(b <= a for a, b in zip(bars.t, bars.t[1:], strict=False)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="bars: t must be strictly increasing (oldest bar first).",
+            detail=f"{name}: t must be strictly increasing (oldest bar first).",
         )
     return pd.DataFrame(
         {
@@ -389,6 +392,11 @@ async def run_backtest(
         df = bars_data if isinstance(bars_data, pd.DataFrame) else pd.DataFrame(bars_data)
         df.index = pd.to_datetime(df["timestamp"], unit="s")
 
+        minute_df = None
+        if body and body.minute_bars is not None and body.minute_bars.t and timeframe != "1min":
+            minute_df = _supplied_bars(body.minute_bars, "minute_bars")
+            minute_df.index = pd.to_datetime(minute_df["timestamp"], unit="s")
+
         # Create backtest engine with specified parameters
         engine = backtest_engine.__class__(initial_capital=initial_capital, commission=commission)
 
@@ -419,7 +427,9 @@ async def run_backtest(
 
         # Run backtest
         try:
-            results = engine.run_backtest(df, strategy_instance, symbol, spec=spec)
+            results = engine.run_backtest(
+                df, strategy_instance, symbol, spec=spec, minute_bars=minute_df
+            )
         except StrategyError as exc:
             # A strategy-author error (bad order intent, unknown hyperparameter)
             # is the caller's to fix, not a service fault.

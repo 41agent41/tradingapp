@@ -81,8 +81,12 @@ def resolve_backtest_quantity(
     price: float,
     equity: float,
     spec: Optional[Dict[str, Any]] = None,
+    stop_price: Optional[float] = None,
 ) -> Tuple[Optional[float], str]:
     """Resolve a ``sizing`` block to a venue-native quantity for one entry.
+
+    ``stop_price`` is the protective stop the entry goes out with, when the
+    strategy declares one; ``risk_pct`` sizes from the distance to it.
 
     Returns ``(quantity, reason)``. A ``None`` quantity means "this block does
     not determine a size — use the engine's default", with ``reason`` saying
@@ -130,10 +134,22 @@ def resolve_backtest_quantity(
             return None, "pct_equity sizing needs positive equity"
         quantity = (size / 100.0) * equity / (price * contract_size)
     elif sizing_type == "risk_pct":
-        # Live, the size falls out of the distance to the stop and the venue's
-        # tick value (orderSizing.ts). The backtester has neither per entry, so
-        # it says so and takes the default rather than inventing a size.
-        return None, "risk_pct sizing is not simulated in backtest"
+        # Risk a fixed share of equity per trade: the size falls out of the
+        # distance to the stop, as it does live (orderSizing.ts). Live divides
+        # by the venue's tick value, which converts a quote-currency move into
+        # the account's currency; the backtest keeps its whole account in the
+        # quote currency, so contract size does that job here. Without a stop
+        # there is no distance, and the entry is refused as it is live.
+        if stop_price is None:
+            return 0, "risk_pct sizing needs a stop: declare a `stop` block on the rule-set"
+        if not math.isfinite(price) or price <= 0:
+            return None, "risk_pct sizing needs a positive price"
+        if not math.isfinite(equity) or equity <= 0:
+            return None, "risk_pct sizing needs positive equity"
+        distance = abs(price - stop_price)
+        if not distance > 0:
+            return 0, "risk_pct sizing needs a non-zero distance to the stop"
+        quantity = (size / 100.0) * equity / (distance * contract_size)
     else:
         return None, f"unknown sizing type '{sizing_type}'"
 

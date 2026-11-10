@@ -615,8 +615,9 @@ All four framing decisions are now resolved:
   higher-TF alignment are the usual sources of backtest↔live drift. Worth a
   dedicated parity test suite as A1 lands. *(Position-aware operands are now
   simulated — see A1's parity note. Sessions and multi-TF share one code path
-  between the two engines. Intrabar fills remain a known divergence: the
-  backtest fills at the bar close, live fills at the market.)*
+  between the two engines. Protective stops fill inside the bar since E-03 of
+  `ENHANCEMENT_PLAN.md`; entries and rule exits still fill at the bar close,
+  where live they fill at the market.)*
 - **MT5 account/equity source** for `pct_equity` sizing — confirm the sidecar
   exposes live account equity per run.
 

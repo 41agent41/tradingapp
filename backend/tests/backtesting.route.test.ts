@@ -562,6 +562,83 @@ describe('POST /api/backtesting/run on stored bars', () => {
     );
   });
 
+  describe('a rule-set with a protective stop', () => {
+    const STOP_RULES = {
+      name: 'stopped',
+      entry: { all: [{ left: 'close', op: '>', right: 0 }] },
+      exit: { all: [{ left: 'close', op: '<', right: 0 }] },
+      stop: { type: 'pct', pct: 1 },
+    };
+    const minuteRows = Array.from({ length: 120 }, (_, i) => ({
+      t: T0 + i * 60,
+      o: 1.1,
+      h: 1.2,
+      l: 1.0,
+      c: 1.15,
+      v: 1,
+    }));
+
+    /** Hourly bars as `storedBars` gives them, plus 1-minute bars. */
+    function withMinutes(rows: unknown[]) {
+      storedBars({ count: 96 });
+      const hourly = (dbService.query as jest.Mock).getMockImplementation()!;
+      (dbService.query as jest.Mock).mockImplementation(async (sql: string, params: unknown[]) =>
+        sql.includes('extract(epoch') && params[1] === '1min' ? { rows } : hourly(sql, params)
+      );
+    }
+
+    it('sends the stored 1-minute bars so the stop fills inside the bar', async () => {
+      withMinutes(minuteRows);
+      axiosMock.post.mockResolvedValueOnce({
+        data: { ...OK.data, results: { ...OK.data.results, fills: { model: '1min' } } },
+      });
+
+      const res = await request(buildApp())
+        .post('/api/backtesting/run')
+        .send({ symbol: 'EUR_USD', rule_set: STOP_RULES, source: 'oanda', ...RANGE });
+
+      expect(res.status).toBe(200);
+      const body = axiosMock.post.mock.calls[0][1] as any;
+      expect(body.bars.t).toHaveLength(96);
+      expect(body.minute_bars.t).toHaveLength(120);
+      expect(res.body.data).toMatchObject({ bars: 96, minute_bars: 120 });
+      expect(res.body.data.minute_hash).toMatch(/^[0-9a-f]{64}$/);
+      expect(res.body.data.minute_hash).not.toBe(res.body.data.hash);
+    });
+
+    it('runs without them when none are stored, when asked not to, and at 1 minute', async () => {
+      withMinutes([]);
+      axiosMock.post.mockResolvedValue(OK);
+      const run = { symbol: 'EUR_USD', rule_set: STOP_RULES, source: 'oanda', ...RANGE };
+
+      const none = await request(buildApp()).post('/api/backtesting/run').send(run);
+      expect(none.status).toBe(200);
+      expect((axiosMock.post.mock.calls[0][1] as any).minute_bars).toBeUndefined();
+      expect(none.body.data.minute_bars).toBeUndefined();
+
+      withMinutes(minuteRows);
+      await request(buildApp())
+        .post('/api/backtesting/run')
+        .send({ ...run, intrabar: false });
+      expect((axiosMock.post.mock.calls[1][1] as any).minute_bars).toBeUndefined();
+
+      await request(buildApp())
+        .post('/api/backtesting/run')
+        .send({ ...run, timeframe: '1min' });
+      expect((axiosMock.post.mock.calls[2][1] as any).minute_bars).toBeUndefined();
+    });
+
+    it('sends none for a rule-set without a stop', async () => {
+      withMinutes(minuteRows);
+      axiosMock.post.mockResolvedValueOnce(OK);
+      const { stop: _stop, ...noStop } = STOP_RULES;
+      await request(buildApp())
+        .post('/api/backtesting/run')
+        .send({ symbol: 'EUR_USD', rule_set: noStop, source: 'oanda', ...RANGE });
+      expect((axiosMock.post.mock.calls[0][1] as any).minute_bars).toBeUndefined();
+    });
+  });
+
   it('says so when nothing is stored and nothing may be fetched', async () => {
     storedBars({ count: 0, contract: false });
     const res = await request(buildApp())

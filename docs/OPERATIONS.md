@@ -383,6 +383,14 @@ After the upgrade that adds them (migration `008_built_bars`) the views are
 filled in the background within the hour. They answer correctly before that,
 only more slowly.
 
+A strategy with a protective stop is backtested most faithfully when 1-minute
+bars are stored for the range, because the stop then fills on the minute that
+reached it. The results header says which was used: "Stops filled along
+stored 1 minute bars" or "Stops filled on each bar's own range". For the
+first, record the instrument live or add it to the data collection table at
+1 minute. After this upgrade a rule-set that has a `stop` block backtests
+differently from before, because the stop used to be ignored.
+
 To check two runs used the same data, compare the data hash in their results
 headers, or `data.hash` from `GET /api/backtesting/runs/<id>`.
 

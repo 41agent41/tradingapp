@@ -20,6 +20,7 @@ import pandas as pd
 
 from indicators import calculator as indicator_calculator
 from sizing import resolve_backtest_quantity, round_to_step
+from stops import StopSpecError, is_more_protective, resolve_stop
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,10 @@ class BacktestResults:
     # Engine-specific extras (the Jesse runner reports its full statistics
     # block here). Empty for the built-in engine, so its payload is unchanged.
     metrics: Dict[str, Any] = field(default_factory=dict)
+    # How fills were simulated: whether a protective stop was in force, what it
+    # was checked against, and how often it closed a trade. Empty when the
+    # strategy declares no stop, so its payload is unchanged.
+    fills: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert results to dictionary for JSON serialization"""
@@ -157,6 +162,7 @@ class BacktestResults:
                 for trade in self.trades
             ],
             **({"metrics": _json_safe(self.metrics)} if self.metrics else {}),
+            **({"fills": _json_safe(self.fills)} if self.fills else {}),
         }
 
 
@@ -292,6 +298,61 @@ class RSIStrategy(TradingStrategy):
         return False, "RSI not overbought"
 
 
+class _MinutePath:
+    """The 1-minute bars inside each bar of a backtest, for filling a stop.
+
+    A bar's minutes are those from its own time up to the next bar's. Bars
+    with no minutes (none were stored for that stretch) fall back to their own
+    open, high and low.
+    """
+
+    def __init__(self, index: pd.Index, minute_bars: pd.DataFrame | None):
+        self.count = 0
+        self.bars_with_minutes = 0
+        self._starts = self._ends = None
+        if minute_bars is None or len(minute_bars) == 0:
+            return
+        bar_times = pd.DatetimeIndex(index).asi8
+        self._times = pd.DatetimeIndex(minute_bars.index)
+        minute_times = self._times.asi8
+        self._open = minute_bars["open"].to_numpy(dtype=float)
+        self._high = minute_bars["high"].to_numpy(dtype=float)
+        self._low = minute_bars["low"].to_numpy(dtype=float)
+        self._starts = np.searchsorted(minute_times, bar_times, side="left")
+        self._ends = np.append(self._starts[1:], len(minute_times))
+        self.count = int(len(minute_times) - self._starts[0]) if len(bar_times) else 0
+        self.bars_with_minutes = int(np.count_nonzero(self._ends > self._starts))
+
+    def stop_fill(
+        self, i: int, bar: pd.Series, stop: float, going_long: bool
+    ) -> Tuple[float, datetime, bool] | None:
+        """Where and when a resting stop fills inside bar ``i``, if it does.
+
+        Returns ``(price, time, on_minutes)``. The price is the stop, or the
+        open of the minute (or bar) that started beyond it: a stop becomes a
+        market order when touched, so a gap fills at the worse price.
+        """
+
+        if self._starts is not None and self._ends[i] > self._starts[i]:
+            lo, hi = int(self._starts[i]), int(self._ends[i])
+            reached = self._low[lo:hi] <= stop if going_long else self._high[lo:hi] >= stop
+            if reached.any():
+                k = lo + int(np.argmax(reached))
+                opened = float(self._open[k])
+                price = min(opened, stop) if going_long else max(opened, stop)
+                return price, self._times[k].to_pydatetime(), True
+
+        # No minute reached it. The bar's own range still can: minutes can be
+        # missing inside a bar, and the bar is the broker's record of it.
+        reached = bar["low"] <= stop if going_long else bar["high"] >= stop
+        if not reached:
+            return None
+        opened = float(bar["open"])
+        price = min(opened, stop) if going_long else max(opened, stop)
+        when = bar.name if isinstance(bar.name, datetime) else datetime.fromtimestamp(bar.name)
+        return price, when, False
+
+
 class BacktestEngine:
     """Main backtesting engine"""
 
@@ -305,8 +366,17 @@ class BacktestEngine:
         strategy: TradingStrategy,
         symbol: str = "UNKNOWN",
         spec: Dict[str, Any] | None = None,
+        minute_bars: pd.DataFrame | None = None,
     ) -> BacktestResults:
         """Run backtest on historical data.
+
+        A strategy that declares a protective ``stop`` has it simulated the way
+        the live runner works it: resolved at entry, held at that price while
+        the next bar forms, tightened (never loosened) at each bar close, and
+        filled inside the bar when price reaches it. ``minute_bars`` are
+        1-minute bars over the same range; with them a stop fills on the minute
+        it was reached, at the stop or at that minute's open when price gapped
+        through. Without them the bar's own range decides.
 
         ``spec`` is the venue's :class:`models.InstrumentSpec` for the symbol,
         which is what lets a `sizing` block mean the same thing here as it does
@@ -381,12 +451,51 @@ class BacktestEngine:
         # subsequent bar that stays past its threshold.
         fired_rungs: set[int] = set()
 
+        # The protective stop (E-03). Live, the entry goes out with the stop
+        # the rules resolve and the broker holds it, so it fills inside a bar,
+        # not at its close. `stop_price` is the stop in force on the open
+        # trade; it only exists for a strategy that declares a `stop` block.
+        stop_spec = getattr(strategy, "stop", None)
+        stop_price: float | None = None
+        minutes = _MinutePath(signals.index, minute_bars) if stop_spec else None
+        stop_exits = 0
+        stop_exits_on_minutes = 0
+        entries_refused = 0
+
         # Process each bar
         for i, (timestamp, data) in enumerate(signals.iterrows()):
             current_price = data["close"]
             current_time = (
                 timestamp if isinstance(timestamp, datetime) else datetime.fromtimestamp(timestamp)
             )
+
+            # The stop was resting at the broker while this bar formed, so it
+            # is checked before anything the bar's close decides. A trade it
+            # closes is gone by the close: the rules then see a flat position.
+            if open_trade and stop_price is not None:
+                going_long = open_trade.order_type == OrderType.BUY
+                fill = minutes.stop_fill(i, data, stop_price, going_long)
+                if fill is not None:
+                    fill_price, fill_time, on_minutes = fill
+                    open_trade.exit_time = fill_time
+                    open_trade.exit_price = fill_price
+                    open_trade.status = OrderStatus.FILLED
+                    gapped = fill_price != stop_price
+                    open_trade.exit_reason = (
+                        f"Stop {stop_price:.5f} gapped through, filled at the open"
+                        if gapped
+                        else f"Stop hit at {stop_price:.5f}"
+                    )
+                    capital += (
+                        open_trade.pnl - abs(open_trade.quantity * fill_price) * self.commission
+                    )
+                    position = 0
+                    strategy.position = position
+                    trades.append(open_trade)
+                    open_trade = None
+                    stop_price = None
+                    stop_exits += 1
+                    stop_exits_on_minutes += 1 if on_minutes else 0
 
             if stateful:
                 decision = evaluate_bar(
@@ -482,6 +591,7 @@ class BacktestEngine:
                         f"Scaled out {slice_qty} at {current_price:.2f}, {remaining} remaining"
                     )
 
+            entered_this_bar = False
             # Check for entry signals. Long and short are mutually exclusive
             # here because `evaluate` refuses a bar where both fire, and E12
             # defers direct reversal — a position is always closed before the
@@ -491,10 +601,30 @@ class BacktestEngine:
                 # Size the entry from the strategy's `sizing` block; a strategy
                 # without one keeps the original "use all available capital"
                 # behaviour so the built-in strategies backtest unchanged.
+                # The stop comes first: `risk_pct` sizes from the distance to
+                # it, and an entry whose declared stop cannot be resolved is
+                # refused, as it is live, rather than opened unprotected.
+                entry_stop: float | None = None
+                stop_failed = False
+                if stop_spec:
+                    try:
+                        entry_stop = resolve_stop(
+                            stop_spec,
+                            signals.iloc[: i + 1],
+                            direction="short" if going_short else "long",
+                            reference_price=float(current_price),
+                        )
+                    except StopSpecError as exc:
+                        stop_failed = True
+                        entries_refused += 1
+                        logger.debug(f"Entry refused: stop rule failed to resolve: {exc}")
+
                 sized, sizing_reason = resolve_backtest_quantity(
-                    sizing_spec, current_price, capital, spec
+                    sizing_spec, current_price, capital, spec, stop_price=entry_stop
                 )
-                if sized is None:
+                if stop_failed:
+                    quantity = 0.0
+                elif sized is None:
                     quantity = float(int(capital / current_price))
                 else:
                     quantity = sized
@@ -525,8 +655,30 @@ class BacktestEngine:
                     position = -quantity if going_short else quantity
                     strategy.position = position
                     fired_rungs.clear()
+                    stop_price = entry_stop
+                    entered_this_bar = True
 
                     logger.debug(f"Opened position at {current_price:.2f}, Quantity: {quantity}")
+
+            # Trail the stop to what the rules want at this close. Only ever
+            # tighter: live, the broker holds the stop and the app moves it
+            # only when the new one protects more. A stop that cannot be
+            # resolved on this bar leaves the one in force.
+            if open_trade and stop_spec and not entered_this_bar:
+                side = "short" if open_trade.order_type == OrderType.SELL else "long"
+                try:
+                    desired = resolve_stop(
+                        stop_spec,
+                        signals.iloc[: i + 1],
+                        direction=side,
+                        reference_price=float(current_price),
+                    )
+                except StopSpecError:
+                    desired = None
+                if desired is not None and is_more_protective(desired, stop_price, side):
+                    stop_price = desired
+            if not open_trade:
+                stop_price = None
 
             # Calculate current equity
             current_equity = capital
@@ -577,6 +729,20 @@ class BacktestEngine:
             trades=trades,
             equity_curve=pd.Series(equity_curve, index=signals.index),
         )
+
+        if stop_spec:
+            results.fills = {
+                "stop": True,
+                # What a stop was checked against: the 1-minute bars inside
+                # each bar where there were any, otherwise the bar's own range.
+                "model": "1min" if minutes.bars_with_minutes else "bar",
+                "bars": len(signals),
+                "bars_with_minutes": minutes.bars_with_minutes,
+                "minute_bars": minutes.count,
+                "stop_exits": stop_exits,
+                "stop_exits_on_minutes": stop_exits_on_minutes,
+                "entries_refused": entries_refused,
+            }
 
         logger.info(
             f"Backtest completed: {len(trades)} trades, {results.total_return_percent:.2f}% return"

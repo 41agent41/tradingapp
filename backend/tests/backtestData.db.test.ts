@@ -194,6 +194,13 @@ run('backtest data (real database)', () => {
       expect((await data.coverage(built, '1hour', two, 'built')).built_from).toBe('1min');
     });
 
+    it('loads the 1-minute bars themselves for stop fills', async () => {
+      const minuteBars = await data.minutes(built, two);
+      expect(minuteBars?.count).toBe(2 * 24 * 60);
+      expect(minuteBars?.bars.t[1]).toBe((T0 + MIN) / 1000);
+      expect(await data.minutes({ ...built, symbol: `NO${tag}` }, two)).toBeNull();
+    });
+
     it('never substitutes a 4-hour or daily bar', async () => {
       for (const timeframe of ['4hour', '1day']) {
         const c = await data.coverage(built, timeframe, two);

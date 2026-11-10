@@ -6,7 +6,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import BacktestPage from '../app/backtest/page';
-import { describeRunData } from '../app/lib/backtestData';
+import { describeFills, describeRunData } from '../app/lib/backtestData';
 
 const RESULTS = {
   symbol: 'MSFT',
@@ -138,5 +138,26 @@ describe('describeRunData', () => {
         last_bar: '2026-02-01T00:00:00.000Z',
       })
     ).toBe('Bars built from stored 1 minute bars, 2026-01-05 to 2026-02-01');
+  });
+});
+
+describe('describeFills', () => {
+  it('says nothing for a strategy without a stop', () => {
+    expect(describeFills(undefined)).toBeNull();
+    expect(describeFills({})).toBeNull();
+  });
+
+  it('says what stops were filled against and how often', () => {
+    expect(
+      describeFills({ stop: true, model: '1min', bars: 96, bars_with_minutes: 90, stop_exits: 3 })
+    ).toBe(
+      'Stops filled along stored 1 minute bars (90 of 96 bars had them). 3 trades closed on the stop.'
+    );
+    expect(
+      describeFills({ stop: true, model: 'bar', bars: 96, stop_exits: 1, entries_refused: 2 })
+    ).toBe(
+      "Stops filled on each bar's own range (no 1 minute bars are stored for this range). " +
+        '1 trade closed on the stop. 2 entries were refused because the stop could not be set.'
+    );
   });
 });
