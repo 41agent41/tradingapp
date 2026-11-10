@@ -5,10 +5,18 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import DataCollection, { historyProgress } from '../app/components/DataCollection';
+import DataCollection, {
+  historyProgress,
+  liveFeed,
+  recorderSummary,
+  type RecorderStatus,
+} from '../app/components/DataCollection';
 
 const ENTRY = {
   id: 3,
+  contract_id: 9,
+  record_live: false,
+  record_ticks: false,
   broker: 'oanda',
   account: 'default',
   symbol: 'EUR_USD',
@@ -26,7 +34,27 @@ const ENTRY = {
   backfilled_to: null,
 };
 
-function mockApi(entries = [ENTRY]) {
+const STATUS: RecorderStatus = {
+  enabled: true,
+  running: true,
+  degraded: false,
+  lag_seconds: 0.4,
+  waiting: 0,
+  last_error: null,
+  poll_seconds: 2,
+  contracts: [
+    {
+      contract_id: 9,
+      mode: 'polled',
+      last_quote: '2026-11-10T12:00:05Z',
+      last_bar: '2026-11-10T12:00:00Z',
+      quotes_last_minute: 28,
+      error: null,
+    },
+  ],
+};
+
+function mockApi(entries = [ENTRY], status: RecorderStatus = STATUS) {
   const writes: { url: string; method: string; body: any }[] = [];
   global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -36,6 +64,9 @@ function mockApi(entries = [ENTRY]) {
       return method === 'DELETE'
         ? new Response(null, { status: 204 })
         : new Response(JSON.stringify({ entry: ENTRY }), { status: 200 });
+    }
+    if (url.includes('/recorder/status')) {
+      return new Response(JSON.stringify(status), { status: 200 });
     }
     return new Response(
       JSON.stringify({ entries, brokers: ['oanda', 'ib'], timeframes: ['5min', '1hour'] }),
@@ -121,5 +152,62 @@ describe('DataCollection', () => {
     mockApi([]);
     render(<DataCollection />);
     await waitFor(() => expect(screen.getByText(/Nothing is collected yet/)).toBeInTheDocument());
+  });
+});
+
+describe('live recording', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('ticks Record live and Store ticks for an instrument', async () => {
+    const writes = mockApi();
+    render(<DataCollection />);
+    fireEvent.click(await screen.findByLabelText('Record EUR_USD live'));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    fireEvent.click(screen.getByLabelText('Store EUR_USD ticks'));
+    await waitFor(() => expect(writes).toHaveLength(2));
+    expect(writes.map((w) => [w.url.split('/').pop(), w.method, w.body])).toEqual([
+      ['3', 'PUT', { record_live: true }],
+      ['3', 'PUT', { record_ticks: true }],
+    ]);
+  });
+
+  it('shows the recorder and what each recorded instrument is receiving', async () => {
+    mockApi([{ ...ENTRY, record_live: true, record_ticks: true }]);
+    render(<DataCollection />);
+    await waitFor(() =>
+      expect(screen.getByTestId('recorder-summary')).toHaveTextContent(
+        'Live recorder: on, recording 1, 0 s behind the stream.'
+      )
+    );
+    expect(screen.getByText(/polled every 2 s, 28 quotes in the last minute/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Record EUR_USD live')).toBeChecked();
+    expect(screen.getByLabelText('Store EUR_USD ticks')).toBeChecked();
+  });
+
+  it('says why an instrument is not streaming, and when the recorder is off or behind', () => {
+    const on = { ...ENTRY, record_live: true };
+    expect(liveFeed(ENTRY, STATUS)).toBe('not recorded');
+    expect(liveFeed({ ...on, enabled: false }, STATUS)).toBe('paused (entry disabled)');
+    expect(liveFeed(on, { ...STATUS, contracts: [] })).toBe('starting');
+    expect(
+      liveFeed(on, { ...STATUS, contracts: [{ ...STATUS.contracts[0], error: 'no such symbol' }] })
+    ).toBe('not streaming: no such symbol');
+    expect(
+      liveFeed(on, {
+        ...STATUS,
+        contracts: [{ ...STATUS.contracts[0], mode: 'streamed', last_quote: null }],
+      })
+    ).toBe('streamed, no quote yet');
+    expect(liveFeed(on, { ...STATUS, enabled: false })).toBe('recorder is off');
+
+    expect(recorderSummary({ ...STATUS, enabled: false })).toMatch(/off/);
+    expect(recorderSummary({ ...STATUS, running: false, last_error: 'redis down' })).toBe(
+      'Live recorder: not running (redis down).'
+    );
+    expect(recorderSummary({ ...STATUS, degraded: true, lag_seconds: 95 })).toBe(
+      'Live recorder: falling behind, 95 s behind the stream.'
+    );
   });
 });
