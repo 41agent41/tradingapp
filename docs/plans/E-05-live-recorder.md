@@ -423,3 +423,21 @@ orders are not affected.
   instead (10 November 2026) that the backend reads the bars and sends them
   with the run. The broker service holds no database login, and the install
   gains no step. The cost is a cap of 2,000,000 bars a run.
+
+## 12. What followed (E-08)
+
+- **E-08, higher timeframes from 1 minute**
+  (`backend/src/database/migrations/008_built_bars.sql`): one real-time
+  continuous aggregate per timeframe, 5 minutes to 1 day, over
+  `timeframe = '1min'` whatever the source, as section 9 expected. Each has a
+  refresh policy with no start offset, so a backfill or a reconcile of any
+  age reaches the built bars.
+- **Readers.** Backtests on 5 minutes to 1 hour fall back to the built bars
+  when the broker's own bars for the timeframe do not cover the range
+  (`backtestData.ts`, `PREFER`). 4-hour and daily built bars are on UTC
+  boundaries, which is not where brokers put theirs, so backtests never
+  substitute them; they are there for bar replay (E-04).
+- **Not done: compressing bars** (D6 above). It is still its own item. It
+  needs the upserts the backfill, the recorder and the reconcile make into
+  old chunks measured first, and it is independent of the views.
+

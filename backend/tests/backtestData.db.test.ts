@@ -117,4 +117,93 @@ run('backtest data (real database)', () => {
     // The start is now covered; what the broker did not have is still missing.
     expect(after.first_bar).toBe(range.start.toISOString());
   });
+
+  describe('bars built from 1-minute bars', () => {
+    const MIN = 60_000;
+    const built = { ...inst, symbol: `BB${tag}` };
+    const two = { start: new Date(T0), end: new Date(T0 + 2 * DAY) };
+    let id: number;
+
+    // Minute i opens at 100 + i and closes half a point higher.
+    function minutes(fromMs: number, count: number): CandlestickBar[] {
+      return Array.from({ length: count }, (_, k) => {
+        const i = Math.round((fromMs - T0) / MIN) + k;
+        return {
+          timestamp: new Date(T0 + i * MIN),
+          open: 100 + i,
+          high: 101 + i,
+          low: 99 + i,
+          close: 100.5 + i,
+          volume: 2,
+        };
+      });
+    }
+
+    beforeAll(async () => {
+      id = await marketDataService.getOrCreateContract({
+        broker: 'oanda',
+        symbol: built.symbol,
+        secType: 'CASH',
+      });
+      await marketDataService.storeCandlestickData(id, '1min', minutes(T0, 2 * 24 * 60));
+    });
+
+    it('covers a timeframe that was never collected', async () => {
+      const c = await data.coverage(built, '1hour', two);
+      expect(c).toMatchObject({
+        contract_id: id,
+        timeframe: '1hour',
+        built_from: '1min',
+        complete: true,
+        bars: 2 * 24 * 60,
+      });
+    });
+
+    it('builds each bar from the minutes inside it', async () => {
+      const hours = await data.load(id, '1hour', two, '1min');
+      expect(hours.count).toBe(48);
+      expect(hours.bars.t[1]).toBe((T0 + HOUR) / 1000);
+      // The second hour is minutes 60 to 119.
+      expect(hours.bars.o[1]).toBe(160);
+      expect(hours.bars.h[1]).toBe(220);
+      expect(hours.bars.l[1]).toBe(159);
+      expect(hours.bars.c[1]).toBe(219.5);
+      expect(hours.bars.v[1]).toBe(120);
+
+      const fives = await data.load(id, '5min', two, '1min');
+      expect(fives.count).toBe(48 * 12);
+      expect(fives.bars.o[1]).toBe(105);
+      expect(fives.bars.c[1]).toBe(109.5);
+    });
+
+    it('shows a 1-minute bar replaced after the bars were built', async () => {
+      const before = await data.load(id, '1hour', two, '1min');
+      await marketDataService.storeCandlestickData(id, '1min', [
+        { ...minutes(T0 + 90 * MIN, 1)[0], high: 5000 },
+      ]);
+      const after = await data.load(id, '1hour', two, '1min');
+      expect(after.bars.h[1]).toBe(5000);
+      expect(after.hash).not.toBe(before.hash);
+    });
+
+    it("uses the broker's own bars when they cover the range, unless built bars are preferred", async () => {
+      await marketDataService.storeCandlestickData(id, '1hour', hourly(T0, 48));
+      const own = await data.coverage(built, '1hour', two);
+      expect(own.built_from).toBeUndefined();
+      expect(own).toMatchObject({ complete: true, bars: 48 });
+      expect((await data.coverage(built, '1hour', two, 'built')).built_from).toBe('1min');
+    });
+
+    it('never substitutes a 4-hour or daily bar', async () => {
+      for (const timeframe of ['4hour', '1day']) {
+        const c = await data.coverage(built, timeframe, two);
+        expect(c.built_from).toBeUndefined();
+        expect(c.complete).toBe(false);
+      }
+      // The views exist all the same, on UTC boundaries.
+      const days = await data.load(id, '1day', two, '1min');
+      expect(days.bars.t).toEqual([T0 / 1000, (T0 + DAY) / 1000]);
+      expect(days.bars.o[1]).toBe(100 + 24 * 60);
+    });
+  });
 });

@@ -280,13 +280,14 @@ What the schema holds, in short (read the files for the full list):
 | `recorder_cursor` | One row: the last quote-stream entry stored, written in the same transaction as its bars and quotes |
 | `tick_data` | Unused. An earlier design's table, left in place; `quote_ticks` replaced it |
 | `daily_candlestick_data` | Continuous aggregate, refreshed hourly over the last 3 days |
+| `bars_5min`, `bars_15min`, `bars_30min`, `bars_1hour`, `bars_4hour`, `bars_1day` | Bars built from the 1-minute bars: real-time continuous aggregates on UTC boundaries, refreshed for changes of any age. Backtests read them (`backtestData.ts`) |
 | `data_collection_config` | The Settings page's collection table, with `history_start` and progress, and `record_live` / `record_ticks` (kept the same on every row of a contract) |
 | `data_quality_metrics` | Per-day bar counts and a quality score, written on every store path |
 | `broker_connections`, `app_settings`, `settings_audit`, `auth_credentials`, `app_meta` | Connections, settings and their history, login and tokens; `app_meta` holds the value that proves the encryption key |
 | `order_audit`, `order_executions` | Every order attempt; venue fills, unique on `(broker, broker_account, exec_id)` |
 | `strategy_definitions`, `strategy_run_groups`, `strategy_runs`, `strategy_signals` | Strategies, deployments and their decisions |
 | `connection_equity`, `connection_halts` | Day-start equity and high-water marks; kill-switch halts |
-| `backtest_runs`, `watchlist_items`, `price_alerts` | Persisted backtests (`data` holds the bars a run used: source, count, range and hash), the watchlist and its alerts |
+| `backtest_runs`, `watchlist_items`, `price_alerts` | Persisted backtests (`data` holds the bars a run used: source, count, range, hash, and `built_from` when they were built from 1-minute bars), the watchlist and its alerts |
 
 Indicators are deliberately not stored: they are computed on demand in
 `broker_service/indicators.py`. `backend/src/database/archive/` holds the old
