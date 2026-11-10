@@ -5,6 +5,7 @@ import BackToHome from '../components/BackToHome';
 import ChartSkeleton from '../components/ChartSkeleton';
 import DataframeViewer from '../components/DataframeViewer';
 import EquityCurveChart, { EquityPoint } from '../components/EquityCurveChart';
+import { describeRunData, type RunData } from '../lib/backtestData';
 import { apiFetch } from '../lib/api';
 import JesseHyperparameterFields from '../components/backtest/JesseHyperparameterFields';
 import {
@@ -81,6 +82,13 @@ interface BacktestResponse {
   period: string;
   engine?: string;
   persisted_id?: number | null;
+  data?: RunData | null;
+}
+
+/** Asked when stored bars do not cover the range: fetch them, or run anyway. */
+interface MissingBars {
+  message: string;
+  stored: number;
 }
 
 interface PersistedRunSummary {
@@ -104,10 +112,11 @@ interface PersistedRunFull extends PersistedRunSummary {
   params_hash: string;
   equity_curve: EquityPoint[];
   trades: TradeSummary[];
+  data?: RunData | null;
 }
 
-const TIMEFRAMES = ['5min', '15min', '30min', '1hour', '4hour', '8hour', '1day'];
-const PERIODS = ['1M', '3M', '6M', '1Y'];
+const TIMEFRAMES = ['1min', '5min', '15min', '30min', '1hour', '4hour', '8hour', '1day'];
+const PERIODS = ['1M', '3M', '6M', '1Y', '2Y', '5Y'];
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat('en-US', {
@@ -147,6 +156,7 @@ export default function BacktestPage() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<BacktestResponse | null>(null);
+  const [missing, setMissing] = useState<MissingBars | null>(null);
 
   const [previousRuns, setPreviousRuns] = useState<PersistedRunSummary[]>([]);
   const [runsError, setRunsError] = useState<string | null>(null);
@@ -191,6 +201,7 @@ export default function BacktestPage() {
         engine: row.strategy.startsWith('jesse') ? 'jesse' : undefined,
         data_points: Number((row.params as { data_points?: number })?.data_points) || 0,
         persisted_id: row.id,
+        data: row.data ?? null,
         results: {
           symbol: row.symbol,
           start_date: String(m.start_date ?? row.start_date ?? ''),
@@ -331,77 +342,92 @@ export default function BacktestPage() {
     };
   }, [applyDefinition]);
 
-  const runBacktest = useCallback(async () => {
-    if (!symbol.trim() || !strategy) {
-      setError('Symbol and strategy are required');
-      return;
-    }
-
-    // Validate Jesse hyperparameters before anything leaves the browser; the
-    // broker service would reject them too, but a field-level message beats a
-    // 400 after a round-trip.
-    let overrides: Record<string, unknown> = {};
-    if (selectedIsJesse) {
-      const outcome = collectHyperparameterOverrides(selectedSpecs, currentHyperparameters);
-      if (Object.keys(outcome.errors).length > 0) {
-        setHyperparameterErrors(outcome.errors);
-        setError('Fix the highlighted hyperparameters before running');
+  // `onMissing` is the answer to the missing-bars question; without it the
+  // backend asks (409) when stored bars do not cover the range.
+  const runBacktest = useCallback(
+    async (onMissing?: 'fetch' | 'use_stored') => {
+      if (!symbol.trim() || !strategy) {
+        setError('Symbol and strategy are required');
         return;
       }
-      overrides = outcome.overrides;
-    }
 
-    setRunning(true);
-    setError(null);
-    setResponse(null);
-
-    try {
-      const res = await apiFetch('/api/backtesting/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          symbol: symbol.trim().toUpperCase(),
-          ...buildBacktestSelector(strategy, selectedInfo, overrides),
-          timeframe,
-          period,
-          initial_capital: Number(initialCapital),
-          commission: Number(commission),
-          sec_type: secType.trim().toUpperCase() || 'STK',
-          exchange: exchange.trim().toUpperCase() || 'SMART',
-          currency: currency.trim().toUpperCase() || 'USD',
-        }),
-        signal: AbortSignal.timeout(125000),
-      });
-
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(body.detail || body.error || `HTTP ${res.status}`);
+      // Validate Jesse hyperparameters before anything leaves the browser; the
+      // broker service would reject them too, but a field-level message beats a
+      // 400 after a round-trip.
+      let overrides: Record<string, unknown> = {};
+      if (selectedIsJesse) {
+        const outcome = collectHyperparameterOverrides(selectedSpecs, currentHyperparameters);
+        if (Object.keys(outcome.errors).length > 0) {
+          setHyperparameterErrors(outcome.errors);
+          setError('Fix the highlighted hyperparameters before running');
+          return;
+        }
+        overrides = outcome.overrides;
       }
-      const next = body as BacktestResponse;
-      setResponse(next);
-      setSelectedRunId(next.persisted_id ?? null);
-      loadPreviousRuns();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to run backtest');
-    } finally {
-      setRunning(false);
-    }
-  }, [
-    symbol,
-    strategy,
-    selectedInfo,
-    selectedIsJesse,
-    selectedSpecs,
-    currentHyperparameters,
-    timeframe,
-    period,
-    initialCapital,
-    commission,
-    secType,
-    exchange,
-    currency,
-    loadPreviousRuns,
-  ]);
+
+      setRunning(true);
+      setError(null);
+      setResponse(null);
+      setMissing(null);
+
+      try {
+        const res = await apiFetch('/api/backtesting/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            symbol: symbol.trim().toUpperCase(),
+            ...buildBacktestSelector(strategy, selectedInfo, overrides),
+            timeframe,
+            period,
+            initial_capital: Number(initialCapital),
+            commission: Number(commission),
+            sec_type: secType.trim().toUpperCase() || 'STK',
+            exchange: exchange.trim().toUpperCase() || 'SMART',
+            currency: currency.trim().toUpperCase() || 'USD',
+            ...(onMissing ? { on_missing: onMissing } : {}),
+          }),
+          // Fetching years of small bars from a broker takes minutes.
+          signal: AbortSignal.timeout(onMissing === 'fetch' ? 900000 : 125000),
+        });
+
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 409 && body.error === 'coverage_incomplete') {
+          setMissing({
+            message: body.detail || 'Stored bars do not cover the whole range.',
+            stored: Number(body.coverage?.bars ?? 0),
+          });
+          return;
+        }
+        if (!res.ok) {
+          throw new Error(body.detail || body.error || `HTTP ${res.status}`);
+        }
+        const next = body as BacktestResponse;
+        setResponse(next);
+        setSelectedRunId(next.persisted_id ?? null);
+        loadPreviousRuns();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to run backtest');
+      } finally {
+        setRunning(false);
+      }
+    },
+    [
+      symbol,
+      strategy,
+      selectedInfo,
+      selectedIsJesse,
+      selectedSpecs,
+      currentHyperparameters,
+      timeframe,
+      period,
+      initialCapital,
+      commission,
+      secType,
+      exchange,
+      currency,
+      loadPreviousRuns,
+    ]
+  );
 
   const results = response?.results;
   const returnPositive = (results?.total_return_percent ?? 0) >= 0;
@@ -612,7 +638,7 @@ export default function BacktestPage() {
 
           <div className="mt-4 flex items-center gap-4">
             <button
-              onClick={runBacktest}
+              onClick={() => void runBacktest()}
               disabled={running}
               className="px-5 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400 flex items-center gap-2"
             >
@@ -627,10 +653,40 @@ export default function BacktestPage() {
             </button>
             {running && (
               <span className="text-sm text-gray-500">
-                Fetching historical data and simulating — this can take a while.
+                Reading bars and simulating. Fetching missing bars from a broker can take minutes.
               </span>
             )}
           </div>
+
+          {missing && !running && (
+            <div
+              role="alert"
+              className="mt-4 text-sm text-amber-900 bg-amber-50 p-3 rounded border border-amber-200"
+            >
+              <p>{missing.message}</p>
+              <p className="mt-1">
+                Backtests run on bars stored in the database. Fetch the missing bars from the broker
+                and store them, or run on the {missing.stored} bars already stored.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void runBacktest('fetch')}
+                  className="px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700"
+                >
+                  Fetch missing bars, then run
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void runBacktest('use_stored')}
+                  disabled={missing.stored === 0}
+                  className="px-3 py-1.5 rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Run on what is stored
+                </button>
+              </div>
+            </div>
+          )}
 
           {error && (
             <div className="mt-4 text-sm text-red-700 bg-red-50 p-3 rounded border border-red-200">
@@ -749,6 +805,12 @@ export default function BacktestPage() {
                   {response?.data_points} bars
                 </span>
               </div>
+
+              {describeRunData(response?.data) && (
+                <p className="mb-4 text-xs text-gray-500" data-testid="result-data">
+                  {describeRunData(response?.data)}
+                </p>
+              )}
 
               {resultHyperparameters && Object.keys(resultHyperparameters).length > 0 && (
                 <p className="mb-4 text-xs text-gray-500" data-testid="result-hyperparameters">

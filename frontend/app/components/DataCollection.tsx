@@ -59,6 +59,13 @@ export type RecorderStatus = {
   last_error: string | null;
   poll_seconds: number | null;
   contracts: RecordedContract[];
+  /** The nightly replacement of recorded bars with the broker's own. */
+  reconcile?: {
+    running: boolean;
+    last_run: string | null;
+    last_error: string | null;
+    results: { replaced: number; filled: number; left: number; error: string | null }[];
+  };
 };
 
 const STATUS_REFRESH_MS = 15_000;
@@ -115,6 +122,25 @@ export function recorderSummary(status: RecorderStatus | null): string {
     return `Live recorder: falling behind, ${behind}${status.last_error ? ` (${status.last_error})` : ''}.`;
   }
   return `Live recorder: on, recording ${status.contracts.length}, ${behind}.`;
+}
+
+/** One line on the last reconcile with broker history. */
+export function reconcileSummary(status: RecorderStatus | null): string {
+  const r = status?.reconcile;
+  if (!r || !status?.enabled) return '';
+  if (r.running) return 'Reconcile with broker history: running.';
+  if (!r.last_run) {
+    return 'Reconcile with broker history: runs nightly at 02:30 UTC; not run since the last restart.';
+  }
+  const sum = (pick: (x: { replaced: number; filled: number }) => number) =>
+    r.results.reduce((n, x) => n + pick(x), 0);
+  const failed = r.results.filter((x) => x.error).length;
+  return (
+    `Reconcile with broker history: last run ${new Date(r.last_run).toLocaleString()}, ` +
+    `${sum((x) => x.replaced)} recorded bars replaced, ${sum((x) => x.filled)} missing minutes filled` +
+    (failed ? `, ${failed} instrument${failed === 1 ? '' : 's'} failed` : '') +
+    '.'
+  );
 }
 
 /** What the recorder is receiving for one entry. */
@@ -192,6 +218,33 @@ export default function DataCollection() {
     }
   };
 
+  // Replaces the last two days of recorded bars with the broker's own, now.
+  const reconcileNow = async () => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const body = await readJson(
+        await apiFetch('/api/market-data/recorder/reconcile', { method: 'POST' })
+      );
+      const results: { replaced: number; filled: number; error: string | null }[] =
+        body?.results ?? [];
+      const failed = results.filter((r) => r.error);
+      setMessage(
+        failed.length
+          ? { kind: 'error', text: `Reconcile failed for ${failed.length}: ${failed[0].error}` }
+          : {
+              kind: 'ok',
+              text: `Reconciled ${results.length} instrument${results.length === 1 ? '' : 's'}.`,
+            }
+      );
+      await loadStatus();
+    } catch (e) {
+      setMessage({ kind: 'error', text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const add = async () => {
     const ok = await send(
       '',
@@ -234,6 +287,19 @@ export default function DataCollection() {
             }`}
           >
             {recorderSummary(status)}
+          </p>
+        )}
+        {reconcileSummary(status) && (
+          <p data-testid="reconcile-summary" className="mt-1 text-sm text-gray-600">
+            {reconcileSummary(status)}{' '}
+            <button
+              type="button"
+              className="underline text-blue-700 disabled:opacity-50"
+              disabled={busy || status?.reconcile?.running}
+              onClick={() => void reconcileNow()}
+            >
+              Reconcile now
+            </button>
           </p>
         )}
       </div>

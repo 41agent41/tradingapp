@@ -774,22 +774,25 @@ export async function storeFlush(
   });
 }
 
+/** Every instrument with Record live ticked on an enabled row. */
+export async function recordTargets(): Promise<RecordTarget[]> {
+  const { rows } = await dbService.query(TARGETS_SQL);
+  return rows.map((r) => ({
+    contractId: Number(r.contract_id),
+    platform: r.broker,
+    account: r.broker_account || 'default',
+    symbol: r.symbol,
+    secType: r.sec_type,
+    exchange: r.exchange ?? null,
+    currency: r.currency ?? null,
+    ticks: Boolean(r.ticks),
+  }));
+}
+
 function defaultDeps(): RecorderDeps {
   return {
     redis: redisClient,
-    targets: async () => {
-      const { rows } = await dbService.query(TARGETS_SQL);
-      return rows.map((r) => ({
-        contractId: Number(r.contract_id),
-        platform: r.broker,
-        account: r.broker_account || 'default',
-        symbol: r.symbol,
-        secType: r.sec_type,
-        exchange: r.exchange ?? null,
-        currency: r.currency ?? null,
-        ticks: Boolean(r.ticks),
-      }));
-    },
+    targets: recordTargets,
     loadCursor: async () => {
       const { rows } = await dbService.query(`SELECT last_entry_id FROM recorder_cursor`);
       return rows[0]?.last_entry_id ?? null;

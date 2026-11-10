@@ -7,6 +7,7 @@
  *   PUT    /api/market-data/collection/:id    change its options
  *   DELETE /api/market-data/collection/:id    stop collecting (bars are kept)
  *   GET    /api/market-data/recorder/status   the live recorder and each recorded instrument
+ *   POST   /api/market-data/recorder/reconcile  replace recorded bars with the broker's, now
  */
 import express from 'express';
 import type { Request, Response } from 'express';
@@ -20,10 +21,12 @@ import {
 } from '../../services/collectionConfig.js';
 import { BROKERS } from '../../services/brokers.js';
 import { liveRecorder } from '../../services/liveRecorder.js';
+import { reconciler } from '../../services/reconcile.js';
 
 export function collectionRouter(
   repo = new CollectionConfigRepository(dbService, marketDataService),
-  recorder: { status(): unknown } = liveRecorder
+  recorder: { status(): object } = liveRecorder,
+  reconcile: { status(): unknown; run(): Promise<unknown> } = reconciler
 ) {
   const router = express.Router();
 
@@ -54,7 +57,17 @@ export function collectionRouter(
   });
 
   router.get('/recorder/status', (_req, res) => {
-    res.json(recorder.status());
+    res.json({ ...recorder.status(), reconcile: reconcile.status() });
+  });
+
+  // The nightly reconcile, on request. It answers when the pass is done.
+  router.post('/recorder/reconcile', async (_req, res) => {
+    try {
+      res.json({ results: await reconcile.run() });
+    } catch (err) {
+      logger.error({ err: (err as Error)?.message }, 'reconcile on request failed');
+      res.status(500).json({ error: 'The reconcile could not run.' });
+    }
   });
 
   router.post('/collection', async (req, res) => {

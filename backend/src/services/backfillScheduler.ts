@@ -226,6 +226,12 @@ function defaultDeps(): BackfillDeps {
   };
 }
 
+/** Bars from the broker service's history route, for callers outside the
+ *  scheduler (a backtest fetching what its range is missing). */
+export function fetchBrokerHistory(req: HistoryRequest): Promise<RawBar[]> {
+  return defaultDeps().fetchHistory(req);
+}
+
 function toCandle(b: RawBar): CandlestickBar {
   return {
     timestamp: new Date(b.timestamp * 1000),

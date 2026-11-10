@@ -14,7 +14,16 @@
  * This is what closes the create → backtest → deploy loop: a user-created
  * definition can be validated in the backtester before it is run live.
  *
+ * Bars come from the database by default (E-02, services/backtestData.ts):
+ * the backend checks how well the stored bars cover the range, and sends the
+ * bars to the broker service with the run. When bars are missing the request
+ * is answered 409 with the coverage, and the caller repeats it with
+ * `on_missing: 'fetch'` (fetch what is missing from the broker, store it, then
+ * run) or `on_missing: 'use_stored'` (run on what is there). `data: 'broker'`
+ * has the broker service fetch the bars itself and stores nothing, as before.
+ *
  *   GET  /api/backtesting/strategies — list available strategies (cached)
+ *   GET  /api/backtesting/coverage   — how well stored bars cover a range
  *   POST /api/backtesting/run        — run a backtest over historical data
  *   GET  /api/backtesting/runs       — list persisted runs (slim rows)
  *   GET  /api/backtesting/runs/:id   — full record for one persisted run
@@ -24,10 +33,19 @@ import type { Request, Response } from 'express';
 import axios from 'axios';
 import { cacheService } from '../services/cache.js';
 import { dbService } from '../services/database.js';
-import { BacktestRunRepository } from '../services/backtestRunRepository.js';
+import { BacktestRunRepository, type BacktestRunData } from '../services/backtestRunRepository.js';
 import { StrategyRepository } from '../services/strategyRepository.js';
 import { backtestRunsPersisted } from '../services/metrics.js';
 import { defaultBroker } from '../services/orderTypes.js';
+import { marketDataService } from '../services/marketDataService.js';
+import { fetchBrokerHistory, historyChunkDays } from '../services/backfillScheduler.js';
+import {
+  BacktestData,
+  BacktestDataError,
+  resolveRange,
+  type Coverage,
+  type LoadedBars,
+} from '../services/backtestData.js';
 
 const router = express.Router();
 const BROKER_SERVICE_URL = process.env.BROKER_SERVICE_URL || 'http://broker_service:8000';
@@ -61,6 +79,55 @@ const VALID_SEC_TYPES = new Set([
 
 const runs = new BacktestRunRepository(dbService);
 const definitions = new StrategyRepository(dbService);
+const barData = new BacktestData({
+  db: dbService,
+  getOrCreateContract: (c) => marketDataService.getOrCreateContract(c),
+  fetchHistory: fetchBrokerHistory,
+  storeCandlestickData: (id, timeframe, bars) =>
+    marketDataService.storeCandlestickData(id, timeframe, bars),
+  chunkDays: historyChunkDays,
+});
+
+const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+
+/** In words, for the 409 and the page: what is stored and what is not. */
+function coverageMessage(c: Coverage): string {
+  if (c.bars === 0) return 'No bars are stored for this instrument, timeframe and range.';
+  const day = (iso: string) => iso.slice(0, 10);
+  const holes = c.missing.map((m) => `${day(m.from)} to ${day(m.to)}`).join('; ');
+  return `Stored bars do not cover the whole range. Missing: ${holes}.`;
+}
+
+// How well the stored bars cover a range, before a run is asked for.
+router.get('/coverage', async (req: Request, res: Response) => {
+  try {
+    const q = req.query;
+    const symbol = text(q.symbol).toUpperCase();
+    const timeframe = text(q.timeframe) || '1hour';
+    if (!symbol) return res.status(400).json({ error: 'symbol is required' });
+    if (!VALID_TIMEFRAMES.includes(timeframe)) {
+      return res.status(400).json({ error: 'Invalid timeframe', valid: VALID_TIMEFRAMES });
+    }
+    const range = resolveRange(q);
+    const coverage = await barData.coverage(
+      {
+        broker: (text(q.source) || defaultBroker()).toLowerCase(),
+        account: text(q.account).toLowerCase() || undefined,
+        symbol,
+        secType: (text(q.sec_type) || 'STK').toUpperCase(),
+      },
+      timeframe,
+      range
+    );
+    res.json({ coverage, message: coverage.complete ? null : coverageMessage(coverage) });
+  } catch (error: any) {
+    if (error instanceof BacktestDataError) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    console.error('Error checking backtest coverage:', error);
+    res.status(500).json({ error: 'Failed to check stored bars', detail: error?.message });
+  }
+});
 
 // Translate an axios error from the IB service into a client response using
 // the same shape the other proxy routes use.
@@ -126,7 +193,19 @@ router.post('/run', async (req: Request, res: Response) => {
       exchange: rawExchange,
       currency: rawCurrency,
       source: rawSource,
+      account: rawAccount,
+      data: rawData,
+      on_missing: rawOnMissing,
     } = req.body || {};
+
+    const dataMode = String(rawData || 'stored');
+    if (dataMode !== 'stored' && dataMode !== 'broker') {
+      return res.status(400).json({ error: "data must be 'stored' or 'broker'" });
+    }
+    const onMissing = String(rawOnMissing || 'ask');
+    if (!['ask', 'fetch', 'use_stored'].includes(onMissing)) {
+      return res.status(400).json({ error: "on_missing must be 'fetch' or 'use_stored'" });
+    }
 
     // Exactly one way to pick the strategy: a registered key, a saved
     // definition, or an inline rule-set.
@@ -239,10 +318,56 @@ router.post('/run', async (req: Request, res: Response) => {
         (hasRange ? `${start_date}..${end_date}` : period)
     );
 
+    // Stored bars: check the range is covered, fetch what is missing if
+    // asked to, and load the bars to send with the run.
+    let coverage: Coverage | null = null;
+    let loaded: LoadedBars | null = null;
+    if (dataMode === 'stored') {
+      const range = resolveRange({ period, start_date, end_date });
+      const instrument = {
+        broker: source,
+        account: text(rawAccount).toLowerCase() || undefined,
+        symbol: String(symbol).toUpperCase(),
+        secType,
+        exchange,
+        currency,
+      };
+      coverage = await barData.coverage(instrument, timeframe, range);
+      if (!coverage.complete && onMissing === 'ask') {
+        return res.status(409).json({
+          error: 'coverage_incomplete',
+          detail: coverageMessage(coverage),
+          coverage,
+          choices: ['fetch', 'use_stored'],
+        });
+      }
+      if (!coverage.complete && onMissing === 'fetch') {
+        coverage = await barData.fetchMissing(instrument, timeframe, range);
+      }
+      if (coverage.contract_id === null || coverage.bars === 0) {
+        return res.status(400).json({
+          error: 'No stored bars',
+          detail:
+            onMissing === 'fetch'
+              ? 'The broker returned no bars for this instrument, timeframe and range.'
+              : coverageMessage(coverage),
+          coverage,
+        });
+      }
+      loaded = await barData.load(coverage.contract_id, timeframe, range);
+    }
+
+    const body = {
+      ...(ruleSet ? { rule_set: ruleSet } : {}),
+      ...(loaded ? { bars: loaded.bars } : {}),
+    };
     const response = await axios.post(
       `${BROKER_SERVICE_URL}/backtesting/run`,
-      ruleSet ? { rule_set: ruleSet } : null,
+      Object.keys(body).length ? body : null,
       {
+        // A long range of small bars is tens of megabytes.
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
         params: {
           symbol,
           ...(ruleSet ? {} : { strategy }),
@@ -256,13 +381,25 @@ router.post('/run', async (req: Request, res: Response) => {
           source,
           ...(hasRange ? { start_date, end_date } : {}),
         },
-        timeout: 120000, // backtests pull historical data from IB and can be slow
+        timeout: 120000, // a broker fetch, or a long stored range, can be slow
         headers: { Connection: 'close' },
       }
     );
 
     const payload = response.data ?? {};
     const results = payload.results ?? {};
+    const runData: BacktestRunData =
+      loaded && coverage
+        ? {
+            source: 'stored',
+            contract_id: coverage.contract_id,
+            bars: loaded.count,
+            first_bar: loaded.first_bar,
+            last_bar: loaded.last_bar,
+            hash: loaded.hash,
+            complete: coverage.complete,
+          }
+        : { source: 'broker', bars: payload.data_points ?? null };
 
     // The IB service returns the equity curve + trade list inline inside
     // `results` (see `BacktestResults.to_dict` in `broker_service/backtesting.py`).
@@ -295,6 +432,7 @@ router.post('/run', async (req: Request, res: Response) => {
         metrics,
         equity_curve: Array.isArray(equity_curve) ? equity_curve : [],
         trades: Array.isArray(trades_summary) ? trades_summary : [],
+        data: runData,
       });
       persisted_id = row.id;
       backtestRunsPersisted.labels(strategyLabel, String(symbol).toUpperCase()).inc();
@@ -302,8 +440,11 @@ router.post('/run', async (req: Request, res: Response) => {
       console.error('Failed to persist backtest run:', persistError?.message ?? persistError);
     }
 
-    res.json({ ...payload, persisted_id });
+    res.json({ ...payload, persisted_id, data: { ...runData, coverage } });
   } catch (error: any) {
+    if (error instanceof BacktestDataError) {
+      return res.status(error.status).json({ error: error.message, detail: error.message });
+    }
     console.error('Error running backtest:', error);
     sendProxyError(res, error, 'Failed to run backtest');
   }
