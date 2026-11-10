@@ -81,7 +81,10 @@ Other brokers search their own catalogues through the same panel and API
 ### Historical charts
 
 A TradingView **lightweight-charts** candlestick chart with volume bars,
-served from the `/historical` and per-symbol pages.
+served from the `/historical` and per-symbol pages. The library is pinned at
+an exact version (5.2.1) in `frontend/package.json`; every chart goes through
+`frontend/app/components/Chart.tsx` (and `EquityCurveChart.tsx` for equity
+curves).
 
 - **Timeframes shipped:** `tick`, `1min`, `5min`, `15min`, `30min`, `1hour`,
   `4hour`, `8hour`, `1day`.
@@ -147,7 +150,8 @@ IB Gateway ──reqMktData──▶ broker_service ──redis.publish──▶
 These are exposed via `GET /api/market-data/indicators` (backend) and
 `GET /indicators/available` (broker service). The frontend
 `IndicatorSelector` and `TechnicalIndicatorsFilter` components let users
-toggle them on the chart.
+toggle them on the chart. Overlays (moving averages, bands, VWAP) are drawn
+on the candles; oscillators (MACD, RSI) each get their own pane below them.
 
 ### Backtesting
 
