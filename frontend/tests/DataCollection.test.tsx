@@ -9,6 +9,7 @@ import DataCollection, {
   historyProgress,
   liveFeed,
   recorderSummary,
+  reconcileSummary,
   type RecorderStatus,
 } from '../app/components/DataCollection';
 
@@ -184,6 +185,38 @@ describe('live recording', () => {
     expect(screen.getByText(/polled every 2 s, 28 quotes in the last minute/)).toBeInTheDocument();
     expect(screen.getByLabelText('Record EUR_USD live')).toBeChecked();
     expect(screen.getByLabelText('Store EUR_USD ticks')).toBeChecked();
+  });
+
+  it('shows the last reconcile and runs one on request', async () => {
+    const writes = mockApi([{ ...ENTRY, record_live: true }], {
+      ...STATUS,
+      reconcile: {
+        running: false,
+        last_run: '2026-11-10T02:30:00Z',
+        last_error: null,
+        results: [
+          { replaced: 40, filled: 3, left: 0, error: null },
+          { replaced: 2, filled: 0, left: 1, error: 'broker down' },
+        ],
+      },
+    });
+    render(<DataCollection />);
+    await waitFor(() =>
+      expect(screen.getByTestId('reconcile-summary')).toHaveTextContent(
+        /42 recorded bars replaced, 3 missing minutes filled, 1 instrument failed\./
+      )
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Reconcile now' }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toMatchObject({ method: 'POST' });
+    expect(writes[0].url).toContain('/api/market-data/recorder/reconcile');
+    expect(reconcileSummary({ ...STATUS, reconcile: undefined })).toBe('');
+    expect(
+      reconcileSummary({
+        ...STATUS,
+        reconcile: { running: false, last_run: null, last_error: null, results: [] },
+      })
+    ).toMatch(/nightly at 02:30 UTC/);
   });
 
   it('says why an instrument is not streaming, and when the recorder is off or behind', () => {

@@ -286,7 +286,7 @@ What the schema holds, in short (read the files for the full list):
 | `order_audit`, `order_executions` | Every order attempt; venue fills, unique on `(broker, broker_account, exec_id)` |
 | `strategy_definitions`, `strategy_run_groups`, `strategy_runs`, `strategy_signals` | Strategies, deployments and their decisions |
 | `connection_equity`, `connection_halts` | Day-start equity and high-water marks; kill-switch halts |
-| `backtest_runs`, `watchlist_items`, `price_alerts` | Persisted backtests, the watchlist and its alerts |
+| `backtest_runs`, `watchlist_items`, `price_alerts` | Persisted backtests (`data` holds the bars a run used: source, count, range and hash), the watchlist and its alerts |
 
 Indicators are deliberately not stored: they are computed on demand in
 `broker_service/indicators.py`. `backend/src/database/archive/` holds the old

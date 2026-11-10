@@ -410,3 +410,16 @@ Found while building, and not fixed here: live subscriptions put the symbol
 in upper case, so an MT5 symbol with a lower-case suffix (`EURUSD.a`) cannot
 be streamed or recorded. The live chart has the same limit. History and
 orders are not affected.
+
+## 11. What followed (E-02, E-07)
+
+- **E-07, nightly reconcile** (`backend/src/services/reconcile.ts`): as
+  section 9 expected, it finds bars with `source = 'stream'` and overwrites
+  them through the broker-wins upsert. It runs for every recorded instrument
+  at 02:30 UTC, whether or not the backfill scheduler is on, and reports
+  bars replaced, minutes filled and how far closes moved.
+- **E-02, backtests from the database** (`backend/src/services/backtestData.ts`):
+  the plan gave the broker service a read-only database role. Sean chose
+  instead (10 November 2026) that the backend reads the bars and sends them
+  with the run. The broker service holds no database login, and the install
+  gains no step. The cost is a cap of 2,000,000 bars a run.

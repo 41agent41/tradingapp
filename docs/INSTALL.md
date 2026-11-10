@@ -942,8 +942,13 @@ On **Settings > Schedulers and data**:
    **Store ticks** as well only if you want every quote kept: a busy FX pair
    is 15 to 25 MB a day, and quotes are deleted after 30 days
    (`TICK_RETENTION_DAYS`, same tab). Both boxes apply to the instrument, so
-   they change on all of its rows. Leave Collect ticked too, so the backfill
-   replaces recorded bars with the broker's own and fills any gap.
+   they change on all of its rows. Each night at 02:30 UTC the app replaces
+   the last two days of recorded bars with the broker's own and fills any
+   gap; nothing needs turning on for that.
+
+Backtests run on these stored bars. An instrument that is not collected can
+still be backtested: the Backtest page says which bars are missing and offers
+to fetch and store them.
 
 **Check:** the Getting started checklist shows the market data step done, and
 a chart of a collected instrument shows bars. If you ticked Record live, the

@@ -49,7 +49,8 @@ import { brokersFromHealth, defaultBrokerProblem } from './services/brokerStatus
 import brokersRoutes from './routes/brokers.js';
 import { brokerSync } from './services/brokerConnectionsRuntime.js';
 import { BROKER_SETTING_KEYS } from './services/brokerSync.js';
-import { liveRecorder, RECORDER_SETTING_KEYS } from './services/liveRecorder.js';
+import { liveRecorder, recorderEnabled, RECORDER_SETTING_KEYS } from './services/liveRecorder.js';
+import { reconciler } from './services/reconcile.js';
 import { DailyJob } from './services/dailyJob.js';
 import { marketDataService } from './services/marketDataService.js';
 import { credentials } from './services/credentials.js';
@@ -339,6 +340,12 @@ const dailyCleanup = new DailyJob(3, 30, async () => {
   );
 });
 
+// Nightly reconcile at 02:30 UTC, before the cleanup: the last two days of
+// each recorded instrument's 1-minute bars are replaced by the broker's own.
+const nightlyReconcile = new DailyJob(2, 30, async () => {
+  if (recorderEnabled()) await reconciler.run();
+});
+
 // Strategy runner (Systematic Trading Phase 2, signal-only): evaluates every
 // running strategy against the latest closed bar and fans signals out over
 // `strategy:<runId>` Socket.IO rooms. Opt-in via SYSTEMATIC_ENABLED; it never
@@ -483,6 +490,7 @@ async function shutdown(signal: string) {
   // Before the database closes: stopping stores what the recorder has read.
   try {
     dailyCleanup.stop();
+    nightlyReconcile.stop();
     await liveRecorder.stop();
   } catch (err) {
     console.warn('Error stopping live recorder:', err);
@@ -591,6 +599,7 @@ function startServices(): void {
     liveRecorder.reconfigure();
     liveRecorder.start();
     dailyCleanup.start();
+    nightlyReconcile.start();
     heartbeat.reconfigure(heartbeatOptionsFromEnv());
     heartbeat.start();
 

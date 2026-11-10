@@ -341,10 +341,35 @@ in the last minute, the time of the last quote, or why it is not streaming.
 | "falling behind", lag growing | The database is slow or down. Quotes wait in Redis (up to `TICK_STREAM_MAXLEN`) and are stored when it returns. If lag grows with the database healthy, record fewer instruments with Store ticks, or raise `TICK_STREAM_MAXLEN` while you look. |
 | "not streaming: ..." on a row | The broker refused the symbol or is down; the text is the broker's reason. Fix the symbol or the connection. It is tried again every minute. |
 | "no quote yet" for minutes | The market is closed, or the broker sends nothing for that symbol. Open `/live` for the same symbol and connection to compare. |
-| A gap in recorded bars | The backfill fills it from the broker's history on its next pass, if the entry has Collect ticked. |
+| A gap in recorded bars | The nightly reconcile (02:30 UTC) fills it from the broker's history. **Reconcile now**, under the recorder's line, does it at once. It reaches back two days; for an older gap, tick Collect on the instrument's 1min row and let the backfill fetch it. |
+| "Reconcile ... 1 instrument failed" | The broker refused the history request. `curl -fs http://<host>:4000/api/market-data/recorder/status \| jq .reconcile` gives the reason per instrument. It is tried again the next night. |
 
 A weekend or a closed market gives no quotes and no bars. That is normal and
 is not reported as a fault.
+
+In the reconcile's results, `mean_move_bps` is how far the broker's closes
+were from the recorded ones. A few basis points on a polled broker is
+expected. The same large figure every night on one broker means its bars are
+being built on the wrong price; report it.
+
+### Backtests and stored bars
+
+Backtests run on stored bars
+([FEATURES.md § Backtesting](FEATURES.md#backtesting)). When the page says
+bars are missing:
+
+- **Fetch missing bars, then run** is right the first time an instrument and
+  timeframe is backtested, or after widening the range. Years of 5-minute
+  bars take a few minutes; the page waits up to 15.
+- **Run on what is stored** is right when the missing stretch is before the
+  broker's own history starts, so fetching cannot fill it.
+
+To have the bars there already, add the instrument and timeframe to the data
+collection table with **History from** set
+([INSTALL.md step 5](INSTALL.md#5-market-data)).
+
+To check two runs used the same data, compare the data hash in their results
+headers, or `data.hash` from `GET /api/backtesting/runs/<id>`.
 
 **Upgrading from a version before migration `006_live_recorder`.** Live
 streams are now per broker connection, and their channel names changed.

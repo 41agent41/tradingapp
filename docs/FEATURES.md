@@ -178,14 +178,41 @@ plus every **saved rule-set** authored in the `/systematic` rule builder. See
   and `POST /api/backtesting/run` (`backend/src/routes/backtesting.ts`).
   The run endpoint takes exactly one of `strategy`, `definition_id` or
   `rule_set`, plus optional `sec_type` / `exchange` / `currency` / `source`
-  to scope the instrument and the venue (defaults: `STK`/`SMART`/`USD`/`ib`).
+  to scope the instrument and the venue (defaults: `STK`/`SMART`/`USD` and
+  the highest-priority broker).
+- **Bars come from the database.** A backtest runs on the bars stored for the
+  instrument at that broker, whichever way they got there (data collection,
+  deep history, live recording). Before each run the backend checks the
+  range: a stretch longer than 5 days with no stored bar counts as missing
+  (shorter ones are weekends and holidays). When something is missing the
+  page asks, and the API answers `409` with the coverage:
+  - **Fetch missing bars, then run** (`on_missing: "fetch"`) fetches each
+    missing stretch from the broker, stores it, and runs. The bars stay
+    stored, so the next run needs no fetch.
+  - **Run on what is stored** (`on_missing: "use_stored"`) runs on the bars
+    there are. The run is marked as not fully covering its range.
+
+  `GET /api/backtesting/coverage` gives the same check without running.
+  The range is a period (`1M` to `5Y` on the page; any `<n>D|W|M|Y` in the
+  API) or `start_date` and `end_date`. One run can load up to 2,000,000
+  bars. The backend reads the bars and sends them to the broker service
+  with the run; the broker service has no access to the database.
+- **A run can be repeated on the same data.** Each run records where its bars
+  came from, how many, the first and last bar, and a SHA-256 of exactly
+  those bars (`backtest_runs.data`). The results header shows the range and
+  the start of the hash. Two runs with the same hash ran on identical bars;
+  a different hash means a bar was added or changed in between (the nightly
+  reconcile replacing a recorded bar, for example).
+- **Straight from the broker, storing nothing:** `data: "broker"` in the API
+  has the broker service fetch the bars itself, as every run did before. It
+  is limited to 365 days and is not offered on the page.
 - **UI:** the `/backtest` page (`frontend/app/backtest/page.tsx`) with a
   strategy picker (saved rule-sets grouped above the built-ins), parameter
   form, instrument fields, metrics summary, equity-curve chart
   (`EquityCurveChart`), trade-list table and a **Previous Runs** panel
   that click-to-loads any prior run without re-running the engine.
 
-**Persistence** ships now: every successful run is upserted into
+**Persistence**: every successful run is saved into
 `backtest_runs` (canonical schema). The slim list endpoint
 `GET /api/backtesting/runs` (filter by symbol / strategy, paginated)
 feeds the panel; `GET /api/backtesting/runs/:id` returns the full record.
@@ -320,11 +347,21 @@ broker_service ──XADD──▶ Redis Stream marketdata:quotes ──XREAD─
   the bars and quotes from it, and resumes from there after any restart. A
   stopped backend catches up from the stream when it returns. Quotes are
   lost only if more than `TICK_STREAM_MAXLEN` of them arrive while it is
-  down; the next backfill fills those minutes from the broker's history.
+  down; the nightly reconcile fills those minutes from the broker's history.
 - **Polled brokers.** A broker without a price stream is polled every
   `STREAM_POLL_SECONDS`, so a high or low between two polls is missed and
-  its recorded bars are approximate until the backfill replaces them. The
-  Live feed column says which instruments are streamed and which polled.
+  its recorded bars are approximate until the nightly reconcile replaces
+  them. The Live feed column says which instruments are streamed and which
+  polled.
+- **Nightly reconcile.** At 02:30 UTC the backend fetches the last two days
+  of 1-minute bars for every recorded instrument from its broker and stores
+  them: a broker bar replaces the recorded one and fills any minute the
+  recorder missed. Each run reports, per instrument, bars replaced, minutes
+  filled, recorded bars the broker had none for, and how far the replaced
+  closes moved (in basis points). The line under the recorder's on the
+  Settings page shows the last run and has **Reconcile now**
+  (`POST /api/market-data/recorder/reconcile`). It runs whenever
+  `RECORDER_ENABLED` is on, and does not need the backfill scheduler.
 - **Limits today.** The time on a quote is when the broker service received
   it, not the broker's own timestamp. Volume on trade-built bars is
   approximate. Live MT5 symbols are sent in upper case, so a symbol with a
@@ -519,9 +556,8 @@ automatically: paper-first, staged behind gates. See the
 - **Any instrument, any venue:** a definition carries `sec_type` / `exchange` /
   `currency` alongside its symbol and broker (defaulting to `STK`/`SMART`/`USD`),
   so futures, FX, CFDs and non-USD instruments work the same way US stocks do.
-  The backtester qualifies the contract before requesting bars, and both the
-  backtester and the live runner fetch data from the run's **own** broker
-  rather than always from IB.
+  The backtester reads the bars stored for the run's **own** broker, and
+  the live runner fetches from that broker, rather than always from IB.
 - **Position-aware rules are simulated, not just carried:** the backtest engine
   evaluates rules bar-by-bar against its running position and entry price, so
   `position.size`, `position.avg_price` and `position.unrealized_pct` (stops,
@@ -777,9 +813,11 @@ describes adding another.
 | `/api/brokers/connections` | GET·POST | List / add broker connections |
 | `/api/brokers/connections/:id` | PUT·DELETE | Edit / remove a connection |
 | `/api/market-data/collection` | GET·POST | Data collection entries (`data_collection_config`) |
-| `/api/market-data/recorder/status` | GET | The live recorder: lag, totals, and each recorded instrument's feed |
+| `/api/market-data/recorder/status` | GET | The live recorder: lag, totals, each recorded instrument's feed, and the last reconcile |
+| `/api/market-data/recorder/reconcile` | POST | Replace the last two days of recorded bars with the broker's, now |
 | `/api/backtesting/strategies` | GET | Available backtest strategies (cached 1h) |
-| `/api/backtesting/run` | POST | Run a backtest: by `strategy` key, saved `definition_id` or inline `rule_set` |
+| `/api/backtesting/run` | POST | Run a backtest on stored bars: by `strategy` key, saved `definition_id` or inline `rule_set`; `409` with the coverage when bars are missing |
+| `/api/backtesting/coverage` | GET | How well stored bars cover an instrument, timeframe and range |
 | `/api/backtesting/runs` | GET | List persisted runs (filterable, paginated) |
 | `/api/backtesting/runs/:id` | GET | Full record for a persisted run |
 | `/api/export/parquet` | POST | Convert `{ columns, rows }` to a Parquet download |

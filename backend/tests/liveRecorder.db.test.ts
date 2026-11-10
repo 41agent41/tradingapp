@@ -7,7 +7,13 @@
 import { dbService } from '../src/services/database.js';
 import { marketDataService } from '../src/services/marketDataService.js';
 import { CollectionConfigRepository } from '../src/services/collectionConfig.js';
-import { TARGETS_SQL, storeFlush, type BarRow } from '../src/services/liveRecorder.js';
+import {
+  TARGETS_SQL,
+  recordTargets,
+  storeFlush,
+  type BarRow,
+} from '../src/services/liveRecorder.js';
+import { Reconciler } from '../src/services/reconcile.js';
 
 const run = process.env.DB_TESTS === '1' ? describe : describe.skip;
 const tag = Date.now().toString(36).slice(-6).toUpperCase();
@@ -118,6 +124,40 @@ run('live recorder (real database)', () => {
 
     await storeFlush({ bars: [bar(id, T, 1.3)], ticks: [], cursor: `${T}-4` });
     expect(await stored(id, T)).toMatchObject({ close: 2, source: 'broker' });
+  });
+
+  it('reconciles recorded bars with the broker: replaced, filled and left', async () => {
+    const symbol = `RECON${tag}`;
+    const entry = await repo.add({ broker: 'oanda', symbol, timeframe: '1min', record_live: true });
+    const id = entry.contract_id;
+    const at = T - 30 * MIN;
+    await storeFlush({
+      bars: [bar(id, at, 1.2), bar(id, at + MIN, 1.2), bar(id, at + 3 * MIN, 1.2)],
+      ticks: [],
+      cursor: `${T}-8`,
+    });
+    const brokerBar = (minute: number) => ({
+      timestamp: minute / 1000,
+      open: 1.3,
+      high: 1.3,
+      low: 1.3,
+      close: 1.3,
+      volume: 5,
+    });
+    const reconciler = new Reconciler({
+      db: dbService,
+      targets: async () => (await recordTargets()).filter((t) => t.symbol === symbol),
+      fetchHistory: async () => [brokerBar(at), brokerBar(at + MIN), brokerBar(at + 2 * MIN)],
+      storeCandlestickData: (c, tf, b) => marketDataService.storeCandlestickData(c, tf, b),
+      recordDataQuality: async () => undefined,
+      now: () => Date.now(),
+    });
+    const [result] = await reconciler.run();
+    expect(result).toMatchObject({ contract_id: id, fetched: 3, replaced: 2, filled: 1, left: 1 });
+    expect(await stored(id, at)).toMatchObject({ close: 1.3, source: 'broker' });
+    expect(await stored(id, at + 2 * MIN)).toMatchObject({ close: 1.3, source: 'broker' });
+    expect(await stored(id, at + 3 * MIN)).toMatchObject({ close: 1.2, source: 'stream' });
+    await repo.remove(entry.id);
   });
 
   it('leaves the minute still forming to the recorder', async () => {
