@@ -36,7 +36,15 @@ function setting(key: string): string | undefined {
  * docs/plans/ENHANCEMENT_PLAN.md). Mirrors `BROKER_PRIORITY` in
  * `broker_service/connections.py`, which owns the choice of default.
  */
-export const BROKER_PRIORITY: readonly Broker[] = ['oanda', 'ig', 'ctrader', 'alpaca', 'mt5', 'ib'];
+export const BROKER_PRIORITY: readonly Broker[] = [
+  'oanda',
+  'ig',
+  'ctrader',
+  'ibweb',
+  'alpaca',
+  'mt5',
+  'ib',
+];
 
 /**
  * What a persisted row with no broker means. Every row written before the

@@ -10,7 +10,7 @@ legacy variables working as a one-connection shorthand.
 Vocabulary, used consistently across the codebase:
 
   - **platform** — the protocol/integration: ``ib`` | ``mt5`` | ``alpaca`` | ``oanda``
-    | ``ig`` | ``ctrader``
+    | ``ig`` | ``ctrader`` | ``ibweb``
   - **account**  — one set of credentials at one firm on one platform
   - **connection** — the addressable pair, written ``mt5:pepperstone-live``
 
@@ -77,12 +77,13 @@ from observability import get_logger
 
 logger = get_logger(__name__)
 
-SUPPORTED_PLATFORMS = ("ib", "mt5", "alpaca", "oanda", "ig", "ctrader")
-# Broker priority, highest first: the web API brokers (OANDA, IG, cTrader,
-# Alpaca), then MT5 through its sidecar, then IB Gateway. A request that names no platform
-# goes to the highest-ranked one that is configured, unless DEFAULT_BROKER
-# names one. Mirrored by BROKER_PRIORITY in backend/src/services/orderTypes.ts.
-BROKER_PRIORITY = ("oanda", "ig", "ctrader", "alpaca", "mt5", "ib")
+SUPPORTED_PLATFORMS = ("ib", "mt5", "alpaca", "oanda", "ig", "ctrader", "ibweb")
+# Broker priority, highest first: the web API brokers (OANDA, IG, cTrader, the
+# IBKR Web API, Alpaca), then MT5 through its sidecar, then IB Gateway. A
+# request that names no platform goes to the highest-ranked one that is
+# configured, unless DEFAULT_BROKER names one. Mirrored by BROKER_PRIORITY in
+# backend/src/services/orderTypes.ts.
+BROKER_PRIORITY = ("oanda", "ig", "ctrader", "ibweb", "alpaca", "mt5", "ib")
 DEFAULT_ACCOUNT = "default"
 ACCOUNT_MODES = ("paper", "live")
 
@@ -313,6 +314,25 @@ def _validate_platform_fields(conn: Connection, literal: bool = False) -> None:
             raise ManifestError(
                 f"connection '{conn.account}': the ctrader account id is the numeric "
                 "ctidTraderAccountId, not the account login"
+            )
+    elif conn.platform == "ibweb":
+        if not (conn.url and conn.account_id):
+            raise ManifestError(
+                f"connection '{conn.account}': ibweb requires the Client Portal Gateway "
+                "'url' and the IBKR account id"
+                if literal
+                else f"connection '{conn.account}': ibweb requires a 'url' (the Client "
+                "Portal Gateway) and 'account_env' naming an environment variable that is set"
+            )
+        # IBKR paper account ids start with D (DU1234567). The mode is the
+        # account's, not a preference: refuse a connection that contradicts it
+        # rather than send paper orders to real money.
+        paper_id = conn.account_id.strip().upper().startswith("D")
+        if paper_id != (conn.account_mode == "paper"):
+            raise ManifestError(
+                f"connection '{conn.account}': IBKR account {conn.account_id} is a "
+                f"{'paper' if paper_id else 'live'} account (paper ids start with D) "
+                f"but the connection is declared {conn.account_mode}"
             )
     elif conn.platform == "ib" and literal:
         if not conn.host:

@@ -111,12 +111,27 @@ export const PLATFORM_FORM: Record<string, Field[]> = {
       placeholder: '12345678 (not the login)',
     },
   ],
+  ibweb: [
+    {
+      name: 'url',
+      label: 'Client Portal Gateway URL',
+      required: true,
+      placeholder: 'https://10.0.0.30:5000',
+    },
+    {
+      name: 'account_id',
+      label: 'Account ID',
+      required: true,
+      placeholder: 'DU1234567 (paper) or U1234567 (live)',
+    },
+  ],
 };
 
 /**
  * The firms a connection can belong to, each with its one connection type:
- * its web API when it has one, the MT5 bridge when it does not, IB Gateway
- * only for Interactive Brokers. The backend refuses any other pairing.
+ * its web API when it has one, the MT5 bridge when it does not. Interactive
+ * Brokers alone has two entries, its Web API and the older IB Gateway. The
+ * backend refuses any other pairing.
  * Mirrors FIRMS in backend/src/services/firms.ts (same ids, order and
  * platforms; backend/tests/firms.test.ts checks it).
  */
@@ -170,6 +185,12 @@ export const FIRM_PRESETS: FirmPreset[] = [
     note: `${CTRADER_NOTE} Use this for a cTrader firm not listed above.`,
   },
   {
+    id: 'ibkr',
+    name: 'Interactive Brokers (Web API)',
+    platform: 'ibweb',
+    note: "Run the Client Portal Gateway and sign it in from a browser (paper login for a DU account). Several accounts, any market the account can trade, brackets attached at entry. IBKR's MCP server (api.ibkr.com/v1/api/mcp-public) works only inside an AI app such as Claude.",
+  },
+  {
     id: 'alpaca',
     name: 'Alpaca',
     platform: 'alpaca',
@@ -201,9 +222,9 @@ export const FIRM_PRESETS: FirmPreset[] = [
   },
   {
     id: 'ib',
-    name: 'Interactive Brokers',
+    name: 'Interactive Brokers (IB Gateway)',
     platform: 'ib',
-    note: 'IB Gateway. Run IB Gateway logged in to your account and give its host and port.',
+    note: 'TWS socket API through IB Gateway or TWS (port 4002 paper, 4001 live). One connection at a time; US stocks. Prefer the Web API for a new connection.',
   },
 ];
 
@@ -227,7 +248,7 @@ export function formForFirm(firm: FirmPreset): FormState {
  * reports the order in effect). Mirrors BROKER_PRIORITY in
  * broker_service/connections.py; see docs/DEVELOPMENT.md, "Adding a broker".
  */
-export const BROKERS_BY_PRIORITY = ['oanda', 'ig', 'ctrader', 'alpaca', 'mt5', 'ib'];
+export const BROKERS_BY_PRIORITY = ['oanda', 'ig', 'ctrader', 'ibweb', 'alpaca', 'mt5', 'ib'];
 
 const PLATFORM_NAME: Record<string, string> = {
   oanda: 'OANDA',
@@ -236,10 +257,11 @@ const PLATFORM_NAME: Record<string, string> = {
   alpaca: 'Alpaca',
   ig: 'IG',
   ctrader: 'cTrader',
+  ibweb: 'IBKR Web API',
 };
 
 /** Short names, where space is tight (the header health badge). */
-const PLATFORM_SHORT_NAME: Record<string, string> = { ib: 'IB' };
+const PLATFORM_SHORT_NAME: Record<string, string> = { ib: 'IB', ibweb: 'IBKR' };
 
 export function platformName(platform: string, short = false): string {
   return (short && PLATFORM_SHORT_NAME[platform]) || PLATFORM_NAME[platform] || platform;

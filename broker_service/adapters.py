@@ -187,6 +187,12 @@ def _build_adapters(conn: Connection) -> tuple[Optional[Any], Optional[Any]]:
         )
         return ctrader, ctrader
 
+    if conn.platform == "ibweb":
+        from ibweb_adapter import IBWebAdapter
+
+        ibweb = IBWebAdapter(conn.url or "", conn.account_id or "", currency=conn.currency)
+        return ibweb, ibweb
+
     return None, None
 
 
@@ -366,6 +372,10 @@ _UNAVAILABLE_HINTS = {
         "and OANDA_ACCOUNT_ID."
     ),
     "ig": " Add an IG connection on Settings > Connections (API key, username, password).",
+    "ibweb": (
+        " Add an IBKR Web API connection on Settings > Connections (the Client Portal "
+        "Gateway URL and the account id), and sign the gateway in."
+    ),
     "ctrader": (
         " Add a cTrader connection on Settings > Connections (Open API client id and "
         "secret, access token, ctidTraderAccountId)."

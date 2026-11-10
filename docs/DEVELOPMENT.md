@@ -37,7 +37,7 @@ app for real are in [INSTALL.md](INSTALL.md) and
                    │ (FastAPI, Py)  │──►         │
                    └─────────┬──────┘  └─────────┘
                              │  adapters, in priority order
-     OANDA ─ IG ─ cTrader ─ Alpaca ─ MT5 (sidecar) ─ IB Gateway
+  OANDA ─ IG ─ cTrader ─ IBKR Web API ─ Alpaca ─ MT5 (sidecar) ─ IB Gateway
 ```
 
 - **frontend** (`frontend/`): Next.js 14 pages under `app/`, served by
@@ -51,7 +51,7 @@ app for real are in [INSTALL.md](INSTALL.md) and
 - **broker_service** (`broker_service/`): FastAPI + Python. Has no database.
   One adapter per platform (`ib_adapter.py`, `mt5_adapter.py`,
   `oanda_adapter.py`, `ig_adapter.py`, `ctrader_adapter.py`,
-  `alpaca_adapter.py`) behind the protocols in
+  `ibweb_adapter.py`, `alpaca_adapter.py`) behind the protocols in
   `adapters.py`. Also the indicator maths, the backtester, the rule engine
   and the embedded Jesse port. Every call except `/`, `/health` and
   `/metrics` needs the `X-Broker-Service-Token`.

@@ -72,10 +72,10 @@ Other brokers search their own catalogues through the same panel and API
 
 | Asset class | Examples | Where |
 |---|---|---|
-| Stocks and ETFs | MSFT, AAPL, SPY | IB, Alpaca |
-| Options | MSFT calls and puts | IB, Alpaca |
-| Futures | ES, NQ, YM | IB |
-| Forex | EUR.USD, GBP.USD | OANDA, MT5, IB |
+| Stocks and ETFs | MSFT, AAPL, SPY, BHP:ASX | IB, IBKR Web API, Alpaca |
+| Options | MSFT calls and puts | IB, IBKR Web API (by conid), Alpaca |
+| Futures | ES, NQ, YM | IB, IBKR Web API (by conid) |
+| Forex | EUR.USD, GBP.USD | OANDA, MT5, IB, IBKR Web API |
 | CFDs | indices, metals | OANDA, MT5 |
 
 ### Historical charts
@@ -594,8 +594,9 @@ routes. [DEVELOPMENT.md § Adding a broker](DEVELOPMENT.md#adding-a-broker)
 describes adding another.
 
 - **Connections in the app:** brokers are added on Settings > Connections,
-  one connection per account, in priority order OANDA, then MT5, then IB,
-  then Alpaca (the order can be changed there). Each connection has a name,
+  one connection per account, in priority order OANDA, IG, cTrader, the
+  IBKR Web API, Alpaca, MT5, then IB Gateway (the order can be changed
+  there). Each connection has a name,
   a mode (`paper` or `live`), a currency, the broker's own fields and
   optional risk limits and prop-firm rules. Credentials are stored
   encrypted in the database. Each connection is tested when saved, and the
@@ -634,6 +635,18 @@ describes adding another.
   symbols resolve to each broker's own. An MT5 connection defined in a `.env` manifest can
   read its balance and positions from an OANDA account (`account_info_from`)
   while orders still go through the sidecar.
+- **IBKR Web API (`ibweb`) through the Client Portal Gateway:**
+  [`IBWebAdapter`](../broker_service/ibweb_adapter.py) speaks IBKR's REST API
+  to a gateway signed in from a browser
+  ([INSTALL.md § 4.10](INSTALL.md#410-interactive-brokers-web-api-client-portal-gateway)).
+  Unlike the TWS socket path it allows several connections, and it resolves
+  `AAPL`, `BHP:ASX`, `AUD.USD` or a bare conid to a contract, so stocks on
+  any exchange, IDEALPRO FX, futures and options all trade. A stop and
+  target go with the entry as one bracket. IBKR's precautionary prompts are
+  confirmed and returned as `warnings`. Paper account ids start with `D`, and
+  the connection's mode must match its account, which must also be one the
+  gateway is signed in to. The connection check tickles the gateway, which
+  keeps its session alive; the daily sign-in is a person's.
 - **Alpaca and OANDA: cloud REST, no sidecar host.** Unlike MT5, both are
   reachable directly over HTTPS, so
   [`AlpacaAdapter`](../broker_service/alpaca_adapter.py) and
@@ -664,9 +677,10 @@ describes adding another.
   Access tokens last about 30 days and are renewed by hand.
 - **One connection type per firm:** every connection names its firm
   (OANDA, IG, IC Markets, Pepperstone, FP Markets, Fusion, another cTrader
-  firm, Alpaca, Axi, Eightcap, Vantage, another MT5 firm, Interactive
-  Brokers), and the firm sets the platform: its web API when it has one, the
-  MT5 sidecar when it does not, IB Gateway only for Interactive Brokers. The
+  firm, Interactive Brokers, Alpaca, Axi, Eightcap, Vantage, another MT5
+  firm), and the firm sets the platform: its web API when it has one, the
+  MT5 sidecar when it does not. Interactive Brokers alone has two entries,
+  its Web API and the older IB Gateway. The
   backend refuses any other pairing (`backend/src/services/firms.ts`). Axi
   has no public trading API, and its MCP server serves Claude only, so Axi
   accounts go through the MT5 sidecar. Connections saved before firms are

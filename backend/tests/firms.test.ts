@@ -21,6 +21,7 @@ describe('firms', () => {
   it('implies the firm only where a platform has one', () => {
     expect(impliedFirm('oanda')).toBe('oanda');
     expect(impliedFirm('ib')).toBe('ib');
+    expect(impliedFirm('ibweb')).toBe('ibkr');
     expect(impliedFirm('mt5')).toBeNull();
     expect(impliedFirm('ctrader')).toBeNull();
   });

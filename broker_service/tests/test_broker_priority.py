@@ -1,6 +1,6 @@
 """Broker priority and optional IB.
 
-Brokers rank OANDA (and later API brokers), then MT5, IB and Alpaca. A request
+Brokers rank the web API brokers (OANDA first), then MT5, then IB Gateway. A request
 that names no platform goes to the highest-ranked one that is configured, and
 IB is only a connection when IB_HOST names a gateway. No venue is touched.
 """
@@ -55,7 +55,7 @@ def _oanda():
 def test_priority_order():
     import connections
 
-    assert connections.BROKER_PRIORITY == ("oanda", "ig", "ctrader", "alpaca", "mt5", "ib")
+    assert connections.BROKER_PRIORITY == ("oanda", "ig", "ctrader", "ibweb", "alpaca", "mt5", "ib")
     assert set(connections.BROKER_PRIORITY) == set(connections.SUPPORTED_PLATFORMS)
 
 
@@ -128,7 +128,7 @@ def test_nothing_configured_defaults_to_top_of_list_and_501s(registry):
 def test_health_reports_default_and_priority(registry):
     health = registry(**_oanda()).provider_health()
     assert health["default"] == "oanda"
-    assert health["priority"] == ["oanda", "ig", "ctrader", "alpaca", "mt5", "ib"]
+    assert health["priority"] == ["oanda", "ig", "ctrader", "ibweb", "alpaca", "mt5", "ib"]
 
 
 def test_ib_connection_without_ib_host_is_a_clear_503(monkeypatch):

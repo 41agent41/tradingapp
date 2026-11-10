@@ -2,10 +2,12 @@
 -- connection names its firm, and the firm decides the platform
 -- (services/firms.ts): OANDA, IG, the cTrader firms and Alpaca through their
 -- web APIs, Axi, Eightcap, Vantage and other firms without one through the
--- MT5 bridge, Interactive Brokers through IB Gateway.
+-- MT5 bridge. Interactive Brokers has two: its Web API (ibkr) and the older
+-- IB Gateway (ib).
 --
 -- Existing rows get a firm where it is certain:
---   * OANDA, IG, Alpaca and IB rows: the platform's own firm.
+--   * OANDA, IG, Alpaca, IB Gateway and IBKR Web API rows: the platform's
+--     own firm.
 --   * cTrader and MT5 rows named after a firm of that platform (the form
 --     named them so): that firm, for example ctrader:icmarkets -> icmarkets.
 -- Every other row keeps firm NULL. The Getting started checklist lists them,
@@ -16,6 +18,9 @@ ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS firm VARCHAR(32);
 
 UPDATE broker_connections SET firm = platform
  WHERE firm IS NULL AND platform IN ('oanda', 'ig', 'alpaca', 'ib');
+
+UPDATE broker_connections SET firm = 'ibkr'
+ WHERE firm IS NULL AND platform = 'ibweb';
 
 UPDATE broker_connections SET firm = account
  WHERE firm IS NULL

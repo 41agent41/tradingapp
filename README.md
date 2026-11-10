@@ -3,7 +3,8 @@
 A self-hosted trading platform: charts, a market-data store, backtesting and
 systematic strategies, with paper and live trading through OANDA, IG,
 cTrader brokers (IC Markets, Pepperstone, FP Markets, Fusion), MetaTrader 5
-brokers (Axi, Eightcap, Vantage), Interactive Brokers and Alpaca. It runs as
+brokers (Axi, Eightcap, Vantage), Interactive Brokers (Web API or IB
+Gateway) and Alpaca. It runs as
 a Docker stack on one Linux host.
 
 ```
@@ -22,7 +23,7 @@ a Docker stack on one Linux host.
                    │ (FastAPI)      │──►         │
                    └─────────┬──────┘  └─────────┘
                              │  in priority order
-     OANDA ─ IG ─ cTrader ─ Alpaca ─ MT5 (sidecar) ─ IB Gateway
+  OANDA ─ IG ─ cTrader ─ IBKR Web API ─ Alpaca ─ MT5 (sidecar) ─ IB Gateway
 ```
 
 The database is the first dependency. Settings, logins, broker connections
@@ -41,7 +42,7 @@ The app is built for Proxmox VE, one server per job, each created with a
 | CT 100 | Database: PostgreSQL + TimescaleDB | PostgreSQL |
 | CT 110 | The app | Docker |
 | VM 120 | MetaTrader 5 terminals and sidecars (optional) | Ubuntu VM |
-| CT 130 | IB Gateway (optional) | Docker |
+| CT 130 | IB Gateway and/or IBKR Client Portal Gateway (optional) | Docker |
 | CT 140 | Reverse proxy and TLS | Nginx Proxy Manager |
 | CT 150, CT 160 | Prometheus and Grafana (optional) | Prometheus, Grafana |
 
@@ -54,7 +55,7 @@ on one container with its own database, see its
 
 | Guide | For |
 |---|---|
-| [docs/INSTALL.md](docs/INSTALL.md) | Installing on Proxmox VE, step by step: the database server, the app server, sign-in, brokers (OANDA, IG, cTrader, MT5, IB, Alpaca), market data, alerts, reverse proxy, firewall, monitoring, backups. Also the installer in detail, and installing without Proxmox. |
+| [docs/INSTALL.md](docs/INSTALL.md) | Installing on Proxmox VE, step by step: the database server, the app server, sign-in, brokers (OANDA, IG, cTrader, IBKR Web API, MT5, IB Gateway, Alpaca), market data, alerts, reverse proxy, firewall, monitoring, backups. Also the installer in detail, and installing without Proxmox. |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Running it: commands, settings, upgrades and rebuilds, going live, monitoring, backups, troubleshooting. |
 | [docs/PAPER_TRADING.md](docs/PAPER_TRADING.md) | Taking strategies through paper trading on two MT5 demo accounts, step by step. |
 | [docs/FEATURES.md](docs/FEATURES.md) | What the app does, and what is planned. |

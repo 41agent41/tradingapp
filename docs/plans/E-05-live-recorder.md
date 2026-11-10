@@ -1,7 +1,7 @@
 # Design record: live recorder and tick storage (E-05, E-06)
 
-Status: **proposed, revision 2**, waiting for Sean's sign-off. Nothing below
-is built yet. Revision 2 changed four things after a second review: bars
+Status: **revision 2, both open questions answered** (section 8). Nothing
+below is built yet. Revision 2 changed four things after a second review: bars
 follow each broker's own price basis (D5), database writes are exactly-once
 through a stored cursor (D7), live channels become per connection (D3), and
 unchanged quotes are not recorded (D2).
@@ -146,6 +146,7 @@ stream.
   | MT5 | `copy_rates`, which MetaTrader builds from bid | `bid` |
   | Alpaca | `/v2/stocks/{symbol}/bars`, built from trades | `last` |
   | IB | `reqHistoricalData` with `TRADES` (`routes/market_data.py`) | `last` |
+  | IBKR Web API | `/iserver/marketdata/history`, trades by default (`ibweb_adapter.py`) | `last` |
 
   The bar price is that field of the snapshot. With `mid`, both bid and ask
   must be present. An entry without the needed field is skipped for bars
@@ -364,15 +365,11 @@ receives from the backend (`brokerSync.ts`). It is not another `.env` line.
 | A broker's history basis is declared wrongly, so stream bars differ from broker bars | E-07 logs how far each replaced bar moved. A basis that is wrong shows up as a large, steady difference on the first night. |
 | The recorder falls behind on a busy instrument set | Reads of 1000 and one flush every 5 seconds for all contracts together. Lag is shown and alerted (section 4). |
 
-## 8. Questions for Sean
+## 8. Answers from Sean (10 November 2026)
 
-Defaults are proposed. Say if any should differ.
-
-1. Is a 30-day default for stored quotes right, given about 5 GB for ten FX
-   pairs (parent plan, storage estimate)?
-2. Should **Record live** be ticked automatically for every collection row
-   that is already enabled, or left off until chosen? The proposal is to
-   leave it off, so the upgrade changes nothing on its own.
+1. Stored quotes are kept for 30 days by default.
+2. **Record live** stays off until chosen, so the upgrade changes nothing on
+   its own.
 
 ## 9. Interfaces left for later items
 

@@ -381,9 +381,10 @@ The app asks brokers in this order of priority. Add only the ones you use.
 | 1 | OANDA (FX, CFDs) | none, a cloud API | A practice account: API token and account id |
 | 2 | IG (CFDs) | none, a cloud API | A demo login and an API key |
 | 3 | cTrader (IC Markets, Pepperstone, FP Markets, Fusion and other cTrader brokers) | none, a cloud API | A demo cTrader account, a cTrader Open API application and an access token |
-| 4 | Alpaca (US stocks, options) | none, a cloud API | A paper API key and secret |
-| 5 | MetaTrader 5 (Axi, Eightcap, Vantage and other firms with no web API) | VM 120 | A demo account: login, password, server, and the server's time zone |
-| 6 | Interactive Brokers | CT 130 | A paper account: username and password |
+| 4 | Interactive Brokers, Web API (stocks, ETFs, FX, futures, options on most exchanges, ASX included) | CT 130 | A paper account id (`DU…`) and its login |
+| 5 | Alpaca (US stocks, options) | none, a cloud API | A paper API key and secret |
+| 6 | MetaTrader 5 (Axi, Eightcap, Vantage and other firms with no web API) | VM 120 | A demo account: login, password, server, and the server's time zone |
+| 7 | Interactive Brokers, IB Gateway (US stocks) | CT 130 | A paper account: username and password |
 
 Each firm connects one way only: through its web API when it has one, through
 MT5 when it does not, and through IB Gateway only for Interactive Brokers
@@ -770,20 +771,21 @@ pairing, and also refuses a connection named after a firm of another type
 | IG | IG | Native REST API. |
 | IC Markets, Pepperstone, FP Markets, Fusion Markets (each "(cTrader)") | cTrader | cTrader Open API. Their MT5 accounts cannot be added; open a cTrader account with the firm instead. |
 | Another cTrader firm | cTrader | Any other firm on cTrader. |
+| Interactive Brokers (Web API), Australia included | IBKR Web API | The Web API ([4.10](#410-interactive-brokers-web-api-client-portal-gateway)) reaches every market the account trades and allows several accounts. Prefer it for a new connection. IBKR's MCP server ([4.11](#411-ibkrs-mcp-server-for-claude)) connects an account to Claude, not to the app. |
 | Alpaca | Alpaca | Native REST API. |
 | Axi (MT5) | MT5 | Axi has no public trading API. Its MCP server (`mcp.axi.com`, in alpha) connects an Axi MT5 account to Claude only, not to other applications, so the app reaches Axi through the MT5 sidecar. |
 | Eightcap (MT5), Vantage (MT5) | MT5 | Through the MT5 sidecar. |
 | Another MT5 firm (no web API) | MT5 | Any firm with no web API, prop firms included. Not for a firm listed above. |
-| Interactive Brokers | IB | Through IB Gateway. |
+| Interactive Brokers (IB Gateway) | IB | The older TWS socket route ([4.3](#43-interactive-brokers-ct-130)): US stocks on one account. Interactive Brokers is the one firm with two entries on the form. |
 
 ### 4.8 Priority and the default broker
 
 A request that names no broker goes to the highest-priority one that has a
-connection: the web API brokers OANDA, IG, cTrader and Alpaca, then MT5, then
-IB. Change the order on the Connections tab, or pin one with `DEFAULT_BROKER`
-on Settings > Trading. A broker with no connection answers 501. An order you
-saved on the Connections tab is kept on upgrade; only the built-in default
-changed.
+connection: the web API brokers OANDA, IG, cTrader, the IBKR Web API and
+Alpaca, then MT5, then IB Gateway. Change the order on the Connections tab,
+or pin one with `DEFAULT_BROKER` on Settings > Trading. A broker with no
+connection answers 501. An order you saved on the Connections tab is kept on
+upgrade; only the built-in default changed.
 
 **Check:** each connection shows as connected on Settings > Connections, the
 header's health badge agrees, and the Getting started checklist shows the
@@ -825,6 +827,98 @@ Until the form has them there are two workarounds, each with a catch:
    then live in the manifest, with their secrets in further `.env` lines.
 
 ---
+
+### 4.10 Interactive Brokers Web API (Client Portal Gateway)
+
+The IBKR Web API is IBKR's REST interface. For an individual account,
+including one at Interactive Brokers Australia, IBKR serves it only through
+the **Client Portal Gateway**, a small Java program that holds the session
+after you sign in from a browser (OAuth is for institutions and approved
+third-party vendors). Compared with IB Gateway in 4.3 it:
+
+- reaches any market the account can trade: US and ASX stocks, ETFs,
+  IDEALPRO FX, futures and options;
+- allows several connections (say a paper and a live account);
+- attaches a stop and target to the entry as one bracket order;
+- needs no client ids and no GUI session.
+
+It also has a price: the gateway must be **signed in by a person** after
+each daily reset (around 01:00 in the account's region) and whenever IBKR
+ends the session, with your second factor. The app keeps a live session open
+(its connection check tickles the gateway every minute), but it cannot sign
+in for you.
+
+Symbols: `AAPL` is the US listing, `BHP:ASX` names the exchange, `AUD.USD` is
+an IDEALPRO pair, and a number is an IBKR contract id (conid) as search
+returns it, which is how futures and options are addressed. Prices need the
+account's market-data subscriptions for that exchange: a paper account
+shares its live account's subscriptions.
+
+#### Run the gateway
+
+On CT 130 (it can run beside IB Gateway), copy `ops/ibkr-gateway/` from the
+repository and start it:
+
+```bash
+mkdir -p /opt/ibkr-gateway && cd /opt/ibkr-gateway
+# copy Dockerfile, entrypoint.sh and docker-compose.yml here
+echo 'GATEWAY_ALLOW=<app-address>,<your-computer-address>' > .env
+docker compose up -d --build
+```
+
+`GATEWAY_ALLOW` is the gateway's own allow list (IBKR's form, `10.0.0.*`
+works): only those addresses may use the API or open the login page. Keep
+it to the app server and the computer you sign in from, and keep port 5000
+off the internet, as in step 8.
+
+#### Sign in
+
+From a computer on the allow list, open `https://<ib-address>:5000`, accept
+the self-signed certificate, and log in with the **paper** login (IBKR's
+paper username, not the live one), completing the second factor. The page
+says "Client login succeeds".
+
+One IBKR username holds one brokerage session at a time. Logging in to TWS,
+IBKR Desktop or the mobile app with the same username takes the session
+from the gateway, and the connection check says so. For a live account,
+create a second username for the app in Client Portal (Settings > Users &
+Access Rights) so your own logins do not compete with it.
+
+#### Add the connection
+
+On Settings > Connections, choose the firm **Interactive Brokers (Web API)**,
+Mode **paper**: **Client Portal Gateway URL** `https://<ib-address>:5000`
+and **Account ID** your paper account (`DU…`, shown top right in Client
+Portal). The mode must match the account: paper ids start with `D`, and a
+paper connection with a live id (or the reverse) is refused when you save
+it. The account must also be one the gateway is signed in to, so a gateway
+signed in to the live login cannot serve a paper connection.
+
+**If the test fails:** the gateway is not signed in (sign in again), another
+IBKR session took it (log that one out), the account id belongs to a
+different login, or the app server is not on `GATEWAY_ALLOW`.
+
+### 4.11 IBKR's MCP server, for Claude
+
+IBKR runs a remote MCP server that connects one IBKR account to an AI app
+such as Claude, ChatGPT or Claude Code: `https://api.ibkr.com/v1/api/mcp-public`.
+You sign in on IBKR's own page and approve the account; the AI app never
+sees your password, and you revoke it under Client Portal > Settings >
+Manage Third-Party Consents. It reads balances, positions, orders, trades,
+prices and contract search, and drafts trade instructions that you approve
+and submit in an IBKR platform.
+
+It is not a data or execution feed for this app. It answers AI apps only,
+is authorised for a single account, and does not place orders by itself,
+so the app uses the Web API (4.10) or IB Gateway (4.3) instead. It works
+well beside the app: ask Claude about the same account the app trades.
+
+To add it to Claude, use **Settings > Connectors > Add custom connector**
+with that URL. In Claude Code:
+
+```bash
+claude mcp add --transport http ibkr https://api.ibkr.com/v1/api/mcp-public
+```
 
 ## 5. Market data
 
@@ -964,6 +1058,7 @@ to **DROP**.
 | CT 110 app | port `4000` | `prometheus` (only with step 9) |
 | VM 120 MT5 | ports `9100-9101` | `tradingapp_app` |
 | CT 130 IB Gateway | port `4002` | `tradingapp_app` |
+| CT 130 Client Portal Gateway | port `5000` | `tradingapp_app`, and the computer you sign in from |
 | CT 140 proxy | ports `80`, `443` | anywhere (leave Source empty) |
 | CT 140 proxy | port `81` | your own computer or LAN only |
 | every guest | port `22` | your LAN, if you use SSH |
