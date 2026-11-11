@@ -70,3 +70,54 @@ export function mfaSummary(source: CredentialSource): string {
   if (source === 'database') return 'On';
   return 'Off';
 }
+
+/** A login session, as `GET /api/auth/sessions` lists it. */
+export interface SessionView {
+  /** The start of the session's id: enough to name it, not to use it. */
+  id: string;
+  created_at: string;
+  expires_at: string;
+  ip: string | null;
+  user_agent: string | null;
+  /** The session this browser is signed in with. */
+  current: boolean;
+}
+
+/** "Firefox on Windows" from a User-Agent header, as far as it can be told. */
+export function describeBrowser(userAgent: string | null): string {
+  const ua = userAgent ?? '';
+  if (!ua) return 'Unknown browser';
+  // Order matters: Edge and Chrome both say "Safari", Edge also says "Chrome".
+  const browser = /Edg\//.test(ua)
+    ? 'Edge'
+    : /Firefox\//.test(ua)
+      ? 'Firefox'
+      : /Chrome\/|CriOS\//.test(ua)
+        ? 'Chrome'
+        : /Safari\//.test(ua)
+          ? 'Safari'
+          : null;
+  const system = /Android/.test(ua)
+    ? 'Android'
+    : /iPhone|iPad|iPod/.test(ua)
+      ? 'iOS'
+      : /Windows/.test(ua)
+        ? 'Windows'
+        : /Mac OS X|Macintosh/.test(ua)
+          ? 'macOS'
+          : /Linux/.test(ua)
+            ? 'Linux'
+            : null;
+  if (!browser) return ua.split(/[\s/]/)[0].slice(0, 40) || 'Unknown browser';
+  return system ? `${browser} on ${system}` : browser;
+}
+
+/** "signed in 3 hours ago", for the sessions list. */
+export function signedIn(iso: string, now: number = Date.now()): string {
+  const minutes = Math.round((now - Date.parse(iso)) / 60_000);
+  if (minutes < 2) return 'signed in just now';
+  if (minutes < 120) return `signed in ${minutes} minutes ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `signed in ${hours} hours ago`;
+  return `signed in ${Math.round(hours / 24)} days ago`;
+}

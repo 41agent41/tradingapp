@@ -993,6 +993,15 @@ when the broker service is unreachable, `504` on IB timeouts.
   compiled into the frontend. Every route except health, `/metrics` and the
   login routes needs one of the two; comparisons run through
   `crypto.timingSafeEqual`.
+- **Sessions that can be ended** (`backend/src/services/sessionStore.ts`):
+  each cookie names a session, and it is accepted only while that session is
+  in force. Logout ends it on the server, so a copy of the cookie stops
+  working at once. Settings > Security lists the browsers signed in (browser,
+  address, when) and can sign out one of them or all of them
+  (`GET /api/auth/sessions`, `DELETE /api/auth/sessions/:id`,
+  `POST /api/auth/logout-all`). A password change ends every session.
+  Sessions are kept in `auth_sessions`, so they survive a restart. API tokens
+  are separate and are revoked on the same tab.
 - **Authenticated Socket.IO handshake**: the session cookie, or the token
   from `auth.token`, the `Authorization` header or a `?token=` query
   parameter.

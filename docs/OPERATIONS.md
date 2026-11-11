@@ -112,8 +112,14 @@ value, then the fleet-wide cap on Settings > Risk.
 - The browser signs in with the login password and holds an HttpOnly session
   cookie for `SESSION_TTL_HOURS` (default 12). Five wrong passwords from one
   address lock it out for 15 minutes.
+- Settings > Security > Signed-in browsers lists each session and signs out
+  one browser or all of them. Signing out ends the session on the server, so
+  a copied cookie stops working at once. If a browser or laptop is lost, use
+  **Sign out everywhere**, then change the password. A live price stream that
+  is already open keeps running until that page is closed or reconnects.
 - Scripts send `Authorization: Bearer <token>` with an API token from
-  Settings > Security. Health checks, `/metrics` and `/api/auth/*` need none.
+  Settings > Security. Health checks, `/metrics`, and signing in and out need
+  none.
 - Only the backend may call the broker service, with the internal token.
 - The page and API share one address, so the app works on any name or IP that
   reaches port 3000.
@@ -397,6 +403,11 @@ stored 1 minute bars" or "Stops filled on each bar's own range". For the
 first, record the instrument live or add it to the data collection table at
 1 minute. After this upgrade a rule-set that has a `stop` block backtests
 differently from before, because the stop used to be ignored.
+
+Migration `010_auth_sessions` adds one small table, `auth_sessions`, and runs
+in an instant. Session cookies issued before this upgrade are no longer
+accepted, so every browser signs in once after it. API tokens are not
+affected.
 
 Migration `009_bar_spread` adds one column, `candlestick_data.spread`, and
 runs in an instant. From then on OANDA's bars are stored with the spread at

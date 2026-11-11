@@ -9,6 +9,7 @@ import request from 'supertest';
 import { checkSocketAuth, createAuthMiddleware } from '../src/middleware/auth.js';
 import authRoutes from '../src/routes/auth.js';
 import { issueSession, SESSION_COOKIE } from '../src/services/session.js';
+import { sessionStore } from '../src/services/sessionStore.js';
 
 function useToken(token: string | undefined) {
   beforeEach(() => {
@@ -103,6 +104,7 @@ describe('browser login sessions', () => {
     delete process.env.API_TOKEN;
     process.env.APP_PASSWORD = PASSWORD;
     process.env.SESSION_SECRET = 's'.repeat(48);
+    sessionStore.revokeAll();
     app = express();
     app.use(express.json());
     app.use(createAuthMiddleware());
@@ -170,5 +172,96 @@ describe('browser login sessions', () => {
     const { value } = issueSession();
     expect(checkSocketAuth({}, { cookie: `${SESSION_COOKIE}=${value}` }, {})).toBeNull();
     expect(checkSocketAuth({}, {}, {})).toBeInstanceOf(Error);
+  });
+
+  async function login(agent = 'jest') {
+    const r = await request(app)
+      .post('/api/auth/login')
+      .set('User-Agent', agent)
+      .send({ password: PASSWORD });
+    return String(r.headers['set-cookie']).split(';')[0];
+  }
+
+  it('refuses a copied cookie once its browser has logged out', async () => {
+    const cookie = await login();
+    expect((await request(app).get('/api/protected').set('Cookie', cookie)).status).toBe(200);
+
+    const out = await request(app).post('/api/auth/logout').set('Cookie', cookie);
+    expect(out.body).toEqual({ authenticated: false });
+    expect(String(out.headers['set-cookie'])).toContain('Max-Age=0');
+
+    expect((await request(app).get('/api/protected').set('Cookie', cookie)).status).toBe(401);
+    const probe = await request(app).get('/api/auth/session').set('Cookie', cookie);
+    expect(probe.body.authenticated).toBe(false);
+  });
+
+  it('logout ends only the session its own cookie names', async () => {
+    const first = await login();
+    const second = await login();
+    await request(app).post('/api/auth/logout').set('Cookie', first);
+    expect((await request(app).get('/api/protected').set('Cookie', second)).status).toBe(200);
+    // No cookie, or one the backend did not sign, ends nothing.
+    await request(app).post('/api/auth/logout');
+    await request(app).post('/api/auth/logout').set('Cookie', `${second}x`);
+    expect((await request(app).get('/api/protected').set('Cookie', second)).status).toBe(200);
+  });
+
+  it('refuses a cookie in the old format, which named no session', async () => {
+    const crypto = await import('crypto');
+    const payload = `v1.${Date.now() + 3_600_000}.${'a'.repeat(32)}`;
+    const mac = crypto
+      .createHmac('sha256', process.env.SESSION_SECRET as string)
+      .update(payload)
+      .digest('base64url');
+    const r = await request(app)
+      .get('/api/protected')
+      .set('Cookie', `${SESSION_COOKIE}=${payload}.${mac}`);
+    expect(r.status).toBe(401);
+  });
+
+  it('lists the sessions in force and marks the caller\u2019s own', async () => {
+    const mine = await login('Firefox');
+    await login('Safari');
+    const r = await request(app).get('/api/auth/sessions').set('Cookie', mine);
+    expect(r.status).toBe(200);
+    expect(r.body.sessions).toHaveLength(2);
+    const own = r.body.sessions.filter((s: any) => s.current);
+    expect(own).toHaveLength(1);
+    expect(own[0].user_agent).toBe('Firefox');
+    // The id shown is too short to be used as the session.
+    for (const s of r.body.sessions) expect(s.id).toHaveLength(12);
+    expect(JSON.stringify(r.body)).not.toContain(mine.split('.')[2]);
+  });
+
+  it('needs a login to list or end sessions', async () => {
+    expect((await request(app).get('/api/auth/sessions')).status).toBe(401);
+    expect((await request(app).delete('/api/auth/sessions/abcdefabcdef')).status).toBe(401);
+    expect((await request(app).post('/api/auth/logout-all')).status).toBe(401);
+  });
+
+  it('ends one other session by the id the list shows', async () => {
+    const mine = await login('Firefox');
+    const other = await login('Safari');
+    const list = await request(app).get('/api/auth/sessions').set('Cookie', mine);
+    const target = list.body.sessions.find((s: any) => !s.current);
+
+    const r = await request(app).delete(`/api/auth/sessions/${target.id}`).set('Cookie', mine);
+    expect(r.body).toEqual({ ended: true });
+    expect((await request(app).get('/api/protected').set('Cookie', other)).status).toBe(401);
+    expect((await request(app).get('/api/protected').set('Cookie', mine)).status).toBe(200);
+
+    const again = await request(app).delete(`/api/auth/sessions/${target.id}`).set('Cookie', mine);
+    expect(again.status).toBe(404);
+  });
+
+  it('signs every browser out at once', async () => {
+    const mine = await login();
+    const other = await login();
+    const r = await request(app).post('/api/auth/logout-all').set('Cookie', mine);
+    expect(r.body).toEqual({ authenticated: false, ended: 2 });
+    expect(String(r.headers['set-cookie'])).toContain('Max-Age=0');
+    for (const cookie of [mine, other]) {
+      expect((await request(app).get('/api/protected').set('Cookie', cookie)).status).toBe(401);
+    }
   });
 });

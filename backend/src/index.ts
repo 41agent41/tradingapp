@@ -59,6 +59,7 @@ import { announceSetupCode } from './services/setupCode.js';
 import { isLiveTradingEnabled, liveTradingSafeguardsMissing } from './services/orderTypes.js';
 import { StartupGate } from './services/startupGate.js';
 import { openOriginsWarning, originAllowed, trustedProxies } from './services/network.js';
+import { sessionStore } from './services/sessionStore.js';
 
 // Refuse to start on an unsafe configuration (open API, default secrets, live
 // trading without MFA, an unimplemented kill-switch action). See the module.
@@ -594,7 +595,10 @@ function startServices(): void {
   // The login password, tokens and MFA secret managed on the Security tab.
   // With no password anywhere, print the first-run setup code.
   credentials.attach(dbService);
-  const credentialsLoaded = credentials.start().then(() => {
+  // The login sessions in force before the restart (S-05). Read before the
+  // gate opens, or a signed-in browser would be refused for a moment.
+  sessionStore.attach(dbService);
+  const credentialsLoaded = Promise.all([credentials.start(), sessionStore.start()]).then(() => {
     if (!credentials.hasPassword()) announceSetupCode();
   });
   // The broker service follows the live gate, which needs the safeguards.

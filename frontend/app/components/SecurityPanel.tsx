@@ -15,9 +15,11 @@ import {
   passwordProblem,
 } from '../lib/security';
 
+import SessionsSection from './SessionsSection';
+
 /**
- * Settings > Security: the login password, trading and API tokens, and the
- * order MFA secret. Nothing secret is ever read back from the server: a new
+ * Settings > Security: the login password, the browsers signed in, trading
+ * and API tokens, and the order MFA secret. Nothing secret is ever read back from the server: a new
  * token is shown once, when it is made, and the MFA secret only while it is
  * being set up.
  *
@@ -436,6 +438,11 @@ export default function SecurityPanel() {
       <section className="space-y-2">
         <h3 className="text-base font-semibold text-gray-900">Login password</h3>
         <PasswordSection data={data} onDone={(text, kind) => void done(text, kind)} />
+      </section>
+
+      <section className="space-y-2">
+        <h3 className="text-base font-semibold text-gray-900">Signed-in browsers</h3>
+        <SessionsSection onDone={(text, kind) => setMessage({ kind, text })} />
       </section>
 
       <section className="space-y-2">
