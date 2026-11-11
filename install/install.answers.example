@@ -70,7 +70,8 @@
 # ---------------------------------------------------------------------------
 # App settings (optional; each can be set on the Settings page instead)
 # ---------------------------------------------------------------------------
-# Behind a TLS reverse proxy (docs/INSTALL.md step 7), the public origin:
+# Other sites whose pages may call the API. The app's own pages need nothing
+# here, also behind a reverse proxy (docs/INSTALL.md step 7.3):
 #CORS_ORIGINS=https://trading.example.com
 
 # Alerting and the dead-man's switch (from the operator; strongly recommended)

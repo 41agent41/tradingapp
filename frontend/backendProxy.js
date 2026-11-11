@@ -34,6 +34,12 @@ function sameOrigin(origin, host) {
   }
 }
 
+/** The first of a header's comma-separated values (the browser's side). */
+function firstValue(header) {
+  const value = Array.isArray(header) ? header[0] : header;
+  return value ? String(value).split(',')[0].trim() : '';
+}
+
 function forwardedHeaders(req, target, { upgrade = false } = {}) {
   const headers = { ...req.headers };
   if (!upgrade) for (const name of HOP_BY_HOP) delete headers[name];
@@ -42,7 +48,15 @@ function forwardedHeaders(req, target, { upgrade = false } = {}) {
   // needs no CORS approval. Dropping its Origin lets the backend treat it as
   // same-origin; a request from any other site keeps its Origin and is still
   // checked against CORS_ORIGINS.
-  if (sameOrigin(headers.origin, req.headers.host)) delete headers.origin;
+  // A reverse proxy in front may replace Host with its upstream's and send
+  // the browser's host in X-Forwarded-Host, so that counts too. A page on
+  // another site cannot set either header.
+  if (
+    sameOrigin(headers.origin, req.headers.host) ||
+    sameOrigin(headers.origin, firstValue(req.headers['x-forwarded-host']))
+  ) {
+    delete headers.origin;
+  }
 
   const remote = req.socket.remoteAddress || '';
   headers['x-forwarded-for'] = headers['x-forwarded-for']

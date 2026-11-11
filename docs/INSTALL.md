@@ -1017,7 +1017,11 @@ Script: **Nginx Proxy Manager**. In Advanced Install: ID `140`, hostname
 
 On **Settings > Network** in the app:
 
-- **Allowed browser origins** (`CORS_ORIGINS`): `https://trading.example.com`
+- **Allowed browser origins** (`CORS_ORIGINS`): leave empty. The app's own
+  pages are accepted without it, as long as the proxy passes the browser's
+  host on in `Host` (Nginx Proxy Manager does) or `X-Forwarded-Host`. If
+  saving anything in the app then fails with "Origin ... is not allowed",
+  the proxy passes neither: set this to `https://trading.example.com`.
 - **Trusted reverse proxies** (`TRUST_PROXY`): `<proxy-address>`. Login
   lockout and the settings history then record the visitor's address instead
   of the proxy's.
@@ -1442,7 +1446,7 @@ and 15 GB of free disk. The servers in this guide map onto it directly:
   Windows machine (step 4.2). IB Gateway runs anywhere Docker does, with the
   same two files as step 4.3.
 - **TLS:** any reverse proxy that forwards to port 3000 with WebSocket
-  support and sends `X-Forwarded-Proto`; set `CORS_ORIGINS` and
-  `TRUST_PROXY` as in step 7.3 (for a proxy on the app server itself,
+  support and sends `X-Forwarded-Proto`; set `TRUST_PROXY` (and
+  `CORS_ORIGINS` if needed) as in step 7.3 (for a proxy on the app server itself,
   `TRUST_PROXY` is `172.20.0.1`, the Docker network's gateway). Docker's published ports bypass `ufw`, so
   close 3000 and 4000 at a firewall Docker does not control.

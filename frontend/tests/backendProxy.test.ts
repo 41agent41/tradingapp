@@ -141,6 +141,27 @@ describe('forwarding a request', () => {
       headers: { Host: 'app.local:3000', Origin: 'https://evil.example' },
     });
     expect(JSON.parse(foreign.body).headers.origin).toBe('https://evil.example');
+
+    // A reverse proxy in front that replaces Host and sends the browser's
+    // host in X-Forwarded-Host.
+    const behindProxy = await request(front, {
+      path: '/api/x',
+      headers: {
+        Host: 'frontend:3000',
+        'X-Forwarded-Host': 'trading.example.com',
+        Origin: 'https://trading.example.com',
+      },
+    });
+    expect(JSON.parse(behindProxy.body).headers.origin).toBeUndefined();
+    const foreignBehindProxy = await request(front, {
+      path: '/api/x',
+      headers: {
+        Host: 'frontend:3000',
+        'X-Forwarded-Host': 'trading.example.com',
+        Origin: 'https://evil.example',
+      },
+    });
+    expect(JSON.parse(foreignBehindProxy.body).headers.origin).toBe('https://evil.example');
   });
 
   it('answers 502 when the backend is down', async () => {

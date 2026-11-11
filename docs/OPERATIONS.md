@@ -143,6 +143,13 @@ Migrations apply themselves when the backend starts. On a host set up by an
 older version, `install` also removes `.env` lines nothing reads any more
 (after a backup to `.env.bak.<timestamp>`).
 
+**Allowed browser origins after this upgrade.** An empty `CORS_ORIGINS` used
+to accept requests from any website and now accepts the app's own pages
+only. Nothing needs changing for the app itself, also behind Nginx Proxy
+Manager. If pages on another site call the API, list their origins on
+Settings > Network. If saving in the app fails with "Origin ... is not
+allowed" behind another reverse proxy, see that row under Troubleshooting.
+
 **Upgrading from a version before migration `005_connection_firm`.** Each
 connection now names its firm, and each firm connects one way only. The
 migration fills in the firm for OANDA, IG, Alpaca and IB connections, and for
@@ -672,7 +679,7 @@ database and the internal secrets. `./tradingapp.sh clean` keeps them.
 | The login page asks for a setup code | No password is set yet. `./tradingapp.sh setup-code`. |
 | Forgot the password or lost the authenticator | [Sign-in and API tokens](#sign-in-and-api-tokens). |
 | Scripts get 401 | Missing or wrong API token. If `NEXT_PUBLIC_API_TOKEN` is still in `.env`, remove it and rotate any token that held that value: it was readable in the page. |
-| CORS error | Only pages on another site calling the API need this: list their exact origins in `CORS_ORIGINS` (Settings > Network). |
+| "Origin ... is not allowed" | A page on another site called the API: list its exact origin in `CORS_ORIGINS` (Settings > Network). If it is the app's own page behind a reverse proxy, the proxy passes the browser's host in neither `Host` nor `X-Forwarded-Host`: fix the proxy, or add the public origin (for example `CORS_ORIGINS=https://trading.example.com` in `.env`, then `./tradingapp.sh restart`), since the Settings page cannot save while this fails. |
 | Logs show the proxy's address, not the visitor's | Set `TRUST_PROXY` (Settings > Network) to the proxy's address ([INSTALL.md § 7.3](INSTALL.md#73-tell-the-app-about-the-proxy)); for a proxy on the app server itself, `172.20.0.1`. |
 
 ### Brokers
