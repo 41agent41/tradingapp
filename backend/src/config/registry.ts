@@ -965,7 +965,7 @@ export const SETTINGS: readonly SettingDef[] = [
     type: 'string',
     apply: 'immediate',
     editable: true,
-    help: "Comma-separated origins (for example https://trading.example.com) whose pages may call the API from a browser. Leave unset to accept any; the app's own pages are served by the frontend and need nothing here.",
+    help: "Comma-separated origins (for example https://trading.example.com) of other sites whose pages may call the API from a browser. Leave unset to accept none; the app's own pages are served by the frontend and need nothing here. * accepts any site and is not advised.",
   },
   {
     key: 'TRUST_PROXY',

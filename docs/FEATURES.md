@@ -1014,17 +1014,22 @@ when the broker service is unreachable, `504` on IB timeouts.
   without the trader role and MFA, or risk settings it cannot read
   (`KILL_SWITCH_ACTION`, `TRADING_DAY_TIMEZONE`, `PROP_RULES__*`, heartbeat
   URLs).
-- **Strict CORS**: origins are validated against `CORS_ORIGINS` instead of a
-  blanket wildcard. It and `TRUST_PROXY` are on Settings > Network; behind
-  nginx, set the public origin there.
+- **Strict CORS**: with `CORS_ORIGINS` unset, the API accepts browser
+  requests from the app's own pages only. They reach the backend through
+  the frontend server, which drops the Origin of its own pages' requests,
+  so a request that still carries an Origin comes from another site and is
+  refused before it reaches a route. List another site's origin in
+  `CORS_ORIGINS` to let its pages call the API. `*` accepts any site and
+  logs a warning at startup. It and `TRUST_PROXY` are on Settings >
+  Network.
 - **Settings API**: `/api/settings` lists only registered settings. Secret
   values are never returned, only whether they are set, and they are stored
   encrypted with `SETTINGS_ENCRYPTION_KEY`. Bootstrap values (database,
   encryption key, internal secrets, ports) are not registered, so they are
   neither listed nor writable. Every change is recorded (Settings > History).
 - **Dev escape hatch**: outside production, with no login password and no
-  API token anywhere (or `CORS_ORIGINS=*`), the backend prints a loud startup
-  warning and accepts unauthenticated / any-origin requests. Convenient
+  API token anywhere, the backend prints a loud startup warning and accepts
+  unauthenticated requests. Convenient
   locally, never for production. In production the same state shows the
   first-run setup screen instead.
 

@@ -58,7 +58,7 @@ import { credentials } from './services/credentials.js';
 import { announceSetupCode } from './services/setupCode.js';
 import { isLiveTradingEnabled, liveTradingSafeguardsMissing } from './services/orderTypes.js';
 import { StartupGate } from './services/startupGate.js';
-import { originAllowed, trustedProxies } from './services/network.js';
+import { openOriginsWarning, originAllowed, trustedProxies } from './services/network.js';
 
 // Refuse to start on an unsafe configuration (open API, default secrets, live
 // trading without MFA, an unimplemented kill-switch action). See the module.
@@ -79,12 +79,18 @@ const BROKER_SERVICE_TOKEN = (process.env.BROKER_SERVICE_TOKEN || '').trim();
 // CORS
 // ---------------------------------------------------------------------------
 // Which origins are accepted is set on the Settings page (Network) and read
-// on every request; see services/network.ts. Empty accepts any origin.
+// on every request; see services/network.ts. Empty accepts only the app's
+// own pages, whose requests arrive through the frontend with no Origin.
 const corsOptions: CorsOptions = {
   origin: (origin, callback) => {
     // Allow same-origin / curl / server-to-server (no Origin header)
     if (originAllowed(origin)) return callback(null, true);
-    return callback(new Error(`Origin ${origin} not allowed by CORS`));
+    return callback(
+      new Error(
+        `Origin ${origin} is not allowed. Add it to Allowed browser origins ` +
+          '(Settings > Network, or CORS_ORIGINS in .env).'
+      )
+    );
   },
   credentials: true,
   allowedHeaders: [
@@ -602,6 +608,8 @@ function startServices(): void {
   let systematicAllowed = false;
   void settingsLoaded.then(() => {
     for (const w of heartbeatWarnings(configService.asEnv())) logger.warn(w);
+    const openOrigins = openOriginsWarning();
+    if (openOrigins) logger.warn(openOrigins);
 
     void streamingBridge.start().catch((err) => {
       logger.warn({ err: String(err) }, 'streaming bridge failed to start');

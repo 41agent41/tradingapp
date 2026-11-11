@@ -239,7 +239,7 @@ There are 47 items, sorted by priority. P1 means do next, P2 soon after, and P3 
 | E-19 | Adapters report capabilities; app and chart offer only what each connection supports (built: each connection reports timeframes, live prices, spread bars, order types with times in force, stops on entry and how fills arrive; the live chart, the order ticket and Settings use it; not yet used by the download, historical, data collection, backtest and rule builder pages) | P2 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
 | E-22 | Lightweight Charts v5 with indicator panes, exact version pinned | P2 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | E-23 | Load older bars on scroll-back; time-zone setting (UTC, exchange, local) (built on the live chart; the other chart pages keep UTC and their fixed range) | P2 | S | Sonnet 5.5 | Opus 5.5 | none |
-| S-04 | CORS defaults to the app's own origin; refuse an empty list in production | P2 | S | Sonnet 5.5 | Haiku 5.5 | none |
+| S-04 | CORS defaults to the app's own origin; refuse an empty list in production (built: an empty list now accepts the app's own pages only, so it is safe and nothing is refused at start; `*` still accepts any site and logs a warning) | P2 | S | Sonnet 5.5 | Haiku 5.5 | none |
 | S-05 | Session IDs and server-side revocation; "sign out everywhere" | P2 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
 | S-06 | Non-root users and multi-stage builds for backend and frontend images | P2 | S | Sonnet 5.5 | Haiku 5.5 | none |
 | S-07 | TLS to the MT5 sidecar; firewall check for IB Gateway in `doctor` | P2 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
