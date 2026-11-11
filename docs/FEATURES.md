@@ -1107,6 +1107,12 @@ Cache health surfaces in `/api/health` under `services.cache`. Turn
 
 ### Deployment & operations
 
+- **Small images that do not run as root** (`backend/Dockerfile`,
+  `frontend/Dockerfile`): each is built in stages, so the image that runs
+  holds the built code and its production dependencies only, with no
+  compiler, test tools or sources. The app runs as the unprivileged `node`
+  user and cannot change its own files; the frontend can write only its
+  page cache. The broker service already ran this way.
 - Docker Compose stack: `frontend`, `backend`, `broker_service`, `redis`,
   and by default a bundled TimescaleDB (`docker-compose.db.yml`). An external
   PostgreSQL with TimescaleDB works too (`--external-db`).

@@ -43,7 +43,7 @@ services:
         export BROKER_SERVICE_TOKEN REDIS_PASSWORD
         exec "$$@"
       - --
-    command: ["npm", "start"]
+    command: ["node", "dist/index.js"]
     volumes: *internal-secrets
     environment:
       - PORT=${BACKEND_PORT:-4000}
