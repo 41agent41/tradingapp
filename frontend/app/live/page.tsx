@@ -7,7 +7,12 @@ import BackToHome from '../components/BackToHome';
 import LiveChart, { type LiveInstrument } from '../components/LiveChart';
 import { instrumentFromParams, paramsFromInstrument } from '../lib/liveInstrument';
 import { apiFetch } from '../lib/api';
-import { platformName, type LiveConnection } from '../lib/brokerConnections';
+import {
+  findConnection,
+  platformName,
+  supportedTimeframes,
+  type LiveConnection,
+} from '../lib/brokerConnections';
 
 const SEC_TYPES = [
   { value: 'STK', label: 'Stock' },
@@ -127,7 +132,13 @@ function LivePage() {
           </button>
         </form>
 
-        <LiveChart key={paramsFromInstrument(instrument)} instrument={instrument} />
+        <LiveChart
+          key={paramsFromInstrument(instrument)}
+          instrument={instrument}
+          supportedTimeframes={supportedTimeframes(
+            findConnection(connections, instrument.source, instrument.account)
+          )}
+        />
       </main>
     </div>
   );

@@ -10,6 +10,22 @@ export type ConnectionCheck = {
   checked_at: string | null;
 };
 
+/** What a connection supports, as its broker adapter reports it (E-19). */
+export type Capabilities = {
+  market_data?: boolean;
+  trading?: boolean;
+  /** Bar timeframes its history serves. */
+  timeframes?: string[];
+  live_prices?: 'stream' | 'poll' | null;
+  /** Its bars carry the broker's spread. */
+  spread_bars?: boolean;
+  /** Each order type it takes, with the times in force that type accepts. */
+  order_types?: Record<string, string[]>;
+  attaches_stops?: boolean;
+  /** How the app learns of a fill. */
+  fills?: 'stream' | 'signal' | 'poll' | null;
+};
+
 /** A connection in effect, as the broker service reports it. */
 export type LiveConnection = {
   label: string;
@@ -20,6 +36,8 @@ export type LiveConnection = {
   /** "env" (.env) or "app" (added here). Older broker services omit it. */
   source?: string;
   check: ConnectionCheck | null;
+  /** Older broker services omit it; everything is then offered. */
+  capabilities?: Capabilities | null;
 };
 
 export type StatusPayload = {
@@ -388,4 +406,63 @@ export function requestBody(form: FormState): Record<string, unknown> {
     prop_rules: form.prop_rules.trim() || null,
     ...(Object.keys(secrets).length ? { secrets } : {}),
   };
+}
+
+/**
+ * The connection a platform and account name. An empty account means the
+ * platform's default account.
+ */
+export function findConnection(
+  connections: LiveConnection[],
+  platform: string | undefined,
+  account: string | undefined
+): LiveConnection | null {
+  if (!platform) return null;
+  const onPlatform = connections.filter((c) => c.platform === platform);
+  if (account) return onPlatform.find((c) => c.account === account) ?? null;
+  return onPlatform.find((c) => c.is_default) ?? (onPlatform.length === 1 ? onPlatform[0] : null);
+}
+
+/**
+ * The bar timeframes to offer for a connection, or null to offer them all:
+ * when no connection is chosen (the broker priority decides) or it does not
+ * say what it supports.
+ */
+export function supportedTimeframes(connection: LiveConnection | null): string[] | null {
+  const timeframes = connection?.capabilities?.timeframes;
+  return Array.isArray(timeframes) && timeframes.length ? timeframes : null;
+}
+
+const TIMEFRAME_NAME: Record<string, string> = {
+  tick: 'tick',
+  '1min': '1m',
+  '5min': '5m',
+  '15min': '15m',
+  '30min': '30m',
+  '1hour': '1h',
+  '4hour': '4h',
+  '8hour': '8h',
+  '1day': '1d',
+};
+
+/** One line on what a connection supports, for Settings > Connections. */
+export function describeCapabilities(caps: Capabilities | null | undefined): string | null {
+  if (!caps) return null;
+  const parts: string[] = [];
+  if (caps.timeframes?.length) {
+    parts.push(`Bars: ${caps.timeframes.map((t) => TIMEFRAME_NAME[t] ?? t).join(', ')}`);
+  }
+  if (caps.live_prices) {
+    parts.push(caps.live_prices === 'stream' ? 'prices streamed' : 'prices polled');
+  }
+  if (caps.spread_bars) parts.push('bars carry the spread');
+  if (caps.trading) {
+    const kinds = Object.keys(caps.order_types ?? {});
+    if (kinds.length) parts.push(`orders: ${kinds.map((k) => k.replace('_', ' ')).join(', ')}`);
+    parts.push(caps.attaches_stops ? 'stop attached to the entry' : 'no stop on the entry');
+    if (caps.fills) {
+      parts.push(caps.fills === 'poll' ? 'fills polled' : 'fills pushed');
+    }
+  }
+  return parts.length ? parts.join(' · ') : null;
 }

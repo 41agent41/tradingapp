@@ -198,6 +198,9 @@ class IBWebAdapter:
     name = "ibweb"
     # A bracket (stop and target) is placed with the entry in one call.
     attaches_stops = True
+    # What the connection reports it supports (capabilities.py).
+    timeframes = tuple(_TIMEFRAME_TO_BAR)
+    order_tifs = {kind: tuple(_TIFS) for kind in _ORDER_TYPES}
 
     def __init__(
         self,

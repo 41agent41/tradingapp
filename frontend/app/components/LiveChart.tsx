@@ -124,7 +124,14 @@ const INDICATOR_FIELDS = [
  * A live chart for any symbol on any connection (E-21): history from the
  * database or the broker, then the tick stream moving the last candle (E-20).
  */
-export default function LiveChart({ instrument }: { instrument: LiveInstrument }) {
+export default function LiveChart({
+  instrument,
+  supportedTimeframes = null,
+}: {
+  instrument: LiveInstrument;
+  /** The timeframes the connection serves (E-19); null offers them all. */
+  supportedTimeframes?: string[] | null;
+}) {
   const {
     symbol,
     source = '',
@@ -148,8 +155,17 @@ export default function LiveChart({ instrument }: { instrument: LiveInstrument }
 
   const [currentData, setCurrentData] = useState<RealtimeData | null>(null);
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
-  const [currentTimeframe, setCurrentTimeframe] = useState('1hour');
+  const [wantedTimeframe, setCurrentTimeframe] = useState('1hour');
   const [currentPeriod, setCurrentPeriod] = useState('3M');
+  const offeredTimeframes = supportedTimeframes
+    ? timeframes.filter((tf) => supportedTimeframes.includes(tf.value))
+    : timeframes;
+  // A timeframe the connection does not serve cannot stay selected.
+  const currentTimeframe = offeredTimeframes.some((tf) => tf.value === wantedTimeframe)
+    ? wantedTimeframe
+    : (offeredTimeframes.find((tf) => tf.value === '1hour')?.value ??
+      offeredTimeframes[0]?.value ??
+      wantedTimeframe);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingHistorical, setIsLoadingHistorical] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -592,7 +608,7 @@ export default function LiveChart({ instrument }: { instrument: LiveInstrument }
                 className="border border-gray-300 rounded px-2 sm:px-3 py-1 text-xs sm:text-sm"
                 disabled={isLoadingHistorical || !dataQueryEnabled}
               >
-                {timeframes.map((tf) => (
+                {offeredTimeframes.map((tf) => (
                   <option key={tf.value} value={tf.value}>
                     {tf.label}
                   </option>

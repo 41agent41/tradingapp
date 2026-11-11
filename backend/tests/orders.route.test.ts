@@ -354,3 +354,82 @@ describe('GET /api/orders/audit', () => {
     expect(res.body.orders).toHaveLength(2);
   });
 });
+
+describe('GET /api/orders/config: connections and what they support (E-19)', () => {
+  const STATUS = {
+    default: 'oanda',
+    connections: [
+      {
+        label: 'oanda:default',
+        platform: 'oanda',
+        account: 'default',
+        account_mode: 'paper',
+        is_default: true,
+        capabilities: {
+          trading: true,
+          attaches_stops: true,
+          order_types: { MKT: ['FOK'], LMT: ['GTC'] },
+        },
+      },
+      // The default account of a platform that is not the default platform.
+      {
+        label: 'ig:demo',
+        platform: 'ig',
+        account: 'demo',
+        account_mode: 'paper',
+        is_default: true,
+        capabilities: { trading: true, order_types: { MKT: ['FOK'] } },
+      },
+      // Data only: no order can go here.
+      {
+        label: 'alpaca:data',
+        platform: 'alpaca',
+        account: 'data',
+        is_default: true,
+        capabilities: { trading: false, order_types: {} },
+      },
+    ],
+  };
+
+  it('lists the connections an order can go to', async () => {
+    axiosMock.get.mockImplementation(async (url: string) =>
+      url.endsWith('/connections/status')
+        ? { data: STATUS }
+        : { data: { live_trading_enabled: false, order_types: ['LMT', 'MKT'], tif: ['DAY'] } }
+    );
+    const res = await request(buildApp()).get('/api/orders/config');
+    expect(res.status).toBe(200);
+    expect(res.body.connections).toEqual([
+      {
+        label: 'oanda:default',
+        platform: 'oanda',
+        account: 'default',
+        account_mode: 'paper',
+        is_default: true,
+        order_types: { MKT: ['FOK'], LMT: ['GTC'] },
+        attaches_stops: true,
+      },
+      {
+        label: 'ig:demo',
+        platform: 'ig',
+        account: 'demo',
+        account_mode: 'paper',
+        is_default: false,
+        order_types: { MKT: ['FOK'] },
+        attaches_stops: false,
+      },
+    ]);
+    expect(res.body.order_types).toEqual(['LMT', 'MKT']);
+  });
+
+  it('still answers when the connection status cannot be read', async () => {
+    axiosMock.get.mockImplementation(async (url: string) => {
+      if (url.endsWith('/connections/status')) throw new Error('down');
+      return { data: { live_trading_enabled: false } };
+    });
+    const res = await request(buildApp()).get('/api/orders/config');
+    expect(res.status).toBe(200);
+    expect(res.body.connections).toEqual([]);
+    expect(res.body.order_types).toEqual(['MKT', 'LMT', 'STP', 'STP_LMT']);
+  });
+});

@@ -154,6 +154,11 @@ def test_status_and_test_routes(registry, monkeypatch):
     # Priority order: OANDA before IB.
     assert [c["label"] for c in status["connections"]] == ["oanda:default", "ib:default"]
     assert all(c["check"] is None for c in status["connections"])
+    # Each connection says what it supports (E-19).
+    oanda, ib = (c["capabilities"] for c in status["connections"])
+    assert oanda["spread_bars"] is True and oanda["fills"] == "stream"
+    assert "tick" in ib["timeframes"] and "tick" not in oanda["timeframes"]
+    assert set(ib["order_types"]) == {"MKT", "LMT", "STP", "STP_LMT"}
 
     tested = client.post("/connections/ib:default/test").json()
     assert tested["check"]["status"] == "connected"

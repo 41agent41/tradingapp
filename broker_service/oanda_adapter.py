@@ -178,6 +178,11 @@ class OANDAAdapter:
     name = "oanda"
     # stopLossOnFill attaches the stop in the fill's own transaction (E-2).
     attaches_stops = True
+    # What the connection reports it supports (capabilities.py).
+    timeframes = tuple(_TIMEFRAME_TO_GRANULARITY)
+    order_tifs = {kind: tuple(_TIF_TO_OANDA) for kind in _ORDER_TYPE_TO_OANDA}
+    # Bars carry the spread at each close (E-15).
+    spread_bars = True
 
     def __init__(
         self,

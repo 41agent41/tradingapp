@@ -104,6 +104,11 @@ redirects to `/live?symbol=MSFT`). Pick the symbol, the connection (or "By
 broker priority"), the type and, optionally, the currency, then **Show**.
 The address holds the choice, so a chart can be bookmarked.
 
+The timeframe list holds only what the chosen connection serves: Tick on
+Interactive Brokers only, and 8-hour bars where the broker has them (not on
+IG, Alpaca or cTrader). With "By broker priority" every timeframe is
+offered, because any broker may answer.
+
 History loads from the database first, then the broker. The tick stream then
 moves the last candle (`frontend/app/lib/liveCandles.ts`): it follows trades
 (`LAST`) when the feed sends them, otherwise the mid of the latest bid and
@@ -600,6 +605,12 @@ Place, cancel and modify orders against any connected broker from the UI:
 - **Order types:** MKT, LMT, STP, STP_LMT. **TIF:** DAY, GTC, IOC,
   FOK. The ticket reveals limit / stop inputs only when the order
   type needs them.
+- **Connection:** with more than one trading connection the ticket has a
+  Connection list; left on Default, the order goes to the default broker
+  as before. The order types and times in force offered are the ones that
+  connection takes (IG has no stop-limit order, and its working orders
+  rest for the day or until cancelled; the IBKR Web API takes no FOK).
+  `GET /api/orders/config` lists the connections with what each takes.
 - **Backend proxy:** `POST /api/orders` (create),
   `DELETE /api/orders/:id` (cancel), `PUT /api/orders/:id` (modify),
   `GET /api/orders/audit` (blotter feed), `GET /api/orders/config`
@@ -787,6 +798,14 @@ A venue-agnostic adapter seam lets each broker plug in without touching the
 routes. [DEVELOPMENT.md § Adding a broker](DEVELOPMENT.md#adding-a-broker)
 describes adding another.
 
+- **Each connection says what it supports.** `GET /api/brokers/status`
+  carries a `capabilities` block per connection, read from its adapter
+  (`broker_service/capabilities.py`): the bar `timeframes` its history
+  serves, `live_prices` (`stream` or `poll`), `spread_bars`, the
+  `order_types` it takes with the times in force for each,
+  `attaches_stops`, and how fills arrive (`stream`, `signal` then read, or
+  `poll`). Settings > Connections shows it under each connection, and the
+  live chart and the order ticket offer only what the connection supports.
 - **Connections in the app:** brokers are added on Settings > Connections,
   one connection per account, in priority order OANDA, IG, cTrader, the
   IBKR Web API, Alpaca, MT5, then IB Gateway (the order can be changed
@@ -924,7 +943,7 @@ describes adding another.
 | `/api/orders/:id` | DELETE | Cancel a working order |
 | `/api/orders/:id` | PUT | Modify a working order |
 | `/api/orders/audit` | GET | Persisted order attempts (blotter feed; `broker` filter) |
-| `/api/orders/config` | GET | Live-trading gate + supported enums + brokers |
+| `/api/orders/config` | GET | Live-trading gate + supported enums + brokers + the trading connections with the order types each takes |
 | `/api/strategies/definitions` | GET·POST | List / create rule-set definitions (symbol + `sec_type`/`exchange`/`currency`/`broker`) |
 | `/api/strategies/runs` | GET·POST | List / start systematic runs |
 | `/api/strategies/runs/:id/stop` | POST | Stop a run (kill switch) |
