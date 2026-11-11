@@ -208,3 +208,37 @@ def test_oanda_stream_fills_raises_on_an_http_error(monkeypatch):
         adapter.stream_fills(lambda f: None, lambda: False)
     assert err.value.status_code == 502
     assert "401" in err.value.detail
+
+
+class TradeEventAdapter:
+    """A broker that says only that something traded."""
+
+    def __init__(self, events=1):
+        self.events = events
+
+    def stream_trade_events(self, on_event, should_stop):
+        for _ in range(self.events):
+            on_event()
+        self.events = 0
+        while not should_stop():
+            time.sleep(0.01)
+
+
+def test_a_broker_that_only_signals_a_trade_publishes_a_change_notice():
+    published, changed = [], []
+    adapters = {("ig", "demo"): TradeEventAdapter(events=2)}
+    streamer = FillStreamer(
+        list_connections=lambda: [SimpleNamespace(platform="ig", account="demo")],
+        resolve_adapter=lambda p, a: adapters[(p, a)],
+        publish_fill=lambda p, a, fill: published.append(fill),
+        publish_changed=lambda p, a: changed.append((p, a)),
+        enabled=lambda: True,
+    )
+    try:
+        streamer.reconcile()
+        assert _wait_for(lambda: len(changed) == 2)
+        assert changed == [("ig", "demo"), ("ig", "demo")]
+        assert published == []
+        assert streamer.status()["streams"][0]["fills"] == 2
+    finally:
+        streamer.stop_all()

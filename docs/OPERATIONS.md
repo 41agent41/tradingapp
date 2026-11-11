@@ -439,6 +439,14 @@ and the run places nothing), or if you want `/api/account/executions` and
   that is down costs nothing but speed: the poll still records every fill.
   Fills streamed while Redis or the backend is down are not replayed; the
   next poll brings them in.
+- IG appears in the same two places. Its stream reports only that something
+  traded, so its count is of trade events, and the backend's
+  `services.executions.stream.refreshes` counts the polls they caused.
+  An IG stream signs in with the same session as its REST requests. If IG
+  refuses a stream, `last_error` shows IG's reason and the service logs in
+  again at most once a minute, because IG locks an API key that logs in too
+  often. IG allows 40 streaming subscriptions per session; the app uses one
+  for all of a connection's live prices and one for its trades.
 - A position is the recorded fills plus the unfilled part of working orders.
   `ORDER_MAX_POSITION` caps the whole account, so manual trades count.
 - IB reports times in the Gateway's zone (`IB_TIMEZONE`, default UTC). Run

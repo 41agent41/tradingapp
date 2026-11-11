@@ -642,6 +642,11 @@ class StreamingManager:
         backend to store (see fill_streaming.py)."""
         self._publish(f"executions:fill:{platform}:{account}", fill)
 
+    def publish_fills_changed(self, platform: str, account: str) -> None:
+        """Tell the backend something traded on a connection, on
+        ``executions:changed:<platform>:<account>``; it polls for the fills."""
+        self._publish(f"executions:changed:{platform}:{account}", {"changed": True})
+
     def _publish_status(self, payload: dict[str, Any]) -> None:
         payload.setdefault("timestamp", self._clock())
         self._publish(STATUS_CHANNEL, payload)

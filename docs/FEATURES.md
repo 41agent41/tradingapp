@@ -409,6 +409,11 @@ broker_service ──XADD──▶ Redis Stream marketdata:quotes ──XREAD─
   stopped backend catches up from the stream when it returns. Quotes are
   lost only if more than `TICK_STREAM_MAXLEN` of them arrive while it is
   down; the nightly reconcile fills those minutes from the broker's history.
+- **Streamed brokers.** IB, OANDA (its pricing stream) and IG (its
+  Lightstreamer `MARKET` subscription, one streaming session per IG
+  connection) push each price change as it happens. If a price stream
+  fails, that connection's prices are fetched every 5 seconds instead until
+  it is back, and the Live feed column shows the stream's error.
 - **Polled brokers.** A broker without a price stream is polled every
   `STREAM_POLL_SECONDS`, so a high or low between two polls is missed and
   its recorded bars are approximate until the nightly reconcile replaces
@@ -459,7 +464,13 @@ Schedulers and data) the backend closes that gap:
   passes every fill to the backend, which stores it within a second or so
   instead of at the next poll. The stream adds speed only: the poll stays on
   and picks up anything the stream missed, and a fill that arrives both ways
-  is stored once. Other brokers are polled only.
+  is stored once.
+- **Fills straight after a trade (IG).** IG's stream says that a deal was
+  confirmed or a position changed, not what the fill was in the shape the
+  app stores. So on each such event the backend polls that IG connection
+  about 1.5 seconds later instead of waiting for the timer. The fill is read
+  the one way it always is, so it cannot be stored twice under two ids.
+  Other brokers are polled on the timer only.
 - **Idempotent by design.** Every poll re-reads an overlapping window, because
   a fill can be reported late and IB delivers a fill's commission on a callback
   separate from the fill itself. Rows upsert on `(broker, exec_id)`, so

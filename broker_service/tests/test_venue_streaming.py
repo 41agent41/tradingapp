@@ -448,3 +448,28 @@ def test_recorded_set_route_resolves_connections_and_reports_errors(two_brokers,
         assert res.json() == {"recorded": [], "resolved": [], "errors": [], "poll_seconds": 60}
     finally:
         streamer.stop_all()
+
+
+class BrokenStreamAdapter(PollingAdapter):
+    """Has a price stream that always fails, and a working ``tick``."""
+
+    def stream_prices(self, symbols, on_price, should_stop):
+        raise HTTPException(502, "stream refused")
+
+
+def test_a_failing_price_stream_falls_back_to_polling_and_still_reports_its_error(monkeypatch):
+    import venue_streaming
+
+    monkeypatch.setattr(venue_streaming, "RETRY_SECONDS", 0.01)
+    published = []
+    adapter = BrokenStreamAdapter({"EURUSD": (1.1, 1.2)})
+    streamer = _streamer(adapter, published)
+    try:
+        streamer.subscribe("EURUSD", "ig", "demo")
+        assert _wait_for(lambda: len(adapter.calls) >= 2)  # polled on each failed attempt
+        assert _wait_for(lambda: published)
+        assert _wait_for(
+            lambda: streamer.status()["subscriptions"][0]["last_error"] == "stream refused"
+        )
+    finally:
+        streamer.stop_all()

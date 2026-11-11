@@ -24,6 +24,11 @@ sidecar host. This module implements the `MarketDataAdapter` and
       GET  /workingorders        (v2)
       GET  /history/activity     (v3)  -> fills
 
+Live prices and trade events come over IG's Lightstreamer stream instead
+(`lightstreamer.py`): `MARKET:{epic}` for bid and offer, `TRADE:{accountId}`
+for deal confirmations and position updates. The login's
+`lightstreamerEndpoint` is the address and its two tokens are the password.
+
 Every request carries the account's API key (`X-IG-API-KEY`) and the two
 session tokens from the last login. A session lasts hours, not days; a 401
 logs in again once and retries.
@@ -49,10 +54,12 @@ Mapping notes the rest of the codebase does not need to know about:
 
 from __future__ import annotations
 
+import json as _json
 import re
 import threading
+import time
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 import pandas as pd
@@ -60,6 +67,7 @@ from fastapi import HTTPException
 
 from client_ids import audit_id_from, client_order_id
 from indicators import calculator as indicator_calculator
+from lightstreamer import LightstreamerClient, LightstreamerError, Subscription, Update
 from models import CandlestickBar, HistoricalDataResponse, RealTimeQuote
 from observability import get_logger
 from stops import is_more_protective
@@ -103,6 +111,8 @@ _PERIOD_TO_DAYS = {
 # Historical prices count against a weekly allowance, so a chart period is
 # capped; an explicit date range (a backfill) asks for exactly that range.
 _MAX_PERIOD_POINTS = 1000
+# A refused stream logs in again, but only when the last login is this old.
+_STREAM_RELOGIN_SECONDS = 60.0
 
 # MKT goes to /positions/otc, LMT/STP to /workingorders/otc.
 _WORKING_TYPES = {"LMT": "LIMIT", "STP": "STOP"}
@@ -177,6 +187,11 @@ class IGAdapter:
         self._account_id = account_id or None
         self._timeout = timeout
         self._tokens: Optional[Dict[str, str]] = None
+        # From the last login: where its streams are served, the account it
+        # is on, and when (see _stream).
+        self._stream_endpoint: Optional[str] = None
+        self._session_account: Optional[str] = None
+        self._login_at = 0.0
         self._login_lock = threading.Lock()
         self._markets: Dict[str, Dict[str, Any]] = {}
 
@@ -234,9 +249,13 @@ class IGAdapter:
                 raise HTTPException(502, "IG login returned no session tokens")
             self._tokens = {"CST": cst, "X-SECURITY-TOKEN": token}
             try:
-                current = (resp.json() or {}).get("currentAccountId")
+                session = resp.json() or {}
             except ValueError:
-                current = None
+                session = {}
+            current = session.get("currentAccountId")
+            self._stream_endpoint = session.get("lightstreamerEndpoint") or None
+            self._session_account = self._account_id or current or None
+            self._login_at = time.monotonic()
             if self._account_id and current and current != self._account_id:
                 switch = self._send("PUT", "/session", 1, None, {"accountId": self._account_id})
                 if switch.status_code >= 400:
@@ -431,6 +450,91 @@ class IGAdapter:
             "volume": quote.volume,
             "broker": "ig",
         }
+
+    # -- streaming (Lightstreamer) ----------------------------------------- #
+    def _stream(
+        self,
+        subscriptions: List[Subscription],
+        on_update: Callable[[Update], None],
+        should_stop: Callable[[], bool],
+    ) -> None:
+        """Read ``subscriptions`` from IG's stream until told to stop or the
+        stream ends. A stream signs in with the REST session's tokens, so one
+        that IG refuses drops them and the next attempt logs in again, but no
+        more than once a minute: IG locks an API key that logs in too often."""
+        if self._tokens is None or not self._stream_endpoint:
+            self._login()
+        tokens = self._tokens or {}
+        if not (self._stream_endpoint and self._session_account):
+            raise HTTPException(502, "IG login returned no streaming address or account")
+        client = LightstreamerClient(
+            self._stream_endpoint,
+            self._session_account,
+            f"CST-{tokens.get('CST', '')}|XST-{tokens.get('X-SECURITY-TOKEN', '')}",
+        )
+        try:
+            client.run(subscriptions, on_update, should_stop)
+        except LightstreamerError as exc:
+            if time.monotonic() - self._login_at > _STREAM_RELOGIN_SECONDS:
+                self._tokens = None
+            raise HTTPException(502, f"IG stream error {exc.code}: {exc.message[:200]}")
+        except httpx.HTTPError as exc:
+            raise HTTPException(503, f"IG stream unreachable: {exc}")
+
+    def stream_prices(
+        self,
+        symbols: List[str],
+        on_price: Callable[[str, Optional[float], Optional[float]], None],
+        should_stop: Callable[[], bool],
+    ) -> None:
+        """Stream bid and offer for ``symbols``, calling
+        ``on_price(symbol, bid, ask)`` with each symbol as the caller wrote
+        it. Blocks until ``should_stop()`` is true (seen within about five
+        seconds) or the stream ends; raises on an error and the caller
+        retries. This replaces polling `/markets/{epic}`, which spends IG's
+        request allowance."""
+        by_item = {f"MARKET:{_to_epic(s)}": s for s in symbols}
+        if not by_item:
+            return
+
+        def on_update(update: Update) -> None:
+            symbol = by_item.get(update.item)
+            if symbol is None or not update.changed & {"BID", "OFFER"}:
+                return
+            on_price(
+                symbol, _opt_float(update.values.get("BID")), _opt_float(update.values.get("OFFER"))
+            )
+
+        self._stream(
+            [Subscription("MERGE", sorted(by_item), ["BID", "OFFER"], snapshot=True)],
+            on_update,
+            should_stop,
+        )
+
+    def stream_trade_events(
+        self,
+        on_event: Callable[[], None],
+        should_stop: Callable[[], bool],
+    ) -> None:
+        """Call ``on_event()`` whenever a deal is confirmed or a position
+        changes on this account, so fills can be read at once instead of at
+        the next poll. The fills themselves still come from
+        :meth:`executions`: one source, so a fill cannot be stored twice
+        under two ids. Blocks like :meth:`stream_prices`."""
+
+        def on_update(update: Update) -> None:
+            for name in ("CONFIRMS", "OPU"):
+                if name in update.changed and _is_trade(update.values.get(name)):
+                    on_event()
+                    return
+
+        if self._tokens is None or not self._session_account:
+            self._login()
+        self._stream(
+            [Subscription("DISTINCT", [f"TRADE:{self._session_account}"], ["CONFIRMS", "OPU"])],
+            on_update,
+            should_stop,
+        )
 
     # -- BrokerAdapter (execution) ------------------------------------------ #
     def _currency(self, epic: str) -> str:
@@ -792,6 +896,20 @@ class IGAdapter:
                 }
             )
         return fills
+
+
+def _is_trade(payload: Optional[str]) -> bool:
+    """Whether a CONFIRMS or OPU message reports a deal that went through. A
+    message that cannot be read counts, since an extra look at fills is cheap."""
+    if not payload:
+        return False
+    try:
+        message = _json.loads(payload)
+    except ValueError:
+        return True
+    if not isinstance(message, dict):
+        return True
+    return message.get("dealStatus") != "REJECTED"
 
 
 def _working_tif(tif: str) -> Dict[str, Any]:
