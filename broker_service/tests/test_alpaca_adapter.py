@@ -538,3 +538,164 @@ def test_instrument_spec_is_whole_shares(alpaca):
     assert spec["size_step"] == 1.0
     assert spec["contract_size"] == 1.0
     assert spec["symbol"] == "AAPL"
+
+
+# --------------------------------------------------------------------------- #
+# Streaming (WebSockets)
+# --------------------------------------------------------------------------- #
+class FakeSocket:
+    """A WebSocket that plays ``frames`` and then stays silent. A frame that
+    is an exception is raised instead of returned."""
+
+    def __init__(self, frames):
+        self.frames = list(frames)
+        self.sent = []
+        self.closed = False
+
+    def recv(self, timeout=None):
+        if not self.frames:
+            raise TimeoutError
+        frame = self.frames.pop(0)
+        if isinstance(frame, BaseException):
+            raise frame
+        return frame
+
+    def send(self, text):
+        import json
+
+        self.sent.append(json.loads(text))
+
+    def close(self):
+        self.closed = True
+
+
+def _stream_adapter(monkeypatch, frames, paper=True):
+    import json
+
+    import alpaca_adapter
+
+    socket = FakeSocket(
+        [f if isinstance(f, (bytes, BaseException)) else json.dumps(f) for f in frames]
+    )
+    urls = []
+
+    def connect(url, timeout):
+        urls.append(url)
+        return socket
+
+    monkeypatch.setattr(alpaca_adapter, "_connect", connect)
+    adapter = alpaca_adapter.AlpacaAdapter("key-1", "secret-1", paper=paper)
+    return adapter, socket, urls
+
+
+def _until_silent(socket):
+    """Stop once every frame has been played."""
+    return lambda: not socket.frames
+
+
+def test_stream_prices_authenticates_subscribes_and_reports_quotes_and_trades(monkeypatch):
+    adapter, socket, urls = _stream_adapter(
+        monkeypatch,
+        [
+            [{"T": "success", "msg": "connected"}],
+            [{"T": "success", "msg": "authenticated"}],
+            [{"T": "subscription", "trades": ["AAPL", "MSFT"], "quotes": ["AAPL", "MSFT"]}],
+            [
+                {"T": "q", "S": "AAPL", "bp": 189.5, "ap": 189.52},
+                {"T": "t", "S": "AAPL", "p": 189.51, "s": 100},
+            ],
+            [{"T": "q", "S": "MSFT", "bp": 0, "ap": 410.2}, {"T": "t", "S": "TSLA", "p": 1}],
+            [{"T": "q", "S": "MSFT", "bp": 0, "ap": 0}],
+            [{"T": "t", "S": "MSFT", "p": 410.1}],
+        ],
+    )
+    got = []
+    adapter.stream_prices(
+        ["aapl", "MSFT"],
+        lambda s, b, a, last="mid": got.append((s, b, a, last)),
+        _until_silent(socket),
+    )
+
+    assert got == [
+        ("aapl", 189.5, 189.52, None),
+        ("aapl", None, None, 189.51),
+        ("MSFT", None, 410.2, None),
+        ("MSFT", None, None, 410.1),
+    ]
+    assert urls == ["wss://stream.data.alpaca.markets/v2/iex"]
+    assert socket.sent == [
+        {"action": "auth", "key": "key-1", "secret": "secret-1"},
+        {"action": "subscribe", "trades": ["AAPL", "MSFT"], "quotes": ["AAPL", "MSFT"]},
+    ]
+    assert socket.closed is True
+
+
+def test_stream_prices_raises_alpacas_error_and_closes(monkeypatch):
+    adapter, socket, _ = _stream_adapter(
+        monkeypatch,
+        [
+            [{"T": "success", "msg": "connected"}],
+            [{"T": "error", "code": 406, "msg": "connection limit exceeded"}],
+        ],
+    )
+    with pytest.raises(HTTPException) as err:
+        adapter.stream_prices(["AAPL"], lambda *a, **k: None, lambda: False)
+    assert err.value.status_code == 502
+    assert "connection limit exceeded" in err.value.detail
+    assert socket.closed is True
+
+
+def test_a_dropped_stream_and_a_refused_connection_are_errors(monkeypatch):
+    import alpaca_adapter
+
+    adapter, socket, _ = _stream_adapter(monkeypatch, [OSError("reset by peer")])
+    with pytest.raises(HTTPException) as err:
+        adapter.stream_prices(["AAPL"], lambda *a, **k: None, lambda: False)
+    assert err.value.status_code == 503
+
+    def refuse(url, timeout):
+        raise OSError("no route")
+
+    monkeypatch.setattr(alpaca_adapter, "_connect", refuse)
+    with pytest.raises(HTTPException) as err:
+        adapter.stream_prices(["AAPL"], lambda *a, **k: None, lambda: False)
+    assert err.value.status_code == 503
+
+
+def test_stream_trade_events_fires_on_fills_only(monkeypatch):
+    import json
+
+    adapter, socket, urls = _stream_adapter(
+        monkeypatch,
+        [
+            # The trading stream sends binary frames.
+            json.dumps({"stream": "authorization", "data": {"status": "authorized"}}).encode(),
+            {"stream": "listening", "data": {"streams": ["trade_updates"]}},
+            {"stream": "trade_updates", "data": {"event": "new", "order": {}}},
+            {"stream": "trade_updates", "data": {"event": "partial_fill", "order": {}}},
+            json.dumps({"stream": "trade_updates", "data": {"event": "fill"}}).encode(),
+            {"stream": "trade_updates", "data": {"event": "canceled"}},
+            b"not json",
+        ],
+    )
+    events = []
+    adapter.stream_trade_events(lambda: events.append(1), _until_silent(socket))
+
+    assert len(events) == 2
+    assert urls == ["wss://paper-api.alpaca.markets/stream"]
+    assert socket.sent == [
+        {"action": "auth", "key": "key-1", "secret": "secret-1"},
+        {"action": "listen", "data": {"streams": ["trade_updates"]}},
+    ]
+
+
+def test_the_live_account_uses_the_live_trade_stream_and_a_refused_key_raises(monkeypatch):
+    adapter, socket, urls = _stream_adapter(
+        monkeypatch,
+        [{"stream": "authorization", "data": {"status": "unauthorized"}}],
+        paper=False,
+    )
+    with pytest.raises(HTTPException) as err:
+        adapter.stream_trade_events(lambda: None, lambda: False)
+    assert err.value.status_code == 502
+    assert urls == ["wss://api.alpaca.markets/stream"]

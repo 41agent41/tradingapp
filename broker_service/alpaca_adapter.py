@@ -25,14 +25,33 @@ the frontend's point of view.
 
 Auth is two headers on every request: `APCA-API-KEY-ID` / `APCA-API-SECRET-KEY`.
 
+### Alpaca WebSockets used here
+
+    Market data: wss://stream.data.alpaca.markets/v2/iex
+      <- [{"T":"success","msg":"connected"}]
+      -> {"action":"auth","key":..,"secret":..}
+      <- [{"T":"success","msg":"authenticated"}]
+      -> {"action":"subscribe","trades":[..],"quotes":[..]}
+      <- [{"T":"q","S":"AAPL","bp":..,"ap":..}, {"T":"t","S":"AAPL","p":..}]
+
+    Trade updates: wss://paper-api.alpaca.markets/stream (live: api.alpaca.markets)
+      -> {"action":"auth","key":..,"secret":..}
+      <- {"stream":"authorization","data":{"status":"authorized"}}
+      -> {"action":"listen","data":{"streams":["trade_updates"]}}
+      <- {"stream":"trade_updates","data":{"event":"fill","order":{..}}}
+
+IEX is the feed every Alpaca account may stream. A free account may hold one
+market data connection and subscribe to 30 symbols on it.
+
 Order placement runs the same `_validate_common` gate the IB path applies
 (defence in depth, identical to MT5) before anything reaches Alpaca.
 """
 
 from __future__ import annotations
 
+import json as _json
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 import pandas as pd
@@ -66,6 +85,9 @@ _HTTP_TIMEOUT_SECONDS = 30.0
 _TRADING_PAPER_BASE = "https://paper-api.alpaca.markets"
 _TRADING_LIVE_BASE = "https://api.alpaca.markets"
 _DATA_BASE = "https://data.alpaca.markets"
+_DATA_STREAM_URL = "wss://stream.data.alpaca.markets/v2/iex"
+# A stream is asked whether to stop at least this often.
+_STREAM_WAIT_SECONDS = 5.0
 
 # Rough bar budget per app period.
 # Alpaca returns at most 10000 bars per request; longer spans follow
@@ -110,6 +132,8 @@ class AlpacaAdapter:
         self._data_base = _DATA_BASE
         self._headers = {"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret}
         self._timeout = timeout
+        self._auth = {"action": "auth", "key": api_key, "secret": api_secret}
+        self._trade_stream_url = self._trading_base.replace("https://", "wss://") + "/stream"
 
     # -- HTTP plumbing ----------------------------------------------------- #
     def _request(
@@ -296,6 +320,121 @@ class AlpacaAdapter:
             "volume": t.get("s"),
             "broker": "alpaca",
         }
+
+    # -- streaming (WebSockets) -------------------------------------------- #
+    def _listen(
+        self,
+        url: str,
+        on_message: Callable[[Any, Callable[[Dict[str, Any]], None]], None],
+        should_stop: Callable[[], bool],
+        *,
+        hello: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Open ``url`` and pass each JSON message to ``on_message(message,
+        send)`` until ``should_stop()`` is true (asked every few seconds) or
+        the server closes. ``hello`` is sent first when given. Raises on a
+        refused or dropped connection; the caller retries."""
+        try:
+            ws = _connect(url, self._timeout)
+        except _connection_errors() as exc:
+            raise HTTPException(503, f"Alpaca stream unreachable: {exc}")
+        try:
+
+            def send(payload: Dict[str, Any]) -> None:
+                ws.send(_json.dumps(payload))
+
+            if hello is not None:
+                send(hello)
+            while not should_stop():
+                try:
+                    raw = ws.recv(timeout=_STREAM_WAIT_SECONDS)
+                except TimeoutError:
+                    continue
+                except _connection_errors() as exc:
+                    raise HTTPException(503, f"Alpaca stream closed: {exc}")
+                # The trading stream sends its JSON in binary frames.
+                text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
+                try:
+                    message = _json.loads(text)
+                except ValueError:
+                    continue
+                on_message(message, send)
+        finally:
+            try:
+                ws.close()
+            except Exception:  # noqa: BLE001 — already gone
+                pass
+
+    def stream_prices(
+        self,
+        symbols: List[str],
+        on_price: Callable[..., None],
+        should_stop: Callable[[], bool],
+    ) -> None:
+        """Stream quotes and trades for ``symbols`` from Alpaca's market data
+        WebSocket. A quote calls ``on_price(symbol, bid, ask, last=None)`` and
+        a trade ``on_price(symbol, None, None, last=price)``: Alpaca builds
+        its bars from trades, so the last price is a trade's, never a quote's
+        midpoint. Blocks until ``should_stop()`` is true or the stream ends;
+        raises on an error and the caller retries."""
+        wanted = sorted({s.upper() for s in symbols})
+        if not wanted:
+            return
+        by_upper = {s.upper(): s for s in symbols}
+
+        def on_message(message: Any, send: Callable[[Dict[str, Any]], None]) -> None:
+            for item in message if isinstance(message, list) else [message]:
+                if not isinstance(item, dict):
+                    continue
+                kind = item.get("T")
+                if kind == "error":
+                    raise HTTPException(
+                        502, f"Alpaca stream error {item.get('code')}: {item.get('msg')}"
+                    )
+                if kind == "success" and item.get("msg") == "connected":
+                    send(self._auth)
+                elif kind == "success" and item.get("msg") == "authenticated":
+                    send({"action": "subscribe", "trades": wanted, "quotes": wanted})
+                elif kind in ("q", "t"):
+                    symbol = by_upper.get(str(item.get("S") or "").upper())
+                    if symbol is None:
+                        continue
+                    if kind == "q":
+                        bid, ask = _positive(item.get("bp")), _positive(item.get("ap"))
+                        if bid is not None or ask is not None:
+                            on_price(symbol, bid, ask, last=None)
+                    else:
+                        price = _positive(item.get("p"))
+                        if price is not None:
+                            on_price(symbol, None, None, last=price)
+
+        self._listen(_DATA_STREAM_URL, on_message, should_stop)
+
+    def stream_trade_events(
+        self,
+        on_event: Callable[[], None],
+        should_stop: Callable[[], bool],
+    ) -> None:
+        """Call ``on_event()`` whenever an order fills or partly fills on this
+        account, so fills can be read at once instead of at the next poll.
+        The fills themselves still come from :meth:`executions`: a stream
+        update and an account activity carry different ids, and reading one
+        source means a fill cannot be stored twice. Blocks like
+        :meth:`stream_prices`."""
+
+        def on_message(message: Any, send: Callable[[Dict[str, Any]], None]) -> None:
+            if not isinstance(message, dict):
+                return
+            stream = message.get("stream")
+            data = message.get("data") if isinstance(message.get("data"), dict) else {}
+            if stream == "authorization":
+                if data.get("status") != "authorized":
+                    raise HTTPException(502, "Alpaca refused the trade stream's key")
+                send({"action": "listen", "data": {"streams": ["trade_updates"]}})
+            elif stream == "trade_updates" and data.get("event") in ("fill", "partial_fill"):
+                on_event()
+
+        self._listen(self._trade_stream_url, on_message, should_stop, hello=self._auth)
 
     # -- BrokerAdapter (execution) ------------------------------------------ #
     def place_order(self, request: Any) -> Dict[str, Any]:
@@ -510,6 +649,28 @@ class AlpacaAdapter:
                 }
             )
         return fills
+
+
+def _connect(url: str, timeout: float) -> Any:
+    """Open the WebSocket. Its own function so tests can replace it."""
+    from websockets.sync.client import connect
+
+    return connect(url, open_timeout=timeout, close_timeout=2)
+
+
+def _connection_errors() -> tuple:
+    """What a dropped or refused connection raises."""
+    try:
+        from websockets.exceptions import WebSocketException
+    except ImportError:  # pragma: no cover - websockets ships with uvicorn[standard]
+        return (OSError,)
+    return (OSError, WebSocketException)
+
+
+def _positive(v: Any) -> Optional[float]:
+    """A price, or None for a missing or zero one (an empty side of the book)."""
+    value = _opt_float(v)
+    return value if value is not None and value > 0 else None
 
 
 def _opt_float(v: Any) -> Optional[float]:

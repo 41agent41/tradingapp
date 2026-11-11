@@ -8,7 +8,7 @@ as IB's. A subscription belongs to one connection, so the same symbol can
 stream from two firms at once (docs/plans/E-05-live-recorder.md, D3):
 
 - an adapter with ``stream_prices`` (OANDA's pricing stream, IG's
-  Lightstreamer prices) is streamed;
+  Lightstreamer prices, Alpaca's market data WebSocket) is streamed;
   the stream restarts whenever the set of symbols on that connection changes;
 - any other adapter is polled with ``tick()`` every
   ``STREAM_POLL_SECONDS`` (default 2, set on the Settings page), which every
@@ -41,6 +41,8 @@ from observability import get_logger
 logger = get_logger(__name__)
 
 RETRY_SECONDS = 5.0
+# "Work the last price out from the bid and ask" (see _Worker._on_price).
+_MIDPOINT = object()
 
 ConnectionKey = Tuple[str, str]  # (platform, account)
 SubKey = Tuple[str, str, str]  # (platform, account, symbol)
@@ -127,8 +129,14 @@ class _Worker:
                 symbol, self.key, bid=tick.get("bid"), ask=tick.get("ask"), last=tick.get("last")
             )
 
-    def _on_price(self, symbol: str, bid: Optional[float], ask: Optional[float]) -> None:
-        last = (bid + ask) / 2 if bid is not None and ask is not None else (bid or ask)
+    def _on_price(
+        self, symbol: str, bid: Optional[float], ask: Optional[float], last: Any = _MIDPOINT
+    ) -> None:
+        """A price from a stream. ``last`` is the midpoint unless the adapter
+        gives one: a broker whose bars are built from trades (Alpaca) passes a
+        trade's price, and None with a quote."""
+        if last is _MIDPOINT:
+            last = (bid + ask) / 2 if bid is not None and ask is not None else (bid or ask)
         self.streamer.publish(symbol, self.key, bid=bid, ask=ask, last=last)
 
 
