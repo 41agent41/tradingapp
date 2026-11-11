@@ -364,6 +364,7 @@ const executionsPoller = createExecutionsPoller();
 // Fills a broker streams (OANDA) are stored as they arrive, between polls.
 const fillStream = new FillStream({
   ingest: (connection, rows) => executionsPoller.ingest(connection, rows),
+  refresh: (connection) => executionsPoller.refresh(connection),
 });
 /** The fill listener runs exactly while executions sync does. */
 function syncFillStream(): void {

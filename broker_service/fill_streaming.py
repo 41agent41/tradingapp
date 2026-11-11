@@ -7,6 +7,13 @@ one background thread per connection, and each fill is published on the Redis
 channel ``executions:fill:<platform>:<account>`` in the same shape the poll
 returns. The backend stores it at once.
 
+A broker whose stream says only that something traded (IG's trade
+subscription; ``stream_trade_events`` on the adapter) is listened to the same
+way, and each event is published on ``executions:changed:<platform>:<account>``.
+The backend then polls that connection straight away, so the fill is still
+read from the one place the poll reads it and cannot be stored twice under
+two ids.
+
 The stream adds speed, not correctness. Redis publish is not durable and a
 stream can drop, so the poll stays on and remains the record: it reads an
 overlapping window, and a fill seen both ways is stored once.
@@ -68,7 +75,10 @@ class _Worker:
                 # Looked up on every attempt, so an edited connection is used.
                 adapter = self.streamer.adapter_for(self.key)
                 self.state.listening = True
-                adapter.stream_fills(self._on_fill, self.stop.is_set)
+                if hasattr(adapter, "stream_fills"):
+                    adapter.stream_fills(self._on_fill, self.stop.is_set)
+                else:
+                    adapter.stream_trade_events(self._on_trade_event, self.stop.is_set)
                 self.state.last_error = None
             except Exception as exc:  # noqa: BLE001 — a worker must outlive any failure
                 error = str(getattr(exc, "detail", None) or exc)
@@ -87,6 +97,11 @@ class _Worker:
         self.state.last_fill_at = time.time()
         self.streamer.publish(self.key, fill)
 
+    def _on_trade_event(self) -> None:
+        self.state.fills += 1
+        self.state.last_fill_at = time.time()
+        self.streamer.publish_changed(self.key)
+
 
 class FillStreamer:
     """Keeps one fill stream open per connection that can stream fills."""
@@ -97,7 +112,9 @@ class FillStreamer:
         resolve_adapter: Optional[Callable[[str, str], Any]] = None,
         publish_fill: Optional[Callable[[str, str, Dict[str, Any]], None]] = None,
         enabled: Optional[Callable[[], bool]] = None,
+        publish_changed: Optional[Callable[[str, str], None]] = None,
     ) -> None:
+        self._publish_changed = publish_changed
         self._list_connections = list_connections
         self._resolve_adapter = resolve_adapter
         self._publish_fill = publish_fill
@@ -121,6 +138,14 @@ class FillStreamer:
 
         streaming_manager.publish_fill(key[0], key[1], fill)
 
+    def publish_changed(self, key: ConnectionKey) -> None:
+        if self._publish_changed is not None:
+            self._publish_changed(key[0], key[1])
+            return
+        from streaming import streaming_manager
+
+        streaming_manager.publish_fills_changed(key[0], key[1])
+
     def _wanted(self) -> set[ConnectionKey]:
         """Every connection that should be streaming now."""
         enabled = (
@@ -141,7 +166,7 @@ class FillStreamer:
                 adapter = self.adapter_for(key)
             except Exception:  # noqa: BLE001 — a connection with no broker side
                 continue
-            if hasattr(adapter, "stream_fills"):
+            if hasattr(adapter, "stream_fills") or hasattr(adapter, "stream_trade_events"):
                 wanted.add(key)
         return wanted
 

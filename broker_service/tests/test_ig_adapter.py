@@ -476,3 +476,128 @@ def test_executions_keep_only_position_deals(ig):
     assert fill["side"] == "SELL" and fill["quantity"] == 2
     assert fill["symbol"] == "EUR.USD"
     assert fill["audit_id"] == 9
+
+
+# --------------------------------------------------------------------------- #
+# Streaming (Lightstreamer)
+# --------------------------------------------------------------------------- #
+class FakeStream:
+    """Stands in for LightstreamerClient: records how it was opened and plays
+    the updates (or raises the error) the test set."""
+
+    opened = []
+    updates = []
+    error = None
+
+    def __init__(self, endpoint, user, password, **kwargs):
+        FakeStream.opened.append({"endpoint": endpoint, "user": user, "password": password})
+
+    def run(self, subscriptions, on_update, should_stop):
+        FakeStream.opened[-1]["subscriptions"] = subscriptions
+        if FakeStream.error is not None:
+            raise FakeStream.error
+        for update in FakeStream.updates:
+            on_update(update)
+
+
+@pytest.fixture
+def ig_stream(ig, monkeypatch):
+    FakeStream.opened, FakeStream.updates, FakeStream.error = [], [], None
+    monkeypatch.setattr(ig, "LightstreamerClient", FakeStream)
+
+    def login(self, method, url, headers=None, params=None, json=None):
+        FakeClient.calls.append((method, url, headers or {}, params or {}, json))
+        return FakeResponse(
+            {"currentAccountId": "ABC12", "lightstreamerEndpoint": "https://demo-apd.example.com"},
+            headers={"CST": "cst-1", "X-SECURITY-TOKEN": "xst-1"},
+        )
+
+    monkeypatch.setattr(FakeClient, "request", login)
+    return ig
+
+
+def _update(ig, item, values, changed=None):
+    return ig.Update(
+        subscription=0, item=item, values=values, changed=set(changed or values.keys())
+    )
+
+
+def test_stream_prices_signs_in_with_the_session_and_reports_bid_and_offer(ig_stream):
+    FakeStream.updates = [
+        _update(ig_stream, "MARKET:CS.D.EURUSD.CFD.IP", {"BID": "1.1000", "OFFER": "1.1002"}),
+        _update(ig_stream, "MARKET:IX.D.ASX.IFD.IP", {"BID": "8001.5", "OFFER": None}),
+        _update(ig_stream, "MARKET:UNKNOWN", {"BID": "1", "OFFER": "2"}),
+    ]
+    got = []
+    _adapter(ig_stream).stream_prices(
+        ["EUR.USD", "IX.D.ASX.IFD.IP"], lambda s, b, a: got.append((s, b, a)), lambda: False
+    )
+
+    assert got == [("EUR.USD", 1.1, 1.1002), ("IX.D.ASX.IFD.IP", 8001.5, None)]
+    opened = FakeStream.opened[0]
+    assert opened["endpoint"] == "https://demo-apd.example.com"
+    assert opened["user"] == "ABC12"
+    assert opened["password"] == "CST-cst-1|XST-xst-1"
+    (sub,) = opened["subscriptions"]
+    assert sub.mode == "MERGE" and sub.snapshot is True
+    assert list(sub.items) == ["MARKET:CS.D.EURUSD.CFD.IP", "MARKET:IX.D.ASX.IFD.IP"]
+    assert list(sub.fields) == ["BID", "OFFER"]
+
+
+def test_stream_prices_uses_the_configured_account_and_one_login(ig_stream):
+    adapter = _adapter(ig_stream, account_id="ABC12")
+    adapter.stream_prices(["EUR.USD"], lambda *a: None, lambda: False)
+    adapter.stream_prices(["EUR.USD"], lambda *a: None, lambda: False)
+    assert FakeStream.opened[1]["user"] == "ABC12"
+    assert len(_calls("/session", "POST")) == 1
+
+
+def test_a_refused_stream_is_an_error_and_does_not_log_in_again_at_once(ig_stream):
+    FakeStream.error = ig_stream.LightstreamerError(1, "User/password check failed")
+    adapter = _adapter(ig_stream)
+    for _ in range(3):
+        with pytest.raises(HTTPException) as err:
+            adapter.stream_prices(["EUR.USD"], lambda *a: None, lambda: False)
+        assert err.value.status_code == 502
+        assert "check failed" in err.value.detail
+    # IG locks a key that logs in too often: three failures, one login.
+    assert len(_calls("/session", "POST")) == 1
+
+
+def test_a_refused_stream_logs_in_again_once_the_session_is_old(ig_stream, monkeypatch):
+    FakeStream.error = ig_stream.LightstreamerError(1, "User/password check failed")
+    adapter = _adapter(ig_stream)
+    with pytest.raises(HTTPException):
+        adapter.stream_prices(["EUR.USD"], lambda *a: None, lambda: False)
+    adapter._login_at -= 120  # the session is now two minutes old
+    with pytest.raises(HTTPException):
+        adapter.stream_prices(["EUR.USD"], lambda *a: None, lambda: False)
+    with pytest.raises(HTTPException):
+        adapter.stream_prices(["EUR.USD"], lambda *a: None, lambda: False)
+    assert len(_calls("/session", "POST")) == 2
+
+
+def test_stream_trade_events_fires_on_accepted_deals_only(ig_stream):
+    item = "TRADE:ABC12"
+    FakeStream.updates = [
+        _update(
+            ig_stream, item, {"CONFIRMS": '{"dealStatus":"ACCEPTED","dealId":"D1"}', "OPU": None}
+        ),
+        _update(ig_stream, item, {"CONFIRMS": '{"dealStatus":"REJECTED"}', "OPU": None}),
+        _update(
+            ig_stream,
+            item,
+            {"CONFIRMS": '{"dealStatus":"REJECTED"}', "OPU": '{"status":"UPDATED"}'},
+            changed=["OPU"],
+        ),
+        _update(ig_stream, item, {"CONFIRMS": None, "OPU": None}),
+        _update(ig_stream, item, {"CONFIRMS": "not json", "OPU": None}, changed=["CONFIRMS"]),
+    ]
+    events = []
+    _adapter(ig_stream).stream_trade_events(lambda: events.append(1), lambda: False)
+
+    assert len(events) == 3
+    (sub,) = FakeStream.opened[0]["subscriptions"]
+    assert sub.mode == "DISTINCT" and sub.snapshot is False
+    assert list(sub.items) == ["TRADE:ABC12"]
+    assert list(sub.fields) == ["CONFIRMS", "OPU"]

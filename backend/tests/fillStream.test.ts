@@ -50,7 +50,7 @@ describe('FillStream', () => {
     const stream = new FillStream({ ingest, redisFactory: () => redis as any, now: () => 0 });
 
     await stream.start();
-    expect(redis.pattern).toBe(FILL_PATTERN);
+    expect(redis.pSubscribe).toHaveBeenCalledWith(FILL_PATTERN, expect.any(Function));
     expect(stream.status().listening).toBe(true);
 
     await stream.handle(JSON.stringify(fill), 'executions:fill:oanda:001');
@@ -125,5 +125,57 @@ describe('FillStream', () => {
     await stream.stop();
     expect(redis.quit).toHaveBeenCalled();
     expect(stream.status().listening).toBe(false);
+  });
+});
+
+describe('FillStream — a broker that only says something traded', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('polls that connection once, shortly after, however many events arrive', async () => {
+    const refresh = jest.fn().mockResolvedValue(undefined);
+    const stream = new FillStream({ ingest: jest.fn(), refresh, refreshDelayMs: 1500 });
+
+    stream.handleChanged('executions:changed:ig:demo');
+    stream.handleChanged('executions:changed:ig:demo');
+    stream.handleChanged('executions:changed:ig:live');
+    expect(refresh).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(1500);
+
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenCalledWith({ broker: 'ig', brokerAccount: 'demo' });
+    expect(refresh).toHaveBeenCalledWith({ broker: 'ig', brokerAccount: 'live' });
+
+    stream.handleChanged('executions:changed:ig:demo');
+    await jest.advanceTimersByTimeAsync(1500);
+    expect(refresh).toHaveBeenCalledTimes(3);
+    expect(stream.status()).toMatchObject({ received: 4, refreshes: 3 });
+  });
+
+  it('ignores a channel that names no connection, and drops pending polls on stop', async () => {
+    const refresh = jest.fn().mockResolvedValue(undefined);
+    const stream = new FillStream({ ingest: jest.fn(), refresh });
+
+    stream.handleChanged('executions:changed:ig');
+    stream.handleChanged('executions:changed:ig:demo');
+    await stream.stop();
+    await jest.advanceTimersByTimeAsync(5000);
+
+    expect(refresh).not.toHaveBeenCalled();
+    expect(stream.status().ignored).toBe(1);
+  });
+
+  it('listens on both patterns', async () => {
+    jest.useRealTimers();
+    const patterns: string[] = [];
+    const redis = fakeRedis({
+      pSubscribe: jest.fn(async (pattern: string) => {
+        patterns.push(pattern);
+      }),
+    });
+    const stream = new FillStream({ ingest: jest.fn(), redisFactory: () => redis as any });
+    await stream.start();
+    expect(patterns).toEqual(['executions:fill:*', 'executions:changed:*']);
   });
 });

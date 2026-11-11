@@ -349,3 +349,28 @@ describe('ExecutionsPoller — fills pushed by the broker', () => {
     expect(p.status().last_error).toBe('db down');
   });
 });
+
+describe('ExecutionsPoller — a poll asked for by the broker', () => {
+  const ig = { broker: 'ig', brokerAccount: 'demo' };
+
+  it('polls just that connection and links what is new', async () => {
+    const deps = makeDeps();
+    const p = new ExecutionsPoller({ deps, enabled: true, lookbackDays: 2 });
+
+    await p.refresh(ig);
+
+    expect(deps.listConnections).not.toHaveBeenCalled();
+    expect(deps.fetchExecutions).toHaveBeenCalledWith(ig, 2);
+    expect(deps.upsert).toHaveBeenCalledWith(expect.objectContaining({ broker_account: 'demo' }));
+    expect(deps.relinkOrphans).toHaveBeenCalledTimes(1);
+  });
+
+  it('never throws, and skips the link pass when nothing was new', async () => {
+    const deps = makeDeps({ fetchExecutions: jest.fn().mockRejectedValue(new Error('ig down')) });
+    const p = new ExecutionsPoller({ deps, enabled: true });
+
+    await expect(p.refresh(ig)).resolves.toBeUndefined();
+    expect(deps.relinkOrphans).not.toHaveBeenCalled();
+    expect(p.status().last_error).toBe('ig down');
+  });
+});

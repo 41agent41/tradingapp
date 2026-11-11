@@ -578,7 +578,7 @@ export const SETTINGS: readonly SettingDef[] = [
     max: 60,
     apply: 'reload',
     editable: true,
-    help: 'How often live prices are fetched from a broker that has no price stream (OANDA streams; the others are polled).',
+    help: 'How often live prices are fetched from a broker that has no price stream (IB, OANDA and IG stream; the others are polled).',
   },
   {
     key: 'RECORDER_ENABLED',

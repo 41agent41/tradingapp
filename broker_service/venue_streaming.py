@@ -7,7 +7,8 @@ through the same :class:`streaming.StreamingManager` so ticks land on the
 as IB's. A subscription belongs to one connection, so the same symbol can
 stream from two firms at once (docs/plans/E-05-live-recorder.md, D3):
 
-- an adapter with ``stream_prices`` (OANDA's pricing stream) is streamed;
+- an adapter with ``stream_prices`` (OANDA's pricing stream, IG's
+  Lightstreamer prices) is streamed;
   the stream restarts whenever the set of symbols on that connection changes;
 - any other adapter is polled with ``tick()`` every
   ``STREAM_POLL_SECONDS`` (default 2, set on the Settings page), which every

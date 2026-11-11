@@ -337,6 +337,7 @@ is the one it returns.
 | `probe()` | Background connectivity checks, the Test button, the heartbeat |
 | `search_contracts`, `historical_bars`, `realtime_quote`, `tick` | Search, charts, quotes, backtests |
 | `stream_prices` (optional) | Live prices; without it `tick` is polled every `STREAM_POLL_SECONDS` |
+| `stream_fills` or `stream_trade_events` (optional) | Fills as they happen (`fill_streaming.py`): the first reports each fill, the second only that something traded, and the backend then polls that connection at once |
 | `bar_basis` (attribute) | `mid`, `bid` or `last`: the price the broker builds its own bars from, so the live recorder builds its bars the same way |
 | `place_order`, `cancel_order`, `modify_order` | Orders and the strategy runner |
 | `positions`, `account_summary`, `open_orders`, `executions` | Account pages, reconciliation, `pct_equity` sizing |

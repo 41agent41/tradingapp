@@ -378,6 +378,23 @@ export class ExecutionsPoller {
     }
   }
 
+  /**
+   * Poll one connection now, outside the timer: its broker said something
+   * traded (see fillStream.ts). Never throws.
+   */
+  async refresh(connection: Connection): Promise<void> {
+    const before = this.inserted;
+    await this.syncConnection(connection);
+    if (this.inserted === before) return;
+    try {
+      this.relinked += await this.deps.relinkOrphans();
+    } catch (err) {
+      this.errors++;
+      this.lastError = err instanceof Error ? err.message : String(err);
+      logger.error({ err: this.lastError }, 'execution re-link pass failed');
+    }
+  }
+
   status() {
     return {
       enabled: this.enabled,
