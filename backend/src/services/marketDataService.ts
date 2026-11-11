@@ -15,6 +15,14 @@ export interface CandlestickBar {
   volume: number;
   wap?: number;
   count?: number;
+  /** Bid-to-ask spread at the bar's close, where the broker reports it. */
+  spread?: number | null;
+}
+
+/** A bar's spread as stored: a positive number, or null when not known. */
+function spreadOf(bar: CandlestickBar): number | null {
+  const spread = Number(bar.spread);
+  return bar.spread != null && Number.isFinite(spread) && spread > 0 ? spread : null;
 }
 
 export interface Contract {
@@ -170,6 +178,7 @@ export class MarketDataService {
         volume = EXCLUDED.volume,
         wap = EXCLUDED.wap,
         count = EXCLUDED.count,
+        spread = COALESCE(EXCLUDED.spread, candlestick_data.spread),
         source = 'broker'
       RETURNING (xmax = 0) AS inserted`;
 
@@ -180,8 +189,8 @@ export class MarketDataService {
         try {
           await client.query('SAVEPOINT bar');
           const result = await client.query(
-            `INSERT INTO candlestick_data (contract_id, timestamp, timeframe, open, high, low, close, volume, wap, count)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ${UPSERT_SET}`,
+            `INSERT INTO candlestick_data (contract_id, timestamp, timeframe, open, high, low, close, volume, wap, count, spread)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ${UPSERT_SET}`,
             [
               contractId,
               bar.timestamp,
@@ -193,6 +202,7 @@ export class MarketDataService {
               bar.volume,
               bar.wap || null,
               bar.count || null,
+              spreadOf(bar),
             ]
           );
           await client.query('RELEASE SAVEPOINT bar');
@@ -215,11 +225,11 @@ export class MarketDataService {
         try {
           await client.query('SAVEPOINT batch');
           const result = await client.query(
-            `INSERT INTO candlestick_data (contract_id, timestamp, timeframe, open, high, low, close, volume, wap, count)
-             SELECT $1, t, $2, o, h, l, c, v, w, n
+            `INSERT INTO candlestick_data (contract_id, timestamp, timeframe, open, high, low, close, volume, wap, count, spread)
+             SELECT $1, t, $2, o, h, l, c, v, w, n, s
                FROM unnest($3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[],
-                           $7::numeric[], $8::bigint[], $9::numeric[], $10::int[])
-                 AS b(t, o, h, l, c, v, w, n)
+                           $7::numeric[], $8::bigint[], $9::numeric[], $10::int[], $11::float8[])
+                 AS b(t, o, h, l, c, v, w, n, s)
              ${UPSERT_SET}`,
             [
               contractId,
@@ -232,6 +242,7 @@ export class MarketDataService {
               batch.map((b) => b.volume),
               batch.map((b) => b.wap || null),
               batch.map((b) => b.count || null),
+              batch.map(spreadOf),
             ]
           );
           await client.query('RELEASE SAVEPOINT batch');
@@ -765,6 +776,7 @@ export class MarketDataService {
       volume: parseInt(bar.volume),
       wap: bar.wap ? parseFloat(bar.wap) : undefined,
       count: bar.count ? parseInt(bar.count) : undefined,
+      spread: bar.spread,
     }));
 
     // Store candlestick data

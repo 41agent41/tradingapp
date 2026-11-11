@@ -129,6 +129,36 @@ def test_historical_bars_maps_granularity_including_8hour(oanda):
     assert resp.bars[0].volume == 120
 
 
+def test_historical_bars_carry_the_closing_spread(oanda):
+    def candle(time, **sides):
+        return {"time": time, "complete": True, "volume": 1, **sides}
+
+    mid = {"o": "1.07", "h": "1.08", "l": "1.06", "c": "1.0750"}
+    FakeClient.handler = lambda method, url, params, json: FakeResponse(
+        {
+            "candles": [
+                candle(
+                    "2023-11-14T22:00:00.000000000Z",
+                    mid=mid,
+                    bid={"o": "1.0699", "h": "1.0799", "l": "1.0599", "c": "1.07492"},
+                    ask={"o": "1.0701", "h": "1.0801", "l": "1.0601", "c": "1.07508"},
+                ),
+                # One side missing, and a crossed pair: no spread to trust.
+                candle("2023-11-14T23:00:00.000000000Z", mid=mid, bid={"c": "1.0749"}),
+                candle(
+                    "2023-11-15T00:00:00.000000000Z", mid=mid, bid={"c": "1.08"}, ask={"c": "1.07"}
+                ),
+            ]
+        }
+    )
+    resp = _adapter(oanda).historical_bars("EUR.USD", "1hour", "1M")
+
+    _method, _url, _headers, params, _json = FakeClient.calls[0]
+    assert params["price"] == "MBA"  # mid, bid and ask in one request
+    assert [b.spread for b in resp.bars] == [0.00016, None, None]
+    assert resp.bars[0].close == 1.075  # the bar itself is still the mid
+
+
 def test_historical_bars_skips_incomplete_candles(oanda):
     FakeClient.handler = lambda method, url, params, json: FakeResponse(
         {

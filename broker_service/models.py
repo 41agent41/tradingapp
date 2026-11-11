@@ -26,6 +26,9 @@ class CandlestickBar(BaseModel):
     low: float
     close: float
     volume: int
+    # The bid-to-ask spread at the bar's close, from a broker whose bars are
+    # mid prices and that reports both sides (OANDA). None when not known.
+    spread: Optional[float] = None
 
     # Technical Indicators (optional fields)
     sma_20: Optional[float] = None

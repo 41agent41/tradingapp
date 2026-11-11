@@ -78,6 +78,9 @@ class BarColumns(BaseModel):
     l: List[float]  # noqa: E741 — the field name is the wire format
     c: List[float]
     v: List[float] = []
+    # The broker's bid-to-ask spread on each bar, null where it is not known.
+    # With it, fills are at the bid or ask instead of the mid.
+    s: List[float | None] = []
 
 
 BacktestRunBody.model_rebuild()
@@ -102,7 +105,12 @@ def _supplied_bars(bars: BarColumns, name: str = "bars") -> pd.DataFrame:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"{name}: t must be strictly increasing (oldest bar first).",
         )
-    return pd.DataFrame(
+    if bars.s and len(bars.s) != n:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{name}: s must be empty or as long as t.",
+        )
+    frame = pd.DataFrame(
         {
             "timestamp": bars.t,
             "open": bars.o,
@@ -112,6 +120,9 @@ def _supplied_bars(bars: BarColumns, name: str = "bars") -> pd.DataFrame:
             "volume": [int(x) for x in bars.v] if bars.v else [0] * n,
         }
     )
+    if any(x is not None for x in bars.s):
+        frame["spread"] = pd.Series(bars.s, dtype="float64")
+    return frame
 
 
 @router.get("/backtesting/strategies")
@@ -312,9 +323,14 @@ async def run_backtest(
     exchange: str = "SMART",
     currency: str = "USD",
     source: str = "",
+    use_spread: bool = True,
     body: BacktestRunBody | None = Body(None),
 ):
-    """Run backtest on historical data"""
+    """Run backtest on historical data.
+
+    Bars that carry the broker's spread fill a buy at the ask and a sell at
+    the bid; ``use_spread=false`` fills everything at the bar's own (mid)
+    price, as a run on bars without spreads does."""
     try:
         rule_set = body.rule_set if body else None
         strategy_instance = _resolve_strategy_instance(strategy, rule_set)
@@ -391,6 +407,8 @@ async def run_backtest(
 
         df = bars_data if isinstance(bars_data, pd.DataFrame) else pd.DataFrame(bars_data)
         df.index = pd.to_datetime(df["timestamp"], unit="s")
+        if not use_spread and "spread" in df.columns:
+            df = df.drop(columns=["spread"])
 
         minute_df = None
         if body and body.minute_bars is not None and body.minute_bars.t and timeframe != "1min":

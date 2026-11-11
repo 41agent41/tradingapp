@@ -47,6 +47,12 @@ export interface BacktestRunData {
   minute_hash?: string | null;
   /** Why stored 1-minute bars were left out, when they were. */
   minute_bars_skipped?: string | null;
+  /** How many of the bars carried the broker's spread (E-15); absent when
+   *  none did or the run asked for fills at the bar's own price. */
+  spread_bars?: number | null;
+  /** True when the bars' broker reports a spread with its bars, so bars
+   *  without one can gain it by downloading the range again. */
+  spread_source?: boolean;
 }
 
 export interface BacktestRunRow {

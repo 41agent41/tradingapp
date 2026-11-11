@@ -275,6 +275,7 @@ What the schema holds, in short (read the files for the full list):
 |---|---|
 | `contracts` | One row per resolved instrument |
 | `candlestick_data` | OHLCV bars; hypertable, 1-day chunks; no retention policy, only `cleanOldData` deletes, and never from an entry's `history_start` on |
+| `candlestick_data.spread` | Ask minus bid at the bar's close, where the broker reports it (OANDA); null otherwise. Prices on the row stay mid prices |
 | `candlestick_data.source` | `broker` (the broker's history) or `stream` (built by the live recorder); a broker bar replaces a stream bar, never the reverse |
 | `quote_ticks` | Quotes stored by the live recorder (bid, ask, last); hypertable, 1-day chunks, compressed after a day, whole days dropped by `cleanOldData` after `TICK_RETENTION_DAYS` |
 | `recorder_cursor` | One row: the last quote-stream entry stored, written in the same transaction as its bars and quotes |

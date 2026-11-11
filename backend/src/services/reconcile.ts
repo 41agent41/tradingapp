@@ -167,6 +167,7 @@ export class Reconciler {
         close: b.close,
         volume: b.volume,
         wap: b.wap,
+        spread: b.spread,
         count: b.count,
       }));
       if (bars.length) {

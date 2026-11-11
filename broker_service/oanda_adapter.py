@@ -305,6 +305,7 @@ class OANDAAdapter:
                     "low": float(mid["l"]),
                     "close": float(mid["c"]),
                     "volume": int(c.get("volume", 0) or 0),
+                    "spread": _closing_spread(c),
                 }
             )
         rows.sort(key=lambda r: r["timestamp"])
@@ -334,7 +335,9 @@ class OANDAAdapter:
         request always did) and pages further back only while that falls
         short of the period. A range returns exactly the candles inside it."""
         path = self._account_path(f"/instruments/{instrument}/candles")
-        base: Dict[str, Any] = {"granularity": granularity, "price": "M"}
+        # Mid, bid and ask in one request: the bars are mid prices, and the
+        # bid and ask closes give each bar's spread (E-15).
+        base: Dict[str, Any] = {"granularity": granularity, "price": "MBA"}
         step = _GRANULARITY_SECONDS.get(granularity, 60)
 
         if start_date and end_date:
@@ -923,6 +926,16 @@ class OANDAAdapter:
                 if fill is not None:
                     fills.append(fill)
         return fills
+
+
+def _closing_spread(candle: Dict[str, Any]) -> Optional[float]:
+    """Ask close less bid close for a candle that carries both sides."""
+    bid = _opt_float((candle.get("bid") or {}).get("c"))
+    ask = _opt_float((candle.get("ask") or {}).get("c"))
+    if bid is None or ask is None or ask < bid:
+        return None
+    # Prices have at most five decimals; the subtraction must not add more.
+    return round(ask - bid, 6)
 
 
 def _fill_from_transaction(row: Any) -> Optional[Dict[str, Any]]:

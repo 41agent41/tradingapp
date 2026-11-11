@@ -5,7 +5,15 @@ import BackToHome from '../components/BackToHome';
 import ChartSkeleton from '../components/ChartSkeleton';
 import DataframeViewer from '../components/DataframeViewer';
 import EquityCurveChart, { EquityPoint } from '../components/EquityCurveChart';
-import { describeFills, describeRunData, type RunData, type RunFills } from '../lib/backtestData';
+import {
+  describeFills,
+  describeRunData,
+  describeSpread,
+  spreadsMissing,
+  type RunData,
+  type RunFills,
+  type RunSpread,
+} from '../lib/backtestData';
 import { apiFetch } from '../lib/api';
 import JesseHyperparameterFields from '../components/backtest/JesseHyperparameterFields';
 import {
@@ -74,6 +82,8 @@ interface BacktestResults {
   metrics?: Record<string, unknown>;
   /** How a protective stop was filled; absent without a stop. */
   fills?: RunFills;
+  /** What the broker's spread cost; absent when no bar carried one. */
+  spread?: RunSpread;
 }
 
 interface BacktestResponse {
@@ -347,7 +357,7 @@ export default function BacktestPage() {
   // `onMissing` is the answer to the missing-bars question; without it the
   // backend asks (409) when stored bars do not cover the range.
   const runBacktest = useCallback(
-    async (onMissing?: 'fetch' | 'use_stored') => {
+    async (onMissing?: 'fetch' | 'use_stored' | 'refetch') => {
       if (!symbol.trim() || !strategy) {
         setError('Symbol and strategy are required');
         return;
@@ -389,7 +399,9 @@ export default function BacktestPage() {
             ...(onMissing ? { on_missing: onMissing } : {}),
           }),
           // Fetching years of small bars from a broker takes minutes.
-          signal: AbortSignal.timeout(onMissing === 'fetch' ? 900000 : 125000),
+          signal: AbortSignal.timeout(
+            onMissing === 'fetch' || onMissing === 'refetch' ? 900000 : 125000
+          ),
         });
 
         const body = await res.json().catch(() => ({}));
@@ -817,6 +829,28 @@ export default function BacktestPage() {
               {describeFills(results.fills) && (
                 <p className="mb-4 text-xs text-gray-500" data-testid="result-fills">
                   {describeFills(results.fills)}
+                </p>
+              )}
+
+              {describeSpread(results.spread) && (
+                <p className="mb-4 text-xs text-gray-500" data-testid="result-spread">
+                  {describeSpread(results.spread)}
+                </p>
+              )}
+
+              {spreadsMissing(response?.data) && (
+                <p className="mb-4 text-xs text-gray-500" data-testid="result-spread-missing">
+                  {response?.data?.spread_bars ?? 0} of {response?.data?.bars ?? 0} bars carry the
+                  broker&apos;s spread, so {response?.data?.spread_bars ? 'the rest' : 'fills'} are
+                  at the mid price, which no trade gets.{' '}
+                  <button
+                    type="button"
+                    onClick={() => void runBacktest('refetch')}
+                    disabled={running}
+                    className="text-blue-700 underline hover:text-blue-900 disabled:opacity-50"
+                  >
+                    Download the range again with spreads, then run
+                  </button>
                 </p>
               )}
 

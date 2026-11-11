@@ -223,6 +223,9 @@ plus every **saved rule-set** authored in the `/systematic` rule builder. See
     stored, so the next run needs no fetch.
   - **Run on what is stored** (`on_missing: "use_stored"`) runs on the bars
     there are. The run is marked as not fully covering its range.
+  - `on_missing: "refetch"` downloads the whole range again and stores it,
+    whether or not it is covered. The page uses it to add the broker's
+    spread to bars stored before spreads were kept.
 
   `GET /api/backtesting/coverage` gives the same check without running.
   The range is a period (`1M` to `5Y` on the page; any `<n>D|W|M|Y` in the
@@ -264,6 +267,19 @@ plus every **saved rule-set** authored in the `/systematic` rule builder. See
   rule exits still fill at the close of the bar that signalled them.
   Rule-sets without a `stop` block, the built-in strategies and Jesse
   strategies are unchanged.
+- **Buys at the ask, sells at the bid.** Stored bars are mid prices, which no
+  trade gets. OANDA's bars are stored with the spread at each bar's close
+  (ask minus bid, `candlestick_data.spread`), and a backtest on bars that
+  carry one fills a buy half the spread above the bar's price and a sell
+  half below it. A long's stop is hit when the bid reaches it and a short's
+  when the ask does, as at the broker. The results say what the spread cost
+  and over how many fills (`results.spread`). `"spread": false` in the API
+  fills at the mid price instead. Bars from brokers that report no spread
+  (IB, IG, Alpaca), bars built from 1 minute, and bars the live recorder
+  built carry none and fill at their own price. Where OANDA bars were
+  stored before spreads were kept, the results offer **Download the range
+  again with spreads, then run**. Jesse strategies do not use the spread.
+  The charts show mid prices; there is no bid and ask view.
 - **Straight from the broker, storing nothing:** `data: "broker"` in the API
   has the broker service fetch the bars itself, as every run did before. It
   is limited to 365 days and is not offered on the page.

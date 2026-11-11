@@ -118,6 +118,77 @@ run('backtest data (real database)', () => {
     expect(after.first_bar).toBe(range.start.toISOString());
   });
 
+  describe("the broker's spread on each bar (E-15)", () => {
+    const sym = `SP${tag}`;
+    const spreadInst = { ...inst, symbol: sym };
+    const day = { start: new Date(T0), end: new Date(T0 + DAY) };
+    let id: number;
+
+    it('loads bars without spreads exactly as before, with no spread field', async () => {
+      id = await marketDataService.getOrCreateContract({
+        broker: 'oanda',
+        symbol: sym,
+        secType: 'CASH',
+      });
+      await marketDataService.storeCandlestickData(id, '1hour', hourly(T0, 24));
+      const loaded = await data.load(id, '1hour', day);
+      expect(loaded.count).toBe(24);
+      expect(loaded.bars.s).toBeUndefined();
+    });
+
+    it('stores a spread with a bar, keeps it when a later bar has none, and hashes it', async () => {
+      const before = await data.load(id, '1hour', day);
+      const withSpread = hourly(T0, 6).map((b, i) => ({ ...b, spread: i === 5 ? 0 : 0.00016 }));
+      await marketDataService.storeCandlestickData(id, '1hour', withSpread);
+      // The same bars again from a source with no spread must not erase it.
+      await marketDataService.storeCandlestickData(id, '1hour', hourly(T0, 3));
+
+      const loaded = await data.load(id, '1hour', day);
+      expect(loaded.bars.s?.slice(0, 7)).toEqual([
+        0.00016,
+        0.00016,
+        0.00016,
+        0.00016,
+        0.00016,
+        null,
+        null,
+      ]);
+      expect(loaded.bars.s).toHaveLength(24);
+      expect(loaded.hash).not.toBe(before.hash);
+    });
+
+    it('downloads a covered range again when asked, which is how old bars gain a spread', async () => {
+      const again = new BacktestData({
+        db: dbService,
+        getOrCreateContract: (c) => marketDataService.getOrCreateContract(c),
+        fetchHistory: async (req) => {
+          const from = Date.parse(`${req.startDate}T00:00:00Z`);
+          return hourly(from, 24).map((b) => ({
+            timestamp: b.timestamp.getTime() / 1000,
+            open: b.open,
+            high: b.high,
+            low: b.low,
+            close: b.close,
+            volume: b.volume,
+            spread: 0.0002,
+          }));
+        },
+        storeCandlestickData: (cid, tf, bars) =>
+          marketDataService.storeCandlestickData(cid, tf, bars),
+        chunkDays: () => 30,
+      });
+      // Covered already, so a plain fetch of what is missing fetches nothing.
+      const plain = await again.fetchMissing(spreadInst, '1hour', day);
+      expect(plain.complete).toBe(true);
+      expect((await again.load(id, '1hour', day)).bars.s?.[10]).toBeNull();
+
+      const refetched = await again.fetchMissing(spreadInst, '1hour', day, { all: true });
+      expect(refetched).toMatchObject({ contract_id: id, bars: 24, complete: true });
+      const loaded = await again.load(id, '1hour', day);
+      expect(loaded.bars.s).toEqual(Array(24).fill(0.0002));
+    });
+  });
+
   describe('bars built from 1-minute bars', () => {
     const MIN = 60_000;
     const built = { ...inst, symbol: `BB${tag}` };

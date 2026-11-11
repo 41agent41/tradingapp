@@ -391,6 +391,17 @@ first, record the instrument live or add it to the data collection table at
 1 minute. After this upgrade a rule-set that has a `stop` block backtests
 differently from before, because the stop used to be ignored.
 
+Migration `009_bar_spread` adds one column, `candlestick_data.spread`, and
+runs in an instant. From then on OANDA's bars are stored with the spread at
+each bar's close, and a backtest on bars that carry one fills buys at the ask
+and sells at the bid. Bars stored before the upgrade have no spread and are
+not changed by it. A backtest on them fills at the mid price as before, and
+the results offer **Download the range again with spreads, then run**, which
+fetches the range from OANDA again and stores the spread on each bar. The
+nightly reconcile and the data collection also add spreads to the bars they
+fetch again. Expect an OANDA backtest to return a little less once its bars
+carry spreads: that is the cost the mid price left out.
+
 To check two runs used the same data, compare the data hash in their results
 headers, or `data.hash` from `GET /api/backtesting/runs/<id>`.
 
