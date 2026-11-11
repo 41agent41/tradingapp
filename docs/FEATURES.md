@@ -411,7 +411,9 @@ broker_service ──XADD──▶ Redis Stream marketdata:quotes ──XREAD─
   down; the nightly reconcile fills those minutes from the broker's history.
 - **Streamed brokers.** IB, OANDA (its pricing stream) and IG (its
   Lightstreamer `MARKET` subscription, one streaming session per IG
-  connection) push each price change as it happens.
+  connection) push each price change as it happens. If a price stream
+  fails, that connection's prices are fetched every 5 seconds instead until
+  it is back, and the Live feed column shows the stream's error.
 - **Polled brokers.** A broker without a price stream is polled every
   `STREAM_POLL_SECONDS`, so a high or low between two polls is missed and
   its recorded bars are approximate until the nightly reconcile replaces

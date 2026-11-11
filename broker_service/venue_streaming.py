@@ -14,6 +14,9 @@ stream from two firms at once (docs/plans/E-05-live-recorder.md, D3):
   ``STREAM_POLL_SECONDS`` (default 2, set on the Settings page), which every
   adapter implements.
 
+A price stream that fails falls back to one ``tick()`` per symbol before
+each new attempt, so prices keep arriving, more slowly, while it is down.
+
 A failure never ends a worker: it records the error (shown on
 ``/market-data/stream/status``), waits, and tries again. The adapter is
 looked up afresh on every attempt, so a connection edited on the Settings
@@ -96,8 +99,20 @@ class _Worker:
                     self._poll_once(adapter, symbols)
                     self.stop.wait(self.streamer.poll_seconds)
             except Exception as exc:  # noqa: BLE001 — a worker must outlive any failure
+                self._poll_instead(symbols)
                 self.streamer.record_error(self.key, symbols, exc)
                 self.stop.wait(RETRY_SECONDS)
+
+    def _poll_instead(self, symbols: Set[str]) -> None:
+        """A price stream that fails must not leave a chart without prices:
+        fetch each symbol once before the stream is tried again, so prices
+        keep arriving (every RETRY_SECONDS) for as long as it is down."""
+        try:
+            adapter = self.streamer.adapter_for(self.key)
+            if hasattr(adapter, "stream_prices") and hasattr(adapter, "tick"):
+                self._poll_once(adapter, symbols)
+        except Exception:  # noqa: BLE001 — the stream's own error is the one reported
+            pass
 
     def _poll_once(self, adapter: Any, symbols: Set[str]) -> None:
         for symbol in sorted(symbols):
