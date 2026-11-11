@@ -8,7 +8,21 @@ export type OrderType = 'MKT' | 'LMT' | 'STP' | 'STP_LMT';
 export type TimeInForce = 'DAY' | 'GTC' | 'IOC' | 'FOK';
 export type AccountMode = 'paper' | 'live';
 
+/** A connection an order can be sent to, with what it supports (E-19). */
+export interface TicketConnection {
+  label: string;
+  platform: string;
+  account: string;
+  account_mode: string | null;
+  /** The connection an order naming no broker reaches. */
+  is_default: boolean;
+  /** Each order type it takes, with the times in force that type accepts. */
+  order_types: Record<string, string[]> | null;
+}
+
 interface OrderConfig {
+  /** Absent from an older backend; the ticket then offers no choice. */
+  connections?: TicketConnection[];
   live_trading_enabled: boolean;
   backend_live_enabled: boolean;
   ib_live_enabled: boolean;
@@ -58,8 +72,8 @@ export default function OrderTicket({
   const [symbol, setSymbol] = useState(defaultSymbol);
   const [action, setAction] = useState<OrderAction>('BUY');
   const [quantity, setQuantity] = useState('1');
-  const [orderType, setOrderType] = useState<OrderType>('MKT');
-  const [tif, setTif] = useState<TimeInForce>('DAY');
+  const [wantedOrderType, setOrderType] = useState<OrderType>('MKT');
+  const [wantedTif, setTif] = useState<TimeInForce>('DAY');
   const [limitPrice, setLimitPrice] = useState('');
   const [stopPrice, setStopPrice] = useState('');
   const [accountMode, setAccountMode] = useState<AccountMode>('paper');
@@ -91,12 +105,38 @@ export default function OrderTicket({
     };
   }, []);
 
+  // Where the order goes: '' is the default connection.
+  const [connectionLabel, setConnectionLabel] = useState('');
+  const connections = config.connections ?? [];
+  const connection =
+    connections.find((c) => c.label === connectionLabel) ??
+    connections.find((c) => c.is_default) ??
+    null;
+  // Offer only what the connection takes; everything when it does not say.
+  const supported = connection?.order_types ?? null;
+  const orderTypes = supported
+    ? config.order_types.filter((t) => t in supported)
+    : config.order_types;
+  // A choice the connection does not take falls back to its first.
+  const orderType = orderTypes.includes(wantedOrderType)
+    ? wantedOrderType
+    : (orderTypes[0] ?? wantedOrderType);
+  const tifs = supported?.[orderType]
+    ? config.tif.filter((t) => supported[orderType].includes(t))
+    : config.tif;
+  const tif = tifs.includes(wantedTif) ? wantedTif : (tifs[0] ?? wantedTif);
+  const chosen = connections.find((c) => c.label === connectionLabel) ?? null;
+
   const needsLimit = orderType === 'LMT' || orderType === 'STP_LMT';
   const needsStop = orderType === 'STP' || orderType === 'STP_LMT';
 
   const payload = useMemo(
     () => ({
-      symbol: symbol.trim().toUpperCase(),
+      // MT5 symbols are case-sensitive (`EURUSDm`); every other broker's
+      // are upper case.
+      symbol: chosen?.platform === 'mt5' ? symbol.trim() : symbol.trim().toUpperCase(),
+      // Only a chosen connection is named; otherwise the default decides.
+      ...(chosen ? { broker: chosen.platform, broker_account: chosen.account } : {}),
       action,
       quantity: Number(quantity),
       order_type: orderType,
@@ -116,6 +156,7 @@ export default function OrderTicket({
       needsLimit,
       needsStop,
       accountMode,
+      chosen,
     ]
   );
 
@@ -185,8 +226,8 @@ export default function OrderTicket({
 
       {!compact && (
         <p className="text-xs text-gray-600 mb-3">
-          Submitting an order sends it to Interactive Brokers via the configured account. Validation
-          runs both here and on the backend before anything reaches IB.
+          Submitting an order sends it to {connection ? connection.label : 'the default broker'}.
+          Validation runs both here and on the backend before anything reaches the broker.
           {configError && (
             <span className="block mt-1 text-amber-700">
               Config probe failed ({configError}) — live mode disabled until that recovers.
@@ -236,6 +277,30 @@ export default function OrderTicket({
           />
         </label>
 
+        {connections.length > 1 && (
+          <label className="block sm:col-span-2">
+            <span className="text-sm font-medium text-gray-700">Connection</span>
+            <select
+              value={connectionLabel}
+              onChange={(e) => setConnectionLabel(e.target.value)}
+              className="mt-1 w-full border border-gray-300 rounded px-3 py-2 bg-white"
+            >
+              <option value="">
+                Default
+                {connections.find((c) => c.is_default)
+                  ? ` (${connections.find((c) => c.is_default)?.label})`
+                  : ''}
+              </option>
+              {connections.map((c) => (
+                <option key={c.label} value={c.label}>
+                  {c.label}
+                  {c.account_mode ? ` (${c.account_mode})` : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
         <label className="block">
           <span className="text-sm font-medium text-gray-700">Order type</span>
           <select
@@ -243,7 +308,7 @@ export default function OrderTicket({
             onChange={(e) => setOrderType(e.target.value as OrderType)}
             className="mt-1 w-full border border-gray-300 rounded px-3 py-2 bg-white"
           >
-            {config.order_types.map((t) => (
+            {orderTypes.map((t) => (
               <option key={t} value={t}>
                 {t.replace('_', ' ')}
               </option>
@@ -258,7 +323,7 @@ export default function OrderTicket({
             onChange={(e) => setTif(e.target.value as TimeInForce)}
             className="mt-1 w-full border border-gray-300 rounded px-3 py-2 bg-white"
           >
-            {config.tif.map((t) => (
+            {tifs.map((t) => (
               <option key={t} value={t}>
                 {t}
               </option>

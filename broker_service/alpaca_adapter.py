@@ -119,6 +119,9 @@ class AlpacaAdapter:
     bar_basis = "last"
 
     name = "alpaca"
+    # What the connection reports it supports (capabilities.py).
+    timeframes = tuple(_TIMEFRAME_TO_ALPACA)
+    order_tifs = {kind: tuple(_TIF_TO_ALPACA) for kind in _ORDER_TYPE_TO_ALPACA}
 
     def __init__(
         self,

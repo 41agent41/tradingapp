@@ -340,6 +340,9 @@ class CTraderAdapter:
     name = "ctrader"
     # Stops ride on the entry order (as distances on a market order).
     attaches_stops = True
+    # What the connection reports it supports (capabilities.py).
+    timeframes = tuple(_TIMEFRAME_TO_PERIOD)
+    order_tifs = {kind: ("DAY", "GTC", "IOC", "FOK") for kind in _APP_TO_ORDER_TYPE}
 
     def __init__(
         self,

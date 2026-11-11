@@ -13,6 +13,7 @@ import {
   LIMIT_FORM,
   PLATFORM_FORM,
   checkSummary,
+  describeCapabilities,
   saveMessage,
   emptyForm,
   formForFirm,
@@ -386,6 +387,11 @@ export default function BrokerConnections() {
           >
             {s.text}
           </span>
+          {describeCapabilities(c.capabilities) && (
+            <p className="mt-1 text-xs text-gray-500" data-testid={`capabilities-${c.label}`}>
+              {describeCapabilities(c.capabilities)}
+            </p>
+          )}
         </div>
         <div className="flex gap-2 self-start sm:self-auto">
           <button

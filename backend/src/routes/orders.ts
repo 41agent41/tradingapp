@@ -58,13 +58,38 @@ function sendProxyError(res: Response, error: any, label: string) {
   });
 }
 
+/**
+ * The connections an order can be sent to, with what each supports, from the
+ * broker service's `/connections/status`. The default connection comes first.
+ */
+export function tradingConnections(status: any): Array<Record<string, unknown>> {
+  if (!Array.isArray(status?.connections)) return [];
+  return status.connections
+    .filter((c: any) => c && isBroker(c.platform) && c.capabilities?.trading !== false)
+    .map((c: any) => ({
+      label: String(c.label),
+      platform: String(c.platform),
+      account: String(c.account),
+      account_mode: c.account_mode ?? null,
+      // The connection an order naming no broker reaches.
+      is_default: Boolean(c.is_default) && c.platform === status.default,
+      order_types: c.capabilities?.order_types ?? null,
+      attaches_stops: Boolean(c.capabilities?.attaches_stops),
+    }));
+}
+
 // -------------------------------------------------------------------------
 // Surface the gate + enums so the frontend can decide what to render.
 // -------------------------------------------------------------------------
 router.get('/config', async (_req: Request, res: Response) => {
   try {
-    const ib = await axios.get(`${BROKER_SERVICE_URL}/orders/config`, { timeout: 5000 });
+    const [ib, status] = await Promise.all([
+      axios.get(`${BROKER_SERVICE_URL}/orders/config`, { timeout: 5000 }),
+      // What each connection supports (E-19). The ticket works without it.
+      axios.get(`${BROKER_SERVICE_URL}/connections/status`, { timeout: 5000 }).catch(() => null),
+    ]);
     res.json({
+      connections: tradingConnections(status?.data),
       live_trading_enabled: isLiveTradingEnabled() && (ib.data?.live_trading_enabled ?? false),
       backend_live_enabled: isLiveTradingEnabled(),
       ib_live_enabled: ib.data?.live_trading_enabled ?? false,

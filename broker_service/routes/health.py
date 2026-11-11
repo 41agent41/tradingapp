@@ -49,7 +49,7 @@ async def connections_status():
     """Last connectivity check per configured connection, in broker priority
     order, plus the default platform. Checks run on a timer (probes.py)."""
     import managed
-    from adapters import default_provider, list_connections
+    from adapters import connection_capabilities, default_provider, list_connections
     from connections import broker_priority, priority_from_env
     from probes import result_for
 
@@ -73,6 +73,8 @@ async def connections_status():
                 "is_default": c.is_default,
                 "source": c.source,
                 "check": result_for(c.label),
+                # What the app may offer on this connection (capabilities.py).
+                "capabilities": connection_capabilities(c),
             }
             for c in connections
         ],

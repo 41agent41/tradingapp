@@ -39,6 +39,14 @@ class ExampleAdapter:
     # True when a stop can be attached to the entry order itself (the stop
     # then cannot be missed); False makes the app place the stop after the fill.
     attaches_stops = False
+    # What the connection reports it supports (capabilities.py), so the app
+    # offers only that. Build both from your own mapping tables.
+    timeframes = ("1min", "5min", "15min", "30min", "1hour", "4hour", "1day")
+    order_tifs = {
+        "MKT": ("DAY", "GTC", "IOC", "FOK"),
+        "LMT": ("DAY", "GTC"),
+        "STP": ("DAY", "GTC"),
+    }
 
     def __init__(self, api_token: str, account_id: str, *, environment: str = "practice") -> None:
         self._base = (

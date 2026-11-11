@@ -118,4 +118,99 @@ describe('OrderTicket', () => {
 
     await waitFor(() => expect(screen.getByText(/gate is off/)).toBeInTheDocument());
   });
+
+  describe('connections that say what they support (E-19)', () => {
+    const CONNECTIONS = [
+      {
+        label: 'oanda:default',
+        platform: 'oanda',
+        account: 'default',
+        account_mode: 'paper',
+        is_default: true,
+        order_types: {
+          MKT: ['DAY', 'GTC', 'IOC', 'FOK'],
+          LMT: ['DAY', 'GTC', 'IOC', 'FOK'],
+          STP: ['DAY', 'GTC', 'IOC', 'FOK'],
+          STP_LMT: ['DAY', 'GTC', 'IOC', 'FOK'],
+        },
+      },
+      {
+        label: 'ig:demo',
+        platform: 'ig',
+        account: 'demo',
+        account_mode: 'paper',
+        is_default: false,
+        order_types: {
+          MKT: ['DAY', 'GTC', 'IOC', 'FOK'],
+          LMT: ['DAY', 'GTC'],
+          STP: ['DAY', 'GTC'],
+        },
+      },
+    ];
+    const options = (label: string) =>
+      Array.from((screen.getByLabelText(label) as HTMLSelectElement).options).map((o) => o.value);
+
+    it('offers only the order types and times in force the chosen connection takes', async () => {
+      const posted: any[] = [];
+      global.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          posted.push(JSON.parse(String(init.body)));
+          return new Response(JSON.stringify({ audit_id: 3, order_id: 9 }), { status: 201 });
+        }
+        return new Response(JSON.stringify({ ...CONFIG_BODY, connections: CONNECTIONS }));
+      }) as any;
+
+      render(<OrderTicket />);
+      await waitFor(() => expect(screen.getByLabelText('Connection')).toBeInTheDocument());
+      // The default connection takes everything.
+      expect(options('Order type')).toEqual(['MKT', 'LMT', 'STP', 'STP_LMT']);
+      fireEvent.change(screen.getByLabelText('Order type'), { target: { value: 'STP_LMT' } });
+      fireEvent.change(screen.getByLabelText('Time in force'), { target: { value: 'FOK' } });
+
+      fireEvent.change(screen.getByLabelText('Connection'), { target: { value: 'ig:demo' } });
+      // IG has no stop-limit order, so the choice falls back to the first.
+      expect(options('Order type')).toEqual(['MKT', 'LMT', 'STP']);
+      expect((screen.getByLabelText('Order type') as HTMLSelectElement).value).toBe('MKT');
+      fireEvent.change(screen.getByLabelText('Order type'), { target: { value: 'LMT' } });
+      expect(options('Time in force')).toEqual(['DAY', 'GTC']);
+      expect((screen.getByLabelText('Time in force') as HTMLSelectElement).value).toBe('DAY');
+
+      fireEvent.change(screen.getByPlaceholderText('MSFT'), { target: { value: 'eurusd' } });
+      fireEvent.change(screen.getByLabelText('Limit price'), { target: { value: '1.1' } });
+      fireEvent.click(screen.getByRole('button', { name: /Place paper order/i }));
+      await waitFor(() => expect(posted).toHaveLength(1));
+      expect(posted[0]).toMatchObject({
+        symbol: 'EURUSD',
+        broker: 'ig',
+        broker_account: 'demo',
+        order_type: 'LMT',
+        tif: 'DAY',
+      });
+    });
+
+    it('names no broker when the default connection is left chosen', async () => {
+      const posted: any[] = [];
+      global.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          posted.push(JSON.parse(String(init.body)));
+          return new Response(JSON.stringify({ audit_id: 4 }), { status: 201 });
+        }
+        return new Response(JSON.stringify({ ...CONFIG_BODY, connections: CONNECTIONS }));
+      }) as any;
+      render(<OrderTicket />);
+      await waitFor(() => expect(screen.getByLabelText('Connection')).toBeInTheDocument());
+      fireEvent.change(screen.getByPlaceholderText('MSFT'), { target: { value: 'EURUSD' } });
+      fireEvent.click(screen.getByRole('button', { name: /Place paper order/i }));
+      await waitFor(() => expect(posted).toHaveLength(1));
+      expect(posted[0].broker).toBeUndefined();
+      expect(posted[0].broker_account).toBeUndefined();
+    });
+
+    it('shows no connection choice when the backend lists none', async () => {
+      mockSequence({ body: CONFIG_BODY });
+      render(<OrderTicket />);
+      await waitFor(() => expect(screen.getByText('Place paper order')).toBeInTheDocument());
+      expect(screen.queryByLabelText('Connection')).not.toBeInTheDocument();
+    });
+  });
 });

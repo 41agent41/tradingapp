@@ -340,6 +340,7 @@ is the one it returns.
 | `stream_prices` (optional) | Live prices; without it `tick` is polled every `STREAM_POLL_SECONDS` |
 | `stream_fills` or `stream_trade_events` (optional) | Fills as they happen (`fill_streaming.py`): the first reports each fill, the second only that something traded, and the backend then polls that connection at once |
 | `bar_basis` (attribute) | `mid`, `bid` or `last`: the price the broker builds its own bars from, so the live recorder builds its bars the same way |
+| `timeframes`, `order_tifs`, `spread_bars`, `attaches_stops` (attributes) | What the connection reports it supports (`capabilities.py`), so the app offers only that: the bar timeframes its history serves, each order type with the times in force it accepts, whether its bars carry the spread, and whether a stop rides on the entry. Build the first two from the adapter's own mapping tables so they cannot drift. Without them the standard set is reported |
 | `place_order`, `cancel_order`, `modify_order` | Orders and the strategy runner |
 | `positions`, `account_summary`, `open_orders`, `executions` | Account pages, reconciliation, `pct_equity` sizing |
 | `instrument_spec` | Converting a size into the venue's units |

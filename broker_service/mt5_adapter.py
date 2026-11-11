@@ -150,6 +150,15 @@ class MT5Adapter:
     name = "mt5"
     # The sidecar attaches SL/TP to the entry atomically (E-2).
     attaches_stops = True
+    # What the connection reports it supports (capabilities.py). The sidecar
+    # rests a pending order for the day or until cancelled.
+    timeframes = tuple(_TIMEFRAME_TO_MT5)
+    order_tifs = {
+        "MKT": ("DAY", "GTC", "IOC", "FOK"),
+        "LMT": ("DAY", "GTC"),
+        "STP": ("DAY", "GTC"),
+        "STP_LMT": ("DAY", "GTC"),
+    }
 
     def __init__(
         self,

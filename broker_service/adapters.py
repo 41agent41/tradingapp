@@ -475,6 +475,14 @@ def list_connections() -> List[Connection]:
     return list(_connections.values())
 
 
+def connection_capabilities(conn: Connection) -> Dict[str, Any]:
+    """What ``conn`` supports, from the adapters registered for it (E-19)."""
+    from capabilities import capabilities
+
+    _bootstrap()
+    return capabilities(_market_data.get(conn.key), _broker.get(conn.key))
+
+
 def currency_consistency() -> Dict[str, Any]:
     """Whether every connection reports the one denomination the fleet expects.
 
@@ -581,6 +589,8 @@ def provider_health() -> Dict[str, Any]:
             "source": conn.source,
             # Last connectivity check (probes.py); None until the first one.
             "check": probe_result(conn.label),
+            # What the app may offer on this connection (capabilities.py).
+            "capabilities": connection_capabilities(conn),
         }
         for conn in _connections.values()
     }

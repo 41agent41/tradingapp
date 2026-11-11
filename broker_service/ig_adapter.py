@@ -169,6 +169,15 @@ class IGAdapter:
     name = "ig"
     # stopLevel / limitLevel ride on the entry, in the deal itself.
     attaches_stops = True
+    # What the connection reports it supports (capabilities.py). IG has no
+    # stop-limit order, and a working order rests for the day or until
+    # cancelled.
+    timeframes = tuple(_TIMEFRAME_TO_RESOLUTION)
+    order_tifs = {
+        "MKT": ("DAY", "GTC", "IOC", "FOK"),
+        "LMT": ("DAY", "GTC"),
+        "STP": ("DAY", "GTC"),
+    }
 
     def __init__(
         self,

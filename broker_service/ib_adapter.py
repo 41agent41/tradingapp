@@ -27,6 +27,10 @@ class IBAdapter:
     bar_basis = "last"
 
     name = "ib"
+    # What the connection reports it supports (capabilities.py). Prices
+    # stream through the IB socket (streaming.py), not `stream_prices`.
+    timeframes = ("tick", "1min", "5min", "15min", "30min", "1hour", "4hour", "8hour", "1day")
+    live_prices = "stream"
 
     # -- BrokerAdapter ----------------------------------------------------- #
     def place_order(self, request: Any) -> Dict[str, Any]:
