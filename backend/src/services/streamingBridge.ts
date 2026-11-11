@@ -145,7 +145,7 @@ class HttpIBClient implements IBClientLike {
   }
 }
 
-interface RedisLike {
+export interface RedisLike {
   connect(): Promise<unknown>;
   quit(): Promise<unknown>;
   pSubscribe(
@@ -494,7 +494,7 @@ export class StreamingBridge {
   }
 }
 
-function defaultRedisFactory(): RedisLike {
+export function defaultRedisFactory(): RedisLike {
   const url = REDIS_PASSWORD
     ? `redis://default:${encodeURIComponent(REDIS_PASSWORD)}@${REDIS_HOST}:${REDIS_PORT}`
     : `redis://${REDIS_HOST}:${REDIS_PORT}`;

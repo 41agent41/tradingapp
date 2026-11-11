@@ -637,6 +637,11 @@ class StreamingManager:
             with self._redis_lock:
                 self._redis = None
 
+    def publish_fill(self, platform: str, account: str, fill: dict[str, Any]) -> None:
+        """Publish one fill on ``executions:fill:<platform>:<account>`` for the
+        backend to store (see fill_streaming.py)."""
+        self._publish(f"executions:fill:{platform}:{account}", fill)
+
     def _publish_status(self, payload: dict[str, Any]) -> None:
         payload.setdefault("timestamp", self._clock())
         self._publish(STATUS_CHANNEL, payload)

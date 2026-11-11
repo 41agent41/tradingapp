@@ -224,6 +224,15 @@ def get_executions_sync(days: int = 1):
         raise Exception(f"Failed to get executions: {str(e)}")
 
 
+@router.get("/account/executions/stream/status")
+async def get_fill_stream_status():
+    """Which connections are streaming fills, and how each stream is doing
+    (see fill_streaming.py)."""
+    from fill_streaming import fill_streamer
+
+    return fill_streamer.status()
+
+
 @router.get("/account/executions", response_model=list[Execution])
 async def get_account_executions(
     broker: str = "",

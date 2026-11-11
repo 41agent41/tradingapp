@@ -342,7 +342,11 @@ describe('BrokerSync', () => {
       process.env.ORDER_MFA_SECRET = 'JBSWY3DPEHPK3PXP';
       process.env.DEFAULT_BROKER = 'oanda';
       const live = await buildPayload(store);
-      expect(live.settings).toEqual({ LIVE_TRADING_ENABLED: 'true', DEFAULT_BROKER: 'oanda' });
+      expect(live.settings).toEqual({
+        LIVE_TRADING_ENABLED: 'true',
+        FILL_STREAM_ENABLED: 'false',
+        DEFAULT_BROKER: 'oanda',
+      });
 
       process.env.LIVE_TRADING_ENABLED = 'false';
       const off = await buildPayload(store);

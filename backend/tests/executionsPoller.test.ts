@@ -306,3 +306,46 @@ describe('connectionsToPoll — venue discovery', () => {
     expect(connectionsToPoll([], [])).toEqual([{ broker: 'oanda', brokerAccount: 'default' }]);
   });
 });
+
+describe('ExecutionsPoller — fills pushed by the broker', () => {
+  const oanda = { broker: 'oanda', brokerAccount: '001' };
+
+  it('stores a pushed fill on the connection it came from and links it', async () => {
+    const deps = makeDeps();
+    const p = new ExecutionsPoller({ deps, enabled: true });
+
+    const added = await p.ingest(oanda, [remote({ exec_id: '12', broker: 'oanda', audit_id: 9 })]);
+
+    expect(added).toBe(1);
+    expect(deps.fetchExecutions).not.toHaveBeenCalled();
+    expect(deps.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        broker: 'oanda',
+        broker_account: '001',
+        exec_id: '12',
+        order_audit_id_hint: 9,
+      })
+    );
+    expect(deps.relinkOrphans).toHaveBeenCalledTimes(1);
+    expect(p.status().totals.inserted).toBe(1);
+  });
+
+  it('does not run the link pass for a fill it already had', async () => {
+    const deps = makeDeps({ upsert: jest.fn().mockResolvedValue({ inserted: false }) });
+    const p = new ExecutionsPoller({ deps, enabled: true });
+
+    expect(await p.ingest(oanda, [remote()])).toBe(0);
+    expect(deps.relinkOrphans).not.toHaveBeenCalled();
+  });
+
+  it('never throws', async () => {
+    const deps = makeDeps({
+      upsert: jest.fn().mockRejectedValue(new Error('db down')),
+      relinkOrphans: jest.fn().mockRejectedValue(new Error('db down')),
+    });
+    const p = new ExecutionsPoller({ deps, enabled: true });
+
+    await expect(p.ingest(oanda, [remote()])).resolves.toBe(0);
+    expect(p.status().last_error).toBe('db down');
+  });
+});

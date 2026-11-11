@@ -664,7 +664,7 @@ export const SETTINGS: readonly SettingDef[] = [
     default: 'false',
     apply: 'reload',
     editable: true,
-    help: "Pulls each venue's fills into the database. Needed for P&L and max_daily_loss.",
+    help: "Pulls each venue's fills into the database. Needed for P&L and max_daily_loss. OANDA fills also arrive as they happen.",
   },
   {
     key: 'EXECUTIONS_SYNC_INTERVAL_SECONDS',

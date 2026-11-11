@@ -22,6 +22,7 @@ import axios from 'axios';
 import { createHmac, randomBytes } from 'crypto';
 
 import { configService } from '../config/configService.js';
+import { readBool } from '../config/read.js';
 import type { BrokerConnectionStore } from './brokerConnections.js';
 import { logger } from './logger.js';
 import { isLiveTradingEnabled } from './orderTypes.js';
@@ -45,6 +46,8 @@ export const BROKER_SETTING_KEYS = [
   'BROKER_PROBE_INTERVAL_SECONDS',
   'STREAM_POLL_SECONDS',
   'TICK_STREAM_MAXLEN',
+  // Fills are streamed while executions sync is on.
+  'EXECUTIONS_SYNC_ENABLED',
   // Live trading is only in effect with the trader role and MFA set up.
   'TRADING_TOKENS',
   'ORDER_MFA_SECRET',
@@ -54,6 +57,10 @@ export function brokerSettings(): Record<string, string> {
   const out: Record<string, string> = {
     // The backend's own decision, safeguards included, so the two never differ.
     LIVE_TRADING_ENABLED: isLiveTradingEnabled() ? 'true' : 'false',
+    // Brokers that can stream their fills do so while executions sync is on.
+    FILL_STREAM_ENABLED: readBool(configService.asEnv(), 'EXECUTIONS_SYNC_ENABLED', false)
+      ? 'true'
+      : 'false',
   };
   for (const key of [
     'DEFAULT_BROKER',

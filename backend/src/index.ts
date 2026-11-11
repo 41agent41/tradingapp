@@ -32,6 +32,7 @@ import {
   createExecutionsPoller,
   executionsSettings,
 } from './services/executionsPoller.js';
+import { FillStream } from './services/fillStream.js';
 import {
   HEARTBEAT_SETTING_KEYS,
   Heartbeat,
@@ -236,7 +237,7 @@ app.get('/api/health', async (_req, res) => {
       backfill: backfillScheduler.status(),
       recorder: recorderHealth(),
       systematic: strategyRunner.status(),
-      executions: executionsPoller.status(),
+      executions: { ...executionsPoller.status(), stream: fillStream.status() },
       heartbeat: heartbeat.status(),
     },
   });
@@ -360,6 +361,15 @@ const strategyRunner = createStrategyRunner({
 // strategy's `max_daily_loss` cap enforceable. Opt-in via
 // EXECUTIONS_SYNC_ENABLED — see services/executionsPoller.ts.
 const executionsPoller = createExecutionsPoller();
+// Fills a broker streams (OANDA) are stored as they arrive, between polls.
+const fillStream = new FillStream({
+  ingest: (connection, rows) => executionsPoller.ingest(connection, rows),
+});
+/** The fill listener runs exactly while executions sync does. */
+function syncFillStream(): void {
+  if (executionsSettings().enabled) void fillStream.start();
+  else void fillStream.stop();
+}
 
 // Dead-man's switch: pings a monitor off the host while the app can trade, so
 // silence pages you when it cannot. Opt-in via HEARTBEAT_URL — see
@@ -522,6 +532,7 @@ async function shutdown(signal: string) {
   }
   try {
     executionsPoller.stop();
+    void fillStream.stop();
   } catch (err) {
     console.warn('Error stopping executions poller:', err);
   }
@@ -631,7 +642,10 @@ function startServices(): void {
     });
     configService.subscribe(EXECUTIONS_SETTING_KEYS, () => {
       executionsPoller.reconfigure(executionsSettings());
-      if (systematicAllowed) executionsPoller.start();
+      if (systematicAllowed) {
+        executionsPoller.start();
+        syncFillStream();
+      }
     });
     // The broker service enforces the live gate itself; send it the stored
     // values now and on every change, not only on the next background check.
@@ -678,6 +692,7 @@ function startServices(): void {
     strategyRunner.start();
     executionsPoller.reconfigure(executionsSettings());
     executionsPoller.start();
+    syncFillStream();
   })();
 }
 

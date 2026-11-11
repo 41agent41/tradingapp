@@ -462,6 +462,42 @@ class OANDAAdapter:
                         symbol, _opt_float(bids[0].get("price")), _opt_float(asks[0].get("price"))
                     )
 
+    def stream_fills(
+        self,
+        on_fill: Callable[[Dict[str, Any]], None],
+        should_stop: Callable[[], bool],
+    ) -> None:
+        """Stream this account's fills from OANDA's transaction stream, calling
+        ``on_fill`` with each in the shape :meth:`executions` returns.
+
+        Blocks until ``should_stop()`` is true (checked on every message;
+        OANDA sends a heartbeat every 5 s) or the stream ends. Raises on a
+        connection or HTTP error; the caller retries. Fills made while the
+        stream was down are not replayed here: the executions poll reads an
+        overlapping window and picks them up.
+        """
+        url = f"{self._stream_base}{self._account_path('/transactions/stream')}"
+        timeout = httpx.Timeout(self._timeout, read=30.0)
+        with httpx.Client(timeout=timeout) as client:
+            with client.stream("GET", url, headers=self._headers) as resp:
+                if resp.status_code >= 400:
+                    resp.read()
+                    raise HTTPException(
+                        502, f"OANDA stream error {resp.status_code}: {resp.text[:200]}"
+                    )
+                for line in resp.iter_lines():
+                    if should_stop():
+                        return
+                    if not line:
+                        continue
+                    try:
+                        msg = _json.loads(line)
+                    except ValueError:
+                        continue
+                    fill = _fill_from_transaction(msg)
+                    if fill is not None:
+                        on_fill(fill)
+
     def tick(self, symbol: str, account_mode: str = "paper") -> Dict[str, Any]:
         quote = self.realtime_quote(symbol, account_mode)
         return {
@@ -883,31 +919,37 @@ class OANDAAdapter:
             payload = self._get_absolute(str(page_url))
             transactions = payload.get("transactions", []) if isinstance(payload, dict) else []
             for row in transactions if isinstance(transactions, list) else []:
-                if not isinstance(row, dict) or row.get("type") != "ORDER_FILL":
-                    continue
-                units = _opt_float(row.get("units"))
-                price = _opt_float(row.get("price"))
-                exec_id = str(row.get("id") or "")
-                if not exec_id or units is None or units == 0 or price is None:
-                    continue
-                fills.append(
-                    {
-                        "exec_id": exec_id,
-                        "order_id": str(row.get("orderID")) if row.get("orderID") else None,
-                        "audit_id": audit_id_from(row.get("clientOrderID")),
-                        "symbol": _from_instrument(str(row.get("instrument") or "")),
-                        "side": "BUY" if units > 0 else "SELL",
-                        "quantity": abs(units),
-                        "price": price,
-                        "commission": _opt_float(row.get("commission")),
-                        "realized_pnl": _opt_float(row.get("pl")),
-                        "executed_at": _iso_from(row.get("time")),
-                        "account": str(row.get("accountID") or "") or None,
-                        "currency": str(row.get("accountBalanceCurrency") or "USD"),
-                        "broker": "oanda",
-                    }
-                )
+                fill = _fill_from_transaction(row)
+                if fill is not None:
+                    fills.append(fill)
         return fills
+
+
+def _fill_from_transaction(row: Any) -> Optional[Dict[str, Any]]:
+    """An ``ORDER_FILL`` transaction as the app's ``models.Execution``; None
+    for any other transaction (or a fill with no id, units or price)."""
+    if not isinstance(row, dict) or row.get("type") != "ORDER_FILL":
+        return None
+    units = _opt_float(row.get("units"))
+    price = _opt_float(row.get("price"))
+    exec_id = str(row.get("id") or "")
+    if not exec_id or units is None or units == 0 or price is None:
+        return None
+    return {
+        "exec_id": exec_id,
+        "order_id": str(row.get("orderID")) if row.get("orderID") else None,
+        "audit_id": audit_id_from(row.get("clientOrderID")),
+        "symbol": _from_instrument(str(row.get("instrument") or "")),
+        "side": "BUY" if units > 0 else "SELL",
+        "quantity": abs(units),
+        "price": price,
+        "commission": _opt_float(row.get("commission")),
+        "realized_pnl": _opt_float(row.get("pl")),
+        "executed_at": _iso_from(row.get("time")),
+        "account": str(row.get("accountID") or "") or None,
+        "currency": str(row.get("accountBalanceCurrency") or "USD"),
+        "broker": "oanda",
+    }
 
 
 def _entry_prices(request: Any, *, required: bool) -> Dict[str, str]:
