@@ -11,6 +11,9 @@ import { apiFetch } from '../lib/api';
 import { useRealtimeStream, TickPayload } from '../lib/useRealtimeStream';
 import { EMPTY_LIVE, LiveState, applyTick, timeframeSeconds } from '../lib/liveCandles';
 import ChartSkeleton from './ChartSkeleton';
+import { CHART_ZONES, chartTimeZone, isChartZone, type ChartZone } from '../lib/chartTime';
+import { olderRange, prependOlder } from '../lib/olderBars';
+import { usePersistentState } from '../lib/usePersistentState';
 
 /** The instrument and the connection it is charted from. */
 export interface LiveInstrument {
@@ -120,6 +123,61 @@ const INDICATOR_FIELDS = [
   'volume_sma',
 ] as const;
 
+/** The API's bars as chart candles, oldest first; unusable rows dropped. */
+function parseBars(raw: any): CandlestickData[] {
+  // Data conversion with indicators and proper timestamp handling
+  const formattedData: CandlestickData[] = raw
+    .map((bar: any) => {
+      // Validate and convert timestamp to TradingView format (Unix timestamp in seconds)
+      let timestamp = bar.timestamp;
+
+      // Validate timestamp is a valid number
+      if (typeof timestamp !== 'number' || isNaN(timestamp)) {
+        console.warn('Invalid timestamp:', timestamp, 'for bar:', bar);
+        return null;
+      }
+
+      // Convert to seconds if in milliseconds
+      if (timestamp > 1000000000000) {
+        timestamp = Math.floor(timestamp / 1000);
+      }
+
+      // Validate timestamp is reasonable (not in the future or too far in the past)
+      const now = Math.floor(Date.now() / 1000);
+      if (timestamp > now + 86400 || timestamp < now - 31536000 * 10) {
+        // Within 1 day future or 10 years past
+        console.warn('Timestamp out of reasonable range:', timestamp, 'for bar:', bar);
+        return null;
+      }
+
+      const candlestick: CandlestickData = {
+        time: timestamp as Time,
+        open: Number(bar.open),
+        high: Number(bar.high),
+        low: Number(bar.low),
+        close: Number(bar.close),
+        volume: Number(bar.volume),
+      };
+
+      // Add indicator values if present
+      INDICATOR_FIELDS.forEach((field) => {
+        if (bar[field] !== undefined && bar[field] !== null && !isNaN(bar[field])) {
+          (candlestick as any)[field] = Number(bar[field]);
+        }
+      });
+
+      return candlestick;
+    })
+    .filter(
+      (bar: CandlestickData | null) =>
+        bar !== null && !isNaN(bar.open) && !isNaN(bar.high) && !isNaN(bar.low) && !isNaN(bar.close)
+    );
+
+  // Sort by timestamp in ascending order (oldest first) - required by TradingView
+  formattedData.sort((a, b) => (a.time as number) - (b.time as number));
+  return formattedData;
+}
+
 /**
  * A live chart for any symbol on any connection (E-21): history from the
  * database or the broker, then the tick stream moving the last candle (E-20).
@@ -195,6 +253,16 @@ export default function LiveChart({
     return [];
   });
 
+  // Older bars, loaded when the chart is scrolled back to its first (E-23).
+  // The ref guards against a second request while one runs; `generation`
+  // drops an answer that arrives after the chart was loaded afresh.
+  const olderRef = useRef({ loading: false, exhausted: false });
+  const generationRef = useRef(0);
+  const [older, setOlder] = useState<'idle' | 'loading' | 'exhausted'>('idle');
+
+  // The zone times are shown in, kept across visits.
+  const [zone, setZone] = usePersistentState('chart-time-zone', 'utc', isChartZone);
+
   // Keep the latest fetch inputs available to the imperative refresh button
   // without threading them through as arguments.
   const fetchRef = useRef<() => void>(() => {});
@@ -230,6 +298,37 @@ export default function LiveChart({
     }
   };
 
+  // The history request for the chart's instrument: its period or custom
+  // range, or `range` when older bars are being loaded.
+  const historyUrl = (range?: { start_date: string; end_date: string }) => {
+    // Simple query building (apiFetch resolves it on the page origin)
+    const params = new URLSearchParams({
+      symbol,
+      timeframe: currentTimeframe,
+      account_mode: accountMode,
+      secType,
+    });
+    if (source) params.set('source', source);
+    if (account) params.set('account', account);
+    if (exchange) params.set('exchange', exchange);
+    if (currency) params.set('currency', currency);
+    let url = `/api/market-data/history?${params.toString()}`;
+
+    if (range) {
+      url += `&start_date=${range.start_date}&end_date=${range.end_date}`;
+    } else if (useCustomDateRange && startDate && endDate) {
+      url += `&start_date=${startDate}&end_date=${endDate}`;
+    } else {
+      url += `&period=${currentPeriod}`;
+    }
+
+    // Add indicators if selected
+    if (selectedIndicators.length > 0) {
+      url += `&indicators=${selectedIndicators.join(',')}&include_indicators=true`;
+    }
+    return url;
+  };
+
   // Simplified historical data fetch
   const fetchHistoricalData = async () => {
     if (!dataQueryEnabled) {
@@ -239,31 +338,10 @@ export default function LiveChart({
 
     setIsLoadingHistorical(true);
     setError(null);
+    generationRef.current += 1;
 
     try {
-      // Simple query building (apiFetch resolves it on the page origin)
-      const params = new URLSearchParams({
-        symbol,
-        timeframe: currentTimeframe,
-        account_mode: accountMode,
-        secType,
-      });
-      if (source) params.set('source', source);
-      if (account) params.set('account', account);
-      if (exchange) params.set('exchange', exchange);
-      if (currency) params.set('currency', currency);
-      let url = `/api/market-data/history?${params.toString()}`;
-
-      if (useCustomDateRange && startDate && endDate) {
-        url += `&start_date=${startDate}&end_date=${endDate}`;
-      } else {
-        url += `&period=${currentPeriod}`;
-      }
-
-      // Add indicators if selected
-      if (selectedIndicators.length > 0) {
-        url += `&indicators=${selectedIndicators.join(',')}&include_indicators=true`;
-      }
+      const url = historyUrl();
 
       const response = await apiFetch(url, {
         headers: { 'X-Data-Query-Enabled': 'true' },
@@ -281,61 +359,10 @@ export default function LiveChart({
         throw new Error('No bars data received');
       }
 
-      // Data conversion with indicators and proper timestamp handling
-      const formattedData: CandlestickData[] = data.bars
-        .map((bar: any) => {
-          // Validate and convert timestamp to TradingView format (Unix timestamp in seconds)
-          let timestamp = bar.timestamp;
+      const formattedData = parseBars(data.bars);
 
-          // Validate timestamp is a valid number
-          if (typeof timestamp !== 'number' || isNaN(timestamp)) {
-            console.warn('Invalid timestamp:', timestamp, 'for bar:', bar);
-            return null;
-          }
-
-          // Convert to seconds if in milliseconds
-          if (timestamp > 1000000000000) {
-            timestamp = Math.floor(timestamp / 1000);
-          }
-
-          // Validate timestamp is reasonable (not in the future or too far in the past)
-          const now = Math.floor(Date.now() / 1000);
-          if (timestamp > now + 86400 || timestamp < now - 31536000 * 10) {
-            // Within 1 day future or 10 years past
-            console.warn('Timestamp out of reasonable range:', timestamp, 'for bar:', bar);
-            return null;
-          }
-
-          const candlestick: CandlestickData = {
-            time: timestamp as Time,
-            open: Number(bar.open),
-            high: Number(bar.high),
-            low: Number(bar.low),
-            close: Number(bar.close),
-            volume: Number(bar.volume),
-          };
-
-          // Add indicator values if present
-          INDICATOR_FIELDS.forEach((field) => {
-            if (bar[field] !== undefined && bar[field] !== null && !isNaN(bar[field])) {
-              (candlestick as any)[field] = Number(bar[field]);
-            }
-          });
-
-          return candlestick;
-        })
-        .filter(
-          (bar: CandlestickData | null) =>
-            bar !== null &&
-            !isNaN(bar.open) &&
-            !isNaN(bar.high) &&
-            !isNaN(bar.low) &&
-            !isNaN(bar.close)
-        );
-
-      // Sort by timestamp in ascending order (oldest first) - required by TradingView
-      formattedData.sort((a, b) => (a.time as number) - (b.time as number));
-
+      olderRef.current = { loading: false, exhausted: false };
+      setOlder('idle');
       setChartData(formattedData);
       setLastHistoricalUpdate(new Date());
     } catch (err) {
@@ -347,6 +374,46 @@ export default function LiveChart({
   };
 
   fetchRef.current = fetchHistoricalData;
+
+  // Load the bars before the first one shown and put them in front. A range
+  // that returns nothing older means the history has run out.
+  const loadOlder = async () => {
+    const state = olderRef.current;
+    if (state.loading || state.exhausted || !dataQueryEnabled || chartData.length === 0) return;
+    if (currentTimeframe === 'tick') return;
+    const generation = generationRef.current;
+    state.loading = true;
+    setOlder('loading');
+    let exhausted = false;
+    try {
+      const earliest = chartData[0].time as number;
+      const latest = chartData[chartData.length - 1].time as number;
+      const response = await apiFetch(historyUrl(olderRange(earliest, latest)), {
+        headers: { 'X-Data-Query-Enabled': 'true' },
+      });
+      if (!response.ok) throw new Error(`API Error: ${response.status}`);
+      const data = await response.json();
+      const fetched = Array.isArray(data.bars) ? parseBars(data.bars) : [];
+      if (generation !== generationRef.current) return;
+      exhausted = !fetched.some((bar) => (bar.time as number) < earliest);
+      if (!exhausted) setChartData((bars) => prependOlder(bars, fetched));
+    } catch (err) {
+      // The chart already shows bars; a failed older load must not replace
+      // them with an error. Stop asking until the chart is loaded afresh.
+      console.error('Older bars fetch error:', err);
+      exhausted = true;
+    } finally {
+      if (generation === generationRef.current) {
+        olderRef.current = { loading: false, exhausted };
+        setOlder(exhausted ? 'exhausted' : 'idle');
+      }
+    }
+  };
+  const loadOlderRef = useRef(loadOlder);
+  useEffect(() => {
+    loadOlderRef.current = loadOlder;
+  });
+  const onReachStart = useMemo(() => () => void loadOlderRef.current(), []);
 
   // One-shot REST fetch used to seed the price display before the
   // first streaming tick arrives, and as a manual-refresh fallback.
@@ -662,6 +729,30 @@ export default function LiveChart({
               </>
             )}
 
+            <div>
+              <label
+                htmlFor="chart-time-zone"
+                className="text-xs sm:text-sm font-medium text-gray-700 mr-2"
+              >
+                Times:
+              </label>
+              <select
+                id="chart-time-zone"
+                value={zone}
+                onChange={(e) => setZone(e.target.value)}
+                className="border border-gray-300 rounded px-2 sm:px-3 py-1 text-xs sm:text-sm"
+                title="Daily bars are always dated in UTC"
+              >
+                {CHART_ZONES.map((z) => (
+                  <option key={z.value} value={z.value}>
+                    {z.value === 'exchange'
+                      ? `Exchange (${chartTimeZone('exchange', { secType, exchange, currency }, '')})`
+                      : z.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <button
               onClick={() => fetchRef.current()}
               disabled={isLoadingHistorical || !dataQueryEnabled}
@@ -772,7 +863,18 @@ export default function LiveChart({
           <ChartSkeleton height={500} label={`Loading ${symbol} history…`} />
         ) : (
           <div className="border border-gray-200 rounded">
-            <Chart data={bars} indicators={indicators} height={500} liveBar={live.bar} />
+            <Chart
+              data={bars}
+              indicators={indicators}
+              height={500}
+              liveBar={live.bar}
+              onReachStart={onReachStart}
+              timeZone={chartTimeZone(
+                zone as ChartZone,
+                { secType, exchange, currency },
+                currentTimeframe
+              )}
+            />
           </div>
         )}
 
@@ -780,6 +882,8 @@ export default function LiveChart({
           <div className="mt-2 text-xs text-gray-500 space-y-1">
             <div>
               Data points: {chartData.length} | Timeframe: {currentTimeframe}
+              {older === 'loading' && ' | Loading older bars…'}
+              {older === 'exhausted' && ' | No older bars'}
             </div>
             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4">
               <span className="flex items-center gap-1">

@@ -18,6 +18,7 @@ import {
   createSeriesMarkers,
 } from 'lightweight-charts';
 
+import { formatChartTime, formatTick } from '../lib/chartTime';
 import { useChartResize } from '../lib/useChartResize';
 
 export interface ChartBar {
@@ -77,7 +78,21 @@ export interface ChartProps {
    * when it is older than the last bar of `data`.
    */
   liveBar?: ChartBar | null;
+  /**
+   * Called when the chart is scrolled or zoomed back to its first bars, so
+   * the caller can load older ones (E-23). When older bars are then put in
+   * front of `data`, the bars on screen stay where they are.
+   */
+  onReachStart?: () => void;
+  /**
+   * The zone the time axis and crosshair are shown in: an IANA name, or
+   * `local` for the browser's (lib/chartTime.ts). Defaults to UTC.
+   */
+  timeZone?: string;
 }
+
+/** Bars left of the screen's edge at which older ones are asked for. */
+const START_MARGIN_BARS = 10;
 
 const DEFAULT_HEIGHT = 400;
 /** Relative height of the price pane against each oscillator pane. */
@@ -117,6 +132,16 @@ function sortAndDedupe<T extends { time: Time }>(rows: T[]): T[] {
       seen.add(r.time);
       return true;
     });
+}
+
+/**
+ * How many of `times` (ascending) come before `previousFirst`, when
+ * `previousFirst` is still among them: the bars newly put in front. Zero when
+ * the data was replaced, not extended.
+ */
+function addedInFront(times: number[], previousFirst: number): number {
+  const index = times.indexOf(previousFirst);
+  return index > 0 ? index : 0;
 }
 
 /**
@@ -164,6 +189,8 @@ export default function Chart({
   height = DEFAULT_HEIGHT,
   readOnly = false,
   liveBar = null,
+  onReachStart,
+  timeZone = 'UTC',
 }: ChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -174,6 +201,12 @@ export default function Chart({
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   /** Time of the last bar drawn, so a stale live bar is never sent. */
   const lastTimeRef = useRef<number | null>(null);
+  /** Time of the first bar drawn, to tell when older bars were added. */
+  const firstTimeRef = useRef<number | null>(null);
+  const onReachStartRef = useRef(onReachStart);
+  useEffect(() => {
+    onReachStartRef.current = onReachStart;
+  }, [onReachStart]);
 
   // Create the chart once on mount.
   useEffect(() => {
@@ -220,6 +253,13 @@ export default function Chart({
     markersRef.current = createSeriesMarkers(candleSeriesRef.current, []);
     chartRef.current = chart;
 
+    // Ask for older bars when the left edge of the screen nears the first.
+    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (range && firstTimeRef.current !== null && range.from < START_MARGIN_BARS) {
+        onReachStartRef.current?.();
+      }
+    });
+
     return () => {
       indicatorSeriesRef.current.clear();
       layoutRef.current = '';
@@ -227,6 +267,7 @@ export default function Chart({
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
       chartRef.current = null;
+      firstTimeRef.current = null;
       chart.remove();
     };
   }, [height, showVolume, readOnly]);
@@ -239,8 +280,21 @@ export default function Chart({
     if (!candleSeriesRef.current || !data) return;
 
     const candles = sortAndDedupe(data.map(toCandle));
+    // Older bars put in front shift every bar's position; move the view by
+    // as many, so the bars on screen stay where they are.
+    const timeScale = chartRef.current?.timeScale();
+    const added =
+      firstTimeRef.current === null
+        ? 0
+        : addedInFront(
+            candles.map((c) => Number(c.time)),
+            firstTimeRef.current
+          );
+    const view = added > 0 ? timeScale?.getVisibleLogicalRange() : null;
     candleSeriesRef.current.setData(candles);
     lastTimeRef.current = candles.length ? Number(candles[candles.length - 1].time) : null;
+    firstTimeRef.current = candles.length ? Number(candles[0].time) : null;
+    if (view) timeScale?.setVisibleLogicalRange({ from: view.from + added, to: view.to + added });
 
     if (volumeSeriesRef.current) {
       volumeSeriesRef.current.setData(sortAndDedupe(data.map(toVolume)));
@@ -325,6 +379,26 @@ export default function Chart({
     lastTimeRef.current = liveBar.time;
   }, [liveBar]);
 
+  // Show times in the chosen zone. A chart left in UTC keeps the library's
+  // own labels; once it has shown another zone it keeps these formatters,
+  // because the library cannot be given its own back.
+  const zonedRef = useRef(false);
+  useEffect(() => {
+    if (timeZone === 'UTC' && !zonedRef.current) return;
+    zonedRef.current = true;
+    chartRef.current?.applyOptions({
+      localization: {
+        timeFormatter: (time: Time) =>
+          typeof time === 'number' ? formatChartTime(time, timeZone) : '',
+      },
+      timeScale: {
+        tickMarkFormatter: (time: Time, type: number) =>
+          typeof time === 'number' ? formatTick(time, type, timeZone) : null,
+      },
+    });
+    // The chart is made afresh when these change, and needs them again.
+  }, [timeZone, height, showVolume, readOnly]);
+
   // Reconcile candle-series markers (strategy signals).
   useEffect(() => {
     markersRef.current?.setMarkers(prepareMarkers(markers));
@@ -333,4 +407,4 @@ export default function Chart({
   return <div ref={containerRef} className="w-full" style={{ height }} aria-label="Chart" />;
 }
 
-export const __test = { sortAndDedupe, prepareMarkers, paneLayout };
+export const __test = { sortAndDedupe, prepareMarkers, paneLayout, addedInFront };
