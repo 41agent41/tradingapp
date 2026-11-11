@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 
 import Chart, { __test, type ChartBar, type ChartMarker } from '../app/components/Chart';
 
-const { sortAndDedupe, prepareMarkers, paneLayout } = __test;
+const { sortAndDedupe, prepareMarkers, paneLayout, addedInFront } = __test;
 
 describe('sortAndDedupe', () => {
   it('orders rows by time ascending', () => {
@@ -76,6 +76,18 @@ describe('paneLayout', () => {
       ['macd', 1],
       ['rsi', 2],
     ]);
+  });
+});
+
+describe('addedInFront', () => {
+  it('counts the bars newly put before the old first bar', () => {
+    expect(addedInFront([100, 200, 300, 400], 300)).toBe(2);
+  });
+
+  it('is zero when nothing was added in front, or the data was replaced', () => {
+    expect(addedInFront([300, 400, 500], 300)).toBe(0);
+    expect(addedInFront([10, 20, 30], 300)).toBe(0);
+    expect(addedInFront([], 300)).toBe(0);
   });
 });
 

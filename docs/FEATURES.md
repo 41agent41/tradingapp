@@ -109,6 +109,21 @@ Interactive Brokers only, and 8-hour bars where the broker has them (not on
 IG, Alpaca or cTrader). With "By broker priority" every timeframe is
 offered, because any broker may answer.
 
+Scrolling or zooming back to the first bar loads older ones and puts them in
+front, without moving the bars on screen. Each load asks for as long a range
+as is already shown (a week at least, a year at most), from the database
+first and then the broker, and repeats until a range returns nothing older;
+the line under the chart then says "No older bars". Indicator lines on a
+newly loaded stretch start after their own warm-up, so a line can have a
+short gap where two loads meet. **Refresh Chart** goes back to the chosen
+period.
+
+**Times** sets the zone of the time axis and the crosshair: UTC, the
+exchange's zone, or the browser's. The exchange zone comes from the named
+exchange, else New York for FX, CFDs and crypto (the FX day ends at 17:00
+there), else the stock's currency. The choice is kept in the browser. Daily
+bars are dated, not timed, so a daily chart stays in UTC.
+
 History loads from the database first, then the broker. The tick stream then
 moves the last candle (`frontend/app/lib/liveCandles.ts`): it follows trades
 (`LAST`) when the feed sends them, otherwise the mid of the latest bid and
