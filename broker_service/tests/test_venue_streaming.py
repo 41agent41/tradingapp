@@ -473,3 +473,34 @@ def test_a_failing_price_stream_falls_back_to_polling_and_still_reports_its_erro
         )
     finally:
         streamer.stop_all()
+
+
+class TradeStreamAdapter:
+    """A stream that reports a quote (no last price) and then a trade."""
+
+    bar_basis = "last"
+
+    def stream_prices(self, symbols, on_price, should_stop):
+        on_price(symbols[0], 189.5, 189.52, last=None)
+        on_price(symbols[0], None, None, last=189.51)
+        while not should_stop():
+            time.sleep(0.01)
+
+
+def test_a_stream_that_gives_its_own_last_price_is_not_given_a_midpoint():
+    published, quotes = [], []
+    streamer = _streamer(TradeStreamAdapter(), published, quotes)
+    try:
+        streamer.set_recorded({("alpaca", "paper", "AAPL")})
+        assert _wait_for(lambda: len(quotes) >= 2)
+        assert [(name, price) for _, name, price, _ in published] == [
+            ("BID", 189.5),
+            ("ASK", 189.52),
+            ("LAST", 189.51),
+        ]
+        assert [q[3] for q in quotes] == [
+            {"bid": 189.5, "ask": 189.52, "last": None, "basis": "last"},
+            {"bid": None, "ask": None, "last": 189.51, "basis": "last"},
+        ]
+    finally:
+        streamer.stop_all()

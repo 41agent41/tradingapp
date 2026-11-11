@@ -234,7 +234,7 @@ There are 47 items, sorted by priority. P1 means do next, P2 soon after, and P3 
 | E-08 | Continuous aggregates for 5m, 15m, 1h, 4h, 1d from 1-minute bars | P2 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
 | E-10 | OANDA transaction stream for instant fills (built: fills are stored as they happen while Fills sync is on; the poll stays on as the record) | P2 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
 | E-11 | IG Lightstreamer: prices, candles, trade confirms, account updates (built: live prices and trade events, which trigger an immediate fills sync; IG's own candles wait for the bar-streaming capability in E-19, and nothing in the app reads pushed account updates yet) | P2 | L | Opus 5.5 | Sonnet 5.5 (supervised) | Haiku 5.5 |
-| E-13 | Alpaca WebSockets: market data and `trade_updates` | P2 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
+| E-13 | Alpaca WebSockets: market data and `trade_updates` (built: quotes and trades on the IEX feed; a fill on `trade_updates` triggers an immediate fills sync) | P2 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | E-15 | Bid and ask bars (OANDA `price=BA` and others) and spread-aware backtests | P2 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
 | E-19 | Adapters report capabilities; app and chart offer only what each connection supports | P2 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
 | E-22 | Lightweight Charts v5 with indicator panes, exact version pinned | P2 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |

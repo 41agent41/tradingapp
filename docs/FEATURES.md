@@ -409,9 +409,12 @@ broker_service ──XADD──▶ Redis Stream marketdata:quotes ──XREAD─
   stopped backend catches up from the stream when it returns. Quotes are
   lost only if more than `TICK_STREAM_MAXLEN` of them arrive while it is
   down; the nightly reconcile fills those minutes from the broker's history.
-- **Streamed brokers.** IB, OANDA (its pricing stream) and IG (its
+- **Streamed brokers.** IB, OANDA (its pricing stream), IG (its
   Lightstreamer `MARKET` subscription, one streaming session per IG
-  connection) push each price change as it happens. If a price stream
+  connection) and Alpaca (its market data WebSocket, IEX feed: quotes for
+  bid and ask, trades for the last price) push each price change as it
+  happens. A free Alpaca account may hold one market data connection with
+  30 symbols on it. If a price stream
   fails, that connection's prices are fetched every 5 seconds instead until
   it is back, and the Live feed column shows the stream's error.
 - **Polled brokers.** A broker without a price stream is polled every
@@ -465,9 +468,10 @@ Schedulers and data) the backend closes that gap:
   instead of at the next poll. The stream adds speed only: the poll stays on
   and picks up anything the stream missed, and a fill that arrives both ways
   is stored once.
-- **Fills straight after a trade (IG).** IG's stream says that a deal was
-  confirmed or a position changed, not what the fill was in the shape the
-  app stores. So on each such event the backend polls that IG connection
+- **Fills straight after a trade (IG and Alpaca).** IG's stream says that a
+  deal was confirmed or a position changed, and Alpaca's `trade_updates`
+  stream reports a fill under a different id from the one its account
+  activities carry. So on each such event the backend polls that connection
   about 1.5 seconds later instead of waiting for the timer. The fill is read
   the one way it always is, so it cannot be stored twice under two ids.
   Other brokers are polled on the timer only.
