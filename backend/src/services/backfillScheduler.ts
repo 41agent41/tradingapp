@@ -82,6 +82,8 @@ export interface RawBar {
   volume: number;
   wap?: number;
   count?: number;
+  /** Bid-to-ask spread at the bar's close, where the broker reports it. */
+  spread?: number | null;
 }
 
 /** Bars per deep-history chunk, and chunks per entry per run. */
@@ -211,6 +213,7 @@ function defaultDeps(): BackfillDeps {
         close: b.close,
         volume: b.volume,
         wap: b.wap,
+        spread: b.spread,
         count: b.count,
       }));
     },
@@ -241,6 +244,7 @@ function toCandle(b: RawBar): CandlestickBar {
     close: b.close,
     volume: b.volume,
     wap: b.wap,
+    spread: b.spread,
     count: b.count,
   };
 }

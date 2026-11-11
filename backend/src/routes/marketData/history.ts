@@ -218,6 +218,7 @@ router.get('/history', async (req: Request, res: Response) => {
           volume: bar.volume,
           wap: bar.wap,
           count: bar.count,
+          spread: bar.spread,
         }));
 
         const storeResult = await marketDataService.storeCandlestickData(

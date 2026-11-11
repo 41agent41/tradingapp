@@ -6,7 +6,12 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import BacktestPage from '../app/backtest/page';
-import { describeFills, describeRunData } from '../app/lib/backtestData';
+import {
+  describeFills,
+  describeRunData,
+  describeSpread,
+  spreadsMissing,
+} from '../app/lib/backtestData';
 
 const RESULTS = {
   symbol: 'MSFT',
@@ -115,6 +120,67 @@ describe('BacktestPage', () => {
     await waitFor(() => expect(runs).toHaveLength(2));
     expect(runs[1].on_missing).toBe('fetch');
   });
+
+  it('offers to download the range again when stored bars have no spreads', async () => {
+    const runs = mockApi({
+      status: 200,
+      body: {
+        success: true,
+        results: RESULTS,
+        data_points: 40,
+        timeframe: '1day',
+        period: '1Y',
+        data: { source: 'stored', bars: 40, spread_bars: 0, spread_source: true, complete: true },
+      },
+    });
+    render(<BacktestPage />);
+    await waitFor(() => expect(screen.getByText('MA Crossover')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Run Backtest' }));
+
+    const note = await screen.findByTestId('result-spread-missing');
+    expect(note).toHaveTextContent("0 of 40 bars carry the broker's spread");
+    expect(screen.queryByTestId('result-spread')).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Download the range again with spreads, then run' })
+    );
+    await waitFor(() => expect(runs).toHaveLength(2));
+    expect(runs[1]).toMatchObject({ symbol: 'MSFT', on_missing: 'refetch' });
+    await waitFor(() =>
+      expect(screen.queryByTestId('result-spread-missing')).not.toBeInTheDocument()
+    );
+  });
+
+  it('says what the spread cost when the run used it', async () => {
+    mockApi({
+      status: 200,
+      body: {
+        success: true,
+        results: {
+          ...RESULTS,
+          spread: {
+            applied: true,
+            bars: 40,
+            bars_with_spread: 40,
+            fills: 6,
+            cost: 12.5,
+            average: 0.0002,
+          },
+        },
+        data_points: 40,
+        timeframe: '1day',
+        period: '1Y',
+        data: { source: 'stored', bars: 40, spread_bars: 40, spread_source: true, complete: true },
+      },
+    });
+    render(<BacktestPage />);
+    await waitFor(() => expect(screen.getByText('MA Crossover')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Run Backtest' }));
+    expect(await screen.findByTestId('result-spread')).toHaveTextContent(
+      'The spread cost 12.50 over 6 fills.'
+    );
+    expect(screen.queryByTestId('result-spread-missing')).not.toBeInTheDocument();
+  });
 });
 
 describe('describeRunData', () => {
@@ -159,5 +225,40 @@ describe('describeFills', () => {
       "Stops filled on each bar's own range (no 1 minute bars are stored for this range). " +
         '1 trade closed on the stop. 2 entries were refused because the stop could not be set.'
     );
+  });
+});
+
+describe('describeSpread', () => {
+  it('says nothing when no spread was applied', () => {
+    expect(describeSpread(undefined)).toBeNull();
+    expect(describeSpread({ applied: false, bars: 10 })).toBeNull();
+  });
+
+  it('says what the spread cost, and how many bars had one', () => {
+    expect(
+      describeSpread({ applied: true, bars: 10, bars_with_spread: 10, fills: 1, cost: 3 })
+    ).toBe(
+      "Buys filled at the ask and sells at the bid, using the broker's spread on each bar. " +
+        'The spread cost 3.00 over 1 fill.'
+    );
+    expect(
+      describeSpread({ applied: true, bars: 10, bars_with_spread: 4, fills: 2, cost: 1234.5 })
+    ).toMatch(
+      /cost 1,234\.50 over 2 fills\. 4 of 10 bars carried a spread; the rest filled at the bar's own price\.$/
+    );
+  });
+});
+
+describe('spreadsMissing', () => {
+  it('is true only for stored bars from a broker that reports spreads', () => {
+    expect(spreadsMissing(null)).toBe(false);
+    expect(spreadsMissing({ source: 'stored', bars: 10, spread_bars: 0 })).toBe(false);
+    expect(spreadsMissing({ source: 'broker', bars: 10, spread_source: true })).toBe(false);
+    expect(
+      spreadsMissing({ source: 'stored', bars: 10, spread_bars: 10, spread_source: true })
+    ).toBe(false);
+    expect(
+      spreadsMissing({ source: 'stored', bars: 10, spread_bars: 4, spread_source: true })
+    ).toBe(true);
   });
 });

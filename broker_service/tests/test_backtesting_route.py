@@ -407,3 +407,55 @@ def test_minute_bars_that_do_not_line_up_are_refused(monkeypatch):
     )
     assert res.status_code == 400
     assert "minute_bars: t, o, h, l and c" in res.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# Bars that carry the broker's spread (E-15)
+# --------------------------------------------------------------------------- #
+ALWAYS_IN = {
+    "name": "always-in",
+    "entry": {"all": [{"left": "close", "op": ">", "right": 0}]},
+    "exit": {"all": [{"left": "close", "op": "<", "right": 0}]},
+    "sizing": {"type": "fixed", "size": 10},
+}
+
+
+def _run_with(monkeypatch, bars, **params):
+    client = _no_broker_client(monkeypatch)
+    return client.post(
+        "/backtesting/run",
+        params={"symbol": "EURUSD", "timeframe": "1hour", "source": "ib", **params},
+        json={"rule_set": ALWAYS_IN, "bars": bars},
+    )
+
+
+def test_supplied_spreads_fill_at_the_bid_and_ask(monkeypatch):
+    bars = {**_columns(), "s": [0.2] * 59 + [None]}
+    res = _run_with(monkeypatch, bars)
+    assert res.status_code == 200, res.text
+    results = res.json()["results"]
+    assert results["spread"]["applied"] is True
+    assert results["spread"]["bars_with_spread"] == 59
+    # Bought on the first bar (close 100) at the ask.
+    assert results["trades_summary"][0]["entry_price"] == pytest.approx(100.1)
+
+
+def test_use_spread_false_fills_at_the_bars_own_price(monkeypatch):
+    bars = {**_columns(), "s": [0.2] * 60}
+    res = _run_with(monkeypatch, bars, use_spread="false")
+    assert res.status_code == 200, res.text
+    results = res.json()["results"]
+    assert "spread" not in results
+    assert results["trades_summary"][0]["entry_price"] == 100.0
+
+
+def test_bars_without_spreads_report_none(monkeypatch):
+    res = _run_with(monkeypatch, {**_columns(), "s": [None] * 60})
+    assert res.status_code == 200, res.text
+    assert "spread" not in res.json()["results"]
+
+
+def test_spreads_that_do_not_line_up_are_refused(monkeypatch):
+    res = _run_with(monkeypatch, {**_columns(), "s": [0.2] * 3})
+    assert res.status_code == 400
+    assert "s must be empty or as long as t" in res.json()["detail"]

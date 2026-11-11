@@ -112,6 +112,9 @@ class BacktestResults:
     # was checked against, and how often it closed a trade. Empty when the
     # strategy declares no stop, so its payload is unchanged.
     fills: Dict[str, Any] = field(default_factory=dict)
+    # What the spread cost: set when the bars carried the broker's bid-to-ask
+    # spread, so entries and exits filled at the ask or the bid, not the mid.
+    spread: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert results to dictionary for JSON serialization"""
@@ -163,6 +166,7 @@ class BacktestResults:
             ],
             **({"metrics": _json_safe(self.metrics)} if self.metrics else {}),
             **({"fills": _json_safe(self.fills)} if self.fills else {}),
+            **({"spread": _json_safe(self.spread)} if self.spread else {}),
         }
 
 
@@ -324,31 +328,42 @@ class _MinutePath:
         self.bars_with_minutes = int(np.count_nonzero(self._ends > self._starts))
 
     def stop_fill(
-        self, i: int, bar: pd.Series, stop: float, going_long: bool
+        self, i: int, bar: pd.Series, stop: float, going_long: bool, half_spread: float = 0.0
     ) -> Tuple[float, datetime, bool] | None:
         """Where and when a resting stop fills inside bar ``i``, if it does.
 
         Returns ``(price, time, on_minutes)``. The price is the stop, or the
         open of the minute (or bar) that started beyond it: a stop becomes a
         market order when touched, so a gap fills at the worse price.
+
+        The bars are mid prices. With ``half_spread``, a long's stop is hit
+        when the bid (mid less half the spread) reaches it and a short's when
+        the ask does, and a gap fills at the open's bid or ask.
         """
+
+        # The mid price at which the bid (long) or ask (short) is at the stop.
+        level = stop + half_spread if going_long else stop - half_spread
 
         if self._starts is not None and self._ends[i] > self._starts[i]:
             lo, hi = int(self._starts[i]), int(self._ends[i])
-            reached = self._low[lo:hi] <= stop if going_long else self._high[lo:hi] >= stop
+            reached = self._low[lo:hi] <= level if going_long else self._high[lo:hi] >= level
             if reached.any():
                 k = lo + int(np.argmax(reached))
                 opened = float(self._open[k])
-                price = min(opened, stop) if going_long else max(opened, stop)
+                price = (
+                    min(opened - half_spread, stop)
+                    if going_long
+                    else max(opened + half_spread, stop)
+                )
                 return price, self._times[k].to_pydatetime(), True
 
         # No minute reached it. The bar's own range still can: minutes can be
         # missing inside a bar, and the bar is the broker's record of it.
-        reached = bar["low"] <= stop if going_long else bar["high"] >= stop
+        reached = bar["low"] <= level if going_long else bar["high"] >= level
         if not reached:
             return None
         opened = float(bar["open"])
-        price = min(opened, stop) if going_long else max(opened, stop)
+        price = min(opened - half_spread, stop) if going_long else max(opened + half_spread, stop)
         when = bar.name if isinstance(bar.name, datetime) else datetime.fromtimestamp(bar.name)
         return price, when, False
 
@@ -386,6 +401,12 @@ class BacktestEngine:
         """
 
         logger.info(f"Starting backtest for {strategy.name} on {symbol}")
+
+        # The broker's spread on each bar, when the bars carry it (E-15). It
+        # is taken off the frame so rules and indicators see prices only.
+        spread_column = df["spread"] if "spread" in df.columns else None
+        if spread_column is not None:
+            df = df.drop(columns=["spread"])
 
         # A strategy that brings its own simulation (the Jesse adapter, whose
         # order semantics — resting limit/stop entries, bracket exits, partial
@@ -462,19 +483,37 @@ class BacktestEngine:
         stop_exits_on_minutes = 0
         entries_refused = 0
 
+        # Bars are mid prices. Where a bar has a spread, a buy fills half of
+        # it above the mid (the ask) and a sell half below (the bid). A bar
+        # without one fills at the mid, as every bar did before.
+        half_spreads = np.zeros(len(signals))
+        bars_with_spread = 0
+        if spread_column is not None:
+            aligned = pd.to_numeric(spread_column.reindex(signals.index), errors="coerce")
+            values = aligned.to_numpy(dtype=float)
+            known = np.isfinite(values) & (values > 0)
+            half_spreads = np.where(known, values, 0.0) / 2
+            bars_with_spread = int(np.count_nonzero(known))
+        spread_cost = 0.0
+        spread_fills = 0
+
         # Process each bar
         for i, (timestamp, data) in enumerate(signals.iterrows()):
             current_price = data["close"]
             current_time = (
                 timestamp if isinstance(timestamp, datetime) else datetime.fromtimestamp(timestamp)
             )
+            half = float(half_spreads[i])
+            # What a buy and a sell fill at on this bar's close.
+            ask_price = current_price + half
+            bid_price = current_price - half
 
             # The stop was resting at the broker while this bar formed, so it
             # is checked before anything the bar's close decides. A trade it
             # closes is gone by the close: the rules then see a flat position.
             if open_trade and stop_price is not None:
                 going_long = open_trade.order_type == OrderType.BUY
-                fill = minutes.stop_fill(i, data, stop_price, going_long)
+                fill = minutes.stop_fill(i, data, stop_price, going_long, half)
                 if fill is not None:
                     fill_price, fill_time, on_minutes = fill
                     open_trade.exit_time = fill_time
@@ -489,6 +528,8 @@ class BacktestEngine:
                     capital += (
                         open_trade.pnl - abs(open_trade.quantity * fill_price) * self.commission
                     )
+                    spread_cost += half * open_trade.quantity
+                    spread_fills += 1 if half else 0
                     position = 0
                     strategy.position = position
                     trades.append(open_trade)
@@ -523,14 +564,18 @@ class BacktestEngine:
 
             # Check for exit signals first
             if open_trade and sell_signal:
-                # Close position
+                # Close position: a long sells at the bid, a short buys back
+                # at the ask.
+                exit_price = ask_price if open_trade.order_type == OrderType.SELL else bid_price
                 open_trade.exit_time = current_time
-                open_trade.exit_price = current_price
+                open_trade.exit_price = exit_price
                 open_trade.status = OrderStatus.FILLED
                 open_trade.exit_reason = sell_reason
+                spread_cost += half * open_trade.quantity
+                spread_fills += 1 if half else 0
 
                 # Calculate commission
-                trade_value = abs(open_trade.quantity * current_price)
+                trade_value = abs(open_trade.quantity * exit_price)
                 commission_cost = trade_value * self.commission
 
                 # Update capital
@@ -560,18 +605,23 @@ class BacktestEngine:
                     if slice_qty <= 0:
                         continue
                     remaining = round_to_step(open_trade.quantity - slice_qty, size_step)
+                    slice_price = (
+                        ask_price if open_trade.order_type == OrderType.SELL else bid_price
+                    )
+                    spread_cost += half * slice_qty
+                    spread_fills += 1 if half else 0
                     closed = Trade(
                         entry_time=open_trade.entry_time,
                         exit_time=current_time,
                         entry_price=open_trade.entry_price,
-                        exit_price=current_price,
+                        exit_price=slice_price,
                         quantity=slice_qty,
                         order_type=open_trade.order_type,
                         status=OrderStatus.FILLED,
                         entry_reason=open_trade.entry_reason,
                         exit_reason=rung["reason"],
                     )
-                    capital += closed.pnl - abs(slice_qty * current_price) * self.commission
+                    capital += closed.pnl - abs(slice_qty * slice_price) * self.commission
                     trades.append(closed)
 
                     if remaining <= 0:
@@ -619,13 +669,15 @@ class BacktestEngine:
                         entries_refused += 1
                         logger.debug(f"Entry refused: stop rule failed to resolve: {exc}")
 
+                # A long buys at the ask, a short sells at the bid.
+                entry_price = bid_price if going_short else ask_price
                 sized, sizing_reason = resolve_backtest_quantity(
-                    sizing_spec, current_price, capital, spec, stop_price=entry_stop
+                    sizing_spec, entry_price, capital, spec, stop_price=entry_stop
                 )
                 if stop_failed:
                     quantity = 0.0
                 elif sized is None:
-                    quantity = float(int(capital / current_price))
+                    quantity = float(int(capital / entry_price))
                 else:
                     quantity = sized
                     if quantity <= 0:
@@ -637,13 +689,15 @@ class BacktestEngine:
                     # right order_type and a **negative** position: every
                     # position-aware rule (a -2% stop, a pyramiding cap) reads
                     # `position.size`, and an unsigned short would read as long.
-                    trade_value = quantity * current_price
+                    trade_value = quantity * entry_price
                     commission_cost = trade_value * self.commission
+                    spread_cost += half * quantity
+                    spread_fills += 1 if half else 0
 
                     open_trade = Trade(
                         entry_time=current_time,
                         exit_time=None,
-                        entry_price=current_price,
+                        entry_price=entry_price,
                         exit_price=None,
                         quantity=quantity,
                         order_type=OrderType.SELL if going_short else OrderType.BUY,
@@ -696,7 +750,12 @@ class BacktestEngine:
 
         # Close any remaining open position
         if open_trade:
-            final_price = signals.iloc[-1]["close"]
+            last_half = float(half_spreads[-1]) if len(half_spreads) else 0.0
+            final_price = signals.iloc[-1]["close"] + (
+                last_half if open_trade.order_type == OrderType.SELL else -last_half
+            )
+            spread_cost += last_half * open_trade.quantity
+            spread_fills += 1 if last_half else 0
             open_trade.exit_time = (
                 signals.index[-1]
                 if isinstance(signals.index[-1], datetime)
@@ -742,6 +801,17 @@ class BacktestEngine:
                 "stop_exits": stop_exits,
                 "stop_exits_on_minutes": stop_exits_on_minutes,
                 "entries_refused": entries_refused,
+            }
+
+        if spread_column is not None and bars_with_spread:
+            results.spread = {
+                "applied": True,
+                "bars": len(signals),
+                "bars_with_spread": bars_with_spread,
+                # Fills that paid half a spread, and what that came to in all.
+                "fills": spread_fills,
+                "cost": round(spread_cost, 6),
+                "average": round(float(half_spreads[half_spreads > 0].mean() * 2), 8),
             }
 
         logger.info(

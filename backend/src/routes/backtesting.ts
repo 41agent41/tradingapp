@@ -19,7 +19,8 @@
  * bars to the broker service with the run. When bars are missing the request
  * is answered 409 with the coverage, and the caller repeats it with
  * `on_missing: 'fetch'` (fetch what is missing from the broker, store it, then
- * run) or `on_missing: 'use_stored'` (run on what is there). `data: 'broker'`
+ * run), `on_missing: 'use_stored'` (run on what is there) or `on_missing:
+ * 'refetch'` (download the whole range again, then run). `data: 'broker'`
  * has the broker service fetch the bars itself and stores nothing, as before.
  *
  *   GET  /api/backtesting/strategies — list available strategies (cached)
@@ -89,6 +90,9 @@ function coverageMessage(c: Coverage): string {
 }
 
 // How well the stored bars cover a range, before a run is asked for.
+/** Brokers whose bars are mid prices and come with a bid-to-ask spread. */
+const SPREAD_BROKERS = new Set(['oanda']);
+
 router.get('/coverage', async (req: Request, res: Response) => {
   try {
     const q = req.query;
@@ -188,6 +192,7 @@ router.post('/run', async (req: Request, res: Response) => {
       on_missing: rawOnMissing,
       intrabar: rawIntrabar,
       save: rawSave,
+      spread: rawSpread,
     } = req.body || {};
 
     const dataMode = String(rawData || 'stored');
@@ -195,8 +200,10 @@ router.post('/run', async (req: Request, res: Response) => {
       return res.status(400).json({ error: "data must be 'stored' or 'broker'" });
     }
     const onMissing = String(rawOnMissing || 'ask');
-    if (!['ask', 'fetch', 'use_stored'].includes(onMissing)) {
-      return res.status(400).json({ error: "on_missing must be 'fetch' or 'use_stored'" });
+    if (!['ask', 'fetch', 'use_stored', 'refetch'].includes(onMissing)) {
+      return res
+        .status(400)
+        .json({ error: "on_missing must be 'fetch', 'use_stored' or 'refetch'" });
     }
 
     // Exactly one way to pick the strategy: a registered key, a saved
@@ -327,6 +334,11 @@ router.post('/run', async (req: Request, res: Response) => {
         currency,
       };
       coverage = await barData.coverage(instrument, timeframe, range);
+      if (onMissing === 'refetch') {
+        // Download the whole range again: the broker's bars replace the
+        // stored ones, and bars stored before spreads were kept gain theirs.
+        coverage = await barData.fetchMissing(instrument, timeframe, range, { all: true });
+      }
       if (!coverage.complete && onMissing === 'ask') {
         return res.status(409).json({
           error: 'coverage_incomplete',
@@ -389,6 +401,9 @@ router.post('/run', async (req: Request, res: Response) => {
           currency,
           source,
           ...(hasRange ? { start_date, end_date } : {}),
+          // Bars with the broker's spread fill at the bid or ask unless the
+          // request says otherwise.
+          ...(rawSpread === false ? { use_spread: false } : {}),
         },
         timeout: 120000, // a broker fetch, or a long stored range, can be slow
         headers: { Connection: 'close' },
@@ -397,6 +412,8 @@ router.post('/run', async (req: Request, res: Response) => {
 
     const payload = response.data ?? {};
     const results = payload.results ?? {};
+    const spreadBars =
+      rawSpread === false ? 0 : (loaded?.bars.s ?? []).filter((s) => s != null).length;
     const runData: BacktestRunData =
       loaded && coverage
         ? {
@@ -410,6 +427,8 @@ router.post('/run', async (req: Request, res: Response) => {
             ...(coverage.built_from ? { built_from: coverage.built_from } : {}),
             ...(minutes ? { minute_bars: minutes.count, minute_hash: minutes.hash } : {}),
             ...(minutesSkipped ? { minute_bars_skipped: minutesSkipped } : {}),
+            ...(spreadBars ? { spread_bars: spreadBars } : {}),
+            ...(SPREAD_BROKERS.has(source) && !coverage.built_from ? { spread_source: true } : {}),
           }
         : { source: 'broker', bars: payload.data_points ?? null };
 

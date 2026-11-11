@@ -97,6 +97,8 @@ export interface Coverage {
   /** Set when this describes the 1-minute bars the timeframe's bars would be
    *  built from; `bars` then counts 1-minute bars. */
   built_from?: '1min';
+  /** How many of the bars carry the broker's bid-to-ask spread (E-15). */
+  spread_bars?: number;
 }
 
 /** Bars as the broker service takes them: one array per field, oldest first. */
@@ -107,6 +109,12 @@ export interface BarColumns {
   l: number[];
   c: number[];
   v: number[];
+  /**
+   * The bid-to-ask spread on each bar, null where it is not known. Present
+   * only when at least one bar has one, so bars without spreads look (and
+   * hash) exactly as they did before spreads were stored.
+   */
+  s?: Array<number | null>;
 }
 
 /** Seconds in one bar of each timeframe a replay can show. */
@@ -187,7 +195,10 @@ export function resolveRange(
 export function barsHash(bars: BarColumns): string {
   const hash = createHash('sha256');
   for (let i = 0; i < bars.t.length; i++) {
-    hash.update(`${bars.t[i]},${bars.o[i]},${bars.h[i]},${bars.l[i]},${bars.c[i]},${bars.v[i]}\n`);
+    const spread = bars.s ? `,${bars.s[i] ?? ''}` : '';
+    hash.update(
+      `${bars.t[i]},${bars.o[i]},${bars.h[i]},${bars.l[i]},${bars.c[i]},${bars.v[i]}${spread}\n`
+    );
   }
   return hash.digest('hex');
 }
@@ -202,6 +213,9 @@ function columns(rows: Array<Record<string, unknown>>): BarColumns {
     bars.l.push(Number(r.l));
     bars.c.push(Number(r.c));
     bars.v.push(Number(r.v ?? 0));
+  }
+  if (rows.some((r) => r.s != null)) {
+    bars.s = rows.map((r) => (r.s == null ? null : Number(r.s)));
   }
   return bars;
 }
@@ -389,12 +403,26 @@ export class BacktestData {
    * Fetches every missing stretch from the broker and stores it, a chunk at a
    * time, then says what is covered now. A stretch the broker has no bars for
    * (it predates the broker's history) stays missing.
+   *
+   * With `all`, the whole range is fetched again whatever is stored: the
+   * broker's bars replace the stored ones, which is how bars stored before
+   * spreads were kept (E-15) gain theirs.
    */
-  async fetchMissing(inst: Instrument, timeframe: string, range: DataRange): Promise<Coverage> {
-    const chosen = await this.coverage(inst, timeframe, range);
-    if (chosen.complete) return chosen;
+  async fetchMissing(
+    inst: Instrument,
+    timeframe: string,
+    range: DataRange,
+    opts: { all?: boolean } = {}
+  ): Promise<Coverage> {
+    if (!opts.all) {
+      const chosen = await this.coverage(inst, timeframe, range);
+      if (chosen.complete) return chosen;
+    }
     let contract = await this.findContract(inst, timeframe, range);
     const before = await this.coverageOf(contract?.id ?? null, timeframe, range);
+    const stretches = opts.all
+      ? [{ from: range.start.toISOString(), to: range.end.toISOString() }]
+      : before.missing;
 
     if (!contract) {
       const account = inst.account ?? 'default';
@@ -419,7 +447,7 @@ export class BacktestData {
 
     const chunkMs = this.deps.chunkDays(timeframe) * DAY_MS;
     const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
-    for (const stretch of before.missing) {
+    for (const stretch of stretches) {
       // Whole UTC days, end exclusive, as the history route takes them.
       const from = Math.floor(new Date(stretch.from).getTime() / DAY_MS) * DAY_MS;
       const to = Math.ceil(new Date(stretch.to).getTime() / DAY_MS) * DAY_MS;
@@ -449,6 +477,7 @@ export class BacktestData {
               close: b.close,
               volume: b.volume,
               wap: b.wap,
+              spread: b.spread,
               count: b.count,
             }))
           );
@@ -485,7 +514,7 @@ export class BacktestData {
       ));
     } else {
       ({ rows } = await this.deps.db.query(
-        `SELECT extract(epoch FROM timestamp)::bigint AS t, ${fields}
+        `SELECT extract(epoch FROM timestamp)::bigint AS t, ${fields}, spread::float8 AS s
            FROM candlestick_data
           WHERE contract_id = $1 AND timeframe = $2 AND timestamp >= $3 AND timestamp < $4
           ORDER BY timestamp

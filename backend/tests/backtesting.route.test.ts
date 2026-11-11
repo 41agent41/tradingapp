@@ -519,6 +519,96 @@ describe('POST /api/backtesting/run on stored bars', () => {
     );
   });
 
+  describe("bars that carry the broker's spread (E-15)", () => {
+    /** 96 stored hourly bars, the first `withSpread` of them with a spread. */
+    function storedWithSpreads(withSpread: number) {
+      const rows = storedBars({ count: 96 });
+      rows.forEach((r, i) => Object.assign(r, { s: i < withSpread ? 0.00016 : null }));
+      return rows;
+    }
+
+    it('sends the spreads with the bars and says how many bars had one', async () => {
+      storedWithSpreads(90);
+      axiosMock.post.mockResolvedValueOnce(OK);
+      const res = await request(buildApp())
+        .post('/api/backtesting/run')
+        .send({ symbol: 'EUR_USD', strategy: 'ma_crossover', source: 'oanda', ...RANGE });
+
+      expect(res.status).toBe(200);
+      const [, body, config] = axiosMock.post.mock.calls[0];
+      expect((body as any).bars.s).toHaveLength(96);
+      expect((body as any).bars.s[0]).toBe(0.00016);
+      expect((body as any).bars.s[95]).toBeNull();
+      expect((config as any).params.use_spread).toBeUndefined();
+      expect(res.body.data).toMatchObject({ spread_bars: 90, spread_source: true });
+    });
+
+    it('fills at the bar price when asked to, and counts no spread bars', async () => {
+      storedWithSpreads(96);
+      axiosMock.post.mockResolvedValueOnce(OK);
+      const res = await request(buildApp())
+        .post('/api/backtesting/run')
+        .send({
+          symbol: 'EUR_USD',
+          strategy: 'ma_crossover',
+          source: 'oanda',
+          spread: false,
+          ...RANGE,
+        });
+
+      expect(res.status).toBe(200);
+      const [, , config] = axiosMock.post.mock.calls[0];
+      expect((config as any).params.use_spread).toBe(false);
+      expect(res.body.data.spread_bars).toBeUndefined();
+    });
+
+    it('sends no spread field for bars that have none, and names no spread source for another broker', async () => {
+      storedBars({ count: 96 });
+      axiosMock.post.mockResolvedValueOnce(OK);
+      const res = await request(buildApp())
+        .post('/api/backtesting/run')
+        .send({ symbol: 'AAPL', strategy: 'ma_crossover', source: 'alpaca', ...RANGE });
+
+      expect(res.status).toBe(200);
+      const [, body] = axiosMock.post.mock.calls[0];
+      expect((body as any).bars.s).toBeUndefined();
+      expect(res.body.data.spread_bars).toBeUndefined();
+      expect(res.body.data.spread_source).toBeUndefined();
+    });
+
+    it('downloads a covered range again when asked to, then runs', async () => {
+      storedBars({ count: 96 });
+      axiosMock.get.mockResolvedValue({
+        data: {
+          bars: [{ timestamp: T0, open: 1, high: 1, low: 1, close: 1, volume: 1, spread: 0.0002 }],
+        },
+      });
+      axiosMock.post.mockResolvedValueOnce(OK);
+      const res = await request(buildApp())
+        .post('/api/backtesting/run')
+        .send({
+          symbol: 'EUR_USD',
+          strategy: 'ma_crossover',
+          source: 'oanda',
+          on_missing: 'refetch',
+          ...RANGE,
+        });
+
+      expect(res.status).toBe(200);
+      expect(axiosMock.get).toHaveBeenCalledWith(
+        expect.stringContaining('/market-data/history'),
+        expect.objectContaining({
+          params: expect.objectContaining({ start_date: '2026-01-05', end_date: '2026-01-09' }),
+        })
+      );
+      expect(marketDataMock.marketDataService.storeCandlestickData).toHaveBeenCalledWith(
+        31,
+        '1hour',
+        [expect.objectContaining({ timestamp: new Date(T0 * 1000), spread: 0.0002 })]
+      );
+    });
+  });
+
   it('runs on bars built from 1-minute bars when the timeframe itself is not stored', async () => {
     const built = Array.from({ length: 96 }, (_, i) => ({
       t: T0 + i * HOUR,
