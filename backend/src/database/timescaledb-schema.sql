@@ -933,6 +933,16 @@ CREATE TABLE IF NOT EXISTS auth_credentials (
     last_used_at TIMESTAMPTZ
 );
 
+-- Login sessions in force, one row per sign-in (services/sessionStore.ts).
+-- Also created by migration 010_auth_sessions for installs that predate it.
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    id VARCHAR(64) PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    ip VARCHAR(64),
+    user_agent VARCHAR(256)
+);
+
 CREATE TABLE IF NOT EXISTS broker_connections (
     id BIGSERIAL PRIMARY KEY,
     platform VARCHAR(16) NOT NULL,

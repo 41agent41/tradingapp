@@ -24,6 +24,7 @@ import crypto from 'crypto';
 import type { Querier } from './backtestRunRepository.js';
 import { encryptionKey, openSecret, sealSecret } from '../config/secretBox.js';
 import { logger } from './logger.js';
+import { sessionStore } from './sessionStore.js';
 
 export type TokenKind = 'api' | 'trading';
 export type CredentialSource = 'environment' | 'database' | 'unset';
@@ -391,6 +392,8 @@ export class CredentialStore {
       [hashPassword(password), ctx.actor]
     );
     await this.rotateSessionSecret();
+    // Ends the sessions too: a key set in `.env` does not rotate.
+    sessionStore.revokeAll();
     await this.audit('password', 'set', '(secret)', ctx);
     await this.load();
   }

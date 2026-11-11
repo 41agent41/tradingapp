@@ -7,11 +7,13 @@
  * `APP_PASSWORD` and receives an HttpOnly session cookie that page scripts
  * cannot read. `API_TOKEN` remains for scripts and curl.
  *
- * Sessions are stateless: the cookie value is `v1.<expiresAtMs>.<hmac>`,
- * signed with `SESSION_SECRET`, or with a key the app generates and stores
- * when that is not set (see credentials.ts). Rotating the key signs everyone
- * out; a password change does that. There is one user, so there is nothing
- * per-user to store server-side.
+ * The cookie value is `v2.<expiresAtMs>.<sessionId>.<hmac>`, signed with
+ * `SESSION_SECRET`, or with a key the app generates and stores when that is
+ * not set (see credentials.ts). The signature shows the backend issued the
+ * cookie; the session id must also still be in force (sessionStore.ts), so
+ * logout and "sign out everywhere" end a session at once, wherever a copy of
+ * its cookie is (S-05). Rotating the key also signs everyone out; a password
+ * change does that.
  *
  * The password is `APP_PASSWORD` when set in `.env`, else the one chosen on
  * the first-run setup screen or the Security tab.
@@ -20,9 +22,10 @@ import crypto from 'crypto';
 
 import { configService } from '../config/configService.js';
 import { credentials } from './credentials.js';
+import { sessionStore, type SessionMeta } from './sessionStore.js';
 
 export const SESSION_COOKIE = 'tradingapp_session';
-const VERSION = 'v1';
+const VERSION = 'v2';
 
 function sessionSecret(): string {
   return credentials.sessionSecret();
@@ -53,22 +56,38 @@ export function checkPassword(supplied: unknown): boolean {
   return credentials.verifyPassword(supplied);
 }
 
-export function issueSession(now: number = Date.now()): { value: string; expiresAt: number } {
+export function issueSession(
+  now: number = Date.now(),
+  meta: SessionMeta = {}
+): { value: string; expiresAt: number } {
   const secret = sessionSecret();
   if (!secret) throw new Error('SESSION_SECRET is not set');
   const expiresAt = now + sessionTtlMs();
-  const payload = `${VERSION}.${expiresAt}`;
+  const payload = `${VERSION}.${expiresAt}.${sessionStore.create(expiresAt, meta, now)}`;
   return { value: `${payload}.${sign(payload, secret)}`, expiresAt };
 }
 
-export function verifySession(value: string | undefined | null, now: number = Date.now()): boolean {
+/**
+ * The id of the session a cookie names, when the backend signed the cookie
+ * and it has not expired; null otherwise. The session may since have been
+ * ended: {@link verifySession} also checks that.
+ */
+export function sessionId(
+  value: string | undefined | null,
+  now: number = Date.now()
+): string | null {
   const secret = sessionSecret();
-  if (!secret || !value) return false;
+  if (!secret || !value) return null;
   const parts = value.split('.');
-  if (parts.length !== 3 || parts[0] !== VERSION) return false;
+  if (parts.length !== 4 || parts[0] !== VERSION) return null;
   const expiresAt = Number(parts[1]);
-  if (!Number.isFinite(expiresAt) || expiresAt <= now) return false;
-  return safeEqual(parts[2], sign(`${parts[0]}.${parts[1]}`, secret));
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) return null;
+  return safeEqual(parts[3], sign(parts.slice(0, 3).join('.'), secret)) ? parts[2] : null;
+}
+
+export function verifySession(value: string | undefined | null, now: number = Date.now()): boolean {
+  const id = sessionId(value, now);
+  return id !== null && sessionStore.isActive(id, now);
 }
 
 /** Reads one cookie from a raw `Cookie` header. */

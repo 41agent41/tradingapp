@@ -2,8 +2,11 @@
  * Browser login for the single app user. See `services/session.ts`.
  *
  *   POST /api/auth/login    { password } → sets the HttpOnly session cookie
- *   POST /api/auth/logout   → clears it
+ *   POST /api/auth/logout   → ends this browser's session and clears it
  *   GET  /api/auth/session  → { authenticated, login_configured, setup_required }
+ *   GET  /api/auth/sessions → the sessions in force
+ *   DELETE /api/auth/sessions/:id → ends one of them
+ *   POST /api/auth/logout-all → ends every session ("sign out everywhere")
  *   POST /api/auth/setup    { code, password } → first run only: sets the
  *                           password and signs in
  */
@@ -22,9 +25,13 @@ import {
   isLoginConfigured,
   issueSession,
   loginLocked,
+  readCookie,
   recordLoginFailure,
+  SESSION_COOKIE,
   sessionCookie,
+  sessionId,
 } from '../services/session.js';
+import { sessionStore } from '../services/sessionStore.js';
 
 const router = express.Router();
 
@@ -41,7 +48,11 @@ function clientKey(req: Request): string {
 }
 
 function signIn(req: Request, res: express.Response) {
-  const session = issueSession();
+  const agent = req.headers['user-agent'];
+  const session = issueSession(Date.now(), {
+    ip: clientKey(req),
+    userAgent: typeof agent === 'string' ? agent : null,
+  });
   res.setHeader(
     'Set-Cookie',
     sessionCookie(session.value, session.expiresAt - Date.now(), isHttps(req))
@@ -116,9 +127,47 @@ router.post('/setup', async (req, res) => {
   return signIn(req, res);
 });
 
+/** The session the request's cookie names, when the backend signed it. */
+function currentSessionId(req: Request): string | null {
+  return sessionId(readCookie(req.headers['cookie'], SESSION_COOKIE));
+}
+
+// Open to a caller that is not signed in, so a stale cookie can always be
+// cleared. It ends only the session its own cookie names.
 router.post('/logout', (req, res) => {
+  const id = currentSessionId(req);
+  if (id) sessionStore.revoke(id);
   res.setHeader('Set-Cookie', clearedSessionCookie(isHttps(req)));
   res.json({ authenticated: false });
+});
+
+// The routes below are not in OPEN_PATHS: the auth middleware has already
+// checked the caller is signed in (or sent an API token).
+router.get('/sessions', (req, res) => {
+  res.json({ sessions: sessionStore.list(currentSessionId(req)) });
+});
+
+router.delete('/sessions/:id', (req, res) => {
+  if (!sessionStore.revokeByPublicId(String(req.params.id))) {
+    return res.status(404).json({ error: 'Not found', message: 'No such session.' });
+  }
+  logger.info({ session: req.params.id, ip: req.ip }, 'auth: session ended');
+  return res.json({ ended: true });
+});
+
+router.post('/logout-all', (req, res) => {
+  const ended = sessionStore.revokeAll();
+  logger.info({ ended, ip: req.ip }, 'auth: every session ended');
+  void notifier
+    .notify({
+      key: `security:logout-all:${Date.now()}`,
+      severity: 'warning',
+      title: 'Every browser was signed out',
+      context: { sessions: ended, ip: req.ip ?? 'unknown' },
+    })
+    .catch(() => undefined);
+  res.setHeader('Set-Cookie', clearedSessionCookie(isHttps(req)));
+  res.json({ authenticated: false, ended });
 });
 
 router.get('/session', (req, res) => {

@@ -284,7 +284,7 @@ What the schema holds, in short (read the files for the full list):
 | `bars_5min`, `bars_15min`, `bars_30min`, `bars_1hour`, `bars_4hour`, `bars_1day` | Bars built from the 1-minute bars: real-time continuous aggregates on UTC boundaries, refreshed for changes of any age. Backtests read them (`backtestData.ts`) |
 | `data_collection_config` | The Settings page's collection table, with `history_start` and progress, and `record_live` / `record_ticks` (kept the same on every row of a contract) |
 | `data_quality_metrics` | Per-day bar counts and a quality score, written on every store path |
-| `broker_connections`, `app_settings`, `settings_audit`, `auth_credentials`, `app_meta` | Connections, settings and their history, login and tokens; `app_meta` holds the value that proves the encryption key |
+| `broker_connections`, `app_settings`, `settings_audit`, `auth_credentials`, `auth_sessions`, `app_meta` | Connections, settings and their history, login and tokens, the login sessions in force; `app_meta` holds the value that proves the encryption key |
 | `order_audit`, `order_executions` | Every order attempt; venue fills, unique on `(broker, broker_account, exec_id)` |
 | `strategy_definitions`, `strategy_run_groups`, `strategy_runs`, `strategy_signals` | Strategies, deployments and their decisions |
 | `connection_equity`, `connection_halts` | Day-start equity and high-water marks; kill-switch halts |
