@@ -243,10 +243,10 @@ There are 47 items, sorted by priority. P1 means do next, P2 soon after, and P3 
 | S-05 | Session IDs and server-side revocation; "sign out everywhere" (built: each cookie names a session kept in `auth_sessions`; logout, a per-browser sign out and "Sign out everywhere" on Settings > Security end it at once; every browser signs in once after the upgrade) | P2 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
 | S-06 | Non-root users and multi-stage builds for backend and frontend images (built: both run as `node`, with production dependencies only and read-only app files) | P2 | S | Sonnet 5.5 | Haiku 5.5 | none |
 | S-07 | TLS to the MT5 sidecar; firewall check for IB Gateway in `doctor` (built: the sidecar serves HTTPS with its own certificate and the connection pins it by fingerprint; `doctor` lists each LAN broker link, whether it is encrypted, and the test to run from another machine, since the app server cannot see the firewall itself) | P2 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
-| D-01 | One step template across all guides | P2 | L | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
-| D-02 | Values sheet for every placeholder | P2 | S | Sonnet 5.5 | Haiku 5.5 | none |
-| D-03 | Decision points written as questions with answers and jumps | P2 | S | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
-| D-08 | Upgrade guide for S-01 to S-03, with rollback | P2 | S | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
+| D-01 | One step template across all guides (built: every step and procedure in INSTALL, OPERATIONS, PAPER\_TRADING and DEVELOPMENT has Where, Before, Do, Expected, If it fails and Done when; FEATURES describes the app and has no procedures; not yet dry-run on a Proxmox host, which is D-07) | P2 | L | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
+| D-02 | Values sheet for every placeholder (built: at the top of INSTALL, with the fixed values and where each secret lives; step 2.5 keeps a filled copy at `/opt/tradingapp/site-values.md`) | P2 | S | Sonnet 5.5 | Haiku 5.5 | none |
+| D-03 | Decision points written as questions with answers and jumps (built: "Decisions to make first" in INSTALL, seven questions) | P2 | S | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
+| D-08 | Upgrade guide for S-01 to S-03, with rollback (built: OPERATIONS § Upgrade in place, Roll back an upgrade, What each upgrade changes, and Upgrade an MT5 sidecar) | P2 | S | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | E-12 | cTrader live trendbars and depth of market | P3 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
 | E-14 | Alpaca crypto and options data and trading | P3 | L | Opus 5.5 | Fable 5.2 | Sonnet 5.5, Haiku 5.5 |
 | E-16 | Trailing, bracket, OCO and guaranteed stops where each broker supports them | P3 | L | Opus 5.5, Fable 5.2 review | Fable 5.2 | Sonnet 5.5, Haiku 5.5 |

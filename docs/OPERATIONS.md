@@ -7,7 +7,28 @@ backups and troubleshooting. Installing is in [INSTALL.md](INSTALL.md).
 Every command here runs on the app server, as the deploy user, in the
 checkout: `./tradingapp.sh COMMAND`. On a server built with
 [INSTALL.md](INSTALL.md), that is the `tradingapp` user in `/opt/tradingapp`:
-in CT 110's Console, `su - tradingapp`, then `cd /opt/tradingapp`.
+in CT 110's Console, `su - tradingapp`, then `cd /opt/tradingapp`. This guide
+calls that the **app shell**.
+
+**How procedures are written.** Each procedure has the same six parts as an
+install step: **Where**, **Before**, **Do**, **Expected**, **If it fails**
+and **Done when** ([INSTALL.md § How each step is written](INSTALL.md#how-each-step-is-written)).
+A failure that is not listed means stop and report, with the output of
+[Reporting a problem](#reporting-a-problem). Placeholders in angle brackets,
+such as `<db-address>`, are the ones on the
+[values sheet](INSTALL.md#values-sheet); this site's values are in
+`/opt/tradingapp/site-values.md`. Addresses of the app itself are written as
+`127.0.0.1`, because the commands run on the app server.
+
+**Calling the API from the shell.** Some checks need an API token (Settings
+> Security). Put it in the shell once, without it showing on screen:
+
+```bash
+read -rsp 'API token: ' API_TOKEN; echo
+```
+
+The commands below then use `$API_TOKEN`. `unset API_TOKEN` when you are
+done.
 
 ## Contents
 
@@ -126,10 +147,56 @@ value, then the fleet-wide cap on Settings > Risk.
 - The page and API share one address, so the app works on any name or IP that
   reaches port 3000.
 
-**Locked out?** Set `APP_PASSWORD` (or `ORDER_MFA_SECRET`, if the
-authenticator is lost) in `.env` and run `./tradingapp.sh restart`. The
-`.env` value wins, so you can sign in, set a new one on the Security tab, then
-remove the line and restart again.
+### Locked out
+
+For a forgotten login password, or a lost authenticator. The way back in is
+a line in `.env`, which wins over what the app has stored.
+
+**Where:** app shell, then the app. A person does this: it chooses a
+password.
+
+**Before:** you can reach the app shell.
+
+**Do:**
+
+1. *Forgotten password:* add a line to `.env` with `nano .env`:
+   `APP_PASSWORD=` followed by the new password, at least 12 characters.
+
+   *Lost authenticator:* make a new secret with
+   `head -c 20 /dev/urandom | base32`, add it to the authenticator app as a
+   new account ("enter a setup key", time based), and add a line to `.env`:
+   `ORDER_MFA_SECRET=` followed by that secret.
+2. Run `./tradingapp.sh restart`.
+3. Sign in with the new password (or check that the authenticator's code is
+   accepted on Settings > Security).
+4. Move the value into the app and take it out of `.env`:
+
+   ```bash
+   ./tradingapp.sh settings-import
+   ```
+
+   Answer `y` when it asks to delete the lines from `.env`. It keeps a backup
+   named `.env.bak.<timestamp>`, which holds the secret: delete it once you
+   are signed in.
+
+While the line is in `.env`, the Security tab refuses to change that value
+and says so. That is why item 4 comes before any change there.
+
+**Expected:** `settings-import` prints `Stored in the app:` followed by
+`APP_PASSWORD` or `ORDER_MFA_SECRET`, removes the line and restarts the
+backend.
+
+**If it fails:**
+- *The backend does not come back after item 2, and its log says `refusing
+  to start`:* the value is too weak or malformed. See
+  [Backend refuses to start](#backend-refuses-to-start).
+- *`settings-import` says `APP_PASSWORD stays in .env`:* the reason follows
+  on the same line, usually that it is shorter than 12 characters. Choose a
+  longer one and start again from item 1.
+- *Five wrong passwords locked the address out:* wait 15 minutes.
+
+**Done when:** you are signed in, and
+`grep -c -E '^(APP_PASSWORD|ORDER_MFA_SECRET)=' .env` prints `0`.
 
 ---
 
@@ -137,63 +204,266 @@ remove the line and restart again.
 
 ### Upgrade in place
 
-Snapshot the app and database containers first
-([INSTALL.md § 10.3](INSTALL.md#103-before-an-upgrade)). Then, as root in
-CT 110:
+An upgrade fetches the new version, rebuilds the images and restarts the
+stack. Migrations apply themselves when the backend starts. Read
+[What each upgrade changes](#what-each-upgrade-changes) first: it lists what
+to do after a particular upgrade.
 
-```bash
-bash /root/install.sh repo env deploy verify
-```
+**Where:** Proxmox UI, the CT 100 console, then the CT 110 console as root.
 
-On a host installed by hand instead: `git pull`, then `./tradingapp.sh install`.
+**Before:**
+- Nothing is trading: no strategy run is open and no order is working, or
+  the markets you trade are closed.
+- The app is healthy now: in the app shell, `./tradingapp.sh doctor` shows
+  `state: ready`. Do not upgrade a broken install; fix it first.
+- The encryption key is stored off the host (`./tradingapp.sh backup-key`
+  prints it).
+- Note the version you are leaving, for the report if anything goes wrong:
+  `git -C /opt/tradingapp rev-parse --short HEAD`.
 
-Migrations apply themselves when the backend starts. On a host set up by an
-older version, `install` also removes `.env` lines nothing reads any more
-(after a backup to `.env.bak.<timestamp>`).
+**Do:**
 
-**Allowed browser origins after this upgrade.** An empty `CORS_ORIGINS` used
-to accept requests from any website and now accepts the app's own pages
-only. Nothing needs changing for the app itself, also behind Nginx Proxy
-Manager. If pages on another site call the API, list their origins on
-Settings > Network. If saving in the app fails with "Origin ... is not
-allowed" behind another reverse proxy, see that row under Troubleshooting.
+1. Snapshot the app and the database together, with the same name on both
+   ([INSTALL.md § 10.3](INSTALL.md#103-before-an-upgrade)). This is the
+   rollback point.
+2. Take a fresh dump, in the CT 100 console:
 
-**Upgrading from a version before migration `005_connection_firm`.** Each
-connection now names its firm, and each firm connects one way only. The
-migration fills in the firm for OANDA, IG, Alpaca and IB connections, and for
-cTrader and MT5 connections named after their firm. After the upgrade, open
-Settings > Getting started: the **Add a broker connection** item lists every
-connection still without a firm. For each one, on Settings > Connections:
+   ```bash
+   /usr/local/bin/backup-tradingapp.sh && ls -t /var/backups/tradingapp | head -1
+   ```
+
+3. Upgrade, in the CT 110 console as root. The first line refreshes the
+   installer itself:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/41agent41/tradingapp/master/install/install.sh -o /root/install.sh
+   bash /root/install.sh repo env deploy verify
+   ```
+
+4. Check it, in the CT 110 console:
+
+   ```bash
+   cd /opt/tradingapp && runuser -u tradingapp -- ./tradingapp.sh doctor
+   ```
+
+On a host installed by hand instead of items 3 and 4: `git pull`, then
+`./tradingapp.sh install`, then `./tradingapp.sh doctor`.
+
+**Expected:** item 3 ends with `result: PASS` and
+`done: repo env deploy verify`. The rebuild takes several minutes, longer
+when the base images changed. `doctor` shows `state: ready`, and after an
+upgrade that changed the database a line `applied at this start:` naming the
+new migrations. On a host set up by an older version, the installer also
+removes `.env` lines nothing reads any more (after a backup to
+`.env.bak.<timestamp>`).
+
+**If it fails:**
+
+| You see | Cause | Do |
+|---|---|---|
+| `has local changes to tracked files` | Someone edited a file in `/opt/tradingapp` | `git -C /opt/tradingapp status` shows which. Keep a copy of the change if it matters, `git -C /opt/tradingapp checkout -- <file>`, and run item 3 again. |
+| `cannot fast-forward ... it has diverged` | The checkout is not a plain copy of the repository | Stop and report. |
+| The build fails | Most often memory (the frontend build needs 4 GB) or a full disk | `free -h`, `df -h`; `docker system prune -f` frees old images. Run item 3 again. |
+| `migration_failed` | A migration hit a database error; the detail carries it | [The page says it is waiting for the database](#the-page-says-it-is-waiting-for-the-database-or-a-key-mismatch). If it cannot be fixed, [roll back](#roll-back-an-upgrade). |
+| `result: FAIL (n)` | A check failed | Each `CHECK ... FAIL` line is in [INSTALL.md § A.3](INSTALL.md#a3-checks). |
+| Every browser is asked to sign in again | Expected after some upgrades | Sign in. API tokens are not affected. |
+| Anything else | | [Roll back](#roll-back-an-upgrade), then report with [Reporting a problem](#reporting-a-problem). |
+
+**Done when:** `tail -1 /var/log/tradingapp-install/report.txt` prints
+`result: PASS`, you can sign in, every connection on Settings > Connections
+shows connected, and a chart updates. Keep the snapshots for a few days,
+then delete them: they take real space on LVM-thin and ZFS.
+
+### Roll back an upgrade
+
+The supported way back is the pair of snapshots from item 1 above. An
+upgrade can change the database, and the older version is not tested
+against the newer schema, so going back to older code alone is not
+supported: the app and the database go back together.
+
+**Where:** Proxmox UI.
+
+**Before:** both snapshots exist (CT 110 and CT 100, same name), and you
+accept losing what was stored after they were taken. Bars are collected
+again by the backfill; orders and fills from that time are not, so check the
+broker's own record for anything traded in between.
+
+**Do:**
+
+1. Stop CT 110, then CT 100.
+2. CT 100 > **Snapshots** > select the snapshot > **Rollback**. Do the same
+   on CT 110.
+3. Start CT 100, then CT 110.
+
+Without snapshots there is a slower route, which has not been rehearsed, so
+prefer the snapshots and ask before using it: in the app shell,
+`./tradingapp.sh stop`; restore the dump from item 2
+([Backups and restore](#backups-and-restore)); then
+`git checkout --detach` followed by the version you noted under **Before**,
+and `./tradingapp.sh redeploy`.
+
+**Expected:** both guests start, and the app comes up as it was when the
+snapshots were taken.
+
+**If it fails:** *the app shows `waiting_for_database`:* CT 100 was not
+started first, or is still starting. It recovers by itself once the database
+answers.
+
+**Done when:** in the app shell, `./tradingapp.sh doctor` shows
+`state: ready`, and `git rev-parse --short HEAD` prints the version you
+noted before the upgrade.
+
+### What each upgrade changes
+
+Newest first. Each entry says what, if anything, you must do after
+upgrading across it.
+
+**Sign-out closes live streams; live streams check the origin.** Nothing to
+do. A page on another site can open a live stream only when its origin is
+listed in `CORS_ORIGINS`, as for the API.
+
+**Encrypted link to an MT5 sidecar.** Nothing changes until you turn it on:
+an existing `http://` connection keeps working, and `doctor` and Settings >
+Connections say it is not encrypted. To turn it on, follow
+[INSTALL.md § 4.2](INSTALL.md#42-metatrader-5-vm-120): on the sidecar's
+machine pull the new code and run the install again with `--tls`, then give
+the connection an `https://` Bridge URL and the certificate fingerprint. If
+the sidecar's certificate is ever replaced, the connection stops with "MT5
+bridge not trusted" until it is given the new fingerprint.
+
+**Images run as an unprivileged user.** The backend and frontend images run
+as the `node` user and hold production dependencies only. The upgrade
+rebuilds them, and there is nothing to change. Commands run inside them with
+`docker compose exec` also run as `node`; add `-u 0` for the rare one that
+needs root.
+
+**Migration `010_auth_sessions`: signed-in browsers.** Adds one small table
+and runs in an instant. Session cookies issued before this upgrade are no
+longer accepted, so every browser signs in once after it. API tokens are not
+affected.
+
+**Allowed browser origins.** An empty `CORS_ORIGINS` used to accept requests
+from any website and now accepts the app's own pages only. Nothing needs
+changing for the app itself, also behind Nginx Proxy Manager. If pages on
+another site call the API, list their origins on Settings > Network. If
+saving in the app fails with "Origin ... is not allowed" behind another
+reverse proxy, see that row under [Sign-in](#sign-in).
+
+**Dependency and Node.js upgrade (November 2026).** The images moved to a
+supported Node.js release, the broker service and MT5 sidecar to current
+FastAPI and Starlette, and every build now installs exactly the versions in
+the lock files. For the app server there is nothing to do beyond the upgrade
+itself; the first rebuild is slower because the base images are downloaded
+again. **The MT5 sidecars upgrade separately**, because they run on the MT5
+VM, not in the Docker stack: see
+[Upgrade an MT5 sidecar](#upgrade-an-mt5-sidecar).
+
+**Migration `009_bar_spread`: spreads on bars.** Adds one column,
+`candlestick_data.spread`, and runs in an instant. From then on OANDA's bars
+are stored with the spread at each bar's close, and a backtest on bars that
+carry one fills buys at the ask and sells at the bid. Bars stored before the
+upgrade have no spread and are not changed by it. A backtest on them fills
+at the mid price as before, and the results offer **Download the range again
+with spreads, then run**, which fetches the range from OANDA again and
+stores the spread on each bar. The nightly reconcile and the data collection
+also add spreads to the bars they fetch again. Expect an OANDA backtest to
+return a little less once its bars carry spreads: that is the cost the mid
+price left out.
+
+**Migration `008_built_bars`: bars built from 1-minute bars.** The views are
+filled in the background within the hour. They answer correctly before that,
+only more slowly. A rule-set that has a `stop` block backtests differently
+from before, because the stop used to be ignored.
+
+**Migration `006_live_recorder`.** Live streams are per broker connection,
+and their channel names changed. Reload any chart tab left open across the
+upgrade. Nothing is recorded until you tick Record live on an entry.
+
+**Migration `005_connection_firm`.** Each connection names its firm, and
+each firm connects one way only. The migration fills in the firm for OANDA,
+IG, Alpaca and IB connections, and for cTrader and MT5 connections named
+after their firm. After the upgrade, open Settings > Getting started: the
+**Add a broker connection** item lists every connection still without a
+firm. For each one, on Settings > Connections:
 
 1. Press **Edit**, choose its **Firm**, and press **Save**.
 2. If saving says the firm "connects only through" another broker (an IC
    Markets account on MT5, for example), press **Remove** on that connection
    and add the account again with that firm, which sets the right broker.
 
-**MT5 sidecars upgrade separately.** They run on the MT5 VM, not in the
-Docker stack. After an upgrade that changes `mt5_sidecar/requirements.txt`
-(the November 2026 dependency upgrade did), on VM 120 for each sidecar:
+**Migration `004_keep_bar_history`.** The upgrade removes the old 2-year
+policy and, for every entry whose history start is more than two years back,
+resets its history cursor so the next backfill passes re-collect any bars
+the policy dropped. Watch the History column; nothing else is needed.
 
-1. Stop its service.
+### Upgrade an MT5 sidecar
+
+Needed after an upgrade that changes `mt5_sidecar/` (the November 2026
+dependency upgrade did). Do it for each sidecar.
+
+**Where:** VM 120 console (Ubuntu with Wine), or the Windows desktop of
+VM 120.
+
+**Before:** the app server is upgraded, and nothing is trading on that MT5
+account. The instance name is the one used at install (`demo-a` for the
+first account).
+
+**Do:** *Ubuntu with Wine:* update the code, then run the install again. It
+keeps the stored secret, login, certificate and TLS setting, installs the
+new packages and restarts the service:
+
+```bash
+git -C /opt/tradingapp pull --ff-only
+cp /opt/tradingapp/install/mt5-sidecar-wine.sh /root/mt5-sidecar-wine.sh
+bash /root/mt5-sidecar-wine.sh install --instance demo-a --port 9100 --server-tz <mt5-server-tz>
+```
+
+For a second account, run the last line again with `--instance demo-b
+--port 9101`.
+
+*Windows:*
+
+1. Stop the sidecar (end the **MT5 sidecar A** task in Task Scheduler).
 2. Update the code (`git pull` in `C:\tradingapp`, or copy the new
-   `mt5_sidecar/` folder over the old one).
-3. Run `python -m pip install -r requirements.txt` in `mt5_sidecar`.
-4. Start the service again.
-5. Check it from the app server, as in
-   [INSTALL.md § 4.2](INSTALL.md#check-it-from-the-app-server).
+   `mt5_sidecar/` folder over the old one, keeping `sidecar.env`).
+3. Run `python -m pip install -r requirements.txt` in
+   `C:\tradingapp\mt5_sidecar`.
+4. Start the task again.
+
+**Expected:** on Ubuntu, a line that starts with `[mt5] check: PASS`.
+
+**If it fails:** as in
+[INSTALL.md § 4.2](INSTALL.md#42-metatrader-5-vm-120), "Install the terminal
+and sidecar".
+
+**Done when:** the check from the app server passes
+([INSTALL.md § 4.2](INSTALL.md#check-it-from-the-app-server)), and the
+connection shows connected on Settings > Connections.
 
 ### Rebuild on a new host, keeping an external database
 
-Build the new app server as in [INSTALL.md step 2](INSTALL.md#2-app-server-ct-110),
-with the saved key added to the answers as `SETTINGS_ENCRYPTION_KEY`
-([INSTALL.md § A.4](INSTALL.md#a4-rebuilding-the-app-server)). On a host
-installed by hand: `./tradingapp.sh install --external-db`, with the same
-values in `--answers FILE` or typed when asked.
+**Where:** as [INSTALL.md § A.4](INSTALL.md#a4-rebuilding-the-app-server),
+which is this procedure in full.
 
-The backend adopts the existing schema, applies only pending migrations and
-checks the key. It comes up configured: no setup screen, and the brokers are
-already there. With the wrong key it stops in `key_mismatch` instead of
-starting with secrets it cannot read.
+**Before:** the database server is intact, and you have the saved encryption
+key.
+
+**Do:** follow [INSTALL.md § A.4](INSTALL.md#a4-rebuilding-the-app-server).
+On a host installed by hand instead: `./tradingapp.sh install --external-db`,
+with the database's address and password and the saved
+`SETTINGS_ENCRYPTION_KEY` in `--answers FILE`, or typed when asked.
+
+**Expected:** the backend adopts the existing schema, applies only pending
+migrations and checks the key. It comes up configured: no setup screen, and
+the brokers are already there.
+
+**If it fails:** *it stops in `key_mismatch`:* the key is not the one this
+database was sealed with. The backend stops there instead of starting with
+secrets it cannot read. Find the right key, or see
+[Lost encryption key](#lost-encryption-key).
+
+**Done when:** `./tradingapp.sh doctor` shows `state: ready` and you can
+sign in with your existing password.
 
 ### The bundled database
 
@@ -204,18 +474,39 @@ removes it. To move to a new host, take a dump first and restore it there.
 ### Move from the bundled to an external database
 
 `install --external-db` refuses on a host that runs the bundled database,
-because it would leave the data behind. Move the data first:
+because it would leave the data behind. Move the data first.
 
-1. Build the database server ([INSTALL.md step 1](INSTALL.md#1-database-server-ct-100)).
-2. On the app host, stop the backend and dump the bundled database:
+**Where:** the app shell, then the database server's console as root (CT 100
+on Proxmox), then the app shell again.
+
+**Before:**
+- The app host runs the bundled database: `ls .tradingapp.with-db` in the
+  checkout finds the file.
+- The database server is built
+  ([INSTALL.md step 1](INSTALL.md#1-database-server-ct-100)), with the app
+  host's address in its `pg_hba.conf` line, and its database is still empty.
+- Nothing is trading.
+
+**Do:**
+
+1. In the app shell, stop the backend and dump the bundled database:
 
    ```bash
    docker compose -f docker-compose.yml -f docker-compose.db.yml stop backend
    docker compose -f docker-compose.yml -f docker-compose.db.yml exec -T postgres \
      pg_dump -U tradingapp -Fc tradingapp > /tmp/tradingapp.dump
+   ls -l /tmp/tradingapp.dump
    ```
 
-3. Copy the dump to the database server and restore it:
+2. Copy the dump to `/tmp/tradingapp.dump` on the database server. On
+   Proxmox, in the Proxmox shell:
+
+   ```bash
+   pct pull 110 /tmp/tradingapp.dump /tmp/tradingapp.dump
+   pct push 100 /tmp/tradingapp.dump /tmp/tradingapp.dump
+   ```
+
+3. On the database server, restore it:
 
    ```bash
    runuser -u postgres -- psql -d tradingapp -c 'SELECT timescaledb_pre_restore();'
@@ -223,32 +514,93 @@ because it would leave the data behind. Move the data first:
    runuser -u postgres -- psql -d tradingapp -c 'SELECT timescaledb_post_restore();'
    ```
 
-   An error that the `timescaledb` extension already exists is expected.
-4. Switch over. `--no-db` stops using the bundled database; the key in
-   `.env` stays, so the restored secrets still open:
+4. In the app shell, switch over. `--no-db` stops using the bundled
+   database; the key in `.env` stays, so the restored secrets still open. It
+   asks for the database's address and password
+   (`/root/tradingapp-db-password` on CT 100):
 
    ```bash
    ./tradingapp.sh --no-db install --external-db
    ```
 
-5. Once the app is healthy, remove the old volume
-   (`docker volume ls | grep pgdata`, then `docker volume rm <name>`).
+5. Once the app is healthy, remove the old volume and the dumps:
+
+   ```bash
+   docker volume rm tradingapp_tradingapp_pgdata
+   rm -f /tmp/tradingapp.dump
+   ```
+
+**Expected:** the dump is not empty. `pg_restore` may print one error that
+the `timescaledb` extension already exists; that is expected. Item 4 ends
+with the app running.
+
+**If it fails:**
+- *`pg_restore` prints other errors:* the target database was not empty.
+  Drop and recreate it as in INSTALL step 1.3, and restore again.
+- *Item 4 stops at `waiting_for_database`:* the address, password or
+  `pg_hba.conf` line is wrong. Correct it and run item 4 again. The bundled
+  database's volume is untouched until item 5, so nothing is lost meanwhile.
+- *`key_mismatch`:* `.env` lost its key. Put the saved key back.
+
+**Done when:** `./tradingapp.sh doctor` shows `Database: external` and
+`state: ready`, your connections and stored bars are there, and
+`docker volume ls | grep pgdata` prints nothing.
 
 ### Lost encryption key
 
-If the saved key cannot be found, run `./tradingapp.sh forget-secrets` and
-type FORGET. It clears every secret sealed with the old key: broker
-credentials, secret settings, the MFA secret and the session key. Connections
-and settings stay. Sign in and enter their secrets again (Connections, Alerts
-and safety, Security). Never generate a new key on a database that already
-holds secrets; `install` never replaces an existing key for that reason.
+Only when the saved key cannot be found anywhere. This cannot be undone.
+
+**Where:** app shell. A person decides this: an agent never runs it on its
+own ([INSTALL.md § A.5](INSTALL.md#a5-rules-for-an-agent-running-the-install)
+rule 7).
+
+**Before:** you have looked for the key in the password manager, in
+`.env.bak.*` files in the checkout, and in backups of the app server. You
+have each broker's credentials to hand, to enter again.
+
+**Do:**
+
+```bash
+./tradingapp.sh forget-secrets
+```
+
+and type `FORGET` when asked. Then sign in and enter the secrets again, on
+Settings > Connections, Alerts and safety, and Security.
+
+**Expected:** it clears every secret sealed with the old key: broker
+credentials, secret settings, the MFA secret and the session key.
+Connections and settings stay.
+
+**If it fails:** stop and report. Never generate a new key on a database
+that already holds secrets; `install` never replaces an existing key for
+that reason.
+
+**Done when:** `./tradingapp.sh doctor` shows `state: ready`, every
+connection shows connected again, and the new key is stored off the host
+(`./tradingapp.sh backup-key`).
 
 ### Internal secrets
 
-`./tradingapp.sh rotate-internal-secrets` replaces the broker service token
-and Redis password and recreates the services that use them. A
-`BROKER_SERVICE_TOKEN` or `REDIS_PASSWORD` line left in `.env` by an old
-install wins over the volume until `install` removes it.
+The broker service token and the Redis password are generated on first
+start. Rotate them if they may have leaked.
+
+**Where:** app shell.
+
+**Before:** nothing is trading; the services restart.
+
+**Do:**
+
+```bash
+./tradingapp.sh rotate-internal-secrets
+```
+
+**Expected:** it replaces both and recreates the services that use them.
+
+**If it fails:** *it warns that `BROKER_SERVICE_TOKEN` or `REDIS_PASSWORD`
+"is still set in .env and wins":* a line left by an old install.
+`./tradingapp.sh install` removes it; then rotate again.
+
+**Done when:** `./tradingapp.sh test` passes for every service.
 
 ---
 
@@ -259,24 +611,48 @@ refuse any `account_mode=live` order with 403 until you turn it on; paper
 orders always work. Take a strategy through
 [PAPER_TRADING.md](PAPER_TRADING.md) first.
 
-1. On Settings > Security, make sure order MFA is enrolled and a trading
-   token exists.
-2. Add the account as a **live** connection on Settings > Connections. A
+**Where:** the app, then the app shell. A person does this, and only a
+person: an agent never turns live trading on or adds a live connection
+([INSTALL.md § A.5](INSTALL.md#a5-rules-for-an-agent-running-the-install)
+rule 1).
+
+**Before:**
+- The strategy has been through [PAPER_TRADING.md](PAPER_TRADING.md).
+- On Settings > Security, order MFA is enrolled and a trading token exists.
+- Alerts and the dead-man's switch work
+  ([INSTALL.md step 6](INSTALL.md#6-alerts-and-safety-nets)).
+- `LIVE_TRADING_ENABLED=false` is not pinned in `.env`:
+  `grep -c '^LIVE_TRADING_ENABLED=' .env` prints `0`.
+
+**Do:**
+
+1. Add the account as a **live** connection on Settings > Connections. A
    live order to a paper connection is refused. For IB that is the live port
-   (4001); for MT5 the sidecar also needs `MT5_ALLOW_REAL=true`.
-3. On Settings > Trading, enter the trading token and a current MFA code,
+   (4001); for MT5 the sidecar also needs `MT5_ALLOW_REAL=true` in its
+   settings file, and a restart of the sidecar.
+2. On Settings > Trading, enter the trading token and a current MFA code,
    set Live trading on, and type LIVE when asked. The change goes to the
    settings history and to Telegram.
-4. Check the gate:
+3. Check the gate, in the app shell, with `$API_TOKEN` set as at the top
+   of this guide:
 
    ```bash
-   curl -s -H "Authorization: Bearer $API_TOKEN" http://<host>:3000/api/orders/config | jq
+   curl -s -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:3000/api/orders/config | jq
    ```
 
-   `live_trading_enabled` must be `true`. If `backend_live_enabled` and
-   `ib_live_enabled` disagree, the broker service has not picked the change
-   up yet (it does within 15 seconds). Do not send a live order until they
-   match.
+**Expected:** `live_trading_enabled` is `true`, and `backend_live_enabled`
+and `ib_live_enabled` agree.
+
+**If it fails:**
+- *`backend_live_enabled` and `ib_live_enabled` disagree:* the broker
+  service has not picked the change up yet (it does within 15 seconds). Run
+  the check again. Do not send a live order until they match.
+- *The switch is locked on the page:* `LIVE_TRADING_ENABLED` is pinned in
+  `.env`, which wins.
+- *The save is refused:* the trading token or the MFA code is wrong.
+
+**Done when:** the check shows all three `true`, and a Telegram message
+reported the change.
 
 A strategy runs live only after the promotion gate has seen a paper run of
 the same definition (`GET /api/strategies/definitions/:id/promotion` says
@@ -319,17 +695,13 @@ is [INSTALL.md step 5](INSTALL.md#5-market-data).
 - With **Record live** ticked, the live recorder stores the instrument's
   1-minute bars from its live prices, and with **Store ticks** each quote as
   well. See [Live recorder](#live-recorder) below.
-- Upgrading from a version before migration `004_keep_bar_history`: the
-  upgrade removes the old 2-year policy and, for every entry whose history
-  start is more than two years back, resets its history cursor so the next
-  backfill passes re-collect any bars the policy dropped. Watch the History
-  column; nothing else is needed.
 
-Check it:
+Check it, in the app shell, with `$API_TOKEN` set as at the top of this
+guide:
 
 ```bash
-curl -fs http://<host>:4000/api/health | jq .services.backfill
-curl -fs -H "Authorization: Bearer $API_TOKEN" http://<host>:4000/api/market-data/database/stats | jq
+curl -fs http://127.0.0.1:4000/api/health | jq .services.backfill
+curl -fs -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:4000/api/market-data/database/stats | jq
 ```
 
 ---
@@ -341,8 +713,8 @@ What it does and how is in
 
 ```bash
 ./tradingapp.sh doctor        # its last section is the recorder
-curl -fs http://<host>:4000/api/health | jq .services.recorder
-curl -fs http://<host>:4000/api/market-data/recorder/status | jq
+curl -fs http://127.0.0.1:4000/api/health | jq .services.recorder
+curl -fs http://127.0.0.1:4000/api/market-data/recorder/status | jq
 ```
 
 The line above the data collection table says the same in words, and the
@@ -357,7 +729,7 @@ in the last minute, the time of the last quote, or why it is not streaming.
 | "not streaming: ..." on a row | The broker refused the symbol or is down; the text is the broker's reason. Fix the symbol or the connection. It is tried again every minute. |
 | "no quote yet" for minutes | The market is closed, or the broker sends nothing for that symbol. Open `/live` for the same symbol and connection to compare. |
 | A gap in recorded bars | The nightly reconcile (02:30 UTC) fills it from the broker's history. **Reconcile now**, under the recorder's line, does it at once. It reaches back two days; for an older gap, tick Collect on the instrument's 1min row and let the backfill fetch it. |
-| "Reconcile ... 1 instrument failed" | The broker refused the history request. `curl -fs http://<host>:4000/api/market-data/recorder/status \| jq .reconcile` gives the reason per instrument. It is tried again the next night. |
+| "Reconcile ... 1 instrument failed" | The broker refused the history request. `curl -fs http://127.0.0.1:4000/api/market-data/recorder/status \| jq .reconcile` gives the reason per instrument. It is tried again the next night. |
 
 A weekend or a closed market gives no quotes and no bars. That is normal and
 is not reported as a fault.
@@ -394,55 +766,24 @@ docker compose exec postgres psql -U tradingapp -d tradingapp -c \
   "SELECT view_name, materialized_only FROM timescaledb_information.continuous_aggregates;"
 ```
 
-After the upgrade that adds them (migration `008_built_bars`) the views are
-filled in the background within the hour. They answer correctly before that,
-only more slowly.
-
 A strategy with a protective stop is backtested most faithfully when 1-minute
 bars are stored for the range, because the stop then fills on the minute that
 reached it. The results header says which was used: "Stops filled along
 stored 1 minute bars" or "Stops filled on each bar's own range". For the
 first, record the instrument live or add it to the data collection table at
-1 minute. After this upgrade a rule-set that has a `stop` block backtests
-differently from before, because the stop used to be ignored.
+1 minute.
 
-The link to an MT5 sidecar can now be encrypted. Nothing changes until you
-turn it on: an existing `http://` connection keeps working, and `doctor` and
-Settings > Connections say it is not encrypted. To turn it on, follow
-[INSTALL.md § 4.2](INSTALL.md#42-metatrader-5-vm-120): on the sidecar's
-machine pull the new code and run the install again with `--tls`, then give
-the connection an `https://` Bridge URL and the certificate fingerprint. If
-the sidecar's certificate is ever replaced, the connection stops with "MT5
-bridge not trusted" until it is given the new fingerprint.
-
-The backend and frontend images now run as the unprivileged `node` user and
-hold production dependencies only. The upgrade rebuilds them, and there is
-nothing to change. Commands run inside them with `docker compose exec` also
-run as `node`; add `-u 0` for the rare one that needs root.
-
-Migration `010_auth_sessions` adds one small table, `auth_sessions`, and runs
-in an instant. Session cookies issued before this upgrade are no longer
-accepted, so every browser signs in once after it. API tokens are not
-affected.
-
-Migration `009_bar_spread` adds one column, `candlestick_data.spread`, and
-runs in an instant. From then on OANDA's bars are stored with the spread at
-each bar's close, and a backtest on bars that carry one fills buys at the ask
-and sells at the bid. Bars stored before the upgrade have no spread and are
-not changed by it. A backtest on them fills at the mid price as before, and
-the results offer **Download the range again with spreads, then run**, which
-fetches the range from OANDA again and stores the spread on each bar. The
-nightly reconcile and the data collection also add spreads to the bars they
-fetch again. Expect an OANDA backtest to return a little less once its bars
-carry spreads: that is the cost the mid price left out.
+OANDA's bars carry the spread at each bar's close, and a backtest on bars
+that carry one fills buys at the ask and sells at the bid. Bars stored
+before spreads were kept fill at the mid price, and the results offer
+**Download the range again with spreads, then run**.
 
 To check two runs used the same data, compare the data hash in their results
-headers, or `data.hash` from `GET /api/backtesting/runs/<id>`.
+headers, or `data.hash` from `GET /api/backtesting/runs/<id>`, where `<id>`
+is the run's id from the results page.
 
-**Upgrading from a version before migration `006_live_recorder`.** Live
-streams are now per broker connection, and their channel names changed.
-Reload any chart tab left open across the upgrade. Nothing is recorded
-until you tick Record live on an entry.
+What changed with each upgrade is under
+[What each upgrade changes](#what-each-upgrade-changes).
 
 ### Bar replay
 
@@ -505,9 +846,9 @@ and the run places nothing), or if you want `/api/account/executions` and
 Check it:
 
 ```bash
-curl -fs http://<host>:4000/api/health | jq .services.executions
+curl -fs http://127.0.0.1:4000/api/health | jq .services.executions
 curl -fs -H "Authorization: Bearer $API_TOKEN" \
-  "http://<host>:4000/api/account/reconciliation?broker=ib" | jq
+  "http://127.0.0.1:4000/api/account/reconciliation?broker=ib" | jq
 ```
 
 The reconciliation lists every symbol either side knows with a `matched`
@@ -523,8 +864,8 @@ flag. On an account you also trade by hand, alert on `.mismatches > 0`.
 ./tradingapp.sh status
 ./tradingapp.sh test
 ./tradingapp.sh doctor
-curl -fs http://<host>:4000/api/health/ready
-curl -fs http://<host>:4000/api/health | jq
+curl -fs http://127.0.0.1:4000/api/health/ready
+curl -fs http://127.0.0.1:4000/api/health | jq
 ```
 
 `/api/health/ready` answers 200 when the database is reachable, migrated and
@@ -553,7 +894,7 @@ rule_files:
 scrape_configs:
   - job_name: tradingapp-backend
     metrics_path: /metrics
-    static_configs: [{ targets: ['<app-host>:4000'] }]
+    static_configs: [{ targets: ['<app-address>:4000'] }]
 ```
 
 - **Alert rules:** copy [`ops/prometheus/alerts.yml`](../ops/prometheus/alerts.yml)
@@ -595,19 +936,55 @@ docker-compose.db.yml exec -T postgres pg_dump -U tradingapp -Fc tradingapp`
 on the app server. Managed databases have their own point-in-time recovery;
 prefer it.
 
-Restore a `-Fc` dump into a database where the `timescaledb` extension exists,
-with the backend stopped:
+### Restore a dump
 
-```bash
-runuser -u postgres -- psql -d tradingapp -c 'SELECT timescaledb_pre_restore();'
-runuser -u postgres -- pg_restore -d tradingapp -c --no-owner --role=tradingapp <file>.dump
-runuser -u postgres -- psql -d tradingapp -c 'SELECT timescaledb_post_restore();'
-```
+**Where:** the app shell to stop the app, then the database server's console
+as root (CT 100 on Proxmox).
 
-For the bundled database, run the same through
+**Before:**
+- You have the dump file, and its path on the database server (dumps from
+  INSTALL step 1.5 are in `/var/backups/tradingapp/`).
+- The `timescaledb` extension exists in the target database (it does on a
+  server built with INSTALL step 1).
+- You have the encryption key that database was sealed with.
+- You accept that the restore replaces what the database holds now.
+
+**Do:**
+
+1. In the app shell, stop the app: `./tradingapp.sh stop`.
+2. On the database server, with the dump's path in place of the one shown:
+
+   ```bash
+   DUMP=/var/backups/tradingapp/tradingapp_20261112_021000.dump
+   runuser -u postgres -- psql -d tradingapp -c 'SELECT timescaledb_pre_restore();'
+   runuser -u postgres -- pg_restore -d tradingapp -c --no-owner --role=tradingapp "$DUMP"
+   runuser -u postgres -- psql -d tradingapp -c 'SELECT timescaledb_post_restore();'
+   ```
+
+3. In the app shell, start the app: `./tradingapp.sh start`.
+
+For the bundled database, run the three commands of item 2 through
 `docker compose -f docker-compose.yml -f docker-compose.db.yml exec -T postgres`
-as user `tradingapp`. Then start the app with the key that database was
-sealed with. Test a restore at least once.
+as user `tradingapp` (`psql -U tradingapp`, `pg_restore -U tradingapp`), with
+only the backend stopped
+(`docker compose -f docker-compose.yml -f docker-compose.db.yml stop backend`).
+
+**Expected:** `pg_restore` may print an error that the `timescaledb`
+extension already exists; that is expected. The two `SELECT` lines each
+print one row.
+
+**If it fails:**
+- *The app comes up in `key_mismatch`:* the key in `.env` is not the one the
+  dump was sealed with. Put that key in `.env` and `./tradingapp.sh restart`.
+- *`pg_restore` reports many errors about existing objects:* the dump was
+  restored without `-c` into a database that was not empty. Run item 2
+  again as written.
+
+**Done when:** `./tradingapp.sh doctor` shows `state: ready`, and the newest
+bar on a chart matches the time of the dump.
+
+Test a restore at least once, into a spare database server, before you need
+one.
 
 ---
 
@@ -633,7 +1010,7 @@ API route answer 503 with the state, and the page shows it.
 
 | State | Meaning | What to do |
 |---|---|---|
-| `waiting_for_database` | The backend cannot reach PostgreSQL. It retries every 1 to 30 seconds with no deadline, so it recovers once the database is up. | Bundled: `./tradingapp.sh status` and `logs`. External: check `POSTGRES_*` in `.env` (host, port, password, `POSTGRES_SSL`), and from the app host `nc -vz <db-host> 5432`; then `listen_addresses`, `pg_hba.conf` and the firewall. |
+| `waiting_for_database` | The backend cannot reach PostgreSQL. It retries every 1 to 30 seconds with no deadline, so it recovers once the database is up. | Bundled: `./tradingapp.sh status` and `logs`. External: check `POSTGRES_*` in `.env` (host, port, password, `POSTGRES_SSL`), and from the app host `nc -vz <db-address> 5432`; then `listen_addresses`, `pg_hba.conf` and the firewall. |
 | `migrating` | The schema is being created or updated. | Wait. A first install or a large migration can take minutes. |
 | `migration_failed` | A migration failed; the detail carries the database error. It does not retry by itself. | Usually permissions: the role must own the database, and the `timescaledb` extension must exist. Fix it, then `./tradingapp.sh migrate`, which applies what is pending and restarts the backend if it had stopped on the failure. |
 | `key_mismatch` | `SETTINGS_ENCRYPTION_KEY` in `.env` does not open this database's secrets. | Put the saved key back in `.env` and `./tradingapp.sh restart`. If it is lost: [Lost encryption key](#lost-encryption-key). |
@@ -727,7 +1104,7 @@ app re-checks every `BROKER_PROBE_INTERVAL_SECONDS`.
 | Symbol resolution says "ambiguous" | The broker lists several tiers of the pair; the connection needs a symbol map ([INSTALL.md § 4.9](INSTALL.md#49-not-yet-on-the-form-symbol-maps-and-account-info-from)). |
 | Log line `connection breaker open` | That connection is not answering. Others keep running; it is retried after the cooldown. |
 
-IB Gateway, checked from the app host with `nc -vz <gateway> 4002`:
+IB Gateway, checked from the app host with `nc -vz <ib-address> 4002`:
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
@@ -741,10 +1118,10 @@ IB Gateway, checked from the app host with `nc -vz <gateway> 4002`:
 
 | Symptom | Fix |
 |---|---|
-| Network errors in the browser, blank charts | `curl -fs http://<host>:3000/api/health` (through the frontend) and `:4000/api/health` (direct). If only the first fails, check `BACKEND_INTERNAL_URL` in `docker-compose.yml` matches `BACKEND_PORT`. A 503: the readiness states above. |
+| Network errors in the browser, blank charts | `curl -fs http://127.0.0.1:3000/api/health` (through the frontend) and `http://127.0.0.1:4000/api/health` (direct). If only the first fails, check `BACKEND_INTERNAL_URL` in `docker-compose.yml` matches `BACKEND_PORT`. A 503: the readiness states above. |
 | Bars in the wrong year or shifted hours | Bars are stored in UTC. Compare one from `/api/market-data/history` with the broker's own chart; for IB, run the Gateway in UTC. |
 | Slow charts | Shorter periods (`3M` rather than `1Y`); collect the instrument so reads come from the database. |
-| Price stops updating, history still loads | `curl -fs http://<host>:4000/api/health \| jq .services.streaming`. `connected: false`: the backend cannot reach Redis (`docker compose logs backend redis`, then `docker compose restart redis`). No subscriptions: reload the chart. Ticks published but none in the browser: the session expired, sign in again. |
+| Price stops updating, history still loads | `curl -fs http://127.0.0.1:4000/api/health \| jq .services.streaming`. `connected: false`: the backend cannot reach Redis (`docker compose logs backend redis`, then `docker compose restart redis`). No subscriptions: reload the chart. Ticks published but none in the browser: the session expired, sign in again. |
 
 ### Systematic trading and alerts
 
@@ -766,16 +1143,38 @@ halt state.
 
 ### Emergency recovery
 
-```bash
-./tradingapp.sh fix              # stop, deploy, check
-./tradingapp.sh clean            # remove containers and images; keeps the database
-./tradingapp.sh install          # rebuild and wait for ready
-```
+When the stack will not come up and the tables above have not helped. Each
+item is stronger than the one before; stop at the first that works.
 
-`clean --include-database` also deletes the bundled database and the
-internal secrets. Take a dump first.
+**Where:** app shell.
+
+**Before:** you have read `./tradingapp.sh doctor` and
+`./tradingapp.sh logs`, and the problem is not one the tables above name.
+
+**Do:**
+
+1. `./tradingapp.sh fix` (stop, deploy, check).
+2. `./tradingapp.sh clean`, then `./tradingapp.sh install` (remove the
+   containers and images, rebuild, and wait until ready). The database and
+   the internal secrets are kept.
+
+**Expected:** `install` ends with the app's address.
+
+**If it fails:** stop and report
+([Reporting a problem](#reporting-a-problem)). Do not go further on your
+own: `clean --include-database` also deletes the bundled database and the
+internal secrets, and is only ever run on the operator's word, after a dump.
+
+**Done when:** `./tradingapp.sh test` passes for every service and
+`./tradingapp.sh doctor` shows `state: ready`.
 
 ### Reporting a problem
+
+**Where:** app shell.
+
+**Before:** nothing.
+
+**Do:**
 
 ```bash
 ./tradingapp.sh doctor  > diagnostics.txt 2>&1
@@ -785,5 +1184,12 @@ df -h                  >> diagnostics.txt
 free -h                >> diagnostics.txt
 ```
 
-Include the OS version, `diagnostics.txt`, the exact steps, and the `.env`
-key names only, never their values.
+**Expected:** a file `diagnostics.txt` in the checkout. `doctor` prints the
+names of the keys in `.env`, never their values.
+
+**If it fails:** *`doctor` itself fails:* include what it printed.
+
+**Done when:** you have sent `diagnostics.txt`, the OS version, the step or
+procedure you were on, the exact command and its output, and the version
+(`git rev-parse --short HEAD`). Never include a value from `.env`, a
+password, a token or the encryption key.
