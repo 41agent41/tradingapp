@@ -82,15 +82,17 @@ describe('SessionStore', () => {
     const store = new SessionStore();
     store.attach(db);
     const id = store.create(NOW + HOUR, { ip: '10.0.0.5' }, NOW);
-    expect(db.calls[0].sql).toContain('INSERT INTO auth_sessions');
-    expect(db.calls[0].params?.[0]).toBe(id);
+    // Expired rows are cleared as a new one is stored.
+    expect(db.calls[0].sql).toMatch(/DELETE FROM auth_sessions WHERE expires_at/);
+    expect(db.calls[1].sql).toContain('INSERT INTO auth_sessions');
+    expect(db.calls[1].params?.[0]).toBe(id);
     store.revoke(id);
-    expect(db.calls[1]).toEqual({
+    expect(db.calls[2]).toEqual({
       sql: 'DELETE FROM auth_sessions WHERE id = $1',
       params: [id],
     });
     store.revokeAll();
-    expect(db.calls[2].sql).toBe('DELETE FROM auth_sessions');
+    expect(db.calls[3].sql).toBe('DELETE FROM auth_sessions');
   });
 
   it('reads the stored sessions at startup, leaving out expired ones', async () => {
@@ -132,6 +134,74 @@ describe('SessionStore', () => {
     expect(store.isActive(id, NOW)).toBe(true);
     expect(store.revoke(id)).toBe(true);
     await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  it('tells listeners which sessions ended', () => {
+    const store = new SessionStore();
+    const seen: Array<string[] | 'all'> = [];
+    const stop = store.onEnd((ended) => seen.push(ended));
+    const a = store.create(NOW + HOUR, {}, NOW);
+    const b = store.create(NOW + HOUR, {}, NOW);
+    store.revoke(a);
+    store.revokeByPublicId(b.slice(0, 12));
+    store.revokeAll();
+    expect(seen).toEqual([[a], [b], 'all']);
+
+    stop();
+    store.revokeAll();
+    expect(seen).toHaveLength(3);
+    // A listener that throws does not stop a session from ending.
+    store.onEnd(() => {
+      throw new Error('boom');
+    });
+    const c = store.create(NOW + HOUR, {}, NOW);
+    expect(store.revoke(c)).toBe(true);
+    expect(store.isActive(c, NOW)).toBe(false);
+  });
+
+  it('forgets expired sessions when a new one is made', () => {
+    const store = new SessionStore();
+    store.create(NOW + HOUR, {}, NOW);
+    store.create(NOW + HOUR, {}, NOW);
+    const later = NOW + 2 * HOUR;
+    const fresh = store.create(later + HOUR, {}, later);
+    // The two old ones are gone from memory, not only hidden from the list.
+    expect((store as any).sessions.size).toBe(1);
+    expect(store.isActive(fresh, later)).toBe(true);
+  });
+
+  it('does not bring back a session ended while the stored ones were being read', async () => {
+    const row = (id: string) => ({
+      id,
+      created_at: new Date(NOW - HOUR),
+      expires_at: new Date(NOW + HOUR),
+      ip: null,
+      user_agent: null,
+    });
+    const run = async (end: (store: SessionStore) => void) => {
+      const store = new SessionStore();
+      store.attach({
+        query: jest.fn(async (sql: string) => {
+          if (!/^\s*SELECT/i.test(sql)) return { rows: [] };
+          // Sign-out arrives after the rows were read, before they are kept.
+          end(store);
+          return { rows: [row('a'.repeat(48)), row('b'.repeat(48))] };
+        }),
+      });
+      await store.start(NOW);
+      return store;
+    };
+
+    const one = await run((store) => store.revoke('a'.repeat(48)));
+    expect(one.isActive('a'.repeat(48), NOW)).toBe(false);
+    expect(one.isActive('b'.repeat(48), NOW)).toBe(true);
+
+    const all = await run((store) => store.revokeAll());
+    expect(all.list(null, NOW)).toEqual([]);
+
+    // Afterwards the store is back to normal: a later load keeps its rows.
+    const again = await run(() => undefined);
+    expect(again.list(null, NOW)).toHaveLength(2);
   });
 
   it('works with no database attached', async () => {

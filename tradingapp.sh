@@ -110,10 +110,12 @@ env_get() {
 env_set() {
     local key="$1" value="$2" tmp
     tmp=$(mktemp)
-    awk -v k="$key" -v v="$value" '
-        index($0, k"=") == 1 { if (!done) print k"="v; done=1; next }
+    # Through the environment, not -v: awk reads backslash escapes in a -v
+    # value, which would change a password or path that has a backslash in it.
+    k="$key" l="$key=$value" awk '
+        index($0, ENVIRON["k"]"=") == 1 { if (!done) print ENVIRON["l"]; done=1; next }
         { print }
-        END { if (!done) print k"="v }
+        END { if (!done) print ENVIRON["l"] }
     ' .env >"$tmp"
     cat "$tmp" >.env
     rm -f "$tmp"

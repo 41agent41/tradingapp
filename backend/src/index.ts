@@ -60,6 +60,7 @@ import { isLiveTradingEnabled, liveTradingSafeguardsMissing } from './services/o
 import { StartupGate } from './services/startupGate.js';
 import { openOriginsWarning, originAllowed, trustedProxies } from './services/network.js';
 import { sessionStore } from './services/sessionStore.js';
+import { allowSocketRequest, closeSocketsWithSessions } from './services/socketGuard.js';
 
 // Refuse to start on an unsafe configuration (open API, default secrets, live
 // trading without MFA, an unimplemented kill-switch action). See the module.
@@ -120,6 +121,8 @@ const io = new SocketIOServer(server, {
     methods: ['GET', 'POST'],
     credentials: true,
   },
+  // A handshake from another site's page is refused (services/socketGuard.ts).
+  allowRequest: (req, callback) => allowSocketRequest(req, callback),
 });
 
 // The frontend server forwards the browser's /api and /socket.io requests
@@ -316,6 +319,9 @@ io.use((socket, next) => {
   }
   next();
 });
+
+// Signing out closes the sockets its session opened (services/socketGuard.ts).
+closeSocketsWithSessions(io);
 
 // Real-time streaming bridge: subscribes to Redis (where the IB
 // service publishes ticks) and fans messages out to Socket.IO rooms
