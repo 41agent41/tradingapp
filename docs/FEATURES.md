@@ -1151,7 +1151,8 @@ Cache health surfaces in `/api/health` under `services.cache`. Turn
   sidecar, deploys a strategy and checks the orders, stops, trailing and
   fills that follow (the paper runbook's steps 11 to 22).
 - **CI:** `.github/workflows/ci.yml` runs lint, format-check, type-check,
-  tests and build for every service, plus the end-to-end paper run, on every
+  tests and build for every service, plus the end-to-end paper run and a
+  build of the backend and frontend images, on every
   push / PR to `master` (and `main`).
 
 ---

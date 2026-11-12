@@ -190,7 +190,8 @@ stack on its own for poking at.
 **CI** (`.github/workflows/ci.yml`) runs on every push and pull request to
 `master` (and `main`): a job per component with lint, format, types, tests
 and build (the backend job adds the database tests against TimescaleDB), the
-end-to-end paper run, and a dependency audit (`npm audit` on both lockfiles'
+end-to-end paper run, a build of the backend and frontend images that checks
+they run as a non-root user, and a dependency audit (`npm audit` on both lockfiles'
 production dependencies, `pip-audit` on both Python locks) that fails on a
 known high-severity vulnerability.
 

@@ -292,3 +292,36 @@ jobs:
 
       - name: Paper run
         run: e2e/run.sh
+
+  # --------------------------------------------------------------------
+  # The backend and frontend images build from their Dockerfiles, run as
+  # a non-root user and carry no dev tools (S-06).
+  # --------------------------------------------------------------------
+  images:
+    name: images (docker build / non-root)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the backend image
+        run: docker build -t tradingapp-backend:ci backend
+
+      - name: Build the frontend image
+        run: docker build -t tradingapp-frontend:ci frontend
+
+      - name: Check both images
+        run: |
+          set -eu
+          for image in tradingapp-backend:ci tradingapp-frontend:ci; do
+            user=$(docker run --rm "$image" id -un)
+            [ "$user" = node ] || { echo "$image runs as $user, not node"; exit 1; }
+            # The app must not be able to change its own files.
+            if docker run --rm "$image" sh -c 'touch /app/probe' 2>/dev/null; then
+              echo "$image can write to /app"; exit 1
+            fi
+          done
+          # What each needs to start is there, and the dev tools are not.
+          docker run --rm tradingapp-backend:ci sh -c \
+            'test -f dist/index.js && test -f src/database/timescaledb-schema.sql && ! test -e node_modules/.bin/jest'
+          docker run --rm tradingapp-frontend:ci sh -c \
+            'test -d .next && test -f server.js && touch .next/cache/probe && ! test -e node_modules/.bin/vitest'
