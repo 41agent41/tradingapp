@@ -15,7 +15,7 @@ from typing import Any, Callable, Optional
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from config import Config, load_config, read_env_file
+from config import LOOPBACK_HOSTS, Config, load_config, read_env_file, tls_fingerprint
 from terminal import Terminal, TerminalError
 
 SECRET_HEADER = "X-MT5-Bridge-Secret"
@@ -145,6 +145,21 @@ async def _json(request: Request) -> Any:
     return body
 
 
+def tls_options(config: Config) -> dict:
+    """uvicorn's TLS arguments, and a log line that says whether the link is
+    encrypted. With TLS on, the line carries the fingerprint to give the app."""
+    if config.tls:
+        assert config.tls_cert and config.tls_key
+        logger.info("TLS on. Certificate SHA-256 fingerprint: %s", tls_fingerprint(config.tls_cert))
+        return {"ssl_certfile": config.tls_cert, "ssl_keyfile": config.tls_key}
+    if config.host not in LOOPBACK_HOSTS:
+        logger.warning(
+            "TLS is off: the secret and every order cross the network unencrypted. "
+            "Set MT5_TLS_CERT and MT5_TLS_KEY (docs/INSTALL.md § 4.2)."
+        )
+    return {}
+
+
 def main() -> None:  # pragma: no cover - needs a real terminal
     import MetaTrader5 as mt5
     import uvicorn
@@ -162,7 +177,13 @@ def main() -> None:  # pragma: no cover - needs a real terminal
         logger.error("%s", exc.message)
     if not config.secret:
         logger.warning("MT5_BRIDGE_SECRET is not set; only use this on a loopback address")
-    uvicorn.run(create_app(terminal), host=config.host, port=config.port, log_level="info")
+    uvicorn.run(
+        create_app(terminal),
+        host=config.host,
+        port=config.port,
+        log_level="info",
+        **tls_options(config),
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

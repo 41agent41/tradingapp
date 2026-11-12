@@ -42,7 +42,13 @@ export const PLATFORM_FIELDS: Record<
   { settings: readonly string[]; required: readonly string[]; secrets: readonly string[] }
 > = {
   oanda: { settings: ['account_id'], required: ['account_id', 'token'], secrets: ['token'] },
-  mt5: { settings: ['url', 'server_timezone'], required: ['url'], secrets: ['secret'] },
+  // `tls_fingerprint`: the SHA-256 fingerprint of the sidecar's certificate,
+  // so a self-signed one can be trusted (S-07). Not secret.
+  mt5: {
+    settings: ['url', 'tls_fingerprint', 'server_timezone'],
+    required: ['url'],
+    secrets: ['secret'],
+  },
   ib: { settings: ['host', 'port', 'client_id'], required: ['host'], secrets: [] },
   alpaca: { settings: [], required: ['api_key', 'api_secret'], secrets: ['api_key', 'api_secret'] },
   // IG: the API key, the login's username and password (`api_secret`), and
@@ -422,7 +428,24 @@ export class BrokerConnectionStore {
       if (name === 'url' && !/^https?:\/\/[^\s]+$/i.test(value)) {
         throw new BrokerConnectionError('URL must start with http:// or https://.', 400);
       }
+      if (name === 'tls_fingerprint') {
+        const hex = value.replace(/^sha256 fingerprint=/i, '').replace(/[:\s-]/g, '');
+        if (!/^[0-9a-f]{64}$/i.test(hex)) {
+          throw new BrokerConnectionError(
+            'The certificate fingerprint is the SHA-256 one: 64 hex digits, with or without colons.',
+            400
+          );
+        }
+        settings[name] = hex.toLowerCase();
+        continue;
+      }
       settings[name] = value;
+    }
+    if (settings.tls_fingerprint && !/^https:\/\//i.test(settings.url ?? '')) {
+      throw new BrokerConnectionError(
+        'A certificate fingerprint needs a bridge URL that starts with https://.',
+        400
+      );
     }
 
     const newSecrets = stringMap(input.secrets, 'secrets');

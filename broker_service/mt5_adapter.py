@@ -78,6 +78,8 @@ like the IB path so `order_audit` reconciles uniformly.
 
 from __future__ import annotations
 
+import ssl
+import threading
 from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 
@@ -89,6 +91,7 @@ from client_ids import audit_id_from, client_order_id
 from indicators import calculator as indicator_calculator
 from models import CandlestickBar, HistoricalDataResponse, RealTimeQuote
 from observability import get_logger
+from tls_pin import PinError, pinned_context
 
 logger = get_logger(__name__)
 
@@ -166,10 +169,30 @@ class MT5Adapter:
         *,
         timeout: float = _HTTP_TIMEOUT_SECONDS,
         shared_secret: Optional[str] = None,
+        tls_fingerprint: Optional[str] = None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._timeout = timeout
         self._shared_secret = shared_secret or None
+        # 64 hex digits: trust exactly the sidecar certificate with this
+        # SHA-256 fingerprint (tls_pin.py). None: the system's authorities.
+        self._tls_fingerprint = tls_fingerprint or None
+        self._tls_context: Optional[ssl.SSLContext] = None
+        self._tls_lock = threading.Lock()
+
+    def _verify(self) -> Any:
+        """What httpx verifies the sidecar's certificate against. With a
+        pinned fingerprint the sidecar's certificate is read and checked once,
+        before anything is sent to it; a sidecar that later presents another
+        certificate fails the handshake, and the pin is read afresh."""
+        if not self._tls_fingerprint:
+            return True
+        with self._tls_lock:
+            if self._tls_context is None:
+                self._tls_context = pinned_context(
+                    self._base, self._tls_fingerprint, timeout=min(self._timeout, 10.0)
+                )
+            return self._tls_context
 
     # -- HTTP plumbing ----------------------------------------------------- #
     def _request(
@@ -183,7 +206,12 @@ class MT5Adapter:
         url = f"{self._base}{path}"
         headers = {_SHARED_SECRET_HEADER: self._shared_secret} if self._shared_secret else None
         try:
-            with httpx.Client(timeout=self._timeout) as client:
+            verify = self._verify()
+        except PinError as exc:
+            logger.error("mt5_bridge_certificate_refused", url=url, error=str(exc))
+            raise HTTPException(503, f"MT5 bridge not trusted: {exc}")
+        try:
+            with httpx.Client(timeout=self._timeout, verify=verify) as client:
                 resp = client.request(
                     method,
                     url,
@@ -192,6 +220,10 @@ class MT5Adapter:
                     headers=headers,
                 )
         except httpx.HTTPError as exc:
+            if self._tls_fingerprint:
+                # The certificate may have been replaced: check it again next time.
+                with self._tls_lock:
+                    self._tls_context = None
             logger.error("mt5_bridge_unreachable", url=url, method=method, error=str(exc))
             raise HTTPException(503, f"MT5 bridge unreachable: {exc}")
         if resp.status_code >= 400:

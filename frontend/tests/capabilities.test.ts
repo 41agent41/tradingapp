@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   describeCapabilities,
+  describeLink,
   findConnection,
   supportedTimeframes,
   type LiveConnection,
@@ -91,5 +92,32 @@ describe('describeCapabilities', () => {
         live_prices: 'poll',
       })
     ).toBe('Bars: tick · prices polled');
+  });
+});
+
+describe('describeLink', () => {
+  const at = { host: '10.0.0.20', port: 9100 };
+
+  it('says nothing for a broker on the internet or on the app server itself', () => {
+    expect(describeLink('oanda', null)).toBeNull();
+    expect(describeLink('mt5', undefined)).toBeNull();
+    expect(describeLink('mt5', { ...at, security: 'loopback' })).toBeNull();
+  });
+
+  it('says when the link is encrypted', () => {
+    expect(describeLink('mt5', { ...at, security: 'tls_pinned' })).toEqual({
+      tone: 'ok',
+      text: 'Encrypted to 10.0.0.20:9100, certificate pinned',
+    });
+    expect(describeLink('mt5', { ...at, security: 'tls' })?.tone).toBe('ok');
+  });
+
+  it('warns when the secret and orders cross the network in the clear', () => {
+    const mt5 = describeLink('mt5', { ...at, security: 'plain' });
+    expect(mt5?.tone).toBe('warn');
+    expect(mt5?.text).toMatch(/Not encrypted to 10\.0\.0\.20:9100.*Turn TLS on at the sidecar/);
+    const ib = describeLink('ib', { host: '10.0.0.30', port: 4002, security: 'plain' });
+    expect(ib?.tone).toBe('warn');
+    expect(ib?.text).toMatch(/IB Gateway has no TLS.*firewalled/);
   });
 });

@@ -470,7 +470,7 @@ read -rp 'MT5 login: ' MT5_LOGIN
 read -rsp 'MT5 password: ' MT5_PASSWORD; echo
 read -rp 'MT5 server: ' MT5_SERVER
 export MT5_LOGIN MT5_PASSWORD MT5_SERVER
-bash /root/mt5-sidecar-wine.sh install --instance demo-a --port 9100 --server-tz Europe/Athens
+bash /root/mt5-sidecar-wine.sh install --instance demo-a --port 9100 --server-tz Europe/Athens --tls
 unset MT5_BRIDGE_SECRET MT5_PASSWORD
 ```
 
@@ -479,6 +479,14 @@ Use your broker's server time zone for `--server-tz`, and add
 is generated once and saved in `/etc/mt5-sidecar/demo-a.env`; anything that
 reaches the sidecar with it can trade the account. The script keeps the
 sidecar to demo accounts (`MT5_ALLOW_REAL=false`).
+
+`--tls` makes a self-signed certificate for the instance
+(`/etc/mt5-sidecar/demo-a.crt` and `.key`) and has the sidecar serve HTTPS
+only, so the secret and every order cross your network encrypted. The script
+prints the certificate's **SHA-256 fingerprint**. Copy it: the app's
+connection is given it below, and trusts exactly that certificate. Without
+`--tls` the link is plain HTTP, and `./tradingapp.sh doctor` on the app
+server says so.
 
 **Exit 0** ends with `check: PASS (demo account ...)`.
 
@@ -490,7 +498,12 @@ open an SSH tunnel to the VM from your computer
 `bash /root/mt5-sidecar-wine.sh check --instance demo-a`.
 
 For a second account, run the install again with another `--instance` name
-and `--port 9101`.
+and `--port 9101`. Each instance gets its own certificate and fingerprint.
+
+To turn TLS on for an instance installed without it, run the same install
+command again with `--tls`, then change the connection in the app to an
+`https://` Bridge URL with the fingerprint. The connection fails between the
+two steps, so do it while nothing is trading.
 
 <details>
 <summary><b>Alternative: a Windows VM</b></summary>
@@ -531,6 +544,24 @@ Then:
 
 5. In Windows Firewall, allow the sidecar's port from `<app-address>` only.
 6. In the terminal, turn on **Algo Trading**.
+7. Turn TLS on. Make a self-signed pair on any machine with OpenSSL (the app
+   server has it), copy both files next to `server.py`, and name them in
+   `sidecar.env`:
+
+   ```bash
+   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj /CN=mt5-sidecar \
+     -keyout sidecar.key -out sidecar.crt
+   ```
+
+   ```
+   MT5_TLS_CERT=C:\tradingapp\mt5_sidecar\sidecar.crt
+   MT5_TLS_KEY=C:\tradingapp\mt5_sidecar\sidecar.key
+   ```
+
+   Restart the sidecar. Its log (`sidecar.log`) then has a line
+   `TLS on. Certificate SHA-256 fingerprint: AB:CD:...`. Copy the fingerprint
+   for the connection. Delete the copy of `sidecar.key` left on the machine
+   that made it.
 
 </details>
 
@@ -551,6 +582,7 @@ go in `sidecar.env` next to `server.py`
 | `MT5_MAGIC` | `61000` | Magic number on every order this sidecar sends |
 | `MT5_DEVIATION_POINTS` | `20` | Slippage accepted on market orders |
 | `MT5_ALLOW_REAL` | `false` | Allow orders on a real-money account. Leave it `false`. |
+| `MT5_TLS_CERT` / `MT5_TLS_KEY` | none | A PEM certificate and its key. With both, the sidecar serves HTTPS only and logs the certificate's fingerprint when it starts. |
 
 For long chart histories, raise **Tools > Options > Charts > Max bars in
 chart** in the terminal.
@@ -563,12 +595,17 @@ In CT 110's Console, so the network path is tested too, with the secret from
 ```bash
 SECRET=paste-the-secret
 H="X-MT5-Bridge-Secret: $SECRET"
-curl -H "$H" http://<mt5-address>:9100/health          # status ok, account_type demo
-curl http://<mt5-address>:9100/health                  # refused: 401
-curl -H "$H" "http://<mt5-address>:9100/symbols?query=EURUSD&limit=20"
-curl -H "$H" "http://<mt5-address>:9100/quote?symbol=EURUSD"
-date -u +%s                                            # compare with the quote's time
+U=https://<mt5-address>:9100
+curl -k -H "$H" $U/health                               # status ok, account_type demo
+curl -k $U/health                                       # refused: 401
+curl -k -H "$H" "$U/symbols?query=EURUSD&limit=20"
+curl -k -H "$H" "$U/quote?symbol=EURUSD"
+date -u +%s                                             # compare with the quote's time
 ```
+
+`-k` skips the certificate check for these hand tests only, because curl does
+not know the self-signed certificate. The app does check it, by its
+fingerprint. Without TLS, use `http://` and drop `-k`.
 
 While the market is open, the quote's `time` is within a few seconds of
 `date -u +%s`. If it is off by whole hours, the server time zone is wrong.
@@ -581,14 +618,23 @@ On Settings > Connections, add a connection with Firm set to the account's
 firm (**Axi (MT5)**, **Eightcap (MT5)**, **Vantage (MT5)**, or **Another MT5
 firm (no web API)** for any other, such as a prop firm), Mode **paper**:
 
-- **Bridge URL**: `http://<mt5-address>:9100`
+- **Bridge URL**: `https://<mt5-address>:9100` (`http://` without TLS)
 - **Bridge secret**: the sidecar's `MT5_BRIDGE_SECRET`
+- **Certificate fingerprint**: the SHA-256 fingerprint the install printed,
+  with or without the colons. Leave it empty without TLS. To read it again:
+  `bash /root/mt5-sidecar-wine.sh check --instance demo-a`
 - **Server timezone** (optional): the trade server's zone
 
 For a second account, add a second connection with port 9101.
 
+The connection's row then reads "Encrypted to `<mt5-address>`:9100,
+certificate pinned". The app reads the sidecar's certificate before it sends
+anything, and sends the secret only if the fingerprint matches.
+
 **If the test fails:** check the URL and port, that the secret is the same
-on both sides, and the firewall (step 8).
+on both sides, and the firewall (step 8). "MT5 bridge not trusted" means the
+sidecar's certificate is not the one with that fingerprint: read the
+fingerprint again on the sidecar's machine and compare.
 
 ### 4.3 Interactive Brokers (CT 130)
 
@@ -1095,6 +1141,19 @@ the physical console to undo.
 
 **Check,** from your own computer: `https://trading.example.com` works, and
 `http://<app-address>:3000` and port `5432` on `<db-address>` do not answer.
+
+Then check the broker ports. IB Gateway's API has no TLS, so this rule is
+the only thing that keeps other machines off port `4002`. On the app server,
+`./tradingapp.sh doctor` lists each MT5 sidecar and IB Gateway the app
+connects to, says whether the link is encrypted, and prints one line per
+port to run on another computer on the LAN:
+
+```bash
+nc -z -w 3 <ib-address> 4002 && echo OPEN || echo closed
+```
+
+Each must say `closed`. `OPEN` means the guest's firewall is off or its rule
+is too wide.
 
 > The broker service (port 8000) and Redis are not published beyond the app
 > server's own loopback, so they need no rule.

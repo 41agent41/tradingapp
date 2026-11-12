@@ -14,6 +14,7 @@ import {
   PLATFORM_FORM,
   checkSummary,
   describeCapabilities,
+  describeLink,
   saveMessage,
   emptyForm,
   formForFirm,
@@ -357,6 +358,7 @@ export default function BrokerConnections() {
   const liveRow = (c: LiveConnection) => {
     const s = checkSummary(c.check);
     const mine = c.source === 'app' ? storedByLabel.get(c.label) : undefined;
+    const link = describeLink(c.platform, c.link);
     return (
       <li
         key={c.label}
@@ -387,6 +389,14 @@ export default function BrokerConnections() {
           >
             {s.text}
           </span>
+          {link && (
+            <p
+              className={`mt-1 text-xs ${link.tone === 'warn' ? 'text-amber-700' : 'text-gray-500'}`}
+              data-testid={`link-${c.label}`}
+            >
+              {link.text}
+            </p>
+          )}
           {describeCapabilities(c.capabilities) && (
             <p className="mt-1 text-xs text-gray-500" data-testid={`capabilities-${c.label}`}>
               {describeCapabilities(c.capabilities)}

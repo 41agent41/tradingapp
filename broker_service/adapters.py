@@ -151,7 +151,9 @@ def _build_adapters(conn: Connection) -> tuple[Optional[Any], Optional[Any]]:
     if conn.platform == "mt5":
         from mt5_adapter import MT5Adapter
 
-        mt5 = MT5Adapter(conn.url or "", shared_secret=conn.secret)
+        mt5 = MT5Adapter(
+            conn.url or "", shared_secret=conn.secret, tls_fingerprint=conn.tls_fingerprint
+        )
         return mt5, mt5
 
     if conn.platform == "alpaca":
@@ -475,6 +477,35 @@ def list_connections() -> List[Connection]:
     return list(_connections.values())
 
 
+def connection_link(conn: Connection) -> Optional[Dict[str, Any]]:
+    """The LAN endpoint behind an mt5 or ib connection, for `doctor` and the
+    Settings page: its address, and how the link is protected. No secrets."""
+    from urllib.parse import urlsplit
+
+    from connections import is_loopback_url
+
+    if conn.platform == "mt5" and conn.url:
+        parts = urlsplit(conn.url)
+        https = parts.scheme == "https"
+        port = parts.port or (443 if https else 80)
+        if https:
+            security = "tls_pinned" if conn.tls_fingerprint else "tls"
+        else:
+            security = "loopback" if is_loopback_url(conn.url) else "plain"
+        return {"host": parts.hostname, "port": port, "security": security}
+    if conn.platform == "ib":
+        import ib_client
+
+        host = conn.host or ib_client.IB_HOST
+        if not host:
+            return None
+        port = conn.port or ib_client.IB_PORT
+        loopback = is_loopback_url(f"tcp://{host}")
+        # IB Gateway's API has no TLS: only a firewall protects the port.
+        return {"host": host, "port": port, "security": "loopback" if loopback else "plain"}
+    return None
+
+
 def connection_capabilities(conn: Connection) -> Dict[str, Any]:
     """What ``conn`` supports, from the adapters registered for it (E-19)."""
     from capabilities import capabilities
@@ -587,6 +618,9 @@ def provider_health() -> Dict[str, Any]:
             ),
             # "env" (.env / manifest) or "app" (added on the Settings page).
             "source": conn.source,
+            # Where the connection goes on the LAN and whether that link is
+            # encrypted; None for a broker reached over the internet.
+            "link": connection_link(conn),
             # Last connectivity check (probes.py); None until the first one.
             "check": probe_result(conn.label),
             # What the app may offer on this connection (capabilities.py).

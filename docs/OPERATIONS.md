@@ -35,7 +35,7 @@ in CT 110's Console, `su - tradingapp`, then `cd /opt/tradingapp`.
 | `restart` | Recreate the containers, so a change to `.env` takes effect. |
 | `logs [follow]` | Recent logs of every service, or follow them. |
 | `setup-code` | The code the first-run screen asks for. |
-| `doctor` | Docker, `.env`, containers, the database, schema and key as the backend sees them, broker state and the live recorder. |
+| `doctor` | Docker, `.env`, containers, the database, schema and key as the backend sees them, broker state, the MT5 and IB Gateway links on the LAN (encrypted or not, and the test that confirms the firewall) and the live recorder. |
 | `test` | Check the frontend, backend, broker service and readiness answer. |
 | `migrate` | Show the schema state and apply anything pending, without a restart. |
 | `settings-import` | Move Settings-page keys from `.env` into the app. |
@@ -403,6 +403,15 @@ stored 1 minute bars" or "Stops filled on each bar's own range". For the
 first, record the instrument live or add it to the data collection table at
 1 minute. After this upgrade a rule-set that has a `stop` block backtests
 differently from before, because the stop used to be ignored.
+
+The link to an MT5 sidecar can now be encrypted. Nothing changes until you
+turn it on: an existing `http://` connection keeps working, and `doctor` and
+Settings > Connections say it is not encrypted. To turn it on, follow
+[INSTALL.md § 4.2](INSTALL.md#42-metatrader-5-vm-120): on the sidecar's
+machine pull the new code and run the install again with `--tls`, then give
+the connection an `https://` Bridge URL and the certificate fingerprint. If
+the sidecar's certificate is ever replaced, the connection stops with "MT5
+bridge not trusted" until it is given the new fingerprint.
 
 The backend and frontend images now run as the unprivileged `node` user and
 hold production dependencies only. The upgrade rebuilds them, and there is

@@ -288,6 +288,38 @@ describe('BrokerConnectionStore', () => {
     await expect(store.create({ ...OANDA, ...extra } as any, ctx)).rejects.toThrow(message);
   });
 
+  it("stores an MT5 sidecar's certificate fingerprint and sends it on", async () => {
+    const { db } = fakeDb();
+    const store = new BrokerConnectionStore(db, { SETTINGS_ENCRYPTION_KEY: KEY });
+    const colons = Array(32).fill('AB').join(':');
+    const view = await store.create(
+      {
+        platform: 'mt5',
+        firm: 'axi',
+        settings: { url: 'https://10.0.0.20:9100', tls_fingerprint: colons },
+        secrets: { secret: 's'.repeat(32) },
+      },
+      ctx
+    );
+    // Stored in one form however it was pasted. It is not a secret.
+    expect(view.settings.tls_fingerprint).toBe('ab'.repeat(32));
+    const [entry] = await store.managedEntries();
+    expect(entry.tls_fingerprint).toBe('ab'.repeat(32));
+    expect(entry.url).toBe('https://10.0.0.20:9100');
+  });
+
+  it.each([
+    [{ url: 'https://10.0.0.20:9100', tls_fingerprint: 'abc123' }, /64 hex digits/],
+    [{ url: 'https://10.0.0.20:9100', tls_fingerprint: 'zz'.repeat(32) }, /64 hex digits/],
+    [{ url: 'http://10.0.0.20:9100', tls_fingerprint: 'ab'.repeat(32) }, /https:\/\//],
+  ])('rejects the MT5 settings %j', async (settings, message) => {
+    const { db } = fakeDb();
+    const store = new BrokerConnectionStore(db, { SETTINGS_ENCRYPTION_KEY: KEY });
+    await expect(store.create({ platform: 'mt5', firm: 'axi', settings }, ctx)).rejects.toThrow(
+      message
+    );
+  });
+
   it('leaves out a row whose secrets cannot be decrypted', async () => {
     const { db } = fakeDb();
     await new BrokerConnectionStore(db, { SETTINGS_ENCRYPTION_KEY: KEY }).create(OANDA, ctx);
