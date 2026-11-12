@@ -14,6 +14,7 @@ import ChartSkeleton from './ChartSkeleton';
 import { CHART_ZONES, chartTimeZone, isChartZone, type ChartZone } from '../lib/chartTime';
 import { olderRange, prependOlder } from '../lib/olderBars';
 import { usePersistentState } from '../lib/usePersistentState';
+import { priceLevels, type LevelOrder, type LevelPosition } from '../lib/chartLevels';
 
 /** The instrument and the connection it is charted from. */
 export interface LiveInstrument {
@@ -102,6 +103,10 @@ function formatPrice(value: number): string {
   const abs = Math.abs(value);
   return value.toFixed(abs === 0 || abs >= 100 ? 2 : abs >= 10 ? 3 : 5);
 }
+
+/** How often the chart's positions and working orders are read again. */
+const LEVELS_REFRESH_MS = 15_000;
+const isOnOff = (v: string) => v === 'on' || v === 'off';
 
 const INDICATOR_FIELDS = [
   'sma_20',
@@ -262,6 +267,64 @@ export default function LiveChart({
 
   // The zone times are shown in, kept across visits.
   const [zone, setZone] = usePersistentState('chart-time-zone', 'utc', isChartZone);
+
+  // Open positions and working orders in this instrument, drawn as price
+  // lines (E-24). Read from the chart's connection, then every 15 seconds.
+  const [showLevels, setShowLevels] = usePersistentState('live-chart-levels', 'on', isOnOff);
+  const levelsOn = showLevels === 'on' && dataQueryEnabled;
+  const heldFor = `${source ?? ''}:${account ?? ''}`;
+  const [held, setHeld] = useState<{
+    connection: string;
+    positions: LevelPosition[];
+    orders: LevelOrder[];
+  }>({ connection: '', positions: [], orders: [] });
+  useEffect(() => {
+    if (!levelsOn) return;
+    let cancelled = false;
+    const query = new URLSearchParams();
+    if (source) query.set('broker', source);
+    if (account) query.set('account', account);
+    const read = async (path: string, field: string) => {
+      const res = await apiFetch(`/api/account/${path}?${query}`, {
+        headers: { 'x-data-query-enabled': 'true' },
+      });
+      const body = res.ok ? await res.json().catch(() => null) : null;
+      return Array.isArray(body?.[field]) ? body[field] : null;
+    };
+    const load = async () => {
+      try {
+        const [positions, orders] = await Promise.all([
+          read('positions', 'positions'),
+          read('orders', 'orders'),
+        ]);
+        if (cancelled) return;
+        // A read that failed keeps what this connection last reported.
+        setHeld((was) => {
+          const same = was.connection === heldFor;
+          return {
+            connection: heldFor,
+            positions: positions ?? (same ? was.positions : []),
+            orders: orders ?? (same ? was.orders : []),
+          };
+        });
+      } catch {
+        // The chart works without them.
+      }
+    };
+    load();
+    const timer = setInterval(load, LEVELS_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [levelsOn, heldFor, source, account]);
+  const levelLines = useMemo(
+    () =>
+      levelsOn && held.connection === heldFor
+        ? priceLevels(symbol, held.positions, held.orders)
+        : [],
+    [levelsOn, heldFor, symbol, held]
+  );
 
   // Keep the latest fetch inputs available to the imperative refresh button
   // without threading them through as arguments.
@@ -756,6 +819,16 @@ export default function LiveChart({
               </select>
             </div>
 
+            <label className="flex items-center text-xs sm:text-sm text-gray-700">
+              <input
+                type="checkbox"
+                className="mr-1"
+                checked={showLevels === 'on'}
+                onChange={(e) => setShowLevels(e.target.checked ? 'on' : 'off')}
+              />
+              Positions and orders
+            </label>
+
             <button
               onClick={() => fetchRef.current()}
               disabled={isLoadingHistorical || !dataQueryEnabled}
@@ -871,6 +944,7 @@ export default function LiveChart({
               indicators={indicators}
               height={500}
               liveBar={live.bar}
+              priceLines={levelLines}
               onReachStart={onReachStart}
               timeZone={chartTimeZone(
                 zone as ChartZone,

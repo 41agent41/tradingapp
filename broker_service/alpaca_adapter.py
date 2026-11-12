@@ -786,6 +786,9 @@ class AlpacaAdapter:
                     "filled_quantity": filled,
                     "remaining_quantity": (quantity - filled) if filled is not None else None,
                     "avg_fill_price": _opt_float(row.get("filled_avg_price")),
+                    # The trigger of a stop or stop-limit order, else the limit.
+                    "price": _opt_float(row.get("stop_price"))
+                    or _opt_float(row.get("limit_price")),
                 }
             )
         return orders

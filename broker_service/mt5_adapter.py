@@ -624,6 +624,7 @@ class MT5Adapter:
                     "avg_fill_price": _opt_float(
                         row.get("avg_fill_price") or row.get("price_current")
                     ),
+                    "price": _opt_float(row.get("price_open")) or None,
                 }
             )
         return orders

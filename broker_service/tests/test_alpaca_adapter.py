@@ -502,13 +502,24 @@ def test_open_orders_normalise_to_the_app_shape(alpaca):
                 "qty": "10",
                 "filled_qty": "4",
                 "type": "limit",
+                "limit_price": "191.5",
                 "status": "partially_filled",
                 "filled_avg_price": "190.25",
-            }
+            },
+            {
+                "id": "s1",
+                "symbol": "AAPL",
+                "type": "stop_limit",
+                "stop_price": "180",
+                "limit_price": "179",
+            },
         ]
     )
 
     rows = _adapter(alpaca).open_orders()
+    # A limit waits at its limit; a stop-limit at its trigger.
+    assert [r["price"] for r in rows] == [191.5, 180.0]
+    rows = rows[:1]
 
     _method, url, _headers, params, _json = FakeClient.calls[-1]
     assert url.endswith("/v2/orders")
@@ -526,6 +537,7 @@ def test_open_orders_normalise_to_the_app_shape(alpaca):
             "filled_quantity": 4.0,
             "remaining_quantity": 6.0,
             "avg_fill_price": 190.25,
+            "price": 191.5,
         }
     ]
 

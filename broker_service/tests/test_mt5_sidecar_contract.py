@@ -141,6 +141,7 @@ def test_working_orders(wired):
     [working] = adapter.open_orders()
     assert working["order_type"] == "LMT"
     assert working["action"] == "BUY"
+    assert working["price"] == 1.07
     assert adapter.cancel_order(int(placed["order_id"]))["status"] == "cancelled"
     assert adapter.open_orders() == []
 

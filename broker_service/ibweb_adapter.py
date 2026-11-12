@@ -838,6 +838,10 @@ class IBWebAdapter:
                     "filled_quantity": filled,
                     "remaining_quantity": remaining if remaining is not None else total,
                     "avg_fill_price": _opt_float(row.get("avgPrice")),
+                    # The trigger of a stop or stop-limit order, else the limit.
+                    "price": _opt_float(row.get("auxPrice"))
+                    or _opt_float(row.get("stop_price"))
+                    or _opt_float(row.get("price")),
                 }
             )
         return orders

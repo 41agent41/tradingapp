@@ -493,12 +493,23 @@ def test_open_orders_skip_position_protection(ct):
             {
                 "orderId": 8,
                 "orderType": 2,
+                "limitPrice": 1.105,
                 "tradeData": {"symbolId": 1, "volume": 50000, "tradeSide": 2},
             },
             {"orderId": 9, "orderType": 4, "tradeData": {"symbolId": 1, "volume": 1}},
+            {
+                "orderId": 10,
+                "orderType": 6,
+                "stopPrice": 1.2,
+                "limitPrice": 1.21,
+                "tradeData": {"symbolId": 1, "volume": 100, "tradeSide": 1},
+            },
         ],
     )
     rows = _adapter(ct).open_orders()
+    # A limit waits at its limit; a stop-limit at its trigger.
+    assert [r["price"] for r in rows] == [1.105, 1.2]
+    rows = rows[:1]
     assert len(rows) == 1
     assert rows[0]["order_id"] == "8"
     assert rows[0]["action"] == "SELL" and rows[0]["quantity"] == 500

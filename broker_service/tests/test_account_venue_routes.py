@@ -388,3 +388,16 @@ def test_omitted_account_is_passed_as_none_for_the_registry_to_default(monkeypat
 
     assert res.status_code == 200
     assert seen == [None]
+
+
+def test_an_ib_order_waits_at_its_trigger_or_its_limit():
+    from types import SimpleNamespace as Order
+
+    from routes.account import _waiting_price
+
+    unset = 1.7976931348623157e308
+    assert _waiting_price(Order(orderType="LMT", lmtPrice=190.5, auxPrice=unset)) == 190.5
+    assert _waiting_price(Order(orderType="STP", lmtPrice=unset, auxPrice=180.0)) == 180.0
+    assert _waiting_price(Order(orderType="STP LMT", lmtPrice=179.0, auxPrice=180.0)) == 180.0
+    assert _waiting_price(Order(orderType="MKT", lmtPrice=0.0, auxPrice=0.0)) is None
+    assert _waiting_price(Order(orderType="LMT", lmtPrice=unset, auxPrice=unset)) is None

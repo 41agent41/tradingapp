@@ -478,6 +478,28 @@ def test_executions_keep_only_position_deals(ig):
     assert fill["audit_id"] == 9
 
 
+def test_open_orders_report_the_level_each_waits_at(ig):
+    FakeClient.handler = lambda method, path, params, json: FakeResponse(
+        {
+            "workingOrders": [
+                {
+                    "workingOrderData": {
+                        "dealId": "DIW1",
+                        "epic": "CS.D.EURUSD.CFD.IP",
+                        "direction": "SELL",
+                        "orderSize": 2,
+                        "orderLevel": 1.25,
+                        "orderType": "LIMIT",
+                    }
+                }
+            ]
+        }
+    )
+    [order] = _adapter(ig).open_orders()
+    assert order["order_id"] == "DIW1" and order["action"] == "SELL"
+    assert order["price"] == 1.25
+
+
 def _closing_activity(deal_id, action="POSITION_CLOSED"):
     return {
         "date": "2026-01-02T03:04:05",
