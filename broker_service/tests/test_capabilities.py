@@ -18,6 +18,8 @@ def test_a_connection_with_no_adapters_supports_nothing():
         "timeframes": [],
         "live_prices": None,
         "spread_bars": False,
+        "live_bars": False,
+        "depth": False,
         "order_types": {},
         "attaches_stops": False,
         "fills": None,
@@ -117,3 +119,13 @@ def test_a_split_account_reports_the_execution_sides_orders():
     caps = capabilities(mt5, split)
     assert caps["order_types"]["LMT"] == ["DAY", "GTC"]
     assert caps["attaches_stops"] is True
+
+
+def test_ctrader_reports_its_own_live_bars_and_an_order_book():
+    from ctrader_adapter import CTraderAdapter
+    from oanda_adapter import OANDAAdapter
+
+    caps = capabilities(_adapter(CTraderAdapter), None)
+    assert caps["live_bars"] is True and caps["depth"] is True
+    caps = capabilities(_adapter(OANDAAdapter), None)
+    assert caps["live_bars"] is False and caps["depth"] is False

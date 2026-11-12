@@ -128,6 +128,29 @@ async def get_realtime_data(
     )
 
 
+@router.get("/market-data/depth")
+async def get_market_depth(
+    symbol: str,
+    levels: int = 10,
+    source: str = "",
+    account: str | None = None,
+):
+    """The order book for ``symbol``: the best ``levels`` bids and asks with
+    the size at each. Only from the connection asked for (or the default
+    one), and only where its broker publishes a book: 501 otherwise."""
+    from adapters import get_market_data_adapter, resolve_provider
+
+    adapter = get_market_data_adapter(source, account)
+    if not hasattr(adapter, "market_depth"):
+        raise HTTPException(
+            status.HTTP_501_NOT_IMPLEMENTED,
+            f"Depth of market is not available from {resolve_provider(source)}",
+        )
+    if not 1 <= levels <= 50:
+        raise HTTPException(400, "levels must be between 1 and 50")
+    return await run_tws_operation(lambda: adapter.market_depth(symbol, levels))
+
+
 async def _historical_data_from(
     symbol: str,
     timeframe: str,

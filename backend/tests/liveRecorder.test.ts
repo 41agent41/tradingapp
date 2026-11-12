@@ -410,6 +410,69 @@ describe('LiveRecorder', () => {
     });
   });
 
+  it("stores a broker's own finished bar in place of the one built from quotes", async () => {
+    const ct: RecordTarget = { ...EUR, contractId: 8, platform: 'ctrader', symbol: 'EURUSD' };
+    const w = world([ct]);
+    const recorder = await w.open();
+    const c = { platform: 'ctrader', symbol: 'EURUSD', basis: 'bid' };
+    const venueBar = (seq: number, minute: number, over: Record<string, string> = {}) => ({
+      id: `${minute + MIN + 100}-${seq}`,
+      fields: {
+        v: '1',
+        kind: 'bar',
+        platform: 'ctrader',
+        account: 'practice',
+        symbol: 'EURUSD',
+        open: '1.1',
+        high: '1.25',
+        low: '1.05',
+        close: '1.2',
+        volume: '42',
+        ts: String(minute),
+        recv_ts: String(minute + MIN + 100),
+        ...over,
+      },
+    });
+    w.state.stream.push(
+      quote(1, T0 + 1_000, { bid: 1.1, ask: 1.2 }, c),
+      quote(2, T0 + 30_000, { bid: 1.15, ask: 1.25 }, c)
+    );
+    w.state.now = T0 + 31_000;
+    await recorder.step();
+    // Built from the two quotes it saw.
+    expect(w.bar(T0, 8)).toMatchObject({ open: 1.1, high: 1.15, low: 1.1, close: 1.15, count: 2 });
+
+    w.state.stream.push(
+      venueBar(3, T0),
+      // A quote for that minute arriving afterwards is stored but changes nothing.
+      quote(4, T0 + 59_000, { bid: 9, ask: 9.1 }, { ...c, ts: String(T0 + 59_000) }),
+      venueBar(5, T0 + MIN, { open: 'soon' }),
+      venueBar(6, T0 - 11 * MIN)
+    );
+    w.state.stream[3].id = `${T0 + MIN + 200}-4`;
+    w.state.stream[4].id = `${T0 + MIN + 220}-5`;
+    w.state.stream[5].id = `${T0 + MIN + 250}-6`;
+    w.state.now = T0 + MIN + 300;
+    await recorder.step();
+
+    expect(w.bar(T0, 8)).toEqual({
+      contractId: 8,
+      minute: T0,
+      open: 1.1,
+      high: 1.25,
+      low: 1.05,
+      close: 1.2,
+      volume: 42,
+      count: 2,
+      source: 'stream',
+    });
+    expect(w.state.ticks).toHaveLength(3);
+    expect(w.bar(T0 + MIN, 8)).toBeUndefined();
+    expect(w.bar(T0 - 11 * MIN, 8)).toBeUndefined();
+    expect(recorder.status().totals).toMatchObject({ invalid: 1, late: 1 });
+    expect(w.state.cursor).toBe(`${T0 + MIN + 250}-6`);
+  });
+
   it('counts an entry it cannot read as invalid and moves on', async () => {
     const w = world();
     const recorder = await w.open();

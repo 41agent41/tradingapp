@@ -408,6 +408,7 @@ describe('GET /api/orders/config: connections and what they support (E-19)', () 
         is_default: true,
         order_types: { MKT: ['FOK'], LMT: ['GTC'] },
         attaches_stops: true,
+        depth: false,
       },
       {
         label: 'ig:demo',
@@ -417,6 +418,7 @@ describe('GET /api/orders/config: connections and what they support (E-19)', () 
         is_default: false,
         order_types: { MKT: ['FOK'] },
         attaches_stops: false,
+        depth: false,
       },
     ]);
     expect(res.body.order_types).toEqual(['LMT', 'MKT']);

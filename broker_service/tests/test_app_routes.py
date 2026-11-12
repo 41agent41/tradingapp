@@ -26,6 +26,7 @@ EXPECTED_PATHS = {
     "/market-data/history",
     "/market-data/tick",
     "/market-data/realtime",
+    "/market-data/depth",
     "/indicators/available",
     # backtesting.py
     "/backtesting/strategies",
@@ -73,3 +74,32 @@ def test_metrics_endpoint_is_mounted():
 def test_orders_router_is_mounted():
     # orders.py is included separately from the routes/ package.
     assert "/orders/{order_id}" in _registered_paths()
+
+
+def test_depth_comes_only_from_a_broker_that_publishes_a_book(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import adapters
+    from routes import market_data
+
+    class WithBook:
+        def market_depth(self, symbol, levels):
+            return {"symbol": symbol, "bids": [{"price": 1.0, "size": 5.0}][:levels], "asks": []}
+
+    class Without:
+        pass
+
+    app = FastAPI()
+    app.include_router(market_data.router)
+    client = TestClient(app)
+
+    monkeypatch.setattr(adapters, "get_market_data_adapter", lambda s, a: WithBook())
+    res = client.get("/market-data/depth", params={"symbol": "EURUSD", "source": "ctrader"})
+    assert res.status_code == 200 and res.json()["bids"] == [{"price": 1.0, "size": 5.0}]
+    assert client.get("/market-data/depth", params={"symbol": "X", "levels": 0}).status_code == 400
+
+    monkeypatch.setattr(adapters, "get_market_data_adapter", lambda s, a: Without())
+    res = client.get("/market-data/depth", params={"symbol": "EURUSD", "source": "oanda"})
+    assert res.status_code == 501
+    assert "not available from oanda" in res.json()["detail"]

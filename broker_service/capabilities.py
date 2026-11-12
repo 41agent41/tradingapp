@@ -12,6 +12,7 @@ An adapter declares what cannot be seen from its methods as class attributes:
 - ``order_tifs``: each order type it takes, with the times in force that
   order type accepts;
 - ``spread_bars``: its bars carry the bid-to-ask spread (E-15);
+- ``streams_bars``: its price stream also carries its own 1-minute bars (E-12);
 - ``live_prices``: only where prices do not come through ``stream_prices``
   or ``tick`` (IB streams through its own socket).
 
@@ -81,6 +82,11 @@ def capabilities(market_data: Any = None, broker: Any = None) -> Dict[str, Any]:
         "live_prices": _live_prices(market_data) if market_data is not None else None,
         # Its bars carry the broker's spread, so backtests can use it.
         "spread_bars": bool(getattr(market_data, "spread_bars", False)),
+        # It publishes its own live 1-minute bars, which the recorder stores
+        # in place of the ones it builds from quotes.
+        "live_bars": bool(getattr(market_data, "streams_bars", False)),
+        # It publishes an order book (GET /market-data/depth).
+        "depth": market_data is not None and hasattr(market_data, "market_depth"),
         # Each order type it takes, with the times in force that type accepts.
         "order_types": {
             kind: [t for t in ALL_TIFS if t in order_tifs[kind]]

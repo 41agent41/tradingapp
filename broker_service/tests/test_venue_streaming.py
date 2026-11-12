@@ -504,3 +504,77 @@ def test_a_stream_that_gives_its_own_last_price_is_not_given_a_midpoint():
         ]
     finally:
         streamer.stop_all()
+
+
+class BarStreamAdapter:
+    """A stream that also passes on the broker's own 1-minute bars (E-12)."""
+
+    bar_basis = "bid"
+    streams_bars = True
+    BAR = {"timestamp": 60000.0, "open": 1.1, "high": 1.2, "low": 1.0, "close": 1.15, "volume": 7}
+
+    def stream_prices(self, symbols, on_price, should_stop, on_bar=None):
+        on_price(symbols[0], 1.15, 1.16)
+        on_bar(symbols[0], dict(self.BAR))
+        while not should_stop():
+            time.sleep(0.01)
+
+
+def _bar_streamer(bars):
+    return VenueStreamer(
+        publish_tick=lambda *a, **k: None,
+        resolve_adapter=lambda p, a: BarStreamAdapter(),
+        publish_quote=lambda *a, **k: None,
+        publish_bar=lambda platform, account, symbol, **bar: bars.append(
+            (platform, account, symbol, bar)
+        ),
+    )
+
+
+def test_a_broker_built_bar_of_a_recorded_subscription_goes_onto_the_stream():
+    bars = []
+    streamer = _bar_streamer(bars)
+    try:
+        streamer.set_recorded({("ctrader", "demo", "EURUSD")})
+        assert _wait_for(lambda: bars)
+        assert bars == [
+            (
+                "ctrader",
+                "demo",
+                "EURUSD",
+                {
+                    "minute": 60000.0,
+                    "open": 1.1,
+                    "high": 1.2,
+                    "low": 1.0,
+                    "close": 1.15,
+                    "volume": 7,
+                },
+            )
+        ]
+    finally:
+        streamer.stop_all()
+
+
+def test_a_broker_built_bar_of_a_chart_only_subscription_is_dropped():
+    bars = []
+    streamer = _bar_streamer(bars)
+    try:
+        streamer.subscribe("EURUSD", "ctrader", "demo")
+        assert _wait_for(lambda: streamer.status()["subscriptions"][0]["tick_count"] >= 1)
+        time.sleep(0.05)
+        assert bars == []
+    finally:
+        streamer.stop_all()
+
+
+def test_an_adapter_without_bars_is_not_given_on_bar():
+    # StreamingAdapter.stream_prices takes no on_bar: it would raise if given.
+    published = []
+    streamer = _streamer(StreamingAdapter(), published)
+    try:
+        streamer.subscribe("EURUSD", "oanda", "practice")
+        assert _wait_for(lambda: len(published) >= 3)
+        assert streamer.status()["subscriptions"][0]["last_error"] is None
+    finally:
+        streamer.stop_all()

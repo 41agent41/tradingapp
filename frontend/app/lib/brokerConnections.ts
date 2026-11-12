@@ -19,6 +19,10 @@ export type Capabilities = {
   live_prices?: 'stream' | 'poll' | null;
   /** Its bars carry the broker's spread. */
   spread_bars?: boolean;
+  /** It publishes its own live 1-minute bars, stored in place of built ones. */
+  live_bars?: boolean;
+  /** It publishes an order book. */
+  depth?: boolean;
   /** Each order type it takes, with the times in force that type accepts. */
   order_types?: Record<string, string[]>;
   attaches_stops?: boolean;
@@ -496,6 +500,8 @@ export function describeCapabilities(caps: Capabilities | null | undefined): str
     parts.push(caps.live_prices === 'stream' ? 'prices streamed' : 'prices polled');
   }
   if (caps.spread_bars) parts.push('bars carry the spread');
+  if (caps.live_bars) parts.push("recorded bars are the broker's own");
+  if (caps.depth) parts.push('depth of market');
   if (caps.trading) {
     const kinds = Object.keys(caps.order_types ?? {});
     if (kinds.length) parts.push(`orders: ${kinds.map((k) => k.replace('_', ' ')).join(', ')}`);

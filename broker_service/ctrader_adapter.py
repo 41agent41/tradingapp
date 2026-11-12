@@ -23,6 +23,8 @@ and closes it; streaming keeps one open with a heartbeat.
     2100/2101 ApplicationAuth     2102/2103 AccountAuth
     2114/2115 SymbolsList         2116/2117 SymbolById      2112/2113 AssetList
     2137/2138 GetTrendbars        2127/2128 SubscribeSpots  2131 SpotEvent
+    2135/2165 SubscribeLiveTrendbar (the forming bar then rides on SpotEvent)
+    2156/2157 SubscribeDepthQuotes  2155 DepthEvent
     2106 NewOrder   2108 CancelOrder   2109 AmendOrder   2110 AmendPositionSLTP
     2126 ExecutionEvent   2132 OrderErrorEvent   2142 ErrorRes   51 Heartbeat
     2121/2122 Trader      2124/2125 Reconcile   2187/2188 PositionUnrealizedPnL
@@ -74,6 +76,13 @@ _TIMEOUT_SECONDS = 15.0
 _HEARTBEAT_SECONDS = 10.0
 _PRICE_SCALE = 100_000
 _VOLUME_SCALE = 100
+# A live 1-minute bar is passed on this long after its minute ends, when no
+# later price has already closed it.
+_BAR_GRACE_SECONDS = 2.0
+# Depth of market: how long to wait for the book, and for it to settle.
+_DEPTH_WAIT_SECONDS = 3.0
+_DEPTH_SETTLE_SECONDS = 0.4
+_DEPTH_MAX_LEVELS = 50
 
 # Payload types (ProtoOAPayloadType / ProtoPayloadType).
 HEARTBEAT = 51
@@ -95,7 +104,10 @@ SPOT_EVENT = 2131
 ORDER_ERROR_EVENT = 2132
 DEAL_LIST_REQ, DEAL_LIST_RES = 2133, 2134
 GET_TRENDBARS_REQ, GET_TRENDBARS_RES = 2137, 2138
+SUBSCRIBE_LIVE_TRENDBAR_REQ, SUBSCRIBE_LIVE_TRENDBAR_RES = 2135, 2165
 OA_ERROR_RES = 2142
+DEPTH_EVENT = 2155
+SUBSCRIBE_DEPTH_REQ, SUBSCRIBE_DEPTH_RES = 2156, 2157
 UNREALIZED_PNL_REQ, UNREALIZED_PNL_RES = 2187, 2188
 
 # Enums. The JSON API may answer with either the number or the name.
@@ -336,6 +348,9 @@ class CTraderAdapter:
     # The price this venue builds its own bars from; the live recorder builds
     # stream bars the same way (docs/plans/E-05-live-recorder.md, D5).
     bar_basis = "bid"
+    # ``stream_prices`` also passes on the venue's own 1-minute bars, which
+    # the recorder stores in place of the ones it builds from quotes.
+    streams_bars = True
 
     name = "ctrader"
     # Stops ride on the entry order (as distances on a market order).
@@ -631,11 +646,17 @@ class CTraderAdapter:
         symbols: List[str],
         on_price: Callable[[str, Optional[float], Optional[float]], None],
         should_stop: Callable[[], bool],
+        on_bar: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> None:
         """Stream bid/ask for ``symbols``. A spot event carries only the side
         that changed, so the last value of each side is kept and both are
         passed on. Blocks until ``should_stop()``; raises when the connection
-        fails, and the caller retries."""
+        fails, and the caller retries.
+
+        With ``on_bar``, cTrader's own 1-minute bars are subscribed to as
+        well: the bar being built rides on each spot event, and each one is
+        passed on once, when its minute has ended. A symbol whose bars cannot
+        be subscribed to still streams prices."""
         if not symbols:
             return
         with self._session() as session:
@@ -645,6 +666,22 @@ class CTraderAdapter:
             session.request(
                 SUBSCRIBE_SPOTS_REQ, {"symbolId": sorted(by_id)}, expect=SUBSCRIBE_SPOTS_RES
             )
+            bars = _LiveBars(on_bar) if on_bar is not None else None
+            # Asked for without waiting for the answers, which are read in
+            # the loop below: waiting here would drop the first spot events,
+            # and the first one is the only one sure to carry both sides.
+            asked: Dict[str, str] = {}
+            if bars is not None:
+                for symbol_id in sorted(by_id):
+                    msg_id = session.send(
+                        SUBSCRIBE_LIVE_TRENDBAR_REQ,
+                        {
+                            "ctidTraderAccountId": session.account_id,
+                            "symbolId": symbol_id,
+                            "period": _PERIOD["M1"],
+                        },
+                    )
+                    asked[msg_id] = by_id[symbol_id]
             last: Dict[int, List[Optional[float]]] = {i: [None, None] for i in by_id}
             beat = time.monotonic()
             while not should_stop():
@@ -652,6 +689,20 @@ class CTraderAdapter:
                     session.heartbeat()
                     beat = time.monotonic()
                 msg = session.receive(1.0)
+                if bars is not None:
+                    bars.close_finished(time.time())
+                if msg and msg.get("clientMsgId") in asked:
+                    symbol = asked.pop(msg["clientMsgId"])
+                    if _int(msg.get("payloadType")) != SUBSCRIBE_LIVE_TRENDBAR_RES:
+                        # Prices matter more: the recorder builds this
+                        # symbol's bars from them instead.
+                        reply = msg.get("payload") if isinstance(msg.get("payload"), dict) else {}
+                        logger.warning(
+                            "ctrader_live_bars_unavailable",
+                            symbol=symbol,
+                            error=str(reply.get("description") or reply.get("errorCode") or ""),
+                        )
+                    continue
                 if not msg or _int(msg.get("payloadType")) != SPOT_EVENT:
                     continue
                 spot = msg.get("payload") or {}
@@ -663,7 +714,71 @@ class CTraderAdapter:
                     sides[0] = _int(spot["bid"]) / _PRICE_SCALE
                 if spot.get("ask") is not None:
                     sides[1] = _int(spot["ask"]) / _PRICE_SCALE
+                if bars is not None:
+                    bars.update(by_id[symbol_id], spot.get("trendbar"), sides[0])
+                if spot.get("bid") is None and spot.get("ask") is None:
+                    continue  # a bar update with no price change
                 on_price(by_id[symbol_id], sides[0], sides[1])
+
+    def market_depth(self, symbol: str, levels: int = 10) -> Dict[str, Any]:
+        """The order book for ``symbol``: the best ``levels`` prices on each
+        side with the size offered at each, in units. cTrader has no book
+        snapshot, so this subscribes and reads depth events until the book
+        stops changing."""
+        levels = max(1, min(int(levels), _DEPTH_MAX_LEVELS))
+        with self._session() as session:
+            symbol_id = _int(self._resolve(session, symbol).get("symbolId"))
+            # Depth is only sent for a symbol whose spots are subscribed.
+            session.request(
+                SUBSCRIBE_SPOTS_REQ, {"symbolId": [symbol_id]}, expect=SUBSCRIBE_SPOTS_RES
+            )
+            # Not waited for: the book may arrive before the answer does.
+            asked = session.send(
+                SUBSCRIBE_DEPTH_REQ,
+                {"ctidTraderAccountId": session.account_id, "symbolId": [symbol_id]},
+            )
+            book: Dict[int, tuple[str, int, int]] = {}
+            deadline = time.monotonic() + min(self._timeout, _DEPTH_WAIT_SECONDS)
+            while time.monotonic() < deadline:
+                msg = session.receive(deadline - time.monotonic())
+                if not msg:
+                    continue
+                kind = _int(msg.get("payloadType"))
+                if msg.get("clientMsgId") == asked and kind != SUBSCRIBE_DEPTH_RES:
+                    raise _venue_error(
+                        msg.get("payload") if isinstance(msg.get("payload"), dict) else {}
+                    )
+                if kind != DEPTH_EVENT:
+                    continue
+                event = msg.get("payload") or {}
+                if _int(event.get("symbolId")) != symbol_id:
+                    continue
+                for quote in event.get("newQuotes") or []:
+                    side = "bid" if quote.get("bid") is not None else "ask"
+                    if quote.get(side) is None:
+                        continue
+                    book[_int(quote.get("id"))] = (
+                        side,
+                        _int(quote[side]),
+                        _int(quote.get("size")),
+                    )
+                for quote_id in event.get("deletedQuotes") or []:
+                    book.pop(_int(quote_id), None)
+                # The first event carries the whole book; later ones change it.
+                deadline = min(deadline, time.monotonic() + _DEPTH_SETTLE_SECONDS)
+        if not book:
+            raise HTTPException(
+                503,
+                f"cTrader sent no depth of market for {symbol} "
+                "(market closed, or this broker does not publish it)",
+            )
+        return {
+            "symbol": symbol.upper(),
+            "broker": "ctrader",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "bids": _depth_side(book, "bid", levels),
+            "asks": _depth_side(book, "ask", levels),
+        }
 
     def tick(self, symbol: str, account_mode: str = "paper") -> Dict[str, Any]:
         quote = self.realtime_quote(symbol, account_mode)
@@ -1050,6 +1165,66 @@ def _decode_trendbar(tb: Any) -> Optional[Dict[str, Any]]:
         "close": (low + _int(tb.get("deltaClose"))) / _PRICE_SCALE,
         "volume": _int(tb.get("volume")),
     }
+
+
+def _decode_live_trendbar(tb: Any, bid: Optional[float]) -> Optional[Dict[str, Any]]:
+    """The bar being built, from a spot event. Its close may be left out,
+    since it is the bid the same event carries: ``bid`` then, else the open."""
+    bar = _decode_trendbar(tb)
+    if bar is None or tb.get("low") is None:
+        return None
+    if tb.get("deltaClose") is None:
+        bar["close"] = bid if bid is not None else bar["open"]
+    bar["high"] = max(bar["high"], bar["open"], bar["close"])
+    bar["low"] = min(bar["low"], bar["open"], bar["close"])
+    return bar
+
+
+class _LiveBars:
+    """The 1-minute bar cTrader is building for each symbol. ``emit`` is
+    called once per bar, when a later bar starts or its minute has been over
+    for ``_BAR_GRACE_SECONDS``."""
+
+    def __init__(self, emit: Callable[[str, Dict[str, Any]], None]) -> None:
+        self._emit = emit
+        self._forming: Dict[str, Dict[str, Any]] = {}
+
+    def update(self, symbol: str, trendbars: Any, bid: Optional[float]) -> None:
+        for tb in trendbars if isinstance(trendbars, list) else []:
+            if not isinstance(tb, dict) or _enum(tb.get("period"), _PERIOD) not in (
+                None,
+                _PERIOD["M1"],
+            ):
+                continue
+            bar = _decode_live_trendbar(tb, bid)
+            if bar is None:
+                continue
+            current = self._forming.get(symbol)
+            if current is not None and bar["timestamp"] < current["timestamp"]:
+                continue
+            if current is not None and bar["timestamp"] > current["timestamp"]:
+                self._emit(symbol, current)
+            self._forming[symbol] = bar
+
+    def close_finished(self, now: float) -> None:
+        for symbol, bar in list(self._forming.items()):
+            if now >= bar["timestamp"] + _PERIOD_SECONDS["M1"] + _BAR_GRACE_SECONDS:
+                del self._forming[symbol]
+                self._emit(symbol, bar)
+
+
+def _depth_side(
+    book: Dict[int, tuple[str, int, int]], side: str, levels: int
+) -> List[Dict[str, float]]:
+    """One side of the book, best price first, quotes at one price added up."""
+    sizes: Dict[int, int] = {}
+    for quote_side, price, size in book.values():
+        if quote_side == side:
+            sizes[price] = sizes.get(price, 0) + size
+    ordered = sorted(sizes.items(), reverse=side == "bid")[:levels]
+    return [
+        {"price": price / _PRICE_SCALE, "size": size / _VOLUME_SCALE} for price, size in ordered
+    ]
 
 
 def _positions(reconcile: Dict[str, Any]) -> List[Dict[str, Any]]:
