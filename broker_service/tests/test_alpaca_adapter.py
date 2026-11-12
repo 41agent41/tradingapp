@@ -699,3 +699,355 @@ def test_the_live_account_uses_the_live_trade_stream_and_a_refused_key_raises(mo
         adapter.stream_trade_events(lambda: None, lambda: False)
     assert err.value.status_code == 502
     assert urls == ["wss://api.alpaca.markets/stream"]
+
+
+# --------------------------------------------------------------------------- #
+# Crypto and options (E-14)
+# --------------------------------------------------------------------------- #
+OPT = "AAPL270115C00190000"
+
+
+def test_a_symbol_says_what_kind_of_instrument_it_is(alpaca):
+    assert alpaca.asset_class("btc/usd") == "crypto"
+    assert alpaca.asset_class(OPT) == "option"
+    assert alpaca.asset_class("AAPL") == "equity"
+    assert alpaca.asset_class("BRK.B") == "equity"
+    # Six letters and digits, but not an OCC symbol.
+    assert alpaca.asset_class("AAPL270115X00190000") == "equity"
+
+
+def test_crypto_and_option_bars_come_from_their_own_endpoints_keyed_by_symbol(alpaca):
+    def handler(method, url, params, json):
+        symbol = params["symbols"]
+        return FakeResponse(
+            {
+                "bars": {
+                    symbol: [
+                        {"t": "2026-01-05T00:00:00Z", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 3.6}
+                    ]
+                },
+                "next_page_token": None,
+            }
+        )
+
+    FakeClient.handler = handler
+    out = _adapter(alpaca).historical_bars("btc/usd", "1hour", "1M")
+    _m, url, _h, params, _j = FakeClient.calls[-1]
+    assert url == "https://data.alpaca.markets/v1beta3/crypto/us/bars"
+    assert params["symbols"] == "BTC/USD" and params["timeframe"] == "1Hour"
+    assert "adjustment" not in params
+    assert out.symbol == "BTC/USD" and out.bars[0].close == 1.5
+    # A fractional volume is stored whole.
+    assert out.bars[0].volume == 4
+
+    out = _adapter(alpaca).historical_bars(OPT, "1day", "1M")
+    assert FakeClient.calls[-1][1] == "https://data.alpaca.markets/v1beta1/options/bars"
+    assert FakeClient.calls[-1][3]["symbols"] == OPT
+    assert out.count == 1
+
+
+def test_crypto_quote_and_option_tick_read_the_keyed_latest_endpoints(alpaca):
+    def handler(method, url, params, json):
+        symbol = params["symbols"]
+        if url.endswith("/latest/quotes") or url.endswith("/quotes/latest"):
+            return FakeResponse({"quotes": {symbol: {"bp": 5.1, "ap": 5.3, "bs": 0.4, "t": None}}})
+        return FakeResponse({"trades": {symbol: {"p": 5.2, "s": 1}}})
+
+    FakeClient.handler = handler
+    quote = _adapter(alpaca).realtime_quote("btc/usd")
+    assert FakeClient.calls[-1][1].endswith("/v1beta3/crypto/us/latest/quotes")
+    assert (quote.bid, quote.ask, quote.volume) == (5.1, 5.3, 0)
+
+    FakeClient.calls.clear()
+    tick = _adapter(alpaca).tick(OPT)
+    assert [c[1].rsplit("/v1beta1", 1)[1] for c in FakeClient.calls] == [
+        "/options/trades/latest",
+        "/options/quotes/latest",
+    ]
+    # An option's tick carries its quote too.
+    assert (tick["bid"], tick["ask"], tick["last"]) == (5.1, 5.3, 5.2)
+
+    FakeClient.calls.clear()
+    tick = _adapter(alpaca).tick("BTC/USD")
+    assert len(FakeClient.calls) == 1 and tick["bid"] is None and tick["last"] == 5.2
+
+
+def test_search_lists_crypto_pairs(alpaca):
+    FakeClient.handler = lambda m, u, p, j: FakeResponse(
+        [
+            {"id": "1", "symbol": "BTC/USD", "name": "Bitcoin / US Dollar", "exchange": "CRYPTO"},
+            {"id": "2", "symbol": "ETH/BTC", "name": "Ethereum / Bitcoin"},
+            {"id": "3", "symbol": "DOGE/USD", "name": "Dogecoin"},
+        ]
+    )
+
+    class Req:
+        symbol = "btc"
+        secType = "CRYPTO"
+
+    out = _adapter(alpaca).search_contracts(Req())
+    assert FakeClient.calls[-1][3] == {"status": "active", "asset_class": "crypto"}
+    assert [(r["symbol"], r["secType"], r["currency"]) for r in out["results"]] == [
+        ("BTC/USD", "CRYPTO", "USD"),
+        ("ETH/BTC", "CRYPTO", "BTC"),
+    ]
+
+
+def _contract(symbol, expiry, strike, kind, **over):
+    return {
+        "id": f"id-{symbol}",
+        "symbol": symbol,
+        "name": f"AAPL {expiry} {strike} {kind}",
+        "tradable": True,
+        "expiration_date": expiry,
+        "underlying_symbol": "AAPL",
+        "type": kind,
+        "strike_price": str(strike),
+        "size": "100",
+        **over,
+    }
+
+
+def test_search_lists_option_contracts_with_the_advanced_filters(alpaca):
+    FakeClient.handler = lambda m, u, p, j: FakeResponse(
+        {
+            "option_contracts": [
+                _contract("AAPL270219P00190000", "2027-02-19", 190, "put"),
+                _contract(OPT, "2027-01-15", 190, "call"),
+                _contract("AAPL270115C00200000", "2027-01-15", 200, "call", tradable=False),
+            ]
+        }
+    )
+
+    class Req:
+        symbol = "aapl"
+        secType = "OPT"
+        expiry = "202701"
+        strike = 190.0
+        right = "C"
+
+    out = _adapter(alpaca).search_contracts(Req())
+    _m, url, _h, params, _j = FakeClient.calls[-1]
+    assert url.endswith("/v2/options/contracts")
+    assert params == {
+        "underlying_symbols": "AAPL",
+        "limit": 50,
+        "expiration_date_gte": "2027-01-01",
+        "expiration_date_lte": "2027-01-31",
+        "strike_price_gte": 190.0,
+        "strike_price_lte": 190.0,
+        "type": "call",
+    }
+    # Nearest expiry first; one that cannot be traded is left out.
+    assert [r["symbol"] for r in out["results"]] == [OPT, "AAPL270219P00190000"]
+    assert out["results"][0] == {
+        "conid": f"id-{OPT}",
+        "symbol": OPT,
+        "companyName": "AAPL 2027-01-15 190 call",
+        "description": "AAPL 2027-01-15 190 call",
+        "secType": "OPT",
+        "exchange": "OPRA",
+        "currency": "USD",
+        "localSymbol": OPT,
+        "underlying": "AAPL",
+        "expiry": "20270115",
+        "strike": 190.0,
+        "right": "C",
+        "multiplier": "100",
+        "broker": "alpaca",
+    }
+
+
+def test_option_search_takes_one_day_or_the_next_90_days(alpaca):
+    FakeClient.handler = lambda m, u, p, j: FakeResponse({"option_contracts": []})
+
+    class Req:
+        symbol = "AAPL"
+        secType = "OPT"
+        expiry = "2027-01-15"
+
+    _adapter(alpaca).search_contracts(Req())
+    assert FakeClient.calls[-1][3]["expiration_date"] == "2027-01-15"
+
+    Req.expiry = ""
+    _adapter(alpaca).search_contracts(Req())
+    params = FakeClient.calls[-1][3]
+    from datetime import date
+
+    span = date.fromisoformat(params["expiration_date_lte"]) - date.fromisoformat(
+        params["expiration_date_gte"]
+    )
+    assert span.days == 90 and "type" not in params and "strike_price_gte" not in params
+
+
+def test_crypto_orders_are_fractional_and_never_day_or_plain_stop(alpaca, monkeypatch):
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+    FakeClient.handler = lambda m, u, p, j: FakeResponse({"id": "c-1", "status": "accepted"})
+    adapter = _adapter(alpaca)
+    adapter.place_order(_OrderReq(symbol="btc/usd", quantity=0.0025, tif="GTC"))
+    body = FakeClient.calls[-1][4]
+    assert body["symbol"] == "BTC/USD" and body["qty"] == "0.0025"
+    assert body["time_in_force"] == "gtc"
+
+    for bad in (
+        {"tif": "DAY"},
+        {"tif": "FOK"},
+        {"tif": "GTC", "order_type": "STP", "stop_price": 1},
+    ):
+        with pytest.raises(HTTPException) as err:
+            adapter.place_order(_OrderReq(symbol="BTC/USD", quantity=1, **bad))
+        assert err.value.status_code == 400
+    assert len(FakeClient.calls) == 1
+
+
+def test_option_orders_are_whole_contracts_for_the_day_or_gtc(alpaca, monkeypatch):
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+    FakeClient.handler = lambda m, u, p, j: FakeResponse({"id": "o-1", "status": "accepted"})
+    adapter = _adapter(alpaca)
+    adapter.place_order(
+        _OrderReq(symbol=OPT, quantity=2.0, order_type="LMT", limit_price=1.05, tif="GTC")
+    )
+    body = FakeClient.calls[-1][4]
+    assert body["symbol"] == OPT and body["qty"] == "2" and body["limit_price"] == "1.05"
+
+    for bad in ({"quantity": 1.5}, {"tif": "IOC"}, {"tif": "FOK"}):
+        with pytest.raises(HTTPException) as err:
+            adapter.place_order(_OrderReq(symbol=OPT, **bad))
+        assert err.value.status_code == 400
+    assert len(FakeClient.calls) == 1
+
+
+def test_a_crypto_position_gets_its_slash_back(alpaca):
+    FakeClient.handler = lambda m, u, p, j: FakeResponse(
+        [
+            {"symbol": "BTCUSD", "asset_class": "crypto", "qty": "0.5"},
+            {"symbol": "ETHUSDT", "asset_class": "crypto", "qty": "2"},
+            {"symbol": "LTC/USD", "asset_class": "crypto", "qty": "1"},
+            {"symbol": OPT, "asset_class": "us_option", "qty": "-1"},
+            {"symbol": "BUSD", "asset_class": "us_equity", "qty": "3"},
+        ]
+    )
+    assert [(p["symbol"], p["position"]) for p in _adapter(alpaca).positions()] == [
+        ("BTC/USD", 0.5),
+        ("ETH/USDT", 2.0),
+        ("LTC/USD", 1.0),
+        (OPT, -1.0),
+        ("BUSD", 3.0),
+    ]
+
+
+def test_instrument_spec_for_crypto_and_options(alpaca):
+    def handler(method, url, params, json):
+        if url.endswith("/v2/assets/BTC/USD"):
+            return FakeResponse({"min_order_size": "0.0001", "min_trade_increment": "0.00001"})
+        assert url.endswith(f"/v2/options/contracts/{OPT}")
+        return FakeResponse({"size": "100"})
+
+    FakeClient.handler = handler
+    spec = _adapter(alpaca).instrument_spec("btc/usd")
+    assert spec == {
+        "symbol": "BTC/USD",
+        "broker": "alpaca",
+        "unit": "units",
+        "min_size": 0.0001,
+        "size_step": 0.00001,
+        "max_size": None,
+        "contract_size": 1.0,
+        "currency": "USD",
+    }
+    spec = _adapter(alpaca).instrument_spec(OPT)
+    assert (spec["unit"], spec["size_step"], spec["contract_size"]) == ("contracts", 1.0, 100.0)
+
+
+def test_only_a_stock_fill_has_a_known_zero_commission(alpaca):
+    row = {"qty": "1", "price": "10", "side": "buy", "transaction_time": "2026-01-05T00:00:00Z"}
+    FakeClient.handler = lambda m, u, p, j: FakeResponse(
+        [
+            {**row, "id": "a", "symbol": "AAPL"},
+            {**row, "id": "b", "symbol": "BTC/USD"},
+            {**row, "id": "c", "symbol": OPT},
+        ]
+    )
+    fills = _adapter(alpaca).executions()
+    assert [(f["symbol"], f["commission"]) for f in fills] == [
+        ("AAPL", 0.0),
+        ("BTC/USD", None),
+        (OPT, None),
+    ]
+
+
+def test_crypto_streams_from_the_crypto_feed(monkeypatch):
+    adapter, socket, urls = _stream_adapter(
+        monkeypatch,
+        [
+            [{"T": "success", "msg": "connected"}],
+            [{"T": "success", "msg": "authenticated"}],
+            [{"T": "q", "S": "BTC/USD", "bp": 60000.5, "ap": 60001}],
+            [{"T": "t", "S": "BTC/USD", "p": 60000.75, "s": 0.01}],
+        ],
+    )
+    got = []
+    adapter.stream_prices(
+        ["BTC/USD"], lambda s, b, a, last="mid": got.append((s, b, a, last)), _until_silent(socket)
+    )
+    assert urls == ["wss://stream.data.alpaca.markets/v1beta3/crypto/us"]
+    assert socket.sent[1] == {"action": "subscribe", "trades": ["BTC/USD"], "quotes": ["BTC/USD"]}
+    assert got == [("BTC/USD", 60000.5, 60001.0, None), ("BTC/USD", None, None, 60000.75)]
+
+
+def test_options_are_polled_and_a_bad_contract_does_not_stop_the_rest(alpaca, monkeypatch):
+    import app_settings
+
+    monkeypatch.setattr(app_settings, "stream_poll_seconds", lambda: 0)
+    adapter = _adapter(alpaca)
+
+    def tick(symbol, account_mode="paper"):
+        if symbol == "AAPL270115P00190000":
+            raise HTTPException(502, "no such contract")
+        return {"bid": 1.0, "ask": 1.1, "last": None}
+
+    monkeypatch.setattr(adapter, "tick", tick)
+    got = []
+    adapter.stream_prices(
+        ["AAPL270115P00190000", OPT],
+        lambda s, b, a, last="mid": got.append((s, b, a, last)),
+        lambda: len(got) >= 2,
+    )
+    assert got == [(OPT, 1.0, 1.1, None)] * 2
+
+
+def test_stocks_and_options_stream_side_by_side_and_one_failing_stops_both(alpaca, monkeypatch):
+    adapter = _adapter(alpaca)
+    seen = {}
+
+    def feed(url, symbols, on_price, should_stop):
+        seen["feed"] = (url, symbols)
+        on_price(symbols[0], 1.0, 1.2, last=None)
+        raise HTTPException(503, "Alpaca stream closed")
+
+    def poll(symbols, on_price, should_stop):
+        seen["poll"] = symbols
+        # Ends because the other one failed, not on the caller's say-so.
+        assert _wait(should_stop)
+
+    monkeypatch.setattr(adapter, "_stream_feed", feed)
+    monkeypatch.setattr(adapter, "_poll_options", poll)
+    got = []
+    with pytest.raises(HTTPException) as err:
+        adapter.stream_prices(
+            ["AAPL", OPT], lambda s, b, a, last="mid": got.append(s), lambda: False
+        )
+    assert err.value.status_code == 503
+    assert seen == {"feed": ("wss://stream.data.alpaca.markets/v2/iex", ["AAPL"]), "poll": [OPT]}
+    assert got == ["AAPL"]
+
+
+def _wait(predicate, timeout=3.0):
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False

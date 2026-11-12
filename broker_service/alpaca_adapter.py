@@ -11,7 +11,9 @@ the frontend's point of view.
 ### Alpaca REST contract used here
 
     Trading API (paper: https://paper-api.alpaca.markets, live: https://api.alpaca.markets)
-      GET    /v2/assets?status=active&asset_class=us_equity
+      GET    /v2/assets?status=active&asset_class=us_equity   (or crypto)
+      GET    /v2/assets/{symbol}
+      GET    /v2/options/contracts?underlying_symbols=&expiration_date_gte=...
       POST   /v2/orders
       PATCH  /v2/orders/{id}   (Alpaca's replace/modify verb)
       DELETE /v2/orders/{id}
@@ -22,6 +24,20 @@ the frontend's point of view.
       GET /v2/stocks/{symbol}/bars?timeframe=&start=&end=&limit=
       GET /v2/stocks/{symbol}/quotes/latest
       GET /v2/stocks/{symbol}/trades/latest
+      GET /v1beta3/crypto/us/bars?symbols=      /latest/quotes   /latest/trades
+      GET /v1beta1/options/bars?symbols=        /quotes/latest   /trades/latest
+
+### Three kinds of instrument, told apart by the symbol
+
+  - **Crypto** has a slash: ``BTC/USD``. It trades around the clock in
+    fractions, cannot be sold short, takes market, limit and stop-limit
+    orders, good till cancelled or immediate-or-cancel only. Prices stream
+    from ``wss://stream.data.alpaca.markets/v1beta3/crypto/us``.
+  - **An option** is its OCC symbol: ``AAPL240119C00100000`` (root, expiry
+    yymmdd, C or P, strike in thousandths). It trades in whole contracts, for
+    the day or good till cancelled. Alpaca's option stream speaks only
+    MessagePack, so option prices are read on a timer instead.
+  - Everything else is a **US stock or ETF**, as before.
 
 Auth is two headers on every request: `APCA-API-KEY-ID` / `APCA-API-SECRET-KEY`.
 
@@ -49,7 +65,10 @@ Order placement runs the same `_validate_common` gate the IB path applies
 
 from __future__ import annotations
 
+import calendar
 import json as _json
+import re
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
@@ -86,6 +105,20 @@ _TRADING_PAPER_BASE = "https://paper-api.alpaca.markets"
 _TRADING_LIVE_BASE = "https://api.alpaca.markets"
 _DATA_BASE = "https://data.alpaca.markets"
 _DATA_STREAM_URL = "wss://stream.data.alpaca.markets/v2/iex"
+_CRYPTO_STREAM_URL = "wss://stream.data.alpaca.markets/v1beta3/crypto/us"
+
+EQUITY, CRYPTO, OPTION = "equity", "crypto", "option"
+# An OCC option symbol: root, expiry yymmdd, call or put, strike x 1000.
+_OPTION_SYMBOL = re.compile(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$")
+# What a crypto pair is quoted in, longest first, to put the slash back into
+# a symbol a position reports without one (BTCUSD).
+_CRYPTO_QUOTES = ("USDT", "USDC", "USD", "BTC")
+# Alpaca refuses anything else for these (docs: crypto orders, options orders).
+_CRYPTO_ORDER_TYPES = ("MKT", "LMT", "STP_LMT")
+_CRYPTO_TIFS = ("GTC", "IOC")
+_OPTION_TIFS = ("DAY", "GTC")
+# With no expiry asked for, list the contracts expiring within this long.
+_OPTION_SEARCH_DAYS = 90
 # A stream is asked whether to stop at least this often.
 _STREAM_WAIT_SECONDS = 5.0
 
@@ -176,6 +209,39 @@ class AlpacaAdapter:
     def _data_get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         return self._request("GET", self._data_base, path, params=params)
 
+    def _bars_page(self, kind: str, symbol: str, params: Dict[str, Any]) -> tuple:
+        """One page of bars and the token of the next. Stocks have a path of
+        their own; crypto and options answer keyed by symbol."""
+        if kind == EQUITY:
+            payload = self._data_get(f"/v2/stocks/{symbol}/bars", params)
+        else:
+            path = "/v1beta3/crypto/us/bars" if kind == CRYPTO else "/v1beta1/options/bars"
+            payload = self._data_get(path, {**params, "symbols": symbol})
+        if not isinstance(payload, dict):
+            return [], None
+        bars = payload.get("bars")
+        if isinstance(bars, dict):
+            bars = bars.get(symbol)
+        return (bars if isinstance(bars, list) else []), payload.get("next_page_token")
+
+    def _latest(self, symbol: str, what: str) -> Dict[str, Any]:
+        """The latest quote or trade (``what``: "quotes" or "trades")."""
+        symbol = symbol.upper()
+        kind = asset_class(symbol)
+        if kind == EQUITY:
+            payload = self._data_get(f"/v2/stocks/{symbol}/{what}/latest")
+            item = payload.get(what[:-1]) if isinstance(payload, dict) else None
+        else:
+            path = (
+                f"/v1beta3/crypto/us/latest/{what}"
+                if kind == CRYPTO
+                else f"/v1beta1/options/{what}/latest"
+            )
+            payload = self._data_get(path, {"symbols": symbol})
+            items = payload.get(what) if isinstance(payload, dict) else None
+            item = items.get(symbol) if isinstance(items, dict) else None
+        return item if isinstance(item, dict) else {}
+
     def _map_timeframe(self, timeframe: str) -> str:
         alpaca_tf = _TIMEFRAME_TO_ALPACA.get(timeframe)
         if alpaca_tf is None:
@@ -186,7 +252,13 @@ class AlpacaAdapter:
     def search_contracts(self, request: Any) -> Dict[str, Any]:
         symbol = (getattr(request, "symbol", "") or "").upper()
         limit = getattr(request, "max_results", None) or 50
-        payload = self._trading_get("/v2/assets", {"status": "active", "asset_class": "us_equity"})
+        sec_type = (getattr(request, "secType", "") or "STK").upper()
+        if sec_type == "OPT":
+            return self._search_options(request, symbol, limit)
+        crypto = sec_type == "CRYPTO"
+        payload = self._trading_get(
+            "/v2/assets", {"status": "active", "asset_class": "crypto" if crypto else "us_equity"}
+        )
         assets = payload if isinstance(payload, list) else []
         # Alpaca has no free-text search endpoint — filter client-side by
         # symbol substring, same approach MT5's adapter uses for its sidecar.
@@ -200,13 +272,67 @@ class AlpacaAdapter:
                     "symbol": sym,
                     "companyName": a.get("name") or sym,
                     "description": a.get("name") or sym,
-                    "secType": "STK",
+                    "secType": "CRYPTO" if crypto else "STK",
                     "exchange": a.get("exchange") or "SMART",
-                    "currency": "USD",
+                    "currency": sym.partition("/")[2] or "USD",
                     "broker": "alpaca",
                 }
             )
         return {"results": results, "count": len(results), "broker": "alpaca"}
+
+    def _search_options(self, request: Any, underlying: str, limit: int) -> Dict[str, Any]:
+        """The option contracts on ``underlying``, nearest expiry first. The
+        advanced search's ``expiry`` (YYYYMM or YYYYMMDD), ``strike`` and
+        ``right`` narrow it; with no expiry, the next 90 days are listed."""
+        params: Dict[str, Any] = {"underlying_symbols": underlying, "limit": limit}
+        expiry = re.sub(r"\D", "", str(getattr(request, "expiry", "") or ""))
+        if len(expiry) == 8:
+            params["expiration_date"] = f"{expiry[:4]}-{expiry[4:6]}-{expiry[6:]}"
+        elif len(expiry) == 6 and 1 <= int(expiry[4:]) <= 12:
+            year, month = int(expiry[:4]), int(expiry[4:])
+            params["expiration_date_gte"] = f"{year:04d}-{month:02d}-01"
+            last = calendar.monthrange(year, month)[1]
+            params["expiration_date_lte"] = f"{year:04d}-{month:02d}-{last:02d}"
+        else:
+            today = datetime.now(UTC).date()
+            params["expiration_date_gte"] = today.isoformat()
+            params["expiration_date_lte"] = (
+                today + timedelta(days=_OPTION_SEARCH_DAYS)
+            ).isoformat()
+        strike = _opt_float(getattr(request, "strike", None))
+        if strike:
+            params["strike_price_gte"] = params["strike_price_lte"] = strike
+        right = str(getattr(request, "right", "") or "").upper()[:1]
+        if right in ("C", "P"):
+            params["type"] = "call" if right == "C" else "put"
+
+        payload = self._trading_get("/v2/options/contracts", params)
+        rows = payload.get("option_contracts") if isinstance(payload, dict) else None
+        results: List[Dict[str, Any]] = []
+        for c in rows if isinstance(rows, list) else []:
+            sym = str(c.get("symbol") or "")
+            if not sym or c.get("tradable") is False:
+                continue
+            results.append(
+                {
+                    "conid": str(c.get("id") or sym),
+                    "symbol": sym,
+                    "companyName": c.get("name") or sym,
+                    "description": c.get("name") or sym,
+                    "secType": "OPT",
+                    "exchange": "OPRA",
+                    "currency": "USD",
+                    "localSymbol": sym,
+                    "underlying": c.get("underlying_symbol") or underlying,
+                    "expiry": str(c.get("expiration_date") or "").replace("-", ""),
+                    "strike": _opt_float(c.get("strike_price")),
+                    "right": "P" if str(c.get("type") or "").lower() == "put" else "C",
+                    "multiplier": str(c.get("size") or "100"),
+                    "broker": "alpaca",
+                }
+            )
+        results.sort(key=lambda r: (r["expiry"], r["strike"] or 0, r["right"]))
+        return {"results": results[:limit], "count": len(results[:limit]), "broker": "alpaca"}
 
     def historical_bars(
         self,
@@ -220,11 +346,10 @@ class AlpacaAdapter:
         account_mode: str = "paper",
     ) -> HistoricalDataResponse:
         alpaca_tf = self._map_timeframe(timeframe)
-        params: Dict[str, Any] = {
-            "timeframe": alpaca_tf,
-            "adjustment": "raw",
-            "limit": _MAX_BARS_PER_REQUEST,
-        }
+        kind = asset_class(symbol)
+        params: Dict[str, Any] = {"timeframe": alpaca_tf, "limit": _MAX_BARS_PER_REQUEST}
+        if kind == EQUITY:
+            params["adjustment"] = "raw"
         if start_date and end_date:
             params["start"] = start_date
             params["end"] = end_date
@@ -242,11 +367,8 @@ class AlpacaAdapter:
 
         raw_bars: List[Dict[str, Any]] = []
         for _ in range(max_pages):
-            payload = self._data_get(f"/v2/stocks/{symbol.upper()}/bars", params)
-            if not isinstance(payload, dict):
-                break
-            raw_bars.extend(payload.get("bars") or [])
-            token = payload.get("next_page_token")
+            page, token = self._bars_page(kind, symbol.upper(), params)
+            raw_bars.extend(page)
             if not token:
                 break
             params = {**params, "page_token": token}
@@ -261,7 +383,8 @@ class AlpacaAdapter:
                     "high": float(b["h"]),
                     "low": float(b["l"]),
                     "close": float(b["c"]),
-                    "volume": int(b.get("v", 0) or 0),
+                    # Crypto trades in fractions; a bar's volume is stored whole.
+                    "volume": int(round(float(b.get("v", 0) or 0))),
                 }
             )
         rows.sort(key=lambda r: r["timestamp"])
@@ -300,25 +423,26 @@ class AlpacaAdapter:
         return bars
 
     def realtime_quote(self, symbol: str, account_mode: str = "paper") -> RealTimeQuote:
-        payload = self._data_get(f"/v2/stocks/{symbol.upper()}/quotes/latest")
-        q = payload.get("quote", {}) if isinstance(payload, dict) else {}
+        q = self._latest(symbol, "quotes")
         return RealTimeQuote(
             symbol=symbol.upper(),
             bid=_opt_float(q.get("bp")),
             ask=_opt_float(q.get("ap")),
             last=_opt_float(q.get("ap")) or _opt_float(q.get("bp")),
-            volume=_opt_int(q.get("bs")),
+            volume=_opt_int(_opt_float(q.get("bs"))),
             timestamp=_iso_from(q.get("t")),
         )
 
     def tick(self, symbol: str, account_mode: str = "paper") -> Dict[str, Any]:
-        payload = self._data_get(f"/v2/stocks/{symbol.upper()}/trades/latest")
-        t = payload.get("trade", {}) if isinstance(payload, dict) else {}
+        t = self._latest(symbol, "trades")
+        # An option can go a long time without a trade, so its quote is read
+        # too: it is the only price there may be.
+        q = self._latest(symbol, "quotes") if asset_class(symbol) == OPTION else {}
         return {
             "symbol": symbol.upper(),
-            "timestamp": _iso_from(t.get("t")),
-            "bid": None,
-            "ask": None,
+            "timestamp": _iso_from(t.get("t") or q.get("t")),
+            "bid": _positive(q.get("bp")),
+            "ask": _positive(q.get("ap")),
             "last": t.get("p"),
             "volume": t.get("s"),
             "broker": "alpaca",
@@ -374,12 +498,69 @@ class AlpacaAdapter:
         on_price: Callable[..., None],
         should_stop: Callable[[], bool],
     ) -> None:
-        """Stream quotes and trades for ``symbols`` from Alpaca's market data
-        WebSocket. A quote calls ``on_price(symbol, bid, ask, last=None)`` and
-        a trade ``on_price(symbol, None, None, last=price)``: Alpaca builds
-        its bars from trades, so the last price is a trade's, never a quote's
-        midpoint. Blocks until ``should_stop()`` is true or the stream ends;
-        raises on an error and the caller retries."""
+        """Stream quotes and trades for ``symbols``. A quote calls
+        ``on_price(symbol, bid, ask, last=None)`` and a trade
+        ``on_price(symbol, None, None, last=price)``: Alpaca builds its bars
+        from trades, so the last price is a trade's, never a quote's
+        midpoint. Blocks until ``should_stop()`` is true or a stream ends;
+        raises on an error and the caller retries.
+
+        Stocks and crypto each have a WebSocket; options are read on a timer
+        (their stream speaks only MessagePack). With more than one kind
+        subscribed each runs on a thread of its own, and when one ends the
+        others are stopped, so the caller restarts them together."""
+        groups: Dict[str, List[str]] = {}
+        for s in symbols:
+            groups.setdefault(asset_class(s), []).append(s)
+        jobs: List[Callable[[Callable[[], bool]], None]] = []
+        for kind, members in sorted(groups.items()):
+            if kind == OPTION:
+                jobs.append(lambda stop, m=members: self._poll_options(m, on_price, stop))
+            else:
+                url = _CRYPTO_STREAM_URL if kind == CRYPTO else _DATA_STREAM_URL
+                jobs.append(lambda stop, m=members, u=url: self._stream_feed(u, m, on_price, stop))
+        if len(jobs) == 1:
+            jobs[0](should_stop)
+        elif jobs:
+            _run_together(jobs, should_stop)
+
+    def _poll_options(
+        self,
+        symbols: List[str],
+        on_price: Callable[..., None],
+        should_stop: Callable[[], bool],
+    ) -> None:
+        """Read each option's latest quote and trade every
+        ``STREAM_POLL_SECONDS``. A contract that cannot be read (expired,
+        mistyped) is skipped, so it does not stop the rest."""
+        import app_settings
+
+        waiter = threading.Event()
+        while not should_stop():
+            for symbol in symbols:
+                if should_stop():
+                    return
+                try:
+                    tick = self.tick(symbol)
+                except HTTPException as exc:
+                    logger.warning("alpaca_option_price_failed", symbol=symbol, error=exc.detail)
+                    continue
+                bid, ask, last = tick["bid"], tick["ask"], _positive(tick["last"])
+                if bid is not None or ask is not None or last is not None:
+                    on_price(symbol, bid, ask, last=last)
+            deadline = app_settings.stream_poll_seconds()
+            while deadline > 0 and not should_stop():
+                waiter.wait(min(deadline, 0.5))
+                deadline -= 0.5
+
+    def _stream_feed(
+        self,
+        url: str,
+        symbols: List[str],
+        on_price: Callable[..., None],
+        should_stop: Callable[[], bool],
+    ) -> None:
+        """One market data WebSocket (stocks or crypto: the same protocol)."""
         wanted = sorted({s.upper() for s in symbols})
         if not wanted:
             return
@@ -411,7 +592,7 @@ class AlpacaAdapter:
                         if price is not None:
                             on_price(symbol, None, None, last=price)
 
-        self._listen(_DATA_STREAM_URL, on_message, should_stop)
+        self._listen(url, on_message, should_stop)
 
     def stream_trade_events(
         self,
@@ -451,9 +632,26 @@ class AlpacaAdapter:
         order_type = _ORDER_TYPE_TO_ALPACA.get(request.order_type)
         if order_type is None:
             raise HTTPException(400, f"order_type '{request.order_type}' is not supported")
+        kind = asset_class(request.symbol)
+        quantity = str(request.quantity)
+        if kind == CRYPTO:
+            if request.order_type not in _CRYPTO_ORDER_TYPES:
+                raise HTTPException(
+                    400, "Alpaca takes market, limit and stop-limit orders for crypto, not a stop"
+                )
+            if request.tif not in _CRYPTO_TIFS:
+                raise HTTPException(
+                    400, "A crypto order on Alpaca must be GTC or IOC (crypto has no trading day)"
+                )
+        elif kind == OPTION:
+            if request.tif not in _OPTION_TIFS:
+                raise HTTPException(400, "An option order on Alpaca must be DAY or GTC")
+            if float(request.quantity) != int(request.quantity) or request.quantity < 1:
+                raise HTTPException(400, "Options trade in whole contracts")
+            quantity = str(int(request.quantity))
         body: Dict[str, Any] = {
             "symbol": request.symbol.upper(),
-            "qty": str(request.quantity),
+            "qty": quantity,
             "side": _ACTION_TO_ALPACA[request.action],
             "type": order_type,
             "time_in_force": _TIF_TO_ALPACA[request.tif],
@@ -521,9 +719,12 @@ class AlpacaAdapter:
             size = _opt_float(row.get("qty"))
             if size is None or size == 0:
                 continue
+            symbol = str(row.get("symbol") or "").upper()
+            if str(row.get("asset_class") or "").lower() == "crypto":
+                symbol = _crypto_symbol(symbol)
             positions.append(
                 {
-                    "symbol": str(row.get("symbol") or "").upper(),
+                    "symbol": symbol,
                     "position": size,
                     "market_price": _opt_float(row.get("current_price")),
                     "market_value": _opt_float(row.get("market_value")),
@@ -593,8 +794,39 @@ class AlpacaAdapter:
         """Alpaca trades US equities in whole shares — the same unit semantics
         as IB, which is why the two already share the live sizer's share path.
         Fractional shares exist on Alpaca but are deliberately not modelled
-        here: the app's order path is whole-share throughout."""
+        here: the app's order path is whole-share throughout.
 
+        Crypto is sized in units of the coin, in the steps Alpaca lists for
+        the pair. An option is sized in contracts of (usually) 100 shares."""
+
+        kind = asset_class(symbol)
+        if kind == CRYPTO:
+            asset = self._trading_get(f"/v2/assets/{symbol.upper()}")
+            asset = asset if isinstance(asset, dict) else {}
+            step = _positive(asset.get("min_trade_increment"))
+            return {
+                "symbol": symbol.upper(),
+                "broker": "alpaca",
+                "unit": "units",
+                "min_size": _positive(asset.get("min_order_size")) or step,
+                "size_step": step,
+                "max_size": None,
+                "contract_size": 1.0,
+                "currency": symbol.upper().partition("/")[2] or "USD",
+            }
+        if kind == OPTION:
+            contract = self._trading_get(f"/v2/options/contracts/{symbol.upper()}")
+            contract = contract if isinstance(contract, dict) else {}
+            return {
+                "symbol": symbol.upper(),
+                "broker": "alpaca",
+                "unit": "contracts",
+                "min_size": 1.0,
+                "size_step": 1.0,
+                "max_size": None,
+                "contract_size": _positive(contract.get("size")) or 100.0,
+                "currency": "USD",
+            }
         return {
             "symbol": symbol.upper(),
             "broker": "alpaca",
@@ -618,6 +850,10 @@ class AlpacaAdapter:
 
         ``sell_short`` is a SELL like any other: the app models direction with
         ``side`` plus a signed running position, not with a third state.
+
+        A crypto fill's fee is taken from what was bought and posted at the
+        end of the day as a separate activity, and an option fill carries
+        regulatory fees, so for those the commission is unknown (``None``).
         """
 
         after = (datetime.now(UTC) - timedelta(days=max(1, days))).isoformat()
@@ -635,15 +871,16 @@ class AlpacaAdapter:
             if not exec_id or quantity is None or price is None:
                 continue
             side = "SELL" if str(row.get("side") or "").lower().startswith("sell") else "BUY"
+            symbol = str(row.get("symbol") or "").upper()
             fills.append(
                 {
                     "exec_id": exec_id,
                     "order_id": str(row.get("order_id")) if row.get("order_id") else None,
-                    "symbol": str(row.get("symbol") or "").upper(),
+                    "symbol": symbol,
                     "side": side,
                     "quantity": abs(quantity),
                     "price": price,
-                    "commission": 0.0,
+                    "commission": 0.0 if asset_class(symbol) == EQUITY else None,
                     "realized_pnl": None,
                     "executed_at": _iso_from(row.get("transaction_time")),
                     "account": None,
@@ -652,6 +889,51 @@ class AlpacaAdapter:
                 }
             )
         return fills
+
+
+def asset_class(symbol: str) -> str:
+    """Which kind of instrument a symbol names: crypto has a slash, an option
+    is an OCC symbol, anything else is a stock or ETF."""
+    symbol = (symbol or "").upper().strip()
+    if "/" in symbol:
+        return CRYPTO
+    return OPTION if _OPTION_SYMBOL.match(symbol) else EQUITY
+
+
+def _crypto_symbol(symbol: str) -> str:
+    """``BTCUSD``, as a position names it, to the ``BTC/USD`` everything
+    else uses. Left alone when it already has a slash or matches no quote."""
+    if "/" in symbol:
+        return symbol
+    for quote in _CRYPTO_QUOTES:
+        if symbol.endswith(quote) and len(symbol) > len(quote):
+            return f"{symbol[: -len(quote)]}/{quote}"
+    return symbol
+
+
+def _run_together(
+    jobs: List[Callable[[Callable[[], bool]], None]], should_stop: Callable[[], bool]
+) -> None:
+    """Run each job on its own thread until ``should_stop()`` or until one
+    ends, which stops the rest. The first error raised is raised here."""
+    halt = threading.Event()
+    errors: List[BaseException] = []
+
+    def run(job: Callable[[Callable[[], bool]], None]) -> None:
+        try:
+            job(lambda: halt.is_set() or should_stop())
+        except BaseException as exc:  # noqa: BLE001 — handed to the caller below
+            errors.append(exc)
+        finally:
+            halt.set()
+
+    threads = [threading.Thread(target=run, args=(job,), daemon=True) for job in jobs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if errors:
+        raise errors[0]
 
 
 def _connect(url: str, timeout: float) -> Any:

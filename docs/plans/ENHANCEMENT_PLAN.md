@@ -248,7 +248,7 @@ There are 47 items, sorted by priority. P1 means do next, P2 soon after, and P3 
 | D-03 | Decision points written as questions with answers and jumps (built: "Decisions to make first" in INSTALL, seven questions) | P2 | S | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | D-08 | Upgrade guide for S-01 to S-03, with rollback (built: OPERATIONS § Upgrade in place, Roll back an upgrade, What each upgrade changes, and Upgrade an MT5 sidecar) | P2 | S | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | E-12 | cTrader live trendbars and depth of market (built: recorded cTrader instruments store the broker's own finished 1-minute bars; the order ticket reads an order book snapshot on request; not built: a book that updates by itself, and neither part has run against a real cTrader account) | P3 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
-| E-14 | Alpaca crypto and options data and trading | P3 | L | Opus 5.5 | Fable 5.2 | Sonnet 5.5, Haiku 5.5 |
+| E-14 | Alpaca crypto and options data and trading (built: search, history, quotes, live prices and single-leg orders for both, crypto streamed and options polled; not built: multi-leg option orders, option greeks and chains view, the option WebSocket, crypto fees on fills, fractional bar volume; not run against a real Alpaca account) | P3 | L | Opus 5.5 | Fable 5.2 | Sonnet 5.5, Haiku 5.5 |
 | E-16 | Trailing, bracket, OCO and guaranteed stops where each broker supports them | P3 | L | Opus 5.5, Fable 5.2 review | Fable 5.2 | Sonnet 5.5, Haiku 5.5 |
 | E-17 | IG client sentiment and transaction history | P3 | S | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | E-18 | Tick and 5-second history: cTrader tick data, MT5 `copy_ticks_range`, IB historical ticks and real-time bars | P3 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
