@@ -255,11 +255,11 @@ There are 47 items, sorted by priority. P1 means do next, P2 soon after, and P3 
 | E-24 | Positions, working orders, stops and targets as price lines on the chart | P3 | S | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | E-25 | Dark theme; merge the chart components; delete unused `TradingChart.tsx` | P3 | S | Sonnet 5.5 | Haiku 5.5 (deletion only) | none |
 | E-36 | Check whether IBKR's Web API with OAuth is open to Sean's account; plan to retire IB Gateway if so | P3 | S | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
-| S-08 | Bind ports 3000 and 4000 to the proxy interface | P3 | S | Sonnet 5.5 | Haiku 5.5 | none |
-| S-09 | Scrape token or separate port for `/metrics` | P3 | S | Sonnet 5.5 | Haiku 5.5 | none |
-| S-10 | No API token in the Socket.IO query string | P3 | S | Sonnet 5.5 | Haiku 5.5 | none |
-| S-11 | 100 KB body limit except on the export route | P3 | S | Haiku 5.5 | Sonnet 5.5 | none |
-| S-12 | `helmet` and a Content Security Policy | P3 | S | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
+| S-08 | Bind ports 3000 and 4000 to the proxy interface (built: `FRONTEND_BIND` and `BACKEND_BIND`, default every address; a proxy on its own host relies on the firewall rules) | P3 | S | Sonnet 5.5 | Haiku 5.5 | none |
+| S-09 | Scrape token or separate port for `/metrics` (built: `METRICS_TOKEN`; open until it is set) | P3 | S | Sonnet 5.5 | Haiku 5.5 | none |
+| S-10 | No API token in the Socket.IO query string (built) | P3 | S | Sonnet 5.5 | Haiku 5.5 | none |
+| S-11 | 100 KB body limit except on the export route (built: the bar upload also keeps 25 MB) | P3 | S | Haiku 5.5 | Sonnet 5.5 | none |
+| S-12 | `helmet` and a Content Security Policy (built: the policy still allows inline scripts and styles, which Next.js and the charts need) | P3 | S | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | D-04 | Symbol map and "account info from" on the Connections form; remove the SQL workaround | P3 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | D-05 | Procedures for recording, tick retention, stored-data backtests, replay, storage checks | P3 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | D-06 | Database disk sizing from the storage estimate | P3 | S | Sonnet 5.5 | Haiku 5.5 | none |

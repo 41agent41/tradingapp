@@ -1067,8 +1067,8 @@ when the broker service is unreachable, `504` on IB timeouts.
   Sessions are kept in `auth_sessions`, so they survive a restart. API tokens
   are separate and are revoked on the same tab.
 - **Authenticated Socket.IO handshake**: the session cookie, or the token
-  from `auth.token`, the `Authorization` header or a `?token=` query
-  parameter.
+  from `auth.token` or the `Authorization` header. A token in the URL is
+  not read.
 - **Encrypted link to the MT5 sidecar** (`mt5_sidecar/config.py`,
   `broker_service/tls_pin.py`): with `MT5_TLS_CERT` and `MT5_TLS_KEY` the
   sidecar serves HTTPS only. Its certificate can be self-signed: the

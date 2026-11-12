@@ -1,5 +1,6 @@
 import express from 'express';
 import cors, { CorsOptions } from 'cors';
+import helmet from 'helmet';
 import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import marketDataRoutes from './routes/marketData.js';
@@ -43,6 +44,7 @@ import { createAuthMiddleware, checkSocketAuth } from './middleware/auth.js';
 import { observabilityMiddleware } from './middleware/observability.js';
 import { logger, currentRequestId } from './services/logger.js';
 import { registry } from './services/metrics.js';
+import { bodyErrors, jsonBody, metricsGuard } from './middleware/requestLimits.js';
 import { checkStartupConfig, heartbeatWarnings } from './services/startupChecks.js';
 import { configService } from './config/configService.js';
 import { startDefaultBrokerRefresh } from './services/brokerDefault.js';
@@ -134,11 +136,16 @@ const applyTrustProxy = () => app.set('trust proxy', trustedProxies());
 applyTrustProxy();
 configService.subscribe(['TRUST_PROXY'], applyTrustProxy);
 
+// Security headers on every answer (S-12): no sniffing, no framing, no
+// referrer leak, HSTS (which browsers apply only over HTTPS) and a policy that
+// lets an API answer load nothing. CORS decides who may read the API from
+// another origin, so the resource policy does not narrow it.
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors(corsOptions));
-// JSON body parser. The default 100kb limit is fine for everything except
-// the Parquet export, which posts the full dataframe back from the
-// browser. 25 MB is plenty for the 200k-row cap enforced in routes/export.ts.
-app.use(express.json({ limit: '25mb' }));
+// JSON body parser: 100 KB everywhere except the Parquet export and the bar
+// upload, which take 25 MB (middleware/requestLimits.ts).
+app.use(jsonBody());
+app.use(bodyErrors());
 
 // Observability runs first so every request — including those rejected by
 // auth — gets a request-id, a log line and a metric observation.
@@ -173,10 +180,10 @@ axios.interceptors.request.use((config) => {
   return config;
 });
 
-// Prometheus scrape endpoint. Intentionally unauthenticated so the scraper
-// can hit it without a bearer token; if you expose this beyond the docker
-// network, front it with a firewall rule.
-app.get('/metrics', async (_req, res) => {
+// Prometheus scrape endpoint. It skips the login (a scraper has no session);
+// with METRICS_TOKEN set it needs that token instead, and without one it is
+// open, so keep port 4000 behind the firewall rule in the install guide.
+app.get('/metrics', metricsGuard(), async (_req, res) => {
   res.setHeader('Content-Type', registry.contentType);
   res.end(await registry.metrics());
 });
@@ -310,8 +317,7 @@ app.get('/', (_req, res) => {
 io.use((socket, next) => {
   const err = checkSocketAuth(
     socket.handshake.auth,
-    socket.handshake.headers as Record<string, string | string[] | undefined>,
-    socket.handshake.query as Record<string, unknown>
+    socket.handshake.headers as Record<string, string | string[] | undefined>
   );
   if (err) {
     console.warn(`[socket] rejected connection ${socket.id}: ${err.message}`);
