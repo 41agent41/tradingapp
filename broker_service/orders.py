@@ -83,6 +83,12 @@ class PlaceOrderRequest(BaseModel):
     # STP order rather than protection on a resulting position.
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
+    # Broker-side variants of that stop (E-16), only where the broker has
+    # them. Trailing: the broker moves the stop behind the price, keeping the
+    # distance it started with. Guaranteed: the broker fills at the stop
+    # price whatever the market does, for a premium it charges.
+    trailing_stop: bool = False
+    guaranteed_stop: bool = False
     # Optional — the backend can supply its audit-row id so error logs
     # can be correlated to the persisted attempt.
     audit_id: Optional[int] = None
@@ -283,6 +289,20 @@ async def place_order(req: PlaceOrderRequest) -> Dict[str, Any]:
             f"broker '{req.broker}' cannot attach a protective stop to an entry; "
             "refusing to open unprotected",
         )
+    # The same for a kind of stop the broker does not have: an ordinary stop
+    # in its place would not be what was asked for.
+    for wanted, supports, name in (
+        (req.trailing_stop, "trailing_stops", "trailing"),
+        (req.guaranteed_stop, "guaranteed_stops", "guaranteed"),
+    ):
+        if not wanted:
+            continue
+        if req.stop_loss is None:
+            raise HTTPException(400, f"a {name} stop needs stop_loss, the price it starts at")
+        if not getattr(adapter, supports, False):
+            raise HTTPException(
+                400, f"broker '{req.broker}' has no {name} stop; refusing rather than downgrading"
+            )
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, lambda: adapter.place_order(req))
 

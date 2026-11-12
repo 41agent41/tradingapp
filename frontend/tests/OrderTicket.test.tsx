@@ -213,4 +213,90 @@ describe('OrderTicket', () => {
       expect(screen.queryByLabelText('Connection')).not.toBeInTheDocument();
     });
   });
+
+  describe('protection on the entry (E-16)', () => {
+    const connection = (over: Record<string, unknown>) => ({
+      label: 'oanda:default',
+      platform: 'oanda',
+      account: 'default',
+      account_mode: 'paper',
+      is_default: true,
+      order_types: null,
+      ...over,
+    });
+    const withConnection = (over: Record<string, unknown>) => {
+      const posted: any[] = [];
+      global.fetch = vi.fn(async (_url: any, init: any) => {
+        if (init?.method === 'POST') {
+          posted.push(JSON.parse(String(init.body)));
+          return new Response(JSON.stringify({ audit_id: 5 }), { status: 201 });
+        }
+        return new Response(JSON.stringify({ ...CONFIG_BODY, connections: [connection(over)] }));
+      }) as any;
+      return posted;
+    };
+
+    it('sends a stop, a target and a trailing stop where the broker has them', async () => {
+      const posted = withConnection({ attaches_stops: true, trailing_stops: true });
+      render(<OrderTicket />);
+      await waitFor(() => expect(screen.getByLabelText('Protective stop')).toBeInTheDocument());
+      // No guaranteed stop at this broker, and nothing to trail yet.
+      expect(screen.queryByLabelText(/Guaranteed stop/)).toBeNull();
+      expect(screen.getByLabelText(/Trailing stop/)).toBeDisabled();
+
+      fireEvent.change(screen.getByPlaceholderText('MSFT'), { target: { value: 'EUR.USD' } });
+      fireEvent.change(screen.getByLabelText('Protective stop'), { target: { value: '1.08' } });
+      fireEvent.change(screen.getByLabelText('Target'), { target: { value: '1.12' } });
+      fireEvent.click(screen.getByLabelText(/Trailing stop/));
+      fireEvent.click(screen.getByRole('button', { name: /Place paper order/i }));
+      await waitFor(() => expect(posted).toHaveLength(1));
+      expect(posted[0]).toMatchObject({ stop_loss: 1.08, take_profit: 1.12, trailing_stop: true });
+      expect(posted[0].guaranteed_stop).toBeUndefined();
+    });
+
+    it('warns when the broker placed the order without the stop', async () => {
+      global.fetch = vi.fn(async (_url: any, init: any) =>
+        init?.method === 'POST'
+          ? new Response(JSON.stringify({ audit_id: 6, stop_loss_missing: true }), { status: 201 })
+          : new Response(
+              JSON.stringify({
+                ...CONFIG_BODY,
+                connections: [connection({ attaches_stops: true })],
+              })
+            )
+      ) as any;
+      render(<OrderTicket />);
+      await waitFor(() => expect(screen.getByLabelText('Protective stop')).toBeInTheDocument());
+      fireEvent.change(screen.getByPlaceholderText('MSFT'), { target: { value: 'EUR.USD' } });
+      fireEvent.change(screen.getByLabelText('Protective stop'), { target: { value: '1.08' } });
+      fireEvent.click(screen.getByRole('button', { name: /Place paper order/i }));
+      await waitFor(() =>
+        expect(screen.getByText(/did not record the protective stop/)).toBeInTheDocument()
+      );
+    });
+
+    it('offers a guaranteed stop only where the broker has one', async () => {
+      const posted = withConnection({ attaches_stops: true, guaranteed_stops: true });
+      render(<OrderTicket />);
+      await waitFor(() => expect(screen.getByLabelText(/Guaranteed stop/)).toBeInTheDocument());
+      expect(screen.queryByLabelText(/Trailing stop/)).toBeNull();
+      fireEvent.change(screen.getByPlaceholderText('MSFT'), { target: { value: 'EUR.USD' } });
+      fireEvent.change(screen.getByLabelText('Protective stop'), { target: { value: '1.08' } });
+      fireEvent.click(screen.getByLabelText(/Guaranteed stop/));
+      fireEvent.click(screen.getByRole('button', { name: /Place paper order/i }));
+      await waitFor(() => expect(posted).toHaveLength(1));
+      expect(posted[0]).toMatchObject({ stop_loss: 1.08, guaranteed_stop: true });
+    });
+
+    it('has no protection fields on a broker that cannot attach a stop', async () => {
+      const posted = withConnection({ attaches_stops: false });
+      render(<OrderTicket />);
+      await waitFor(() => expect(screen.getByText('Place paper order')).toBeInTheDocument());
+      expect(screen.queryByLabelText('Protective stop')).toBeNull();
+      fireEvent.change(screen.getByPlaceholderText('MSFT'), { target: { value: 'AAPL' } });
+      fireEvent.click(screen.getByRole('button', { name: /Place paper order/i }));
+      await waitFor(() => expect(posted).toHaveLength(1));
+      expect(posted[0].stop_loss).toBeUndefined();
+    });
+  });
 });

@@ -94,6 +94,9 @@ def capabilities(market_data: Any = None, broker: Any = None) -> Dict[str, Any]:
         },
         # A stop and target can be attached to the entry order.
         "attaches_stops": bool(getattr(broker, "attaches_stops", False)),
+        # That stop can trail the price, or be guaranteed, at the broker.
+        "trailing_stops": bool(getattr(broker, "trailing_stops", False)),
+        "guaranteed_stops": bool(getattr(broker, "guaranteed_stops", False)),
         # "stream", "signal" or "poll"; None when the connection cannot trade.
         "fills": _fills(broker) if broker is not None else None,
     }

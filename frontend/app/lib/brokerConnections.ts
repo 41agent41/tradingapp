@@ -26,6 +26,9 @@ export type Capabilities = {
   /** Each order type it takes, with the times in force that type accepts. */
   order_types?: Record<string, string[]>;
   attaches_stops?: boolean;
+  /** That stop can trail the price, or be guaranteed, at the broker. */
+  trailing_stops?: boolean;
+  guaranteed_stops?: boolean;
   /** How the app learns of a fill. */
   fills?: 'stream' | 'signal' | 'poll' | null;
 };
@@ -506,6 +509,8 @@ export function describeCapabilities(caps: Capabilities | null | undefined): str
     const kinds = Object.keys(caps.order_types ?? {});
     if (kinds.length) parts.push(`orders: ${kinds.map((k) => k.replace('_', ' ')).join(', ')}`);
     parts.push(caps.attaches_stops ? 'stop attached to the entry' : 'no stop on the entry');
+    if (caps.trailing_stops) parts.push('trailing stops');
+    if (caps.guaranteed_stops) parts.push('guaranteed stops');
     if (caps.fills) {
       parts.push(caps.fills === 'poll' ? 'fills polled' : 'fills pushed');
     }

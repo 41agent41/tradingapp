@@ -642,6 +642,29 @@ Place, cancel and modify orders against any connected broker from the UI:
   `order_audit` with the input set, the IB order id once known, the
   `X-Request-Id`, status transitions and raw IB response. The
   backend refuses to forward an order if the audit insert fails.
+- **Protection on a manual order.** Where the connection attaches a stop
+  to the entry (OANDA, IG, cTrader, MT5, the IBKR Web API), the order ticket
+  has optional **Protective stop** and **Target** prices. They are sent as
+  `stop_loss` and `take_profit` and the broker creates them with the
+  position. If the broker places the order without recording the stop, the
+  ticket says so in red: the position is open without one.
+- **Trailing and guaranteed stops.** Two kinds of protective stop that the
+  broker itself runs, offered on the ticket only where the broker has them:
+  - **Trailing stop** (OANDA and cTrader): the broker moves the stop behind
+    the price as it moves in your favour, keeping the distance it started
+    with. The starting distance is from the expected fill price (the ask
+    for a market buy, the bid for a market sell, the order's own price
+    otherwise) to the protective stop entered.
+  - **Guaranteed stop** (IG): IG fills at the stop price whatever the
+    market does, and charges a premium if it is triggered. IG may refuse
+    one on a market or account that does not allow it.
+
+  Both need a protective stop. On the API they are `trailing_stop` and
+  `guaranteed_stop` (true or false) on `POST /api/orders`. A broker without
+  the kind asked for refuses the order; it is never placed with an ordinary
+  stop instead. Strategies do not use these: a strategy's trailing stop is
+  still moved by the app. Not built: IG trailing stops, and bracket and OCO
+  orders on Alpaca and IB Gateway.
 - **Defence-in-depth gate:** live trading must be on in **both** the
   backend and the broker service (Settings > Trading sets both; the
   broker service refuses live orders until the backend has told it).

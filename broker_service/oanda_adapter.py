@@ -178,6 +178,8 @@ class OANDAAdapter:
     name = "oanda"
     # stopLossOnFill attaches the stop in the fill's own transaction (E-2).
     attaches_stops = True
+    # The stop can trail the price at OANDA (``trailingStopLossOnFill``).
+    trailing_stops = True
     # What the connection reports it supports (capabilities.py).
     timeframes = tuple(_TIMEFRAME_TO_GRANULARITY)
     order_tifs = {kind: tuple(_TIF_TO_OANDA) for kind in _ORDER_TYPE_TO_OANDA}
@@ -553,7 +555,14 @@ class OANDAAdapter:
         take_profit = getattr(request, "take_profit", None)
         if stop_loss is not None or take_profit is not None:
             digits = self._price_precision(order_body["instrument"])
-            if stop_loss is not None:
+            if stop_loss is not None and getattr(request, "trailing_stop", False):
+                # OANDA trails by a distance, not from a price: the distance
+                # from where the order is expected to fill to the stop asked for.
+                order_body["trailingStopLossOnFill"] = {
+                    "distance": _price(self._stop_distance(request, stop_loss), digits),
+                    "timeInForce": "GTC",
+                }
+            elif stop_loss is not None:
                 order_body["stopLossOnFill"] = {
                     "price": _price(stop_loss, digits),
                     "timeInForce": "GTC",
@@ -591,9 +600,37 @@ class OANDAAdapter:
             # Echoed back so the caller can verify the venue recorded the
             # protection it asked for. Read from OANDA's own record of the
             # order, not from the request.
-            "sl": _opt_float((create.get("stopLossOnFill") or {}).get("price")),
+            # A trailing stop has no price in OANDA's record, only a
+            # distance; recorded, it starts at the stop that was asked for.
+            "sl": (
+                _opt_float((create.get("stopLossOnFill") or {}).get("price"))
+                if not create.get("trailingStopLossOnFill")
+                else _opt_float(stop_loss)
+            ),
             "tp": _opt_float((create.get("takeProfitOnFill") or {}).get("price")),
         }
+
+    def _stop_distance(self, request: Any, stop_loss: float) -> float:
+        """How far ``stop_loss`` is from where the order should fill: its
+        own price for a limit or stop entry, the current ask (buy) or bid
+        (sell) for a market order."""
+        if request.order_type == "MKT":
+            quote = self.realtime_quote(request.symbol, request.account_mode)
+            reference = quote.ask if request.action == "BUY" else quote.bid
+        else:
+            reference = request.limit_price if request.order_type == "LMT" else request.stop_price
+        if reference is None:
+            raise HTTPException(503, f"no price for {request.symbol} to trail the stop from")
+        distance = (
+            reference - float(stop_loss)
+            if request.action == "BUY"
+            else float(stop_loss) - reference
+        )
+        if distance <= 0:
+            raise HTTPException(
+                400, f"stop_loss {stop_loss} is on the wrong side of the entry price {reference}"
+            )
+        return distance
 
     def modify_position_stop(
         self,
@@ -668,12 +705,24 @@ class OANDAAdapter:
                 continue
             sl = row.get("stopLossOrder") if isinstance(row.get("stopLossOrder"), dict) else {}
             tp = row.get("takeProfitOrder") if isinstance(row.get("takeProfitOrder"), dict) else {}
+            trail = row.get("trailingStopLossOrder")
+            trail = trail if isinstance(trail, dict) else {}
+            # A trade may hold a fixed stop, a trailing one, or both: the one
+            # nearer the price is the one that will be hit.
+            stops = [
+                s
+                for s in (
+                    _opt_float(sl.get("price")),
+                    _opt_float(trail.get("trailingStopValue")),
+                )
+                if s is not None
+            ]
             trades.append(
                 {
                     "id": str(row.get("id")),
                     "instrument": str(row.get("instrument") or ""),
                     "units": units,
-                    "stop_loss": _opt_float(sl.get("price")),
+                    "stop_loss": (max(stops) if units > 0 else min(stops)) if stops else None,
                     "take_profit": _opt_float(tp.get("price")),
                 }
             )

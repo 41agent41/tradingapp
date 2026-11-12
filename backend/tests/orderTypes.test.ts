@@ -396,3 +396,32 @@ describe('validateOrder — venue symbol case', () => {
     if (result.ok) expect(result.value.symbol).toBe('EURUSDm');
   });
 });
+
+describe('validateOrder: trailing and guaranteed stops (E-16)', () => {
+  const protectedOrder = { ...base, stop_loss: 380 };
+
+  it('carries each flag only when asked for', () => {
+    const plain = validateOrder(protectedOrder);
+    expect(plain.ok && 'trailing_stop' in plain.value).toBe(false);
+    expect(plain.ok && 'guaranteed_stop' in plain.value).toBe(false);
+
+    const both = validateOrder({ ...protectedOrder, trailing_stop: true, guaranteed_stop: true });
+    expect(both.ok && both.value).toMatchObject({
+      stop_loss: 380,
+      trailing_stop: true,
+      guaranteed_stop: true,
+    });
+    const off = validateOrder({ ...protectedOrder, trailing_stop: false, guaranteed_stop: null });
+    expect(off.ok && 'trailing_stop' in off.value).toBe(false);
+  });
+
+  it('refuses a flag without the stop it is a kind of, or one that is not a boolean', () => {
+    const noStop = validateOrder({ ...base, trailing_stop: true });
+    expect(noStop.ok).toBe(false);
+    if (!noStop.ok) expect(noStop.errors.join(' ')).toMatch(/trailing_stop needs stop_loss/);
+
+    const text = validateOrder({ ...protectedOrder, guaranteed_stop: 'yes' });
+    expect(text.ok).toBe(false);
+    if (!text.ok) expect(text.errors.join(' ')).toMatch(/guaranteed_stop must be true or false/);
+  });
+});

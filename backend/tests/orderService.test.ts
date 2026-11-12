@@ -73,6 +73,22 @@ describe('submitCreateOrder', () => {
     expect(d.ibPost).toHaveBeenCalledWith(expect.objectContaining({ broker: 'ib' }));
   });
 
+  it('forwards a trailing or guaranteed stop only when the order asks for one (E-16)', async () => {
+    const d = makeDeps();
+    await submitCreateOrder(order(), 'req-1', d.overrides);
+    expect(d.ibPost).toHaveBeenLastCalledWith(
+      expect.objectContaining({ trailing_stop: false, guaranteed_stop: false })
+    );
+    await submitCreateOrder(
+      { ...order(), stop_loss: 380, trailing_stop: true, guaranteed_stop: true },
+      'req-2',
+      d.overrides
+    );
+    expect(d.ibPost).toHaveBeenLastCalledWith(
+      expect.objectContaining({ stop_loss: 380, trailing_stop: true, guaranteed_stop: true })
+    );
+  });
+
   it('keys the position guard per broker (B1)', async () => {
     process.env.ORDER_MAX_POSITION = '1000';
     const d = makeDeps();
