@@ -230,7 +230,7 @@ Steps 5 to 9 are written for sidecar A. Step 10 repeats them for sidecar B.
 ### 5. Check the read-side endpoints
 
 `GET /health`, `/symbols`, `/history`, `/quote`, `/tick`, `/positions`,
-`/orders`, `/account`, `/deals`, `/symbol`. Every request carries
+`/orders`, `/account`, `/deals`, `/symbol`, `/ticks`. Every request carries
 `X-MT5-Bridge-Secret`, and the sidecar rejects any without it: anything that
 could reach it otherwise could trade the account.
 

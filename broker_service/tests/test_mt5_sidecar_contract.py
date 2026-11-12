@@ -143,3 +143,17 @@ def test_working_orders(wired):
     assert working["action"] == "BUY"
     assert adapter.cancel_order(int(placed["order_id"]))["status"] == "cancelled"
     assert adapter.open_orders() == []
+
+
+def test_tick_history_round_trip(wired):
+    from datetime import UTC, datetime
+
+    fake, adapter = wired
+    start = datetime(2026, 1, 5, tzinfo=UTC)
+    got = adapter.tick_history("EURUSDm", start, start.replace(second=5), 3)
+    assert got["broker"] == "mt5" and got["symbol"] == "EURUSDM"
+    assert got["count"] == 3 and got["complete"] is False
+    assert got["ticks"][-1]["time"] == int(start.timestamp() * 1000) + 4250
+    assert got["ticks"][0]["bid"] == pytest.approx(1.08002)
+    assert got["ticks"][0]["last"] is None
+    assert fake.tick_calls[-1][0] == "EURUSDm"

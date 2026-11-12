@@ -981,6 +981,21 @@ describes adding another.
   each, in units. It is a snapshot and does not update until **Refresh** is
   pressed. A broker that publishes no book for the symbol, or a closed
   market, shows the reason instead. Other brokers do not have the button.
+- **Tick history (cTrader and MT5).** With a cTrader or MT5 connection in
+  effect, the Download page has a **Tick history** panel under the bar
+  download. Choose the connection, a symbol, a start time and optionally an
+  end time, and **Download ticks (CSV)** saves the broker's own past quotes
+  as a file with the columns `time` (UTC), `bid`, `ask` and `last`. One
+  download holds at most 5,000, 20,000 or 50,000 ticks, the most recent in
+  the window; when earlier ones were left out the panel says so and gives
+  the time to put in **To** to fetch them. cTrader keeps bid and ask ticks
+  apart, so the app merges them: each row carries the side that changed and
+  the other side's last price. MT5 ticks come from the terminal's own store
+  (`copy_ticks_range`), so how far back they go depends on the broker's
+  server. The ticks are not stored in the database, and nothing in the app
+  replays them yet. Not built: Interactive Brokers historical ticks and
+  5-second bars. Neither broker's tick history has run against a real
+  account.
 - **One connection type per firm:** every connection names its firm
   (OANDA, IG, IC Markets, Pepperstone, FP Markets, Fusion, another cTrader
   firm, Interactive Brokers, Alpaca, Axi, Eightcap, Vantage, another MT5
@@ -1015,6 +1030,7 @@ describes adding another.
 | `/api/market-data/realtime` | GET | Latest bid / ask / last quote |
 | `/api/market-data/depth` | GET | The order book for `symbol` (`levels` 1 to 50, default 10; `source`, `account`). 501 from a broker without one (only cTrader has one) |
 | `/api/market-data/sentiment` | GET | The share of the broker's clients long and short in `symbol` (`source`, `account`). 501 from a broker that publishes none (only IG does) |
+| `/api/market-data/ticks` | GET | The broker's own past ticks for `symbol` from `start` to `end` (now if left out), oldest first: the `limit` most recent (default 5,000, at most 50,000; `source`, `account`). `complete` is false when earlier ones were left out. 501 from a broker that keeps none (cTrader and MT5 do) |
 | `/api/market-data/indicators` | GET | Computed indicators |
 | `/api/market-data/upload` | POST | Persist downloaded bars to Postgres |
 | `/api/market-data/database/stats` | GET | Per-symbol storage statistics |

@@ -350,6 +350,41 @@ class MT5Adapter:
             timestamp=_iso_from(q.get("time")),
         )
 
+    def tick_history(
+        self, symbol: str, start: datetime, end: datetime, limit: int = 5000
+    ) -> Dict[str, Any]:
+        """The terminal's stored ticks between ``start`` and ``end``, oldest
+        first: at most the ``limit`` most recent (the sidecar's
+        ``copy_ticks_range``). A sidecar older than this route answers 404,
+        which arrives here as a 502 naming ``/ticks``."""
+        payload = self._get(
+            "/ticks",
+            {
+                "symbol": _venue_symbol(symbol),
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "limit": int(limit),
+            },
+        )
+        payload = payload if isinstance(payload, dict) else {}
+        ticks = [
+            {
+                "time": int(t["time"]),
+                "bid": _opt_float(t.get("bid")),
+                "ask": _opt_float(t.get("ask")),
+                "last": _opt_float(t.get("last")),
+            }
+            for t in payload.get("ticks") or []
+            if isinstance(t, dict) and t.get("time") is not None
+        ]
+        return {
+            "symbol": symbol.upper(),
+            "broker": "mt5",
+            "ticks": ticks,
+            "count": len(ticks),
+            "complete": bool(payload.get("complete", True)),
+        }
+
     def tick(self, symbol: str, account_mode: str = "paper") -> Dict[str, Any]:
         t = self._get("/tick", {"symbol": _venue_symbol(symbol)})
         return {

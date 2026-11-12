@@ -335,6 +335,12 @@ noted before the upgrade.
 Newest first. Each entry says what, if anything, you must do after
 upgrading across it.
 
+**Tick history (E-18).** Nothing to do for cTrader. For MT5, the tick
+history download needs the sidecar's new `/ticks` route, so
+[upgrade each MT5 sidecar](#upgrade-an-mt5-sidecar) before using it. Until
+then the download fails with "MT5 bridge error 404 for /ticks"; everything
+else keeps working with the older sidecar.
+
 **Request limits and security headers (S-08 to S-12).** Usually nothing to
 do. Check these three only if they apply to you:
 

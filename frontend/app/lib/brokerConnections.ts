@@ -23,6 +23,10 @@ export type Capabilities = {
   live_bars?: boolean;
   /** It publishes an order book. */
   depth?: boolean;
+  /** It keeps past ticks and hands them over. */
+  tick_history?: boolean;
+  /** It says how its clients are positioned. */
+  sentiment?: boolean;
   /** Each order type it takes, with the times in force that type accepts. */
   order_types?: Record<string, string[]>;
   attaches_stops?: boolean;
@@ -505,6 +509,8 @@ export function describeCapabilities(caps: Capabilities | null | undefined): str
   if (caps.spread_bars) parts.push('bars carry the spread');
   if (caps.live_bars) parts.push("recorded bars are the broker's own");
   if (caps.depth) parts.push('depth of market');
+  if (caps.tick_history) parts.push('tick history');
+  if (caps.sentiment) parts.push('client sentiment');
   if (caps.trading) {
     const kinds = Object.keys(caps.order_types ?? {});
     if (kinds.length) parts.push(`orders: ${kinds.map((k) => k.replace('_', ' ')).join(', ')}`);

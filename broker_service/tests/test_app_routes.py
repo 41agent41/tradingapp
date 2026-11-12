@@ -28,6 +28,7 @@ EXPECTED_PATHS = {
     "/market-data/realtime",
     "/market-data/depth",
     "/market-data/sentiment",
+    "/market-data/ticks",
     "/indicators/available",
     # backtesting.py
     "/backtesting/strategies",
@@ -130,5 +131,58 @@ def test_sentiment_comes_only_from_a_broker_that_publishes_it(monkeypatch):
 
     monkeypatch.setattr(adapters, "get_market_data_adapter", lambda s, a: Without())
     res = client.get("/market-data/sentiment", params={"symbol": "EUR.USD", "source": "oanda"})
+    assert res.status_code == 501
+    assert "not available from oanda" in res.json()["detail"]
+
+
+def test_tick_history_comes_only_from_a_broker_that_keeps_ticks(monkeypatch):
+    from datetime import UTC, datetime
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import adapters
+    from routes import market_data
+
+    asked = []
+
+    class WithTicks:
+        def tick_history(self, symbol, start, end, limit):
+            asked.append((symbol, start, end, limit))
+            return {"symbol": symbol, "ticks": [], "count": 0, "complete": True}
+
+    class Without:
+        pass
+
+    app = FastAPI()
+    app.include_router(market_data.router)
+    client = TestClient(app)
+    get = lambda **params: client.get("/market-data/ticks", params=params)  # noqa: E731
+
+    monkeypatch.setattr(adapters, "get_market_data_adapter", lambda s, a: WithTicks())
+    res = get(
+        symbol="EURUSD",
+        start="2026-01-05T00:00:00Z",
+        end="2026-01-05T01:00:00",
+        limit=7,
+    )
+    assert res.status_code == 200 and res.json()["complete"] is True
+    symbol, start, end, limit = asked[0]
+    assert (symbol, limit) == ("EURUSD", 7)
+    assert start == datetime(2026, 1, 5, tzinfo=UTC)
+    # A time with no zone is read as UTC.
+    assert end == datetime(2026, 1, 5, 1, tzinfo=UTC)
+
+    # With no end, up to now.
+    assert get(symbol="EURUSD", start="2026-01-05T00:00:00Z").status_code == 200
+    assert asked[1][2] > asked[1][1] and asked[1][3] == 5000
+
+    assert get(symbol="X", start="yesterday").status_code == 400
+    assert get(symbol="X", start="2026-01-05", end="2026-01-04").status_code == 400
+    assert get(symbol="X", start="2026-01-05", limit=0).status_code == 400
+    assert get(symbol="X", start="2026-01-05", limit=50001).status_code == 400
+
+    monkeypatch.setattr(adapters, "get_market_data_adapter", lambda s, a: Without())
+    res = get(symbol="EURUSD", start="2026-01-05T00:00:00Z", source="oanda")
     assert res.status_code == 501
     assert "not available from oanda" in res.json()["detail"]
