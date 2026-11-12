@@ -6,12 +6,23 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const chartProps: { current: any } = { current: null };
-vi.mock('../app/components/Chart', () => ({
-  default: (props: any) => {
+// Set to have the chart report its start as soon as it is given bars, the
+// way the real chart can from its own effect.
+const reachStartOnData = { current: false };
+vi.mock('../app/components/Chart', async () => {
+  const { useEffect } = await import('react');
+  function MockChart(props: any) {
     chartProps.current = props;
+    useEffect(() => {
+      if (reachStartOnData.current && props.data.length > 0) {
+        reachStartOnData.current = false;
+        props.onReachStart();
+      }
+    });
     return <div data-testid="chart" />;
-  },
-}));
+  }
+  return { default: MockChart };
+});
 vi.mock('../app/contexts/TradingAccountContext', () => ({
   useTradingAccount: () => ({ accountMode: 'paper', dataType: 'delayed' }),
 }));
@@ -60,6 +71,7 @@ function mockHistory(older: Array<ReturnType<typeof bar>>) {
 beforeEach(() => {
   window.localStorage.clear();
   chartProps.current = null;
+  reachStartOnData.current = false;
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -86,6 +98,16 @@ describe('LiveChart', () => {
     expect(urls[1]).toContain('symbol=EURUSD');
     expect(urls[1]).toContain('source=oanda');
     expect(urls[1]).not.toContain('period=');
+  });
+
+  it('loads older bars when the chart reports its start as the bars arrive', async () => {
+    // The chart's effect runs before the live chart's own, so the loader it
+    // calls must already know the bars that were just drawn.
+    reachStartOnData.current = true;
+    const urls = mockHistory([bar(NOW - 4 * HOUR), bar(NOW - 3 * HOUR), bar(NOW - 2 * HOUR)]);
+    render(<LiveChart instrument={{ symbol: 'EURUSD', source: 'oanda', secType: 'CASH' }} />);
+    await waitFor(() => expect(chartProps.current?.data).toHaveLength(5));
+    expect(urls).toHaveLength(2);
   });
 
   it('stops asking once a range returns nothing older', async () => {

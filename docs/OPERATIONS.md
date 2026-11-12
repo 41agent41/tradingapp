@@ -404,6 +404,11 @@ first, record the instrument live or add it to the data collection table at
 1 minute. After this upgrade a rule-set that has a `stop` block backtests
 differently from before, because the stop used to be ignored.
 
+The backend and frontend images now run as the unprivileged `node` user and
+hold production dependencies only. The upgrade rebuilds them, and there is
+nothing to change. Commands run inside them with `docker compose exec` also
+run as `node`; add `-u 0` for the rare one that needs root.
+
 Migration `010_auth_sessions` adds one small table, `auth_sessions`, and runs
 in an instant. Session cookies issued before this upgrade are no longer
 accepted, so every browser signs in once after it. API tokens are not
