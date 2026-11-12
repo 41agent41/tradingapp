@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import type { Time } from 'lightweight-charts';
 import Chart, { ChartBar, ChartIndicatorSeries } from './Chart';
 import DataSwitch from './DataSwitch';
@@ -409,8 +409,11 @@ export default function LiveChart({
       }
     }
   };
+  // A layout effect, not a plain one: the chart can report its start from
+  // its own effect, which runs before this component's plain effects, and
+  // would then call a loader that does not yet know the bars just drawn.
   const loadOlderRef = useRef(loadOlder);
-  useEffect(() => {
+  useLayoutEffect(() => {
     loadOlderRef.current = loadOlder;
   });
   const onReachStart = useMemo(() => () => void loadOlderRef.current(), []);
