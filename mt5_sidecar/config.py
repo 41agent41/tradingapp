@@ -44,6 +44,16 @@ class Config:
     # Orders on a real-money account are refused unless this is set, as a
     # second gate behind the app's own LIVE_TRADING_ENABLED.
     allow_real: bool
+    # TLS: a PEM certificate and its private key. With both, the sidecar
+    # serves HTTPS only, so the secret and every order cross the network
+    # encrypted. A self-signed certificate is fine: the app pins it by its
+    # fingerprint (see tls_fingerprint and docs/INSTALL.md § 4.2).
+    tls_cert: Optional[str] = None
+    tls_key: Optional[str] = None
+
+    @property
+    def tls(self) -> bool:
+        return bool(self.tls_cert and self.tls_key)
 
 
 def _flag(value: Optional[str]) -> bool:
@@ -74,6 +84,14 @@ def load_config(env: Mapping[str, str] = os.environ) -> Config:
     server_tz = (env.get("MT5_SERVER_TZ") or "UTC").strip()
     _check_zone(server_tz)
 
+    tls_cert = (env.get("MT5_TLS_CERT") or "").strip() or None
+    tls_key = (env.get("MT5_TLS_KEY") or "").strip() or None
+    if bool(tls_cert) != bool(tls_key):
+        raise ConfigError("MT5_TLS_CERT and MT5_TLS_KEY must be set together.")
+    for name, path in (("MT5_TLS_CERT", tls_cert), ("MT5_TLS_KEY", tls_key)):
+        if path and not os.path.isfile(path):
+            raise ConfigError(f"{name}={path!r} is not a file.")
+
     return Config(
         secret=secret,
         host=host,
@@ -87,7 +105,29 @@ def load_config(env: Mapping[str, str] = os.environ) -> Config:
         deviation=deviation,
         server_tz=server_tz,
         allow_real=_flag(env.get("MT5_ALLOW_REAL")),
+        tls_cert=tls_cert,
+        tls_key=tls_key,
     )
+
+
+def tls_fingerprint(cert_path: str) -> str:
+    """The SHA-256 fingerprint of the first certificate in a PEM file, as
+    ``AB:CD:...``. It is what the app's connection is given to pin."""
+    import hashlib
+    import ssl
+
+    with open(cert_path, encoding="ascii") as fh:
+        pem = fh.read()
+    start = pem.find("-----BEGIN CERTIFICATE-----")
+    end = pem.find("-----END CERTIFICATE-----")
+    if start < 0 or end < 0:
+        raise ConfigError(f"{cert_path!r} holds no PEM certificate.")
+    try:
+        der = ssl.PEM_cert_to_DER_cert(pem[start : end + len("-----END CERTIFICATE-----")])
+    except ValueError as exc:
+        raise ConfigError(f"{cert_path!r} holds no readable PEM certificate: {exc}") from exc
+    digest = hashlib.sha256(der).hexdigest().upper()
+    return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
 
 
 def read_env_file(path: str) -> Dict[str, str]:

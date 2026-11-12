@@ -1005,6 +1005,14 @@ when the broker service is unreachable, `504` on IB timeouts.
 - **Authenticated Socket.IO handshake**: the session cookie, or the token
   from `auth.token`, the `Authorization` header or a `?token=` query
   parameter.
+- **Encrypted link to the MT5 sidecar** (`mt5_sidecar/config.py`,
+  `broker_service/tls_pin.py`): with `MT5_TLS_CERT` and `MT5_TLS_KEY` the
+  sidecar serves HTTPS only. Its certificate can be self-signed: the
+  connection carries the certificate's SHA-256 fingerprint, and the broker
+  service reads the certificate first and sends the bridge secret only to
+  that one. Settings > Connections and `./tradingapp.sh doctor` say whether
+  each MT5 and IB Gateway link is encrypted. IB Gateway's API has no TLS, so
+  `doctor` prints the test that confirms its port is firewalled.
 - **Broker service lock-down**: the broker service listens on loopback only
   and rejects any call without the broker service token, which the backend
   attaches. The token and the Redis password are not in `.env`: a one-shot

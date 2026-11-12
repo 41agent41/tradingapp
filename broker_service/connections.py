@@ -28,7 +28,8 @@ the same JSON). One entry per connection::
 
     [
       { "id": "pepperstone-live", "platform": "mt5",
-        "url": "http://mt5-bridge:9100", "secret_env": "MT5_SECRET_PEPPERSTONE",
+        "url": "https://mt5-bridge:9100", "secret_env": "MT5_SECRET_PEPPERSTONE",
+        "tls_fingerprint": "<SHA-256 of the sidecar's certificate; see tls_pin.py>",
         "account_mode": "live", "currency": "USD", "default": true,
         "server_timezone": "Etc/GMT-2" },
 
@@ -119,6 +120,10 @@ class Connection:
     # Platform-specific wiring. Only the fields relevant to `platform` are used.
     url: Optional[str] = None
     secret: Optional[str] = None
+    # mt5: the SHA-256 fingerprint of the sidecar's TLS certificate (64 hex
+    # digits). With it the adapter trusts exactly that certificate, so a
+    # self-signed one works. See tls_pin.py.
+    tls_fingerprint: Optional[str] = None
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
     token: Optional[str] = None
@@ -172,6 +177,22 @@ def _env(name: Optional[str]) -> Optional[str]:
     return value or None
 
 
+def _fingerprint(value: Any, account: str) -> Optional[str]:
+    from tls_pin import normalise_fingerprint
+
+    try:
+        return normalise_fingerprint(str(value) if value is not None else None)
+    except ValueError as exc:
+        raise ManifestError(f"connection '{account}': tls_fingerprint: {exc}") from exc
+
+
+def is_loopback_url(url: Optional[str]) -> bool:
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(url or "").hostname or "").lower()
+    return host in {"localhost", "::1"} or host.startswith("127.")
+
+
 def _optional_int(raw: Any, name: str, account: str) -> Optional[int]:
     value = raw.get(name)
     if value in (None, ""):
@@ -222,6 +243,7 @@ def _parse_entry(raw: Any, index: int, literal: bool = False) -> Connection:
         currency=str(raw.get("currency") or "USD").strip().upper(),
         is_default=bool(raw.get("default")),
         url=(str(raw.get("url")).rstrip("/") if raw.get("url") else None),
+        tls_fingerprint=_fingerprint(raw.get("tls_fingerprint"), account),
         secret=_literal(raw.get("secret")) if literal else _env(raw.get("secret_env")),
         api_key=_literal(raw.get("api_key")) if literal else _env(raw.get("key_env")),
         api_secret=(
@@ -266,6 +288,22 @@ def _validate_platform_fields(conn: Connection, literal: bool = False) -> None:
     if conn.platform == "mt5":
         if not conn.url:
             raise ManifestError(f"connection '{conn.account}': mt5 requires a 'url' (sidecar base)")
+        https = conn.url.lower().startswith("https://")
+        if conn.tls_fingerprint and not https:
+            raise ManifestError(
+                f"connection '{conn.account}': a certificate fingerprint needs an "
+                "https:// bridge URL"
+            )
+        if not https and not is_loopback_url(conn.url):
+            logger.warning(
+                "connection_not_encrypted",
+                connection=conn.label,
+                msg=(
+                    "MT5 connection over plain http: the bridge secret and every "
+                    "order cross the network unencrypted. Turn TLS on at the sidecar "
+                    "and use an https:// URL with its certificate fingerprint."
+                ),
+            )
         if not conn.secret:
             logger.warning(
                 "connection_no_shared_secret",

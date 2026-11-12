@@ -38,7 +38,42 @@ export type LiveConnection = {
   check: ConnectionCheck | null;
   /** Older broker services omit it; everything is then offered. */
   capabilities?: Capabilities | null;
+  /** Where a LAN connection goes and how the link is protected. */
+  link?: ConnectionLink | null;
 };
+
+/** The LAN endpoint behind an MT5 or IB Gateway connection. */
+export type ConnectionLink = {
+  host: string | null;
+  port: number | null;
+  security: 'tls_pinned' | 'tls' | 'plain' | 'loopback';
+};
+
+/**
+ * What to say about a connection's link, or null when there is nothing to:
+ * a broker reached over the internet, or a service on the app server itself.
+ */
+export function describeLink(
+  platform: string,
+  link: ConnectionLink | null | undefined
+): { tone: 'ok' | 'warn'; text: string } | null {
+  if (!link || link.security === 'loopback') return null;
+  const where = link.host ? `${link.host}:${link.port}` : 'the bridge';
+  if (link.security === 'tls_pinned') {
+    return { tone: 'ok', text: `Encrypted to ${where}, certificate pinned` };
+  }
+  if (link.security === 'tls') return { tone: 'ok', text: `Encrypted to ${where}` };
+  if (platform === 'ib') {
+    return {
+      tone: 'warn',
+      text: `Not encrypted to ${where}: IB Gateway has no TLS, so its port must be firewalled to this server`,
+    };
+  }
+  return {
+    tone: 'warn',
+    text: `Not encrypted to ${where}: the bridge secret and orders cross the network in the clear. Turn TLS on at the sidecar`,
+  };
+}
 
 export type StatusPayload = {
   default: string | null;
@@ -101,6 +136,11 @@ export const PLATFORM_FORM: Record<string, Field[]> = {
   mt5: [
     { name: 'url', label: 'Bridge URL', required: true, placeholder: 'http://10.0.0.20:9100' },
     { name: 'secret', label: 'Bridge secret', secret: true },
+    {
+      name: 'tls_fingerprint',
+      label: 'Certificate fingerprint (https only)',
+      placeholder: 'AB:CD:… from the sidecar log',
+    },
     { name: 'server_timezone', label: 'Server timezone', placeholder: 'Etc/GMT-2' },
   ],
   ib: [

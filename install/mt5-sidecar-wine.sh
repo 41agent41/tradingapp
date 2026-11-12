@@ -8,7 +8,7 @@
 #
 #   mt5-sidecar-wine.sh install --instance NAME [--port 9100]
 #                               [--server-tz Europe/Athens]
-#                               [--installer-url URL]
+#                               [--installer-url URL] [--tls]
 #   mt5-sidecar-wine.sh check   --instance NAME
 #   mt5-sidecar-wine.sh vnc     --instance NAME
 #
@@ -20,6 +20,12 @@
 #   MT5_LOGIN, MT5_PASSWORD, MT5_SERVER
 #                       optional: the DEMO account the operator gives you. With
 #                       them the sidecar logs the terminal in on start.
+#
+# --tls makes a self-signed certificate for the instance and has the sidecar
+# serve HTTPS only, so the secret and every order cross the network
+# encrypted. The script prints the certificate's SHA-256 fingerprint: enter it
+# as the connection's Certificate fingerprint in the app, with an https://
+# Bridge URL. Once on, TLS stays on when install is run again without --tls.
 #
 # `check` exits 0 when /health says ok on a demo account and refuses a request
 # without the secret. `vnc` serves the instance's virtual screen on
@@ -42,7 +48,7 @@ fail() {
 
 CMD=${1:-}
 [[ -n $CMD ]] && shift
-INSTANCE='' PORT=9100 SERVER_TZ=Europe/Athens
+INSTANCE='' PORT=9100 SERVER_TZ=Europe/Athens TLS=0
 # The systemd unit (mt5_sidecar/deploy) runs the sidecar from here.
 REPO_DIR=/opt/tradingapp
 INSTALLER_URL=https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe
@@ -55,6 +61,7 @@ while (($#)); do
         --port) PORT=$2 && shift 2 ;;
         --server-tz) SERVER_TZ=$2 && shift 2 ;;
         --installer-url) INSTALLER_URL=$2 && shift 2 ;;
+        --tls) TLS=1 && shift ;;
         *) fail 2 "unknown argument $1" ;;
     esac
 done
@@ -69,6 +76,8 @@ MT5_HOME=/var/lib/mt5
 PREFIX=$MT5_HOME/$INSTANCE
 ENV_DIR=/etc/mt5-sidecar
 ENV_FILE=$ENV_DIR/$INSTANCE.env
+TLS_CERT=$ENV_DIR/$INSTANCE.crt
+TLS_KEY=$ENV_DIR/$INSTANCE.key
 UNIT=mt5-sidecar@$INSTANCE
 TERMINAL_WIN='C:\Program Files\MetaTrader 5\terminal64.exe'
 TERMINAL_UNIX="$PREFIX/drive_c/Program Files/MetaTrader 5/terminal64.exe"
@@ -88,13 +97,54 @@ env_set() {
     local key=$1 value=$2 tmp
     [[ $value != *$'\n'* ]] || fail 2 "$key contains a newline"
     tmp=$(mktemp)
-    awk -v k="$key" -v l="$key=$value" '
-        index($0, k"=") == 1 { if (!done) print l; done=1; next }
+    # Through the environment, not -v: awk reads backslash escapes in a -v
+    # value, which turns the \t of ...\terminal64.exe into a tab.
+    k="$key" l="$key=$value" awk '
+        index($0, ENVIRON["k"]"=") == 1 { if (!done) print ENVIRON["l"]; done=1; next }
         { print }
-        END { if (!done) print l }
+        END { if (!done) print ENVIRON["l"] }
     ' "$ENV_FILE" >"$tmp"
     cat "$tmp" >"$ENV_FILE"
     rm -f "$tmp"
+}
+
+# TLS is on for this instance once its env file names a certificate.
+tls_on() { [[ -n $(env_get MT5_TLS_CERT) ]]; }
+
+# curl to the sidecar on this machine, over whichever scheme it serves. The
+# certificate names 127.0.0.1, so curl checks it against the file itself.
+sidecar_curl() {
+    local path=$1
+    shift
+    if tls_on; then
+        curl --cacert "$TLS_CERT" "$@" "https://127.0.0.1:$PORT$path"
+    else
+        curl "$@" "http://127.0.0.1:$PORT$path"
+    fi
+}
+
+tls_fingerprint() {
+    openssl x509 -in "$TLS_CERT" -noout -fingerprint -sha256 | cut -d= -f2
+}
+
+# A self-signed pair for this instance, made once. The app trusts it by its
+# fingerprint, so it needs no name the app would recognise; 127.0.0.1 is in
+# it only so that `check` can verify it from this machine.
+make_tls_pair() {
+    if [[ ! -s $TLS_CERT || ! -s $TLS_KEY ]]; then
+        log "making a self-signed TLS certificate for $INSTANCE"
+        command -v openssl >/dev/null || apt-get install -y -qq openssl >/dev/null
+        openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+            -subj "/CN=mt5-sidecar-$INSTANCE" \
+            -addext 'subjectAltName=IP:127.0.0.1,DNS:localhost' \
+            -keyout "$TLS_KEY" -out "$TLS_CERT" 2>/dev/null
+    fi
+    chown root:"$MT5_USER" "$TLS_CERT" "$TLS_KEY"
+    chmod 644 "$TLS_CERT"
+    chmod 640 "$TLS_KEY"
+    # The sidecar runs under Wine, which sees the host's files on drive Z.
+    env_set MT5_TLS_CERT "Z:\\etc\\mt5-sidecar\\$INSTANCE.crt"
+    env_set MT5_TLS_KEY "Z:\\etc\\mt5-sidecar\\$INSTANCE.key"
 }
 
 do_install() {
@@ -173,6 +223,7 @@ do_install() {
     for k in MT5_LOGIN MT5_PASSWORD MT5_SERVER; do
         [[ -n ${!k:-} ]] && env_set "$k" "${!k}"
     done
+    if ((TLS)) || tls_on; then make_tls_pair; fi
     chmod 640 "$ENV_FILE"
     chown root:"$MT5_USER" "$ENV_FILE"
 
@@ -183,7 +234,7 @@ do_install() {
     log "service $UNIT started on port $PORT; waiting for the terminal"
     local i
     for ((i = 0; i < 24; i++)); do
-        curl -s -o /dev/null --max-time 5 -H "X-MT5-Bridge-Secret: $secret" "http://127.0.0.1:$PORT/health" && break
+        sidecar_curl /health -s -o /dev/null --max-time 5 -H "X-MT5-Bridge-Secret: $secret" && break
         sleep 5
     done
     do_check
@@ -193,11 +244,21 @@ do_check() {
     local secret body code status
     secret=$(env_get MT5_BRIDGE_SECRET)
     [[ -n $secret ]] || fail 2 "$ENV_FILE has no MT5_BRIDGE_SECRET; run install first"
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$PORT/health" || true)
-    body=$(curl -s --max-time 15 -H "X-MT5-Bridge-Secret: $secret" "http://127.0.0.1:$PORT/health" || true)
+    code=$(sidecar_curl /health -s -o /dev/null -w '%{http_code}' --max-time 10 || true)
+    body=$(sidecar_curl /health -s --max-time 15 -H "X-MT5-Bridge-Secret: $secret" || true)
     status=$(jq -r '.status // empty' <<<"$body" 2>/dev/null || true)
     log "health: ${body:-no answer}"
     [[ $code == 401 ]] || fail 1 "a request without the secret got $code, not 401"
+    if tls_on; then
+        # With TLS on the port must not also answer in the clear.
+        if curl -s -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/health"; then
+            fail 1 "port $PORT answers plain http although TLS is on"
+        fi
+        log "TLS: on. In the app use https://<this host>:$PORT and this certificate fingerprint:"
+        log "  $(tls_fingerprint)"
+    else
+        log "TLS: off. The secret and orders cross the network unencrypted; re-run install with --tls."
+    fi
     case $status in
         ok)
             [[ $(jq -r '.account_type' <<<"$body") == demo ]] ||

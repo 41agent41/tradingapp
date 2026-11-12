@@ -592,6 +592,57 @@ print(", ".join(f"{c} ({state(c)})" for c in sorted(conns)))
     fi
 }
 
+# The MT5 sidecars and IB Gateways the connections reach on the LAN: whether
+# each link is encrypted, whether this server reaches it, and how to confirm
+# that nothing else can (docs/INSTALL.md § 8). Never fails.
+show_lan_links() {
+    command -v python3 &>/dev/null || return 0
+    curl -s --max-time 5 "http://127.0.0.1:$(broker_service_port)/health" 2>/dev/null |
+        python3 -c '
+import json, socket, sys
+try:
+    conns = json.load(sys.stdin).get("providers", {}).get("connections", {})
+except Exception:
+    print("  The broker service is not answering.")
+    sys.exit(0)
+links = [(label, c["link"]) for label, c in sorted(conns.items()) if (c or {}).get("link")]
+links = [(label, l) for label, l in links if l.get("security") != "loopback"]
+if not links:
+    print("  None: no MT5 sidecar or IB Gateway on another machine.")
+    sys.exit(0)
+
+def reachable(host, port):
+    try:
+        with socket.create_connection((host, port), timeout=3):
+            return True
+    except OSError:
+        return False
+
+SECURITY = {
+    "tls_pinned": "encrypted, certificate pinned",
+    "tls": "encrypted",
+    "plain": "NOT encrypted",
+}
+exposed = []
+for label, link in links:
+    host, port, security = link.get("host"), link.get("port"), link.get("security")
+    up = "reachable from this server" if reachable(host, port) else "NOT reachable from this server"
+    print(f"  {label}: {host}:{port}, {SECURITY.get(security, security)}, {up}")
+    if security == "plain" and label.startswith("mt5:"):
+        print("    The bridge secret and orders cross the network in the clear. Turn TLS on at")
+        print("    the sidecar, then use an https:// URL and its certificate fingerprint.")
+    if security == "plain" and label.startswith("ib:"):
+        print("    IB Gateway has no TLS. Only the firewall keeps others off this port.")
+    exposed.append((host, port))
+print("")
+print("  This server cannot see whether other machines reach these ports. To confirm the")
+print("  firewall, run each line on another computer on the LAN. Each must fail to connect:")
+for host, port in sorted(set(exposed)):
+    print(f"    nc -z -w 3 {host} {port} && echo OPEN || echo closed")
+print("  (Windows PowerShell: Test-NetConnection <host> -Port <port>)")
+' 2>/dev/null || print_warning "The broker links could not be read"
+}
+
 setup_code() {
     compose_cmd logs --no-color backend 2>/dev/null | grep -o 'SETUP CODE: [A-Z0-9-]*' | tail -1 | sed 's/SETUP CODE: //'
 }
@@ -754,6 +805,10 @@ if m:
     echo ""
     echo "=== Brokers (checked inside the app) ==="
     show_broker_summary
+
+    echo ""
+    echo "=== Links to brokers on the LAN ==="
+    show_lan_links
 
     echo ""
     echo "=== Live recorder ==="
