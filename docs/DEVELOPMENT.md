@@ -5,6 +5,13 @@ database schema evolves, and how to add a broker. Installing and running the
 app for real are in [INSTALL.md](INSTALL.md) and
 [OPERATIONS.md](OPERATIONS.md).
 
+Procedures here have the same six parts as an install step: **Where**,
+**Before**, **Do**, **Expected**, **If it fails** and **Done when**
+([INSTALL.md § How each step is written](INSTALL.md#how-each-step-is-written)).
+**Where** is a directory of your clone of the repository, on your own
+machine. Passwords and keys in this guide are fixed development values for a
+database on your own machine; never use them on a server.
+
 ## Contents
 
 1. [Architecture](#architecture)
@@ -40,7 +47,7 @@ app for real are in [INSTALL.md](INSTALL.md) and
   OANDA ─ IG ─ cTrader ─ IBKR Web API ─ Alpaca ─ MT5 (sidecar) ─ IB Gateway
 ```
 
-- **frontend** (`frontend/`): Next.js 14 pages under `app/`, served by
+- **frontend** (`frontend/`): Next.js pages under `app/`, served by
   `server.js`, which also proxies `/api` and `/socket.io` to the backend
   (`backendProxy.js`), so the browser only ever talks to one address.
 - **backend** (`backend/`): Express + TypeScript. Owns the database: it waits
@@ -93,8 +100,17 @@ features are in [`docs/plans/`](plans/).
 
 ## Run it locally
 
-You need Node.js 24 LTS (22.12 or later also works), Python 3.11 and a PostgreSQL with TimescaleDB. The quickest
-database:
+Four processes, started in this order: a database, the broker service, the
+backend, the frontend. Each has its own terminal.
+
+### 1. A database
+
+**Where:** any directory.
+
+**Before:** Docker runs (`docker info` prints no error), and nothing listens
+on port 5432 (`ss -ltn | grep -c ':5432 '` prints `0`).
+
+**Do:**
 
 ```bash
 docker run -d --name tsdb -p 5432:5432 \
@@ -102,23 +118,53 @@ docker run -d --name tsdb -p 5432:5432 \
   timescale/timescaledb:2.17.2-pg15
 ```
 
-**Broker service** (port 8000):
+**Expected:** a container id.
+
+**If it fails:**
+- *`port is already allocated`:* another PostgreSQL uses 5432. Stop it, or
+  publish another port (`-p 5433:5432`) and use that as `POSTGRES_PORT`
+  below.
+- *`The container name "/tsdb" is already in use`:* it exists from an
+  earlier run. `docker start tsdb`.
+
+**Done when:** `docker exec tsdb pg_isready -U tradingapp` prints
+`accepting connections`.
+
+### 2. The broker service (port 8000)
+
+**Where:** `broker_service/`.
+
+**Before:** Python 3.11 (`python --version`), in a virtual environment of
+its own.
+
+**Do:**
 
 ```bash
-cd broker_service
 pip install -r requirements.txt -r requirements-dev.txt
 BROKER_SERVICE_TOKEN=dev-broker-token-0123456789abcdef python main.py
 ```
+
+**Expected:** the server's log says it is listening on port 8000.
+
+**If it fails:** *`address already in use`:* something else is on port 8000.
+
+**Done when:** `curl -s http://127.0.0.1:8000/health` answers with JSON.
 
 With no `BROKER_SERVICE_TOKEN` it warns and accepts unauthenticated calls.
 Brokers come from the backend's push, or for a quick test from a
 `BROKER_CONNECTIONS` manifest in its environment (format at the top of
 `connections.py`; `e2e/stack.sh` has a working example).
 
-**Backend** (port 4000). It loads `backend/.env` if present:
+### 3. The backend (port 4000)
+
+**Where:** `backend/`.
+
+**Before:** Node.js 24 LTS (22.12 or later also works; `node --version`),
+and steps 1 and 2 are done.
+
+**Do:** it loads `backend/.env` if present:
 
 ```bash
-cd backend
 cat > .env <<'EOF'
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
@@ -134,22 +180,47 @@ npm ci
 npm run dev
 ```
 
-`BROKER_SERVICE_URL` must be set: its default is the compose service name,
-which does not resolve outside Docker. With Redis running locally, drop
-`REDIS_ENABLED=false` and set `REDIS_HOST`. The backend creates the schema on
-first start.
-
+**Expected:** the backend creates the schema on first start, then serves.
 Outside `NODE_ENV=production`, with no login password and no API token set,
-the backend accepts unauthenticated requests and says so loudly at startup.
-Set `API_TOKEN` (or choose a password on first visit) to exercise auth.
+it accepts unauthenticated requests and says so loudly at startup.
 
-**Frontend** (port 3000):
+**If it fails:**
+- *It stays at `waiting_for_database`:* step 1's container is not running,
+  or the `POSTGRES_*` lines do not match it.
+- *`key_mismatch`:* the database was created with another
+  `SETTINGS_ENCRYPTION_KEY`. Use that key, or start again with an empty
+  development database: remove the `tsdb` container and do step 1 again.
+- *Calls to brokers fail with a name that does not resolve:*
+  `BROKER_SERVICE_URL` is missing. Its default is the compose service name,
+  which does not resolve outside Docker.
+
+**Done when:** `curl -s http://127.0.0.1:4000/api/health/ready` includes
+`"state":"ready"`.
+
+With Redis running locally, drop `REDIS_ENABLED=false` and set `REDIS_HOST`.
+Set `API_TOKEN` in `.env` (or choose a password on the first visit) to
+exercise auth.
+
+### 4. The frontend (port 3000)
+
+**Where:** `frontend/`.
+
+**Before:** step 3 is done.
+
+**Do:**
 
 ```bash
-cd frontend
 npm ci
-npm run dev        # BACKEND_INTERNAL_URL defaults to http://localhost:4000
+npm run dev
 ```
+
+**Expected:** Next.js reports that it is ready on port 3000.
+`BACKEND_INTERNAL_URL` defaults to `http://localhost:4000`.
+
+**If it fails:** *the pages load but every request fails:* the backend is
+not on port 4000. Set `BACKEND_INTERNAL_URL` to where it is.
+
+**Done when:** `http://localhost:3000` shows the app.
 
 The Docker images do not hot-reload. To try a change in the full stack, run
 `./tradingapp.sh redeploy`.
@@ -165,27 +236,78 @@ The Docker images do not hot-reload. To try a change in the full stack, run
 | broker_service | `ruff check .`, `black --check .` | | `pytest -q` |
 | mt5_sidecar | `ruff check .`, `black --check .` | | `pytest -q` |
 
+### Database tests
+
 Backend tests named `*.db.test.ts` need a real database. CI builds the schema
-the way the backend does, then runs them:
+the way the backend does, then runs them.
+
+**Where:** `backend/`.
+
+**Before:** the database from [Run it locally](#1-a-database) is running.
+The tests write to it, so use a development database only.
+
+**Do:**
 
 ```bash
-cd backend && npm run build
-DB_TESTS=1 POSTGRES_HOST=localhost POSTGRES_USER=tradingapp POSTGRES_PASSWORD=devpassword \
-  POSTGRES_DB=tradingapp SETTINGS_ENCRYPTION_KEY=<64 hex> node dist/cli/migrate.js
-DB_TESTS=1 ... npx jest --runInBand '\.db\.test\.ts$'
+export DB_TESTS=1 POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_USER=tradingapp \
+  POSTGRES_PASSWORD=devpassword POSTGRES_DB=tradingapp \
+  SETTINGS_ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000001
+npm run build
+node dist/cli/migrate.js
+npx jest --runInBand '\.db\.test\.ts$'
 ```
 
-**End-to-end paper run.** `e2e/run.sh` starts two simulated MT5 terminals
-behind the real sidecar code (`e2e/sim_sidecar.py`), the broker service, and
-the backend with the strategy runner executing on paper, then runs
-`e2e/test_paper_flow.py`: deploying a strategy, orders with stops attached,
-trailing, fills, limits, prop rules, the kill switch and restarts. Then
-`e2e/test_recorder_flow.py` marks an instrument Record live, adds known
-quotes to the quote stream, and reads the bar and the quotes back from the
-database, across a backend restart. It needs `POSTGRES_*` pointing at a
-TimescaleDB, Redis on `REDIS_HOST`:`REDIS_PORT` (default `127.0.0.1:6379`),
-`psql`, the backend built, and both services' Python requirements. `e2e/stack.sh start|stop|restart <component>` runs the
-stack on its own for poking at.
+**Expected:** `migrate` lists the migrations as applied or current, and Jest
+ends with every suite passed.
+
+**If it fails:** *the suites are all skipped:* `DB_TESTS=1` is not set in
+that shell.
+
+**Done when:** Jest reports no failed and no skipped suite.
+
+### End-to-end paper run
+
+`e2e/run.sh` starts two simulated MT5 terminals behind the real sidecar code
+(`e2e/sim_sidecar.py`), the broker service, and the backend with the
+strategy runner executing on paper, then runs `e2e/test_paper_flow.py`:
+deploying a strategy, orders with stops attached, trailing, fills, limits,
+prop rules, the kill switch and restarts. Then `e2e/test_recorder_flow.py`
+marks an instrument Record live, adds known quotes to the quote stream, and
+reads the bar and the quotes back from the database, across a backend
+restart.
+
+**Where:** the repository root.
+
+**Before:**
+- `POSTGRES_*` are exported and point at a **development** TimescaleDB (as
+  above). The run writes to it.
+- Redis answers on `REDIS_HOST`:`REDIS_PORT` (default `127.0.0.1:6379`). To
+  start one: `docker run -d --name redis -p 6379:6379 redis:7-alpine`.
+- `psql` is installed, the backend is built (`npm run build` in `backend/`),
+  and both services' Python requirements are installed in the active Python
+  environment (`broker_service/requirements.txt`,
+  `broker_service/requirements-dev.txt` and `mt5_sidecar/requirements.txt`).
+
+**Do:**
+
+```bash
+e2e/run.sh
+```
+
+**Expected:** it takes ten to fifteen minutes and ends with both test files
+passed.
+
+**If it fails:**
+- *`ModuleNotFoundError: No module named 'fastapi'`, or it times out waiting
+  for a sidecar's `/health`:* the Python requirements are not installed in
+  the Python that runs it.
+- *A test fails:* the output names it, and each component's log is in
+  `/tmp/tradingapp-e2e/`. To poke at the stack on its own, `e2e/stack.sh
+  start` and `e2e/stack.sh stop` run all of it, and `e2e/stack.sh restart`
+  followed by `backend`, `broker`, `calendar`, `sidecar-a` or `sidecar-b`
+  restarts one component.
+
+**Done when:** `e2e/run.sh` exits 0.
 
 **CI** (`.github/workflows/ci.yml`) runs on every push and pull request to
 `master` (and `main`): a job per component with lint, format, types, tests
@@ -206,13 +328,39 @@ is what runs.
 | broker_service | `requirements.in`, `requirements-dev.in` | `requirements.txt`, `requirements-dev.txt` | `pip install -r requirements.txt -r requirements-dev.txt` |
 | mt5_sidecar | `requirements.in`, `requirements-dev.in` | `requirements.txt`, `requirements-dev.txt` | the same |
 
-To change a Node dependency, run `npm install <package>@<version>` in that
-directory and commit both `package.json` and `package-lock.json`.
+### Change a Node dependency
 
-To change a Python dependency, edit the `.in` file, then regenerate the locks
-with [uv](https://docs.astral.sh/uv/) from the repository root, broker service
-first, because the sidecar's lock is held to the same shared versions (CI's
-end-to-end job installs both into one environment):
+**Where:** `backend/` or `frontend/`.
+
+**Before:** you know the package and the exact version.
+
+**Do:** with the package and version in place of the example:
+
+```bash
+npm install express@5.1.0
+npm audit --omit=dev
+```
+
+**Expected:** `package.json` and `package-lock.json` both change, and the
+audit reports 0 vulnerabilities.
+
+**If it fails:** *the audit reports a high-severity vulnerability:* choose a
+version that fixes it. CI fails on one.
+
+**Done when:** that component's lint, type-check and tests pass
+([the table above](#tests-lint-and-ci)), and both files are committed
+together.
+
+### Change a Python dependency
+
+**Where:** the repository root.
+
+**Before:** [uv](https://docs.astral.sh/uv/) is installed (`uv --version`),
+and you have edited the `.in` file.
+
+**Do:** regenerate the locks, broker service first, because the sidecar's
+lock is held to the same shared versions (CI's end-to-end job installs both
+into one environment):
 
 ```bash
 cd broker_service
@@ -223,8 +371,14 @@ uv pip compile requirements.in -c ../broker_service/requirements.txt --python-ve
 uv pip compile requirements-dev.in -c ../broker_service/requirements.txt --python-version 3.11 --universal -o requirements-dev.txt
 ```
 
-Then run that component's tests and commit the `.in` and `.txt` files
-together.
+**Expected:** the four `.txt` files change only where the edit requires.
+With no edit to an `.in` file, they do not change at all.
+
+**If it fails:** *uv cannot resolve the sidecar's lock:* the new version
+clashes with one the two services share. Change it in both `.in` files.
+
+**Done when:** `pytest -q` passes in both `broker_service/` and
+`mt5_sidecar/`, and the `.in` and `.txt` files are committed together.
 
 ---
 
@@ -255,10 +409,17 @@ unrecorded and retried on the next start. Editing a numbered migration after
 it shipped does nothing on databases that already ran it (the backend logs a
 warning).
 
-To add a migration:
+### Add a migration
 
-1. Create `migrations/NNN_short_name.sql` with the next number (`004_...`
-   follows `003_collection_history.sql`).
+**Where:** `backend/src/database/`, then `backend/`.
+
+**Before:** you know the next free number: `ls migrations` shows the last
+one used.
+
+**Do:**
+
+1. Create `migrations/NNN_short_name.sql` with the next number (after
+   `010_auth_sessions.sql` comes `011_...`).
 2. Open with a comment saying what it changes and why.
 3. Make it idempotent where you can. Do not add `BEGIN`/`COMMIT`, and do not
    use statements that cannot run in a transaction (`CREATE INDEX
@@ -266,9 +427,28 @@ To add a migration:
 4. Make the same change in `timescaledb-schema.sql`, so fresh installs get
    it. A fresh database runs the baseline and then the migration, which is
    why the migration must tolerate the change already being there.
-5. Never edit a shipped migration; write a new one.
-6. `./tradingapp.sh migrate` (or a restart) applies it; `doctor` shows the
-   state. Locally, `node dist/cli/migrate.js` in `backend/`.
+5. Apply it locally, in `backend/`, with the `POSTGRES_*` variables of
+   [Database tests](#database-tests) exported:
+
+   ```bash
+   npm run build && node dist/cli/migrate.js
+   ```
+
+   On an installed app, `./tradingapp.sh migrate` (or a restart) applies it,
+   and `doctor` shows the state.
+
+**Expected:** `migrate` reports the new file as applied. Run it a second
+time: it reports nothing pending.
+
+**If it fails:**
+- *The file is ignored:* its name does not match three digits, an
+  underscore, then lower-case letters, digits and underscores.
+- *It fails on a fresh database but not on yours:* the baseline already made
+  the change (item 4) and the migration does not tolerate that. Add
+  `IF NOT EXISTS` or a guard.
+
+**Done when:** the database tests pass on a fresh database and on one that
+had the previous schema. Never edit a shipped migration; write a new one.
 
 What the schema holds, in short (read the files for the full list):
 
@@ -399,13 +579,29 @@ differ), `PLATFORM_NAME` and, for a long name, `PLATFORM_SHORT_NAME`.
 
 ### 5. Check
 
+**Where:** the repository root.
+
+**Before:** steps 1 to 4 are done.
+
+**Do:**
+
 ```bash
-cd broker_service && ruff check . && black --check . && pytest -q
-cd backend && npm run lint && npm run format:check && npx tsc --noEmit && npx jest
-cd frontend && npm run lint && npm run format:check && npm run type-check && npx vitest run
+(cd broker_service && ruff check . && black --check . && pytest -q)
+(cd backend && npm run lint && npm run format:check && npx tsc --noEmit && npx jest)
+(cd frontend && npm run lint && npm run format:check && npm run type-check && npx vitest run)
 ```
 
-Then add a paper connection on Settings > Connections and press Test.
+Then, with the app [running locally](#run-it-locally), add a **paper**
+connection for the new broker on Settings > Connections and press Test.
+
+**Expected:** all three lines pass, and the Test button reports the
+connection as connected.
+
+**If it fails:** *`tests/test_broker_lists.py` fails:* it names the file
+whose list does not yet include the new broker.
+
+**Done when:** the three lines pass and a paper connection tests as
+connected.
 
 ---
 
@@ -444,14 +640,29 @@ What the sidecar guarantees:
   checks the terminal and relaunches it; `/health` answers 503 while it is
   offline. Requotes are retried twice at a fresh price.
 
-Tests use `mt5_sidecar/tests/fake_mt5.py`, an in-memory `MetaTrader5`, so they
-run on any OS:
+### Test the sidecar
+
+Tests use `mt5_sidecar/tests/fake_mt5.py`, an in-memory `MetaTrader5`, so
+they run on any OS.
+
+**Where:** `mt5_sidecar/`.
+
+**Before:** Python 3.11, in a virtual environment.
+
+**Do:**
 
 ```bash
-cd mt5_sidecar
-pip install -r requirements.txt -r requirements-dev.txt   # MetaTrader5 is skipped off Windows
+pip install -r requirements.txt -r requirements-dev.txt
 ruff check . && black --check . && pytest -q
 ```
+
+**Expected:** every test passes. Off Windows, `pip` skips the `MetaTrader5`
+package; the tests do not need it.
+
+**If it fails:** *`black --check` lists files:* run `black .` and commit the
+result.
+
+**Done when:** all three commands exit 0.
 
 ---
 

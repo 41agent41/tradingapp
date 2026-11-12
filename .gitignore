@@ -69,3 +69,6 @@ frontend/next-env.d.ts
 
 # install/install.sh: transient copy of .env while it is being written
 .env.install-work
+
+# The filled values sheet of one install (docs/INSTALL.md step 2.5)
+/site-values.md
