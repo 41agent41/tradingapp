@@ -269,6 +269,8 @@ There are 47 items, sorted by priority. P1 means do next, P2 soon after, and P3 
 
 **Security sign-off.** After S-01 to S-07 merge, a Fable 5.2 pass reviews the whole diff and re-runs `pip-audit` and `npm audit`.
 
+*Done.* `npm audit --omit=dev` and `pip-audit` report nothing in what ships. The review found and fixed five things: a live (WebSocket) connection skipped the allowed-origins check, live connections stayed open after sign-out, the session store kept expired sessions in memory and could bring back a session ended while it was loading, `tradingapp.sh` mangled a backslash when writing `.env`, and the Cursor setup script installed without the lock file. One follow-up remains: the test and lint tools (vitest, vite, eslint, jest) carry advisories. They run only on a developer's machine and in CI, never in the images, and the fix is a major vitest upgrade.
+
 ## Held for later
 
 MCP servers and MT4 are on hold at Sean's request. They are not in the register.

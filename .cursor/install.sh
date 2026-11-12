@@ -40,12 +40,11 @@ if ! command -v redis-server >/dev/null 2>&1 \
 fi
 
 echo "==> [2/5] Backend dependencies + build"
-# Lockfiles are intentionally gitignored in this repo (see .gitignore), so a
-# fresh checkout has none — use `npm install` (as CI does), not `npm ci`.
-( cd backend && npm install --no-audit --no-fund && npm run build )
+# Exactly the versions in package-lock.json, as CI and the images install.
+( cd backend && npm ci --no-audit --no-fund && npm run build )
 
 echo "==> [3/5] Frontend dependencies"
-( cd frontend && npm install --no-audit --no-fund )
+( cd frontend && npm ci --no-audit --no-fund )
 
 echo "==> [4/5] Broker service virtualenv + dependencies"
 if [ ! -x broker_service/.venv/bin/python ]; then

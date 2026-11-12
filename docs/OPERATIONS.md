@@ -115,8 +115,10 @@ value, then the fleet-wide cap on Settings > Risk.
 - Settings > Security > Signed-in browsers lists each session and signs out
   one browser or all of them. Signing out ends the session on the server, so
   a copied cookie stops working at once. If a browser or laptop is lost, use
-  **Sign out everywhere**, then change the password. A live price stream that
-  is already open keeps running until that page is closed or reconnects.
+  **Sign out everywhere**, then change the password. Signing a browser out
+  also closes its open live price streams.
+- Live streams follow the same origin rule as the API: a page on another
+  site can open one only when its origin is listed in `CORS_ORIGINS`.
 - Scripts send `Authorization: Bearer <token>` with an API token from
   Settings > Security. Health checks, `/metrics`, and signing in and out need
   none.
