@@ -19,6 +19,7 @@ def test_a_connection_with_no_adapters_supports_nothing():
         "live_prices": None,
         "spread_bars": False,
         "live_bars": False,
+        "sentiment": False,
         "depth": False,
         "order_types": {},
         "attaches_stops": False,

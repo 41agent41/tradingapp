@@ -128,6 +128,22 @@ async def get_realtime_data(
     )
 
 
+@router.get("/market-data/sentiment")
+async def get_client_sentiment(symbol: str, source: str = "", account: str | None = None):
+    """How a broker's clients are positioned in ``symbol``: the share long
+    and the share short. Only where the broker publishes it (IG): 501
+    otherwise."""
+    from adapters import get_market_data_adapter, resolve_provider
+
+    adapter = get_market_data_adapter(source, account)
+    if not hasattr(adapter, "client_sentiment"):
+        raise HTTPException(
+            status.HTTP_501_NOT_IMPLEMENTED,
+            f"Client sentiment is not available from {resolve_provider(source)}",
+        )
+    return await run_tws_operation(lambda: adapter.client_sentiment(symbol))
+
+
 @router.get("/market-data/depth")
 async def get_market_depth(
     symbol: str,

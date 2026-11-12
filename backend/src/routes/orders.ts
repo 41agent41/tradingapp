@@ -80,6 +80,8 @@ export function tradingConnections(status: any): Array<Record<string, unknown>> 
       guaranteed_stops: Boolean(c.capabilities?.guaranteed_stops),
       // The broker publishes an order book (GET /api/market-data/depth).
       depth: Boolean(c.capabilities?.depth),
+      // It says how its clients are positioned (GET /api/market-data/sentiment).
+      sentiment: Boolean(c.capabilities?.sentiment),
     }));
 }
 

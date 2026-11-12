@@ -85,6 +85,8 @@ def capabilities(market_data: Any = None, broker: Any = None) -> Dict[str, Any]:
         # It publishes its own live 1-minute bars, which the recorder stores
         # in place of the ones it builds from quotes.
         "live_bars": bool(getattr(market_data, "streams_bars", False)),
+        # It says how its clients are positioned (GET /market-data/sentiment).
+        "sentiment": market_data is not None and hasattr(market_data, "client_sentiment"),
         # It publishes an order book (GET /market-data/depth).
         "depth": market_data is not None and hasattr(market_data, "market_depth"),
         # Each order type it takes, with the times in force that type accepts.

@@ -23,6 +23,8 @@ sidecar host. This module implements the `MarketDataAdapter` and
       GET  /positions            (v2), PUT /positions/otc/{dealId} (v2)
       GET  /workingorders        (v2)
       GET  /history/activity     (v3)  -> fills
+      GET  /history/transactions (v2)  -> realised P&L of closed deals
+      GET  /clientsentiment/{marketId} -> share of IG clients long and short
 
 Live prices and trade events come over IG's Lightstreamer stream instead
 (`lightstreamer.py`): `MARKET:{epic}` for bid and offer, `TRADE:{accountId}`
@@ -864,8 +866,9 @@ class IGAdapter:
         """Fills from the activity history, in ``models.Execution`` shape. A
         fill is an accepted POSITION activity that opened, closed or partly
         closed a position. IG reports no commission on CFDs (it is in the
-        spread) and the realised P&L only on the transaction history, so both
-        are left empty here."""
+        spread). The realised P&L of a close comes from the transaction
+        history (:meth:`_realised`); it stays empty on an opening fill, and on
+        a close the history does not list yet."""
         start = datetime.now(UTC) - timedelta(days=max(1, days))
         payload = self._request(
             "GET",
@@ -892,8 +895,10 @@ class IGAdapter:
             if not deal_id or not size or price is None:
                 continue
             moment = _parse_ig_time(row.get("date"))
+            closes = bool(actions & {"POSITION_CLOSED", "POSITION_PARTIALLY_CLOSED"})
             fills.append(
                 {
+                    "_closes": closes,
                     "exec_id": deal_id,
                     "order_id": deal_id,
                     "audit_id": audit_id_from(details.get("dealReference")),
@@ -909,7 +914,78 @@ class IGAdapter:
                     "broker": "ig",
                 }
             )
+        closing = [f for f in fills if f.pop("_closes")]
+        if closing:
+            realised = self._realised(start)
+            for fill in closing:
+                # A transaction's reference is the end of its deal's id.
+                matches = {ref for ref in realised if fill["exec_id"].endswith(ref)}
+                if len(matches) == 1:
+                    fill["realized_pnl"] = realised[matches.pop()]
         return fills
+
+    def _realised(self, start: datetime) -> Dict[str, float]:
+        """Realised P&L of the deals closed since ``start``, by transaction
+        reference. Empty when the history cannot be read: the fills are still
+        worth storing without it."""
+        try:
+            payload = self._request(
+                "GET",
+                "/history/transactions",
+                version=2,
+                params={"type": "ALL_DEAL", "from": _ig_time(start), "pageSize": 500},
+            )
+        except HTTPException as exc:
+            logger.warning("ig_transaction_history_failed", error=str(exc.detail))
+            return {}
+        rows = payload.get("transactions") if isinstance(payload, dict) else None
+        realised: Dict[str, float] = {}
+        seen_twice = set()
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            reference = str(row.get("reference") or "").strip()
+            amount = _money(row.get("profitAndLoss"))
+            if not reference or amount is None:
+                continue
+            if reference in realised:
+                seen_twice.add(reference)
+            realised[reference] = amount
+        # Two rows under one reference cannot be told apart: use neither.
+        return {ref: amount for ref, amount in realised.items() if ref not in seen_twice}
+
+    def client_sentiment(self, symbol: str) -> Dict[str, Any]:
+        """The share of IG's clients holding the market long and short."""
+        epic = _to_epic(symbol)
+        market_id = (self._cached_market(epic).get("instrument") or {}).get("marketId")
+        if not market_id:
+            raise HTTPException(404, f"IG lists no client sentiment for {symbol}")
+        payload = self._request("GET", f"/clientsentiment/{market_id}")
+        payload = payload if isinstance(payload, dict) else {}
+        long_pct = _opt_float(payload.get("longPositionPercentage"))
+        short_pct = _opt_float(payload.get("shortPositionPercentage"))
+        if long_pct is None or short_pct is None:
+            raise HTTPException(502, f"IG returned no client sentiment for {symbol}")
+        return {
+            "symbol": symbol.upper(),
+            "broker": "ig",
+            "market_id": str(market_id),
+            "long_pct": long_pct,
+            "short_pct": short_pct,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+
+
+def _money(value: Any) -> Optional[float]:
+    """An amount as IG's history writes it: a currency symbol or code, then
+    the number with thousands separators (``A$-1,234.50``, ``USD12.3``)."""
+    if value is None:
+        return None
+    text = re.sub(r"[^0-9.\-]", "", str(value))
+    try:
+        return float(text) if text not in ("", "-", ".") else None
+    except ValueError:
+        return None
 
 
 def _is_trade(payload: Optional[str]) -> bool:
