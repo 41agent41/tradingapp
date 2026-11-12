@@ -162,6 +162,7 @@ class StreamingManager:
         # (an unchanged one is not added again) and counters for /status.
         self._last_quote: dict[tuple[str, str, str], tuple] = {}
         self.quotes_added = 0
+        self.bars_added = 0
         self.quotes_unchanged = 0
         self.quotes_dropped = 0
 
@@ -375,6 +376,7 @@ class StreamingManager:
                 "ticks_published": self.ticks_published,
                 "ticks_dropped": self.ticks_dropped,
                 "quotes_added": self.quotes_added,
+                "bars_added": self.bars_added,
                 "quotes_unchanged": self.quotes_unchanged,
                 "quotes_dropped": self.quotes_dropped,
             },
@@ -570,6 +572,54 @@ class StreamingManager:
             return False
         self._last_quote[key] = values
         self.quotes_added += 1
+        return True
+
+    def add_bar(
+        self,
+        platform: str,
+        account: str,
+        symbol: str,
+        *,
+        minute: float,
+        open: float,  # noqa: A002 — the bar's field names
+        high: float,
+        low: float,
+        close: float,
+        volume: float = 0,
+    ) -> bool:
+        """Add one finished 1-minute bar, built by the broker itself, to the
+        quote stream of a recorded subscription. ``minute`` is the bar's start
+        in epoch seconds. The recorder stores it in place of the bar it built
+        from that minute's quotes. Returns whether an entry was added.
+        """
+        client = self._ensure_redis()
+        if client is None:
+            self.quotes_dropped += 1
+            return False
+        start_ms = int(minute * 1000)
+        fields = {
+            "v": QUOTE_FORMAT,
+            "kind": "bar",
+            "platform": platform,
+            "account": account,
+            "symbol": symbol.upper(),
+            "open": repr(float(open)),
+            "high": repr(float(high)),
+            "low": repr(float(low)),
+            "close": repr(float(close)),
+            "volume": repr(float(volume)),
+            "ts": str(start_ms),
+            "recv_ts": str(int(self._clock() * 1000)),
+        }
+        try:
+            client.xadd(QUOTE_STREAM, fields, maxlen=_stream_maxlen(), approximate=True)
+        except Exception as exc:
+            self.quotes_dropped += 1
+            logger.warning("Redis XADD to %s failed: %s", QUOTE_STREAM, exc)
+            with self._redis_lock:
+                self._redis = None
+            return False
+        self.bars_added += 1
         return True
 
     def forget_quote(self, platform: str, account: str, symbol: str) -> None:

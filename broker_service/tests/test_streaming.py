@@ -377,3 +377,38 @@ def test_add_quote_survives_redis_being_down(mgr_and_pieces):
     # Not remembered as sent, so the same quote goes out once Redis is back.
     assert mgr.add_quote("oanda", "practice", "EURUSD", bid=1.0, ask=1.2) is True
     assert redis.added[0][1]["basis"] == "mid"
+
+
+def test_add_bar_puts_a_broker_built_bar_on_the_quote_stream(mgr_and_pieces):
+    mgr, _ib, redis = mgr_and_pieces
+    assert mgr.add_bar(
+        "ctrader",
+        "demo",
+        "eurusd",
+        minute=60000.0,
+        open=1.1,
+        high=1.2,
+        low=1.0,
+        close=1.15,
+        volume=7,
+    )
+    stream, fields, maxlen, approximate = redis.added[-1]
+    assert stream == "marketdata:quotes"
+    assert fields == {
+        "v": "1",
+        "kind": "bar",
+        "platform": "ctrader",
+        "account": "demo",
+        "symbol": "EURUSD",
+        "open": "1.1",
+        "high": "1.2",
+        "low": "1.0",
+        "close": "1.15",
+        "volume": "7.0",
+        "ts": "60000000",
+        "recv_ts": "1234567890000",
+    }
+    assert mgr.bars_added == 1
+    redis.connected = False
+    assert not mgr.add_bar("ctrader", "demo", "EURUSD", minute=0, open=1, high=1, low=1, close=1)
+    assert mgr.quotes_dropped == 1

@@ -14,6 +14,11 @@ stream from two firms at once (docs/plans/E-05-live-recorder.md, D3):
   ``STREAM_POLL_SECONDS`` (default 2, set on the Settings page), which every
   adapter implements.
 
+An adapter with ``streams_bars`` (cTrader) is also given ``on_bar``, and
+passes on each 1-minute bar the broker itself built. For a recorded
+subscription that bar goes onto the quote stream, and the recorder stores it
+in place of the one it built from quotes.
+
 A price stream that fails falls back to one ``tick()`` per symbol before
 each new attempt, so prices keep arriving, more slowly, while it is down.
 
@@ -89,10 +94,14 @@ class _Worker:
             try:
                 adapter = self.streamer.adapter_for(self.key)
                 if hasattr(adapter, "stream_prices"):
+                    extra = (
+                        {"on_bar": self._on_bar} if getattr(adapter, "streams_bars", False) else {}
+                    )
                     adapter.stream_prices(
                         sorted(symbols),
                         self._on_price,
                         lambda: self.stop.is_set() or self.changed.is_set(),
+                        **extra,
                     )
                     if not (self.stop.is_set() or self.changed.is_set()):
                         # The venue closed the stream; reopen after a pause.
@@ -139,6 +148,11 @@ class _Worker:
             last = (bid + ask) / 2 if bid is not None and ask is not None else (bid or ask)
         self.streamer.publish(symbol, self.key, bid=bid, ask=ask, last=last)
 
+    def _on_bar(self, symbol: str, bar: Dict[str, Any]) -> None:
+        """A finished 1-minute bar the broker built (``timestamp`` in epoch
+        seconds, ``open``, ``high``, ``low``, ``close``, ``volume``)."""
+        self.streamer.publish_bar(symbol, self.key, bar)
+
 
 class VenueStreamer:
     """Refcounted live-price subscriptions on non-IB connections."""
@@ -150,7 +164,9 @@ class VenueStreamer:
         poll_seconds: Optional[float] = None,
         publish_quote: Optional[Callable[..., Any]] = None,
         forget_quote: Optional[Callable[[str, str, str], None]] = None,
+        publish_bar: Optional[Callable[..., Any]] = None,
     ) -> None:
+        self._publish_bar = publish_bar
         self._publish_quote = publish_quote
         self._forget_quote = forget_quote
         self._publish_tick = publish_tick
@@ -191,6 +207,16 @@ class VenueStreamer:
         from streaming import streaming_manager
 
         streaming_manager.add_quote(*args, **kwargs)
+
+    def _bar(self, *args: Any, **kwargs: Any) -> None:
+        if self._publish_bar is not None:
+            self._publish_bar(*args, **kwargs)
+            return
+        if self._publish_quote is not None:
+            return
+        from streaming import streaming_manager
+
+        streaming_manager.add_bar(*args, **kwargs)
 
     def _forget(self, platform: str, account: str, symbol: str) -> None:
         if self._forget_quote is not None:
@@ -392,6 +418,25 @@ class VenueStreamer:
                 except Exception:  # noqa: BLE001 — the next quote asks again
                     return
             self._quote(key[0], key[1], symbol, bid=bid, ask=ask, last=last, basis=sub.basis)
+
+    def publish_bar(self, symbol: str, key: ConnectionKey, bar: Dict[str, Any]) -> None:
+        """Put a broker-built 1-minute bar on the quote stream, when the
+        subscription is recorded. A chart builds its own bar from the prices."""
+        with self._lock:
+            sub = self._subs.get((key[0], key[1], symbol))
+            if sub is None or not sub.recorded:
+                return
+        self._bar(
+            key[0],
+            key[1],
+            symbol,
+            minute=bar["timestamp"],
+            open=bar["open"],
+            high=bar["high"],
+            low=bar["low"],
+            close=bar["close"],
+            volume=bar.get("volume") or 0,
+        )
 
     def record_error(self, key: ConnectionKey, symbols: Set[str], exc: BaseException) -> None:
         detail = getattr(exc, "detail", None)

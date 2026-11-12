@@ -578,3 +578,190 @@ def test_enum_names_are_understood_too(ct):
     assert ct._enum("ORDER_FILLED", ct._EXECUTION_TYPE) == 3
     assert ct._enum("3", ct._EXECUTION_TYPE) == 3
     assert ct._enum(None, ct._EXECUTION_TYPE) is None
+
+
+# --------------------------------------------------------------------------- #
+# live 1-minute bars and depth of market (E-12)
+# --------------------------------------------------------------------------- #
+def _bar_events(*spots):
+    """Answer the spot subscription, then the live-bar one with ``spots``."""
+
+    def extra(kind, payload):
+        if kind == 2127:
+            return [(2128, {})]
+        if kind == 2135:
+            return [(2165, {})] + [(2131, spot, False) for spot in spots]
+        return None
+
+    return base_handler(extra)
+
+
+def _tb(minute, low, d_open, d_high, d_close=None, volume=3):
+    bar = {
+        "utcTimestampInMinutes": minute,
+        "period": 1,
+        "low": low,
+        "deltaOpen": d_open,
+        "deltaHigh": d_high,
+        "volume": volume,
+    }
+    if d_close is not None:
+        bar["deltaClose"] = d_close
+    return bar
+
+
+def test_stream_passes_on_each_live_bar_once_when_the_next_one_starts(ct, monkeypatch):
+    monkeypatch.setattr(ct, "_BAR_GRACE_SECONDS", 10**12)  # only a later bar closes one
+    FakeWS.handler = _bar_events(
+        {"symbolId": 1, "bid": 110010, "ask": 110020, "trendbar": [_tb(1000, 110000, 5, 20)]},
+        # The same minute again: a new low, and no close of its own.
+        {"symbolId": 1, "bid": 109990, "trendbar": [_tb(1000, 109990, 15, 30, volume=4)]},
+        # A bar of another period is not a 1-minute bar.
+        {"symbolId": 1, "bid": 110000, "trendbar": [_tb(1000, 1, 1, 1) | {"period": "M5"}]},
+        {"symbolId": 1, "bid": 110030, "trendbar": [_tb(1001, 110030, 0, 0, 0, volume=1)]},
+    )
+    prices, bars = [], []
+    _adapter(ct).stream_prices(
+        ["EUR.USD"],
+        lambda s, b, a: prices.append((s, b, a)),
+        lambda: len(prices) >= 4,
+        on_bar=lambda s, bar: bars.append((s, bar)),
+    )
+    assert _sent(2135) == [{"symbolId": 1, "period": 1, "ctidTraderAccountId": 424242}]
+    assert bars == [
+        (
+            "EUR.USD",
+            {
+                "timestamp": 60000.0,
+                "open": 1.10005,
+                "high": 1.1002,
+                "low": 1.0999,
+                "close": 1.0999,
+                "volume": 4,
+            },
+        )
+    ]
+    assert len(prices) == 4
+
+
+def test_a_live_bar_is_passed_on_soon_after_its_minute_ends(ct):
+    # Minute 1000 ended long ago, so the first look at the clock closes it.
+    FakeWS.handler = _bar_events(
+        {"symbolId": 1, "bid": 110010, "ask": 110020, "trendbar": [_tb(1000, 110000, 5, 20, 10)]}
+    )
+    bars = []
+    _adapter(ct).stream_prices(
+        ["EUR.USD"],
+        lambda s, b, a: None,
+        lambda: bool(bars),
+        on_bar=lambda s, bar: bars.append((s, bar["timestamp"], bar["close"])),
+    )
+    assert bars == [("EUR.USD", 60000.0, 1.1001)]
+
+
+def test_prices_still_stream_when_live_bars_are_refused(ct):
+    def extra(kind, payload):
+        if kind == 2127:
+            return [
+                (2128, {}),
+                (2131, {"symbolId": 1, "bid": 110000, "ask": 110010}, False),
+            ]
+        if kind == 2135:
+            return [(2142, {"errorCode": "UNSUPPORTED", "description": "no live bars"})]
+        return None
+
+    FakeWS.handler = base_handler(extra)
+    prices, bars = [], []
+    _adapter(ct).stream_prices(
+        ["EUR.USD"],
+        lambda s, b, a: prices.append((s, b, a)),
+        lambda: bool(prices),
+        on_bar=lambda s, bar: bars.append(bar),
+    )
+    assert prices == [("EUR.USD", 1.1, 1.1001)] and bars == []
+
+
+def test_stream_without_on_bar_does_not_subscribe_to_live_bars(ct):
+    FakeWS.handler = base_handler(
+        lambda k, p: (
+            [(2128, {}), (2131, {"symbolId": 1, "bid": 110000}, False)] if k == 2127 else None
+        )
+    )
+    seen = []
+    _adapter(ct).stream_prices(["EUR.USD"], lambda s, b, a: seen.append(b), lambda: bool(seen))
+    assert _sent(2135) == []
+
+
+def test_market_depth_builds_the_book_from_new_and_deleted_quotes(ct):
+    def extra(kind, payload):
+        if kind == 2127:
+            return [(2128, {})]
+        if kind == 2156:
+            return [
+                (2157, {}),
+                (
+                    2155,
+                    {
+                        "symbolId": 1,
+                        "newQuotes": [
+                            {"id": 1, "size": 100000000, "bid": 110000},
+                            {"id": 2, "size": 50000000, "bid": 109990},
+                            {"id": 3, "size": 20000000, "bid": 110000},
+                            {"id": 4, "size": 30000000, "ask": 110020},
+                            {"id": 5, "size": 70000000, "ask": 110010},
+                            {"id": 6, "size": 10000000, "ask": 110030},
+                        ],
+                    },
+                    False,
+                ),
+                (2155, {"symbolId": 2, "newQuotes": [{"id": 9, "size": 1, "bid": 5}]}, False),
+                (
+                    2155,
+                    {
+                        "symbolId": 1,
+                        "newQuotes": [{"id": 5, "size": 80000000, "ask": 110010}],
+                        "deletedQuotes": [2],
+                    },
+                    False,
+                ),
+            ]
+        return None
+
+    FakeWS.handler = base_handler(extra)
+    book = _adapter(ct).market_depth("EUR.USD", levels=2)
+    assert _sent(2156) == [{"ctidTraderAccountId": 424242, "symbolId": [1]}]
+    assert book["symbol"] == "EUR.USD" and book["broker"] == "ctrader"
+    # Quotes at one price are added up; sizes are in units; best price first.
+    assert book["bids"] == [{"price": 1.1, "size": 1200000.0}]
+    assert book["asks"] == [
+        {"price": 1.1001, "size": 800000.0},
+        {"price": 1.1002, "size": 300000.0},
+    ]
+
+
+def test_market_depth_with_no_book_is_a_503(ct, monkeypatch):
+    monkeypatch.setattr(ct, "_DEPTH_WAIT_SECONDS", 0.05)
+    FakeWS.handler = base_handler(
+        lambda k, p: [(2128, {})] if k == 2127 else [(2157, {})] if k == 2156 else None
+    )
+    with pytest.raises(HTTPException) as err:
+        _adapter(ct).market_depth("EUR.USD")
+    assert err.value.status_code == 503
+    assert "depth of market" in err.value.detail
+
+
+def test_market_depth_reports_a_refused_subscription(ct):
+    FakeWS.handler = base_handler(
+        lambda k, p: (
+            [(2128, {})]
+            if k == 2127
+            else (
+                [(2142, {"errorCode": "UNSUPPORTED", "description": "no depth"})]
+                if k == 2156
+                else None
+            )
+        )
+    )
+    with pytest.raises(HTTPException) as err:
+        _adapter(ct).market_depth("EUR.USD")
+    assert "no depth" in str(err.value.detail)

@@ -75,6 +75,8 @@ export function tradingConnections(status: any): Array<Record<string, unknown>> 
       is_default: Boolean(c.is_default) && c.platform === status.default,
       order_types: c.capabilities?.order_types ?? null,
       attaches_stops: Boolean(c.capabilities?.attaches_stops),
+      // The broker publishes an order book (GET /api/market-data/depth).
+      depth: Boolean(c.capabilities?.depth),
     }));
 }
 

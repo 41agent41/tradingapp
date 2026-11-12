@@ -439,6 +439,13 @@ broker_service ──XADD──▶ Redis Stream marketdata:quotes ──XREAD─
   `candlestick_data`. A bar fetched from the broker (`source = 'broker'`)
   replaces a recorded one, and a recorded bar never replaces a broker bar.
   The backfill does not store the minute still forming.
+- **A broker's own live bars.** cTrader publishes the 1-minute bar it is
+  building along with its prices. When a minute ends, the finished bar is
+  added to the same stream and the recorder stores it in place of the bar it
+  built from that minute's quotes, with the broker's tick volume. It is still
+  marked `source = 'stream'`, so the nightly reconcile checks it like any
+  other. If cTrader refuses the bar subscription for a symbol, that symbol's
+  bars are built from quotes as before.
 - **Nothing twice, nothing skipped.** The recorder stores the ID of the last
   stream entry it has written (`recorder_cursor`) in the same transaction as
   the bars and quotes from it, and resumes from there after any restart. A
@@ -902,7 +909,15 @@ describes adding another.
   streaming, every order type including stop-limit, stops on the entry
   (as distances on a market order), position stops, positions netted across
   a hedged account, account equity and fills. Quantities are in units.
-  Access tokens last about 30 days and are renewed by hand.
+  Access tokens last about 30 days and are renewed by hand. Recorded
+  instruments store cTrader's own live 1-minute bars (see
+  [Live recorder](#live-recorder)).
+- **Depth of market (cTrader).** With a cTrader connection chosen, the order
+  ticket has a **Show depth** button under the form. It reads the order book
+  for the ticket's symbol once: the best 10 bids and asks with the size at
+  each, in units. It is a snapshot and does not update until **Refresh** is
+  pressed. A broker that publishes no book for the symbol, or a closed
+  market, shows the reason instead. Other brokers do not have the button.
 - **One connection type per firm:** every connection names its firm
   (OANDA, IG, IC Markets, Pepperstone, FP Markets, Fusion, another cTrader
   firm, Interactive Brokers, Alpaca, Axi, Eightcap, Vantage, another MT5
@@ -935,6 +950,7 @@ describes adding another.
 | `/api/market-data/search/advanced` | POST | Contract search with derivatives filters |
 | `/api/market-data/history` | GET | Historical bars (DB first, IB fallback) |
 | `/api/market-data/realtime` | GET | Latest bid / ask / last quote |
+| `/api/market-data/depth` | GET | The order book for `symbol` (`levels` 1 to 50, default 10; `source`, `account`). 501 from a broker without one (only cTrader has one) |
 | `/api/market-data/indicators` | GET | Computed indicators |
 | `/api/market-data/upload` | POST | Persist downloaded bars to Postgres |
 | `/api/market-data/database/stats` | GET | Per-symbol storage statistics |

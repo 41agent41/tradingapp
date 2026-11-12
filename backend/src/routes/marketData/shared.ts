@@ -7,6 +7,7 @@
  *   search.ts     — POST /search, POST /search/advanced, POST /symbols/discover
  *   history.ts    — GET  /history
  *   realtime.ts   — GET  /realtime
+ *   depth.ts      — GET  /depth
  *   indicators.ts — GET  /indicators, GET /indicators/available
  *   database.ts   — GET  /database/stats, POST /upload, POST /database/clean
  *

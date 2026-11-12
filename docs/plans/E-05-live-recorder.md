@@ -381,6 +381,13 @@ receives from the backend (`brokerSync.ts`). It is not another `.env` line.
   `source = 'stream'` through the same upsert. The recorder skips building a
   bar for a contract whose adapter says it streams bars (an E-19
   capability).
+  As built for E-12 (cTrader): the adapter declares `streams_bars` and
+  passes each finished bar to `on_bar`; it goes onto `marketdata:quotes` as
+  an entry with `kind = bar` (`open`, `high`, `low`, `close`, `volume`, and
+  `ts` the start of the minute). The recorder still builds the forming bar
+  from quotes, so the minute in progress is stored as before, and the
+  broker's bar replaces it when the minute ends. A backend older than this
+  counts a `kind = bar` entry as invalid and carries on.
 - **E-15:** bid and ask bars can be rebuilt from `quote_ticks` for the
   retention window. Older data comes from the broker (`price=BA`).
 - **E-20 (shipped):** the live chart builds its forming candle in the

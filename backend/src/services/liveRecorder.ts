@@ -26,6 +26,10 @@
  * Bars are built on the price each broker builds its own history from (the
  * entry's `basis`: mid, bid or last), and written with source 'stream'. A
  * stream bar never replaces a broker bar; the backfill replaces stream bars.
+ *
+ * A broker that publishes its own live 1-minute bars (cTrader) also adds each
+ * finished bar to the stream (`kind: bar`). It replaces the bar built from
+ * that minute's quotes, and later quotes leave it alone.
  */
 import axios from 'axios';
 import { createClient } from 'redis';
@@ -152,6 +156,8 @@ interface Bar extends BarRow {
   /** Time of the newest quote in the bar, which owns the close. */
   lastTs: number;
   dirty: boolean;
+  /** The broker's own finished bar: quotes no longer change it. */
+  venue?: boolean;
 }
 
 interface ContractState {
@@ -498,6 +504,10 @@ export class LiveRecorder {
       this.totals.unrecorded++;
       return;
     }
+    if (f.kind === 'bar') {
+      this.applyBar(states, f, ts);
+      return;
+    }
     const lastSize = num(f.last_size);
     const recvTs = num(f.recv_ts) ?? ts;
     const price = basisPrice(f.basis ?? '', bid, ask, last);
@@ -559,7 +569,7 @@ export class LiveRecorder {
           lastTs: ts,
           dirty: true,
         });
-      } else {
+      } else if (!bar.venue) {
         bar.high = Math.max(bar.high, price);
         bar.low = Math.min(bar.low, price);
         if (ts >= bar.lastTs) {
@@ -570,6 +580,38 @@ export class LiveRecorder {
         bar.count++;
         bar.dirty = true;
       }
+      this.count('written');
+    }
+  }
+
+  /** A finished 1-minute bar the broker built: it replaces the bar built
+   *  from that minute's quotes. `ts` is the start of its minute. */
+  private applyBar(states: ContractState[], f: Record<string, string>, ts: number): void {
+    const [open, high, low, close] = [num(f.open), num(f.high), num(f.low), num(f.close)];
+    if (open === null || high === null || low === null || close === null) {
+      this.count('invalid');
+      return;
+    }
+    const minute = Math.floor(ts / MINUTE_MS) * MINUTE_MS;
+    const late = minute < windowStart(this.deps.now());
+    for (const state of states) {
+      if (late) {
+        this.count('late');
+        continue;
+      }
+      state.bars.set(minute, {
+        contractId: state.target.contractId,
+        minute,
+        open,
+        high,
+        low,
+        close,
+        volume: num(f.volume) ?? 0,
+        count: state.bars.get(minute)?.count ?? 0,
+        lastTs: minute + MINUTE_MS,
+        dirty: true,
+        venue: true,
+      });
       this.count('written');
     }
   }
@@ -592,7 +634,7 @@ export class LiveRecorder {
     if (moved || dirty.length || this.ticks.length) {
       const started = Date.now();
       await this.deps.flush({
-        bars: dirty.map(({ lastTs: _l, dirty: _d, ...row }) => row),
+        bars: dirty.map(({ lastTs: _l, dirty: _d, venue: _v, ...row }) => row),
         ticks: this.ticks,
         cursor: this.readId!,
       });

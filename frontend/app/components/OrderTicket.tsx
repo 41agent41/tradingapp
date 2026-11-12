@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '../lib/api';
+import DepthOfMarket from './DepthOfMarket';
 
 export type OrderAction = 'BUY' | 'SELL';
 export type OrderType = 'MKT' | 'LMT' | 'STP' | 'STP_LMT';
@@ -18,6 +19,8 @@ export interface TicketConnection {
   is_default: boolean;
   /** Each order type it takes, with the times in force that type accepts. */
   order_types: Record<string, string[]> | null;
+  /** Its broker publishes an order book (E-12). */
+  depth?: boolean;
 }
 
 interface OrderConfig {
@@ -443,6 +446,14 @@ export default function OrderTicket({
           </button>
         </div>
       </form>
+
+      {connection?.depth && (
+        <DepthOfMarket
+          symbol={payload.symbol}
+          platform={connection.platform}
+          account={connection.account}
+        />
+      )}
 
       {confirmOpen && (
         <div
