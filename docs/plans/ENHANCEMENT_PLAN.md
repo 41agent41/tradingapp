@@ -222,7 +222,7 @@ There are 47 items, sorted by priority. P1 means do next, P2 soon after, and P3 
 | S-02 | Commit npm lockfiles, use `npm ci`, pin Python, add `npm audit` and `pip-audit` to CI | P1 | S | Sonnet 5.5 | Haiku 5.5 | none |
 | S-03 | Node 22 or 24 LTS images and a supported Next.js major release | P1 | L | Opus 5.5 | Sonnet 5.5 (supervised) | Haiku 5.5 |
 | E-05 | Live recorder: server-side subscriptions, Redis Streams, 1-minute bars from the stream | P1 | XL | Fable 5.2 (design), Opus 5.5 (build) | none | Sonnet 5.5, Haiku 5.5 |
-| E-06 | Store ticks with bid, ask and last, with a retention setting; compress ticks after 1 day and bars after 7 days | P1 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
+| E-06 | Store ticks with bid, ask and last, with a retention setting; compress ticks after 1 day and bars after 7 days (bar compression is not built: only stored quotes have a compression policy) | P1 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
 | E-02 | Backtests read stored bars, with a coverage check, a read-only database role and a data hash on each run | P1 | L | Opus 5.5 | Fable 5.2 | Sonnet 5.5, Haiku 5.5 |
 | E-20 | Live ticks update the last candle, not just the price badge | P1 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
 | E-21 | One live chart page for any symbol on any connection, replacing the MSFT page | P1 | M | Opus 5.5 | Sonnet 5.5 (supervised) | Haiku 5.5 |
@@ -261,8 +261,8 @@ There are 47 items, sorted by priority. P1 means do next, P2 soon after, and P3 
 | S-11 | 100 KB body limit except on the export route (built: the bar upload also keeps 25 MB) | P3 | S | Haiku 5.5 | Sonnet 5.5 | none |
 | S-12 | `helmet` and a Content Security Policy (built: the policy still allows inline scripts and styles, which Next.js and the charts need) | P3 | S | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | D-04 | Symbol map and "account info from" on the Connections form; remove the SQL workaround (built: the MT5 symbol map is a field on the form and the SQL route is gone from the guide; not built: "account info from", because the form allows one connection type per firm, so an OANDA account always uses OANDA's API; it stays a `.env` manifest option) | P3 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
-| D-05 | Procedures for recording, tick retention, stored-data backtests, replay, storage checks | P3 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
-| D-06 | Database disk sizing from the storage estimate | P3 | S | Sonnet 5.5 | Haiku 5.5 | none |
+| D-05 | Procedures for recording, tick retention, stored-data backtests, replay, storage checks (built: five step-by-step procedures in OPERATIONS under Data collection and retention; not yet run on a Proxmox host) | P3 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
+| D-06 | Database disk sizing from the storage estimate (built: a sizing table in INSTALL § 1.1; the figures are still the plan's estimates, not measurements, and bars are counted uncompressed because only stored quotes have a compression policy) | P3 | S | Sonnet 5.5 | Haiku 5.5 | none |
 | D-07 | CI link and command checks, plus an agent dry run of INSTALL on a test container | P3 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
 
 **Suggested pull requests.** (1) E-01 alone, since it stops data loss. (2) S-01, S-02 and S-03. (3) E-30 and E-31. (4) E-05 and E-06, after Fable 5.2 writes the design record into `docs/plans/`. (5) E-02, E-07 and E-08. (6) E-20, E-21 and E-22. Everything else follows in priority order. Sean signs off at the end of each step.
