@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import { AreaSeries, createChart, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
+import { chartThemeOptions, useTheme } from '../lib/theme';
 import { useChartResize } from '../lib/useChartResize';
 
 export interface EquityPoint {
@@ -61,6 +62,12 @@ export default function EquityCurveChart({ data, height = 320 }: EquityCurveChar
   }, [height]);
 
   useChartResize(containerRef, chartRef);
+
+  // The page's theme, also given to a chart that was made afresh.
+  const theme = useTheme();
+  useEffect(() => {
+    chartRef.current?.applyOptions(chartThemeOptions(theme));
+  }, [theme, height]);
 
   useEffect(() => {
     if (!seriesRef.current || !data?.length) return;

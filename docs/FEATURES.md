@@ -134,6 +134,14 @@ recomputed live. Streams are per broker connection, so EURUSD from OANDA and
 EURUSD from an MT5 account can be charted side by side. A chart left on "By
 broker priority" joins the stream a symbol already has, if there is one.
 
+**Light and dark theme.** A small **Light / Dark / Auto** control sits in the
+bottom right corner of every page. Auto follows the device's setting and is
+the default; the choice is kept in the browser. The dark theme recolours the
+pages and the charts (candles keep their green and red). It is defined in
+one place, `frontend/app/globals.css`, which gives the light greys and tints
+the pages are written with their dark values, so a new page needs no dark
+styling of its own.
+
 **Positions and orders on the chart.** With **Positions and orders** ticked
 (it is by default, and the choice is kept), the live chart draws what the
 chart's connection holds in the charted instrument as labelled price lines:
