@@ -136,6 +136,9 @@ export type Field = {
   secret?: boolean;
   required?: boolean;
   placeholder?: string;
+  /** A field of several lines, with a note under it. */
+  multiline?: boolean;
+  help?: string;
 };
 
 /** Mirrors PLATFORM_FIELDS in backend/src/services/brokerConnections.ts. */
@@ -153,6 +156,13 @@ export const PLATFORM_FORM: Record<string, Field[]> = {
       placeholder: 'AB:CD:… from the sidecar log',
     },
     { name: 'server_timezone', label: 'Server timezone', placeholder: 'Etc/GMT-2' },
+    {
+      name: 'symbol_map',
+      label: 'Symbol map',
+      multiline: true,
+      placeholder: 'EURUSD=EURUSD.a',
+      help: "Only when the broker lists a symbol under several names and the app reports it as ambiguous. One pair per line: the app's symbol, an equals sign, then the broker's exact name.",
+    },
   ],
   ib: [
     { name: 'host', label: 'Gateway host', required: true, placeholder: '10.0.0.30' },

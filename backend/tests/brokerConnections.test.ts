@@ -320,6 +320,61 @@ describe('BrokerConnectionStore', () => {
     );
   });
 
+  it('keeps an MT5 symbol map as text and sends it to the broker service as an object', async () => {
+    const { db, rows, audit } = fakeDb();
+    const store = new BrokerConnectionStore(db, {});
+    const mt5 = { platform: 'mt5', firm: 'axi', account: 'demo-a' };
+    const created = await store.create(
+      {
+        ...mt5,
+        settings: { url: 'http://x', symbol_map: ' eurusd = EURUSD.a ; XAUUSD=GOLD.pro\n' },
+      },
+      ctx
+    );
+    expect(created.settings.symbol_map).toBe('EURUSD=EURUSD.a\nXAUUSD=GOLD.pro');
+    expect((await store.managedEntries())[0].symbol_map).toEqual({
+      EURUSD: 'EURUSD.a',
+      XAUUSD: 'GOLD.pro',
+    });
+    expect(audit[0].join(' ')).toContain('symbol_map=EURUSD=EURUSD.a,XAUUSD=GOLD.pro');
+
+    // An edit that sends the settings without the map clears it.
+    await store.update(created.id, { settings: { url: 'http://x' } }, ctx);
+    expect((await store.list())[0].settings.symbol_map).toBeUndefined();
+    expect((await store.managedEntries())[0]).not.toHaveProperty('symbol_map');
+
+    // A map set by hand in the database is an object: shown as text, kept
+    // by an edit that leaves the settings out, and still sent.
+    rows[0].settings.symbol_map = { gbpusd: 'GBPUSD.a' };
+    expect((await store.list())[0].settings.symbol_map).toBe('GBPUSD=GBPUSD.a');
+    expect((await store.managedEntries())[0].symbol_map).toEqual({ GBPUSD: 'GBPUSD.a' });
+    await store.update(created.id, { currency: 'AUD' }, ctx);
+    expect(rows[0].settings.symbol_map).toBe('GBPUSD=GBPUSD.a');
+  });
+
+  it.each([
+    ['EURUSD', /is not a pair/],
+    ['EUR USD=EURUSD.a', /is not two symbol names/],
+    ['EURUSD=', /is not two symbol names/],
+    ['EURUSD=EURUSD.a\nEURUSD=EURUSD.pro', /EURUSD is mapped twice/],
+  ])('refuses the symbol map %j', async (symbol_map, message) => {
+    const { db } = fakeDb();
+    const store = new BrokerConnectionStore(db, {});
+    await expect(
+      store.create({ platform: 'mt5', firm: 'axi', settings: { url: 'http://x', symbol_map } }, ctx)
+    ).rejects.toThrow(message);
+  });
+
+  it('takes a symbol map only on MT5', async () => {
+    const { db } = fakeDb();
+    const store = new BrokerConnectionStore(db, { SETTINGS_ENCRYPTION_KEY: KEY });
+    const view = await store.create(
+      { ...OANDA, settings: { ...OANDA.settings, symbol_map: 'EURUSD=EURUSD.a' } },
+      ctx
+    );
+    expect(view.settings).toEqual({ account_id: '101-001' });
+  });
+
   it('leaves out a row whose secrets cannot be decrypted', async () => {
     const { db } = fakeDb();
     await new BrokerConnectionStore(db, { SETTINGS_ENCRYPTION_KEY: KEY }).create(OANDA, ctx);
