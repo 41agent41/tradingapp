@@ -949,6 +949,21 @@ describes adding another.
   and targets ride on the entry (as force-open deals), every deal is checked
   on `/confirms`, and positions are netted per epic with the least protective
   stop reported. No 8-hour bars or stop-limit orders.
+- **Client sentiment (IG).** With an IG connection chosen, the order ticket
+  has a **Show sentiment** button under the form. It reads, once, the share
+  of IG's clients with a position in the ticket's market who are long and
+  the share who are short. It does not update until **Refresh** is pressed,
+  and a market IG publishes no figure for shows the reason. Other brokers do
+  not have the button.
+- **Realised P&L on IG fills.** IG's activity history, where fills come from,
+  carries no profit figure. So when a poll finds a fill that closed or partly
+  closed a position, the adapter also reads IG's transaction history and
+  copies the profit or loss onto the fill whose deal id ends with the
+  transaction's reference. A fill the history does not list yet is stored
+  without the figure and gains it on a later poll. Two transactions under
+  one reference cannot be told apart, so neither is used. The amount is in
+  the account's currency, as IG reports it. This matching has not run
+  against a real IG account.
 - **cTrader brokers: one integration.**
   [`CTraderAdapter`](../broker_service/ctrader_adapter.py) speaks Spotware's
   cTrader Open API (JSON over WebSocket), so one connection type reaches IC
@@ -999,6 +1014,7 @@ describes adding another.
 | `/api/market-data/history` | GET | Historical bars (DB first, IB fallback) |
 | `/api/market-data/realtime` | GET | Latest bid / ask / last quote |
 | `/api/market-data/depth` | GET | The order book for `symbol` (`levels` 1 to 50, default 10; `source`, `account`). 501 from a broker without one (only cTrader has one) |
+| `/api/market-data/sentiment` | GET | The share of the broker's clients long and short in `symbol` (`source`, `account`). 501 from a broker that publishes none (only IG does) |
 | `/api/market-data/indicators` | GET | Computed indicators |
 | `/api/market-data/upload` | POST | Persist downloaded bars to Postgres |
 | `/api/market-data/database/stats` | GET | Per-symbol storage statistics |

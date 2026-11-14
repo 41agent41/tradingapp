@@ -411,6 +411,7 @@ describe('GET /api/orders/config: connections and what they support (E-19)', () 
         trailing_stops: false,
         guaranteed_stops: false,
         depth: false,
+        sentiment: false,
       },
       {
         label: 'ig:demo',
@@ -423,6 +424,7 @@ describe('GET /api/orders/config: connections and what they support (E-19)', () 
         trailing_stops: false,
         guaranteed_stops: false,
         depth: false,
+        sentiment: false,
       },
     ]);
     expect(res.body.order_types).toEqual(['LMT', 'MKT']);

@@ -478,6 +478,117 @@ def test_executions_keep_only_position_deals(ig):
     assert fill["audit_id"] == 9
 
 
+def _closing_activity(deal_id, action="POSITION_CLOSED"):
+    return {
+        "date": "2026-01-02T03:04:05",
+        "epic": "CS.D.EURUSD.CFD.IP",
+        "dealId": deal_id,
+        "type": "POSITION",
+        "status": "ACCEPTED",
+        "details": {
+            "direction": "SELL",
+            "size": 1,
+            "level": 1.1,
+            "currency": "USD",
+            "actions": [{"actionType": action}],
+        },
+    }
+
+
+def _history(activities, transactions):
+    def handler(method, path, params, json):
+        if path == "/history/transactions":
+            if isinstance(transactions, Exception):
+                return FakeResponse({"errorCode": "error.down"}, status_code=500)
+            return FakeResponse({"transactions": transactions})
+        return FakeResponse({"activities": activities})
+
+    return handler
+
+
+def test_a_closing_fill_takes_its_realised_pnl_from_the_transaction_history(ig):
+    opened = _closing_activity("DIAAAAOPEN0001", "POSITION_OPENED")
+    FakeClient.handler = _history(
+        [_closing_activity("DIAAAAB7XK2QA"), opened],
+        [
+            {"reference": "B7XK2QA", "profitAndLoss": "A$-1,234.50"},
+            {"reference": "OPEN0001", "profitAndLoss": "A$9.00"},
+            {"reference": "", "profitAndLoss": "A$1.00"},
+        ],
+    )
+    fills = {f["exec_id"]: f for f in _adapter(ig).executions()}
+    assert fills["DIAAAAB7XK2QA"]["realized_pnl"] == pytest.approx(-1234.50)
+    # An opening fill realises nothing, whatever the history lists.
+    assert fills["DIAAAAOPEN0001"].get("realized_pnl") is None
+    assert all("_closes" not in f for f in fills.values())
+    call = _calls("/history/transactions")[0]
+    assert call[2]["Version"] == "2" and call[3]["type"] == "ALL_DEAL"
+
+
+def test_a_reference_listed_twice_gives_no_realised_pnl(ig):
+    FakeClient.handler = _history(
+        [_closing_activity("DIAAAAB7XK2QA", "POSITION_PARTIALLY_CLOSED")],
+        [
+            {"reference": "B7XK2QA", "profitAndLoss": "USD5.00"},
+            {"reference": "B7XK2QA", "profitAndLoss": "USD7.00"},
+        ],
+    )
+    assert _adapter(ig).executions()[0].get("realized_pnl") is None
+
+
+def test_fills_survive_a_transaction_history_that_fails(ig):
+    FakeClient.handler = _history([_closing_activity("DIAAAAB7XK2QA")], RuntimeError())
+    fills = _adapter(ig).executions()
+    assert len(fills) == 1 and fills[0].get("realized_pnl") is None
+
+
+def test_the_transaction_history_is_not_read_when_nothing_closed(ig):
+    FakeClient.handler = _history([_closing_activity("D1", "POSITION_OPENED")], [])
+    _adapter(ig).executions()
+    assert _calls("/history/transactions") == []
+
+
+def test_money_reads_the_amounts_ig_writes(ig):
+    assert ig._money("A$-1,234.50") == pytest.approx(-1234.5)
+    assert ig._money("USD12.3") == pytest.approx(12.3)
+    assert ig._money(4) == 4.0
+    assert ig._money("-") is None and ig._money(None) is None and ig._money("n/a") is None
+
+
+def _sentiment(payload, market_id="EURUSD"):
+    market = {**_MARKET, "instrument": {**_MARKET["instrument"], "marketId": market_id}}
+
+    def handler(method, path, params, json):
+        if path.startswith("/clientsentiment/"):
+            return FakeResponse(payload)
+        return FakeResponse(market)
+
+    return handler
+
+
+def test_client_sentiment_reads_the_share_long_and_short(ig):
+    FakeClient.handler = _sentiment(
+        {"marketId": "EURUSD", "longPositionPercentage": 62.0, "shortPositionPercentage": 38.0}
+    )
+    got = _adapter(ig).client_sentiment("eur.usd")
+    assert got["symbol"] == "EUR.USD" and got["broker"] == "ig"
+    assert got["long_pct"] == 62.0 and got["short_pct"] == 38.0
+    assert got["market_id"] == "EURUSD" and got["timestamp"]
+    assert _calls("/clientsentiment/EURUSD", "GET")
+
+
+def test_client_sentiment_needs_a_market_id_and_an_answer(ig):
+    FakeClient.handler = _sentiment({}, market_id=None)
+    with pytest.raises(HTTPException) as err:
+        _adapter(ig).client_sentiment("EUR.USD")
+    assert err.value.status_code == 404
+
+    FakeClient.handler = _sentiment({"marketId": "EURUSD"})
+    with pytest.raises(HTTPException) as err:
+        _adapter(ig).client_sentiment("EUR.USD")
+    assert err.value.status_code == 502
+
+
 # --------------------------------------------------------------------------- #
 # Streaming (Lightstreamer)
 # --------------------------------------------------------------------------- #

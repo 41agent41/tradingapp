@@ -27,6 +27,7 @@ EXPECTED_PATHS = {
     "/market-data/tick",
     "/market-data/realtime",
     "/market-data/depth",
+    "/market-data/sentiment",
     "/indicators/available",
     # backtesting.py
     "/backtesting/strategies",
@@ -101,5 +102,33 @@ def test_depth_comes_only_from_a_broker_that_publishes_a_book(monkeypatch):
 
     monkeypatch.setattr(adapters, "get_market_data_adapter", lambda s, a: Without())
     res = client.get("/market-data/depth", params={"symbol": "EURUSD", "source": "oanda"})
+    assert res.status_code == 501
+    assert "not available from oanda" in res.json()["detail"]
+
+
+def test_sentiment_comes_only_from_a_broker_that_publishes_it(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import adapters
+    from routes import market_data
+
+    class WithSentiment:
+        def client_sentiment(self, symbol):
+            return {"symbol": symbol, "long_pct": 60.0, "short_pct": 40.0}
+
+    class Without:
+        pass
+
+    app = FastAPI()
+    app.include_router(market_data.router)
+    client = TestClient(app)
+
+    monkeypatch.setattr(adapters, "get_market_data_adapter", lambda s, a: WithSentiment())
+    res = client.get("/market-data/sentiment", params={"symbol": "EUR.USD", "source": "ig"})
+    assert res.status_code == 200 and res.json()["long_pct"] == 60.0
+
+    monkeypatch.setattr(adapters, "get_market_data_adapter", lambda s, a: Without())
+    res = client.get("/market-data/sentiment", params={"symbol": "EUR.USD", "source": "oanda"})
     assert res.status_code == 501
     assert "not available from oanda" in res.json()["detail"]

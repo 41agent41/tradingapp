@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '../lib/api';
+import ClientSentiment from './ClientSentiment';
 import DepthOfMarket from './DepthOfMarket';
 
 export type OrderAction = 'BUY' | 'SELL';
@@ -26,6 +27,8 @@ export interface TicketConnection {
   guaranteed_stops?: boolean;
   /** Its broker publishes an order book (E-12). */
   depth?: boolean;
+  /** Its broker says how its clients are positioned (E-17). */
+  sentiment?: boolean;
 }
 
 interface OrderConfig {
@@ -538,6 +541,14 @@ export default function OrderTicket({
 
       {connection?.depth && (
         <DepthOfMarket
+          symbol={payload.symbol}
+          platform={connection.platform}
+          account={connection.account}
+        />
+      )}
+
+      {connection?.sentiment && (
+        <ClientSentiment
           symbol={payload.symbol}
           platform={connection.platform}
           account={connection.account}
