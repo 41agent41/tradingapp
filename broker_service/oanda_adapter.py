@@ -914,6 +914,7 @@ class OANDAAdapter:
                     "filled_quantity": None,
                     "remaining_quantity": abs(units),
                     "avg_fill_price": None,
+                    "price": _opt_float(row.get("price")),
                 }
             )
         return orders

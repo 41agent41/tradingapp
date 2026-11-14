@@ -1163,6 +1163,11 @@ class CTraderAdapter:
                     "filled_quantity": executed or None,
                     "remaining_quantity": units - executed,
                     "avg_fill_price": _opt_float(o.get("executionPrice")),
+                    # A limit order waits at its limit; a stop or stop-limit
+                    # order at its trigger.
+                    "price": _opt_float(
+                        o.get("limitPrice") if kind == _ORDER_TYPE["LIMIT"] else o.get("stopPrice")
+                    ),
                 }
             )
         return orders

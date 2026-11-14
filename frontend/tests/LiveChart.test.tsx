@@ -136,4 +136,56 @@ describe('LiveChart', () => {
     fireEvent.change(screen.getByLabelText('Times:'), { target: { value: 'local' } });
     await waitFor(() => expect(chartProps.current.timeZone).toBe('local'));
   });
+
+  it('draws the positions and working orders of its instrument, until switched off', async () => {
+    const asked: string[] = [];
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const json = (body: unknown) => new Response(JSON.stringify(body));
+      if (url.includes('/api/account/positions')) {
+        asked.push(url);
+        expect(new Headers(init?.headers).get('x-data-query-enabled')).toBe('true');
+        return json({
+          positions: [
+            { symbol: 'EUR.USD', position: 1000, average_cost: 1.1, stop_loss: 1.09 },
+            { symbol: 'GBP.USD', position: 5, average_cost: 1.3 },
+          ],
+        });
+      }
+      if (url.includes('/api/account/orders')) {
+        return json({
+          orders: [
+            {
+              order_id: '7',
+              symbol: 'EUR.USD',
+              action: 'SELL',
+              quantity: 1000,
+              order_type: 'LMT',
+              price: 1.12,
+            },
+          ],
+        });
+      }
+      if (url.includes('/api/market-data/history')) return json({ bars: [bar(NOW)] });
+      return json({});
+    }) as any;
+    const { getByLabelText } = render(
+      <LiveChart
+        instrument={{ symbol: 'EURUSD', source: 'oanda', account: 'demo', secType: 'CASH' }}
+      />
+    );
+    await waitFor(() => expect(chartProps.current?.priceLines).toHaveLength(3));
+    expect(chartProps.current.priceLines.map((l: any) => l.title)).toEqual([
+      'Long 1,000',
+      'Stop',
+      'Sell limit 1,000',
+    ]);
+    expect(asked[0]).toContain('broker=oanda&account=demo');
+
+    await act(async () => {
+      getByLabelText('Positions and orders').click();
+    });
+    await waitFor(() => expect(chartProps.current.priceLines).toEqual([]));
+    expect(window.localStorage.getItem('live-chart-levels')).toBe('off');
+  });
 });

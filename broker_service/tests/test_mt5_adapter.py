@@ -494,7 +494,13 @@ def test_open_orders_derive_direction_from_the_mt5_type_code(mt5):
     FakeClient.handler = lambda method, url, params, json: FakeResponse(
         {
             "orders": [
-                {"ticket": 900, "symbol": "eurusd", "type": 2, "volume_current": 1.5},
+                {
+                    "ticket": 900,
+                    "symbol": "eurusd",
+                    "type": 2,
+                    "volume_current": 1.5,
+                    "price_open": 1.07,
+                },
                 {"ticket": 901, "symbol": "EURUSD", "type": 3, "volume_current": 0.5},
                 {"ticket": 902, "symbol": "EURUSD", "action": "SELL", "quantity": 2.0},
             ]
@@ -510,6 +516,7 @@ def test_open_orders_derive_direction_from_the_mt5_type_code(mt5):
         ("902", "SELL", 2.0),
     ]
     assert rows[0]["symbol"] == "EURUSD"
+    assert [r["price"] for r in rows] == [1.07, None, None]
 
 
 def test_instrument_spec_reads_mt5_symbol_info(mt5):

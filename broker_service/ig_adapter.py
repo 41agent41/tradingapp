@@ -837,6 +837,7 @@ class IGAdapter:
                     "filled_quantity": None,
                     "remaining_quantity": size,
                     "avg_fill_price": None,
+                    "price": _opt_float(data.get("orderLevel")),
                 }
             )
         return orders

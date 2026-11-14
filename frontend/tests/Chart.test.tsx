@@ -92,6 +92,21 @@ describe('addedInFront', () => {
 });
 
 describe('<Chart> smoke render', () => {
+  it('draws, changes and removes price lines without throwing', () => {
+    const bars: ChartBar[] = [
+      { time: 1700000000, open: 1, high: 2, low: 0.5, close: 1.5, volume: 100 },
+    ];
+    const line = { key: 'stop', price: 1.2, color: '#dc2626', style: 'dashed' as const };
+    const { getByLabelText, rerender } = render(
+      <Chart data={bars} priceLines={[line, { key: 'entry', price: 1.4, color: '#2563eb' }]} />
+    );
+    rerender(<Chart data={bars} priceLines={[{ ...line, price: 1.25, title: 'Stop' }]} />);
+    // A new height makes the chart afresh; the lines are drawn on the new one.
+    rerender(<Chart data={bars} height={300} priceLines={[{ ...line, price: 1.25 }]} />);
+    rerender(<Chart data={bars} height={300} />);
+    expect(getByLabelText('Chart')).toBeInTheDocument();
+  });
+
   it('renders a labelled container without throwing', () => {
     const bars: ChartBar[] = [
       { time: 1700000000, open: 1, high: 2, low: 0.5, close: 1.5, volume: 100 },

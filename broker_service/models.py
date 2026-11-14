@@ -153,6 +153,9 @@ class Order(BaseModel):
     filled_quantity: Optional[float] = None
     remaining_quantity: Optional[float] = None
     avg_fill_price: Optional[float] = None
+    # The price the order waits at: its limit, or its trigger for a stop or
+    # stop-limit order. Empty where the venue does not report one.
+    price: Optional[float] = None
 
 
 class Execution(BaseModel):

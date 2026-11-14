@@ -8,10 +8,12 @@ import {
   HistogramData,
   HistogramSeries,
   IChartApi,
+  IPriceLine,
   ISeriesApi,
   ISeriesMarkersPluginApi,
   LineData,
   LineSeries,
+  LineStyle,
   SeriesMarker,
   Time,
   createChart,
@@ -60,12 +62,32 @@ export interface ChartMarker {
   text?: string;
 }
 
+/** A horizontal line at one price, labelled on the price axis: a position's
+ *  entry, a stop, a target or a working order (E-24). */
+export interface ChartPriceLine {
+  /** Stable key: a line whose key and content are unchanged is left alone. */
+  key: string;
+  price: number;
+  color: string;
+  style?: 'solid' | 'dashed' | 'dotted';
+  /** Shown beside the line. */
+  title?: string;
+}
+
+const LINE_STYLE = {
+  solid: LineStyle.Solid,
+  dashed: LineStyle.Dashed,
+  dotted: LineStyle.Dotted,
+} as const;
+
 export interface ChartProps {
   data: ChartBar[];
   /** Optional overlay indicator series. */
   indicators?: ChartIndicatorSeries[];
   /** Optional signal markers pinned to the candle series. */
   markers?: ChartMarker[];
+  /** Optional price lines on the candle series. */
+  priceLines?: ChartPriceLine[];
   /** Whether to render the volume histogram band. Defaults to true. */
   showVolume?: boolean;
   /** Canvas height in pixels. Defaults to 400. */
@@ -185,6 +207,7 @@ export default function Chart({
   data,
   indicators = [],
   markers = [],
+  priceLines,
   showVolume = true,
   height = DEFAULT_HEIGHT,
   readOnly = false,
@@ -199,6 +222,11 @@ export default function Chart({
   const indicatorSeriesRef = useRef<Map<string, ISeriesApi<'Line'>>>(new Map());
   const layoutRef = useRef('');
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  // The price lines drawn, and the candle series they were drawn on.
+  const priceLinesRef = useRef<{
+    series: ISeriesApi<'Candlestick'> | null;
+    lines: Map<string, { line: IPriceLine; shown: string }>;
+  }>({ series: null, lines: new Map() });
   /** Time of the last bar drawn, so a stale live bar is never sent. */
   const lastTimeRef = useRef<number | null>(null);
   /** Time of the first bar drawn, to tell when older bars were added. */
@@ -403,6 +431,48 @@ export default function Chart({
   useEffect(() => {
     markersRef.current?.setMarkers(prepareMarkers(markers));
   }, [markers]);
+
+  // Reconcile the price lines: add the new, redraw the changed, remove the
+  // gone. The chart is made afresh when its size or panes change, and the
+  // lines are then drawn again on the new candle series.
+  useEffect(() => {
+    const candles = candleSeriesRef.current;
+    if (!candles) return;
+    const state = priceLinesRef.current;
+    if (state.series !== candles) {
+      // A new chart: the lines of the old one went with it.
+      state.series = candles;
+      state.lines = new Map();
+    }
+    const drawn = state.lines;
+    const wanted = new Map<string, ChartPriceLine>();
+    (priceLines ?? []).forEach((l) => {
+      if (Number.isFinite(l.price)) wanted.set(l.key, l);
+    });
+    Array.from(drawn.entries()).forEach(([key, entry]) => {
+      if (!wanted.has(key)) {
+        candles.removePriceLine(entry.line);
+        drawn.delete(key);
+      }
+    });
+    wanted.forEach((l, key) => {
+      const options = {
+        price: l.price,
+        color: l.color,
+        lineWidth: 1 as const,
+        lineStyle: LINE_STYLE[l.style ?? 'solid'],
+        axisLabelVisible: true,
+        title: l.title ?? '',
+      };
+      const shown = JSON.stringify(options);
+      const entry = drawn.get(key);
+      if (!entry) drawn.set(key, { line: candles.createPriceLine(options), shown });
+      else if (entry.shown !== shown) {
+        entry.line.applyOptions(options);
+        entry.shown = shown;
+      }
+    });
+  }, [priceLines, height, showVolume, readOnly]);
 
   return <div ref={containerRef} className="w-full" style={{ height }} aria-label="Chart" />;
 }

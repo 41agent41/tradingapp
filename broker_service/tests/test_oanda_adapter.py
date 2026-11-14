@@ -514,7 +514,13 @@ def test_open_orders_report_a_bounded_stop_as_stop_limit(oanda):
     FakeClient.handler = lambda method, url, params, json: FakeResponse(
         {
             "orders": [
-                {"id": "7", "instrument": "EUR_USD", "type": "STOP", "units": "100"},
+                {
+                    "id": "7",
+                    "instrument": "EUR_USD",
+                    "type": "STOP",
+                    "units": "100",
+                    "price": "1.19",
+                },
                 {
                     "id": "8",
                     "instrument": "EUR_USD",
@@ -527,6 +533,7 @@ def test_open_orders_report_a_bounded_stop_as_stop_limit(oanda):
     )
     rows = _adapter(oanda).open_orders()
     assert [r["order_type"] for r in rows] == ["STP", "STP_LMT"]
+    assert [r["price"] for r in rows] == [1.19, None]
 
 
 def test_place_order_limit_without_price_is_400(oanda, monkeypatch):
@@ -752,6 +759,7 @@ def test_open_orders_split_signed_units_into_side_and_size(oanda):
             "filled_quantity": None,
             "remaining_quantity": 2000.0,
             "avg_fill_price": None,
+            "price": None,
         }
     ]
 

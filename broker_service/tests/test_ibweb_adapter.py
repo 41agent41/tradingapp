@@ -472,6 +472,8 @@ def test_open_orders_skip_finished_ones(mod):
                     "totalSize": 10,
                     "remainingQuantity": 10,
                     "origOrderType": "STOP_LIMIT",
+                    "price": 180.5,
+                    "auxPrice": 181.0,
                     "status": "Submitted",
                 },
                 {"orderId": 2, "acct": "DU1234567", "status": "Filled"},
@@ -482,6 +484,8 @@ def test_open_orders_skip_finished_ones(mod):
     out = _adapter(mod).open_orders()
     assert [o["order_id"] for o in out] == ["1"]
     assert out[0]["order_type"] == "STP_LMT" and out[0]["action"] == "SELL"
+    # A stop-limit waits at its trigger.
+    assert out[0]["price"] == 181.0
 
 
 def test_executions_map_trades(mod):

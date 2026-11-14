@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import time
 from datetime import datetime, timedelta
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, status
 from ibapi.execution import ExecutionFilter
@@ -126,6 +127,18 @@ def get_positions_sync():
         raise Exception(f"Failed to get positions: {str(e)}")
 
 
+def _waiting_price(order: Any) -> Optional[float]:
+    """The price an IB order waits at: the trigger of a stop or stop-limit
+    order, else the limit. IB writes an unset price as the largest float."""
+    kind = str(getattr(order, "orderType", "") or "").upper()
+    names = ("auxPrice", "lmtPrice") if kind.startswith("STP") else ("lmtPrice",)
+    for name in names:
+        value = getattr(order, name, None)
+        if isinstance(value, (int, float)) and 0 < value < 1e300:
+            return float(value)
+    return None
+
+
 def get_orders_sync():
     """Get current orders using TWS API"""
     try:
@@ -157,6 +170,7 @@ def get_orders_sync():
                     filled_quantity=None,  # TWS API doesn't provide this in open orders
                     remaining_quantity=None,  # TWS API doesn't provide this in open orders
                     avg_fill_price=None,  # TWS API doesn't provide this in open orders
+                    price=_waiting_price(order_data["order"]),
                 )
             )
 

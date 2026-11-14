@@ -134,6 +134,19 @@ recomputed live. Streams are per broker connection, so EURUSD from OANDA and
 EURUSD from an MT5 account can be charted side by side. A chart left on "By
 broker priority" joins the stream a symbol already has, if there is one.
 
+**Positions and orders on the chart.** With **Positions and orders** ticked
+(it is by default, and the choice is kept), the live chart draws what the
+chart's connection holds in the charted instrument as labelled price lines:
+an open position at its average entry (solid, "Long 10,000" or "Short
+10,000"), its stop (red, dashed) and target (green, dashed) where the broker
+reports them, and each working order at the price it waits at (dotted, for
+example "Buy limit 2,000"). A stop or stop-limit order is drawn at its
+trigger. The lines are read again every 15 seconds, so a new order can take
+that long to appear. They are for looking only: a line cannot be dragged to
+move an order. A chart left on "By broker priority" shows the default
+trading connection's positions and orders. The Data query switch turns the
+lines off with the rest of the chart's requests.
+
 ### Bar replay
 
 `/replay` plays stored 1-minute bars back onto a chart, so each candle forms
@@ -561,7 +574,9 @@ sees a raw broker response.
 - `GET /api/account/summary`: balances and key metrics. Also the source of
   the equity that `pct_equity` position sizing reads.
 - `GET /api/account/positions`: current positions.
-- `GET /api/account/orders`: orders still working at the venue.
+- `GET /api/account/orders`: orders still working at the venue. Each has a
+  `price`, the level it waits at (its limit, or its trigger for a stop or
+  stop-limit order), where the venue reports one.
 - `GET /api/account/all`: all of the above in one call.
 - `GET /api/account/connection`: IB connection state.
 
