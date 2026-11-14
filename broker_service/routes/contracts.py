@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, status
@@ -32,11 +33,14 @@ def venue_search(
     currency: str = "USD",
     name: bool = False,
     account_mode: str = "paper",
+    filters: Optional[dict] = None,
 ) -> Optional[dict]:
     """Search a venue other than IB with its adapter's contract search.
 
     Returns None when ``source`` resolves to IB, whose advanced search and
-    symbol discovery talk to the gateway directly.
+    symbol discovery talk to the gateway directly. ``filters`` are the
+    advanced search's ``expiry``, ``strike`` and ``right``, for an adapter
+    that lists options (Alpaca); the others ignore them.
     """
     from adapters import get_market_data_adapter, resolve_provider
 
@@ -45,17 +49,19 @@ def venue_search(
     if not symbol.strip():
         raise HTTPException(status_code=400, detail="Enter a symbol to search")
     adapter = get_market_data_adapter(source)
-    return adapter.search_contracts(
-        SearchRequest(
-            symbol=symbol,
-            secType=secType,
-            exchange=exchange,
-            currency=currency,
-            name=name,
-            account_mode=account_mode,
-            source=source,
-        )
+    request = SearchRequest(
+        symbol=symbol,
+        secType=secType,
+        exchange=exchange,
+        currency=currency,
+        name=name,
+        account_mode=account_mode,
+        source=source,
     )
+    if filters:
+        # Carried beside the model's own fields, read with getattr.
+        request = SimpleNamespace(**request.model_dump(), **filters)
+    return adapter.search_contracts(request)
 
 
 def _contract_to_result(contract) -> dict:
@@ -228,6 +234,7 @@ async def advanced_search_contracts(request: AdvancedSearchRequest):
             currency=request.currency,
             name=request.name,
             account_mode=request.account_mode,
+            filters={"expiry": request.expiry, "strike": request.strike, "right": request.right},
         )
         if found is not None:
             return found

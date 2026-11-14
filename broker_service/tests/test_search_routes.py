@@ -135,3 +135,38 @@ def test_discovery_passes_venue_errors_through(oanda_only):
     client, _ = oanda_only
     res = client.post("/symbols/discover", json={"pattern": "eur", "source": "nope"})
     assert res.status_code == 400
+
+
+def test_advanced_search_hands_its_option_filters_to_a_venue_adapter(monkeypatch):
+    import adapters
+    from routes import contracts
+
+    seen = {}
+
+    class Adapter:
+        def search_contracts(self, request):
+            seen.update(
+                symbol=request.symbol,
+                secType=request.secType,
+                expiry=request.expiry,
+                strike=request.strike,
+                right=request.right,
+            )
+            return {"results": [], "count": 0}
+
+    monkeypatch.setattr(adapters, "resolve_provider", lambda s: "alpaca")
+    monkeypatch.setattr(adapters, "get_market_data_adapter", lambda s, a=None: Adapter())
+    out = contracts.venue_search(
+        "alpaca",
+        "AAPL",
+        secType="OPT",
+        filters={"expiry": "202701", "strike": 190.0, "right": "C"},
+    )
+    assert out == {"results": [], "count": 0}
+    assert seen == {
+        "symbol": "AAPL",
+        "secType": "OPT",
+        "expiry": "202701",
+        "strike": 190.0,
+        "right": "C",
+    }

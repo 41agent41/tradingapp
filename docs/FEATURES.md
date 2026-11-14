@@ -77,6 +77,7 @@ Other brokers search their own catalogues through the same panel and API
 | Futures | ES, NQ, YM | IB, IBKR Web API (by conid) |
 | Forex | EUR.USD, GBP.USD | OANDA, MT5, IB, IBKR Web API |
 | CFDs | indices, metals | OANDA, MT5 |
+| Crypto | BTC/USD, ETH/USD | Alpaca |
 
 ### Historical charts
 
@@ -894,6 +895,30 @@ describes adding another.
   left resting). Units may be fractional where the instrument allows. OANDA
   entries carry their stop loss and take profit on the fill, positions report
   the stop per trade and are marked with one pricing call.
+- **Alpaca crypto and options.** One Alpaca connection covers three kinds
+  of instrument, told apart by the symbol:
+  - **Crypto** has a slash: `BTC/USD`. Search with security type `CRYPTO`.
+    History, quotes and the live stream come from Alpaca's crypto data.
+    Orders may be fractional (`0.0025`), are market, limit or stop-limit,
+    and must be GTC or IOC: a DAY, FOK or plain stop order is refused before
+    it is sent. Crypto cannot be sold short. Sizing is in units of the coin,
+    in the steps Alpaca lists for the pair. A bar's volume is stored as a
+    whole number, so a small coin volume rounds to 0.
+  - **An option** is its OCC symbol: `AAPL270115C00190000` (root, expiry
+    yymmdd, C or P, strike x 1000). Search an underlying with security type
+    `OPT`; the advanced search's expiry (YYYYMM or YYYYMMDD), strike and
+    right narrow it, and with no expiry the next 90 days are listed. Orders
+    are in whole contracts, DAY or GTC. Live option prices are read every
+    `STREAM_POLL_SECONDS` rather than streamed, because Alpaca's option
+    stream uses a different message format. Without an OPRA subscription
+    Alpaca answers with its indicative feed. Only single contracts are
+    traded: no spreads or other multi-leg orders.
+  - Everything else is a US stock or ETF, as before.
+
+  The order ticket lists the stock order types and times in force for every
+  Alpaca symbol, so a choice crypto or an option does not take is refused
+  with the reason. A crypto or option fill is stored with no commission
+  figure, because Alpaca posts those fees separately.
 - **IG: cloud REST.** [`IGAdapter`](../broker_service/ig_adapter.py) logs in
   with the connection's API key, username and password and trades CFDs
   through IG's REST API (demo or live by the connection's mode). Spot FX in
