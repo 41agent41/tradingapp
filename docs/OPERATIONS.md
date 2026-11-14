@@ -141,8 +141,25 @@ value, then the fleet-wide cap on Settings > Risk.
 - Live streams follow the same origin rule as the API: a page on another
   site can open one only when its origin is listed in `CORS_ORIGINS`.
 - Scripts send `Authorization: Bearer <token>` with an API token from
-  Settings > Security. Health checks, `/metrics`, and signing in and out need
-  none.
+  Settings > Security. Health checks and signing in and out need none.
+  `/metrics` needs none either unless `METRICS_TOKEN` is set, and then it
+  needs that token and no other.
+- A live stream takes a script's token in the handshake's `auth.token` or
+  its `Authorization` header. A token in the URL (`?token=`) is not read,
+  because URLs are written to proxy and access logs.
+- A request body may be 100 KB of JSON. The Parquet export and the bar
+  upload take 25 MB. A larger body is answered with HTTP 413.
+- Every answer carries security headers: the backend's from `helmet`, the
+  pages' from `frontend/securityHeaders.js`, including a Content Security
+  Policy that lets a page load only what the app itself serves and stops
+  another site framing it.
+- Ports 3000 and 4000 listen on every address of the app host unless
+  `FRONTEND_BIND` or `BACKEND_BIND` in `.env` says otherwise. Set
+  `127.0.0.1` for a reverse proxy on the same host. The pages reach the
+  backend through port 3000, so `BACKEND_BIND=127.0.0.1` is safe unless
+  Prometheus or a script on another machine calls port 4000. With the proxy
+  on its own host (CT 140), keep the defaults and rely on the firewall
+  rules in [INSTALL.md § 8](INSTALL.md#8-firewall).
 - Only the backend may call the broker service, with the internal token.
 - The page and API share one address, so the app works on any name or IP that
   reaches port 3000.
@@ -317,6 +334,21 @@ noted before the upgrade.
 
 Newest first. Each entry says what, if anything, you must do after
 upgrading across it.
+
+**Request limits and security headers (S-08 to S-12).** Usually nothing to
+do. Check these three only if they apply to you:
+
+- A script that opened a live stream with the API token in the URL
+  (`?token=`) must send it as `auth.token` or in the `Authorization` header
+  instead.
+- A script that posts more than 100 KB of JSON to a route other than the
+  Parquet export or the bar upload now gets HTTP 413.
+- The pages now carry a Content Security Policy. If a page stays blank after
+  the upgrade, open the browser's console, copy any line that mentions
+  "Content Security Policy", and report it.
+
+Optional and off until you set them: `METRICS_TOKEN`, `FRONTEND_BIND` and
+`BACKEND_BIND` in `.env`.
 
 **Sign-out closes live streams; live streams check the origin.** Nothing to
 do. A page on another site can open a live stream only when its origin is
@@ -882,8 +914,15 @@ and data (`REDIS_ENABLED`, `STREAMING_ENABLED`, `RECORDER_ENABLED`).
 
 ### Prometheus and Grafana
 
-The backend serves Prometheus metrics at `GET /metrics` on port 4000, with
-no token. The broker service has its own `/metrics`, but it is published on
+The backend serves Prometheus metrics at `GET /metrics` on port 4000. With
+no `METRICS_TOKEN` in `.env` it needs no token, so port 4000 should be
+reachable only from Prometheus (the firewall rules in INSTALL.md § 8 do
+that). To require a token, add `METRICS_TOKEN=<a long random value>` to
+`/opt/tradingapp/.env` (`openssl rand -hex 24` makes one), run
+`./tradingapp.sh restart`, and give Prometheus the same value under the job:
+`authorization: { credentials: '<the value>' }`. Check it with
+`curl -s -o /dev/null -w '%{http_code}\n' http://<app-address>:4000/metrics`,
+which prints `401` without the token. The broker service has its own `/metrics`, but it is published on
 the app host's loopback only, so an outside Prometheus cannot reach it
 without a proxy of your own.
 

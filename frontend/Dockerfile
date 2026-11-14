@@ -28,7 +28,7 @@ WORKDIR /app
 # Owned by root and read-only to the app, which runs as `node` (uid 1000).
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/.next ./.next
-COPY package.json next.config.js server.js backendProxy.js ./
+COPY package.json next.config.js securityHeaders.js server.js backendProxy.js ./
 # The one place Next.js writes while it runs.
 RUN mkdir -p .next/cache && chown node:node .next/cache
 USER node

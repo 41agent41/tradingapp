@@ -170,8 +170,8 @@ describe('browser login sessions', () => {
 
   it('accepts the session cookie on the Socket.IO handshake', () => {
     const { value } = issueSession();
-    expect(checkSocketAuth({}, { cookie: `${SESSION_COOKIE}=${value}` }, {})).toBeNull();
-    expect(checkSocketAuth({}, {}, {})).toBeInstanceOf(Error);
+    expect(checkSocketAuth({}, { cookie: `${SESSION_COOKIE}=${value}` })).toBeNull();
+    expect(checkSocketAuth({}, {})).toBeInstanceOf(Error);
   });
 
   async function login(agent = 'jest') {

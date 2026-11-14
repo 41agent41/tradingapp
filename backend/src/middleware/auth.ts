@@ -116,14 +116,14 @@ export function createAuthMiddleware() {
 
 /**
  * Socket.IO handshake guard. Accepts the session cookie (browsers connect
- * with `withCredentials`) or the API token from `auth.token`, the
- * `Authorization` header, or the `token` query parameter. Returns `null` on
- * success, an Error on failure (surfaced to the client as `connect_error`).
+ * with `withCredentials`) or the API token from `auth.token` or the
+ * `Authorization` header. A token in the URL (`?token=`) is not read: URLs
+ * end up in proxy and access logs (S-10). Returns `null` on success, an
+ * Error on failure (surfaced to the client as `connect_error`).
  */
 export function checkSocketAuth(
   authPayload: unknown,
-  headers: Record<string, string | string[] | undefined>,
-  query: Record<string, unknown>
+  headers: Record<string, string | string[] | undefined>
 ): Error | null {
   if (!isAuthConfigured() && !production()) return null; // see the startup warning
 
@@ -140,8 +140,6 @@ export function checkSocketAuth(
       ? authHeader.slice(7).trim()
       : '';
 
-  const fromQuery = typeof query['token'] === 'string' ? (query['token'] as string).trim() : '';
-
-  const bearer = fromAuth || fromHeader || fromQuery || null;
+  const bearer = fromAuth || fromHeader || null;
   return isAuthenticated(headers, bearer) ? null : new Error('Unauthorized');
 }

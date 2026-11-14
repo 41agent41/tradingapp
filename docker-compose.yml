@@ -71,8 +71,11 @@ services:
       # Everything else is set on the Settings page. A value in .env (passed
       # in by env_file) still wins and shows there as locked, so nothing is
       # defaulted here.
+    # Which address of this host the port listens on (S-08). 0.0.0.0 is
+    # every address; 127.0.0.1 is this host only, for a reverse proxy on
+    # the same host, or when nothing outside scrapes /metrics.
     ports:
-      - "${BACKEND_PORT:-4000}:${BACKEND_PORT:-4000}"
+      - "${BACKEND_BIND:-0.0.0.0}:${BACKEND_PORT:-4000}:${BACKEND_PORT:-4000}"
     depends_on:
       secrets:
         condition: service_completed_successfully
@@ -105,8 +108,11 @@ services:
       - PORT=${FRONTEND_PORT:-3000}
       - NODE_ENV=production
       - BACKEND_INTERNAL_URL=http://172.20.0.5:${BACKEND_PORT:-4000}
+    # Which address of this host the port listens on (S-08). 0.0.0.0 is
+    # every address; 127.0.0.1 is this host only, for a reverse proxy on
+    # the same host.
     ports:
-      - "${FRONTEND_PORT:-3000}:${FRONTEND_PORT:-3000}"
+      - "${FRONTEND_BIND:-0.0.0.0}:${FRONTEND_PORT:-3000}:${FRONTEND_PORT:-3000}"
     # Not gated on the backend being healthy: while the backend waits for its
     # database, the page is what says so.
     depends_on:
