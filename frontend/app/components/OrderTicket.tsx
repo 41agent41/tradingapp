@@ -19,6 +19,11 @@ export interface TicketConnection {
   is_default: boolean;
   /** Each order type it takes, with the times in force that type accepts. */
   order_types: Record<string, string[]> | null;
+  /** A protective stop and target can ride on the entry order. */
+  attaches_stops?: boolean;
+  /** That stop can trail the price, or be guaranteed, at the broker (E-16). */
+  trailing_stops?: boolean;
+  guaranteed_stops?: boolean;
   /** Its broker publishes an order book (E-12). */
   depth?: boolean;
 }
@@ -79,6 +84,11 @@ export default function OrderTicket({
   const [wantedTif, setTif] = useState<TimeInForce>('DAY');
   const [limitPrice, setLimitPrice] = useState('');
   const [stopPrice, setStopPrice] = useState('');
+  // Protection on the position the order opens, where the broker attaches it.
+  const [stopLoss, setStopLoss] = useState('');
+  const [takeProfit, setTakeProfit] = useState('');
+  const [trailing, setTrailing] = useState(false);
+  const [guaranteed, setGuaranteed] = useState(false);
   const [accountMode, setAccountMode] = useState<AccountMode>('paper');
 
   // Order-endpoint credentials (opt-in on the backend). Entered per-session
@@ -130,6 +140,15 @@ export default function OrderTicket({
   const tif = tifs.includes(wantedTif) ? wantedTif : (tifs[0] ?? wantedTif);
   const chosen = connections.find((c) => c.label === connectionLabel) ?? null;
 
+  // Offered only where the connection attaches a stop to the entry; what
+  // was typed for another connection is not sent.
+  const protects = Boolean(connection?.attaches_stops);
+  const protectiveStop = protects && stopLoss !== '' ? Number(stopLoss) : undefined;
+  const target = protects && takeProfit !== '' ? Number(takeProfit) : undefined;
+  const trails = protectiveStop !== undefined && trailing && Boolean(connection?.trailing_stops);
+  const guarantees =
+    protectiveStop !== undefined && guaranteed && Boolean(connection?.guaranteed_stops);
+
   const needsLimit = orderType === 'LMT' || orderType === 'STP_LMT';
   const needsStop = orderType === 'STP' || orderType === 'STP_LMT';
 
@@ -146,6 +165,10 @@ export default function OrderTicket({
       tif,
       limit_price: needsLimit ? Number(limitPrice) : undefined,
       stop_price: needsStop ? Number(stopPrice) : undefined,
+      stop_loss: protectiveStop,
+      take_profit: target,
+      ...(trails ? { trailing_stop: true } : {}),
+      ...(guarantees ? { guaranteed_stop: true } : {}),
       account_mode: accountMode,
     }),
     [
@@ -160,6 +183,10 @@ export default function OrderTicket({
       needsStop,
       accountMode,
       chosen,
+      protectiveStop,
+      target,
+      trails,
+      guarantees,
     ]
   );
 
@@ -187,6 +214,13 @@ export default function OrderTicket({
       setSuccess(
         `Order submitted (audit #${body.audit_id ?? '?'}${body.order_id ? `, IB id ${body.order_id}` : ''})`
       );
+      if (body.stop_loss_missing) {
+        // Placed, but not as asked: say so where it cannot be missed.
+        setError(
+          'The order was placed, but the broker did not record the protective stop. ' +
+            'The position is open without one: check it now.'
+        );
+      }
       // A TOTP code is single-use; clear it so the next order needs a fresh one.
       setMfaCode('');
       if (onPlaced) onPlaced(body);
@@ -376,6 +410,61 @@ export default function OrderTicket({
               required={needsStop}
             />
           </label>
+        )}
+
+        {protects && (
+          <>
+            <label className="block">
+              <span className="text-sm font-medium text-gray-700">Protective stop</span>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={stopLoss}
+                onChange={(e) => setStopLoss(e.target.value)}
+                placeholder="Optional"
+                className="mt-1 w-full border border-gray-300 rounded px-3 py-2"
+              />
+            </label>
+            <label className="block">
+              <span className="text-sm font-medium text-gray-700">Target</span>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={takeProfit}
+                onChange={(e) => setTakeProfit(e.target.value)}
+                placeholder="Optional"
+                className="mt-1 w-full border border-gray-300 rounded px-3 py-2"
+              />
+            </label>
+            {(connection?.trailing_stops || connection?.guaranteed_stops) && (
+              <div className="sm:col-span-2 flex flex-wrap gap-x-6 gap-y-1 text-sm text-gray-700">
+                {connection?.trailing_stops && (
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={trailing}
+                      disabled={stopLoss === ''}
+                      onChange={(e) => setTrailing(e.target.checked)}
+                    />
+                    Trailing stop (the broker moves it behind the price)
+                  </label>
+                )}
+                {connection?.guaranteed_stops && (
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={guaranteed}
+                      disabled={stopLoss === ''}
+                      onChange={(e) => setGuaranteed(e.target.checked)}
+                    />
+                    Guaranteed stop (the broker charges a premium)
+                  </label>
+                )}
+              </div>
+            )}
+          </>
         )}
 
         {(config.trading_auth_required || config.mfa_required) && (

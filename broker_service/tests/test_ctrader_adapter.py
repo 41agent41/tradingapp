@@ -765,3 +765,27 @@ def test_market_depth_reports_a_refused_subscription(ct):
     with pytest.raises(HTTPException) as err:
         _adapter(ct).market_depth("EUR.USD")
     assert "no depth" in str(err.value.detail)
+
+
+def test_a_trailing_stop_sets_ctraders_flag_on_the_order(ct):
+    def handler(kind, payload):
+        if kind == 2127:
+            return [(2128, {}), (2131, {"symbolId": 1, "bid": 110000, "ask": 110020}, False)]
+        if kind == 2106:
+            return [(2126, _fill(sl=1.0952))]
+        return None
+
+    FakeWS.handler = base_handler(handler)
+    req = _OrderReq(stop_loss=1.0952)
+    req.trailing_stop = True
+    _adapter(ct).place_order(req)
+    body = _sent(2106)[-1]
+    assert body["trailingStopLoss"] is True and body["relativeStopLoss"] == 500
+
+    # Nothing to trail without a stop, and no flag unless asked.
+    req = _OrderReq()
+    req.trailing_stop = True
+    _adapter(ct).place_order(req)
+    assert "trailingStopLoss" not in _sent(2106)[-1]
+    _adapter(ct).place_order(_OrderReq(stop_loss=1.0952))
+    assert "trailingStopLoss" not in _sent(2106)[-1]

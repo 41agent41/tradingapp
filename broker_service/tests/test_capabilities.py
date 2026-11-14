@@ -22,6 +22,8 @@ def test_a_connection_with_no_adapters_supports_nothing():
         "depth": False,
         "order_types": {},
         "attaches_stops": False,
+        "trailing_stops": False,
+        "guaranteed_stops": False,
         "fills": None,
     }
 

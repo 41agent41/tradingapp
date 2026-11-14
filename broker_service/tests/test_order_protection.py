@@ -77,3 +77,56 @@ def test_venue_adapters_declare_stop_support():
     assert not getattr(AlpacaAdapter, "attaches_stops", False)
     split = SplitAccountAdapter(execution=MT5Adapter.__new__(MT5Adapter), account_info=object())
     assert split.attaches_stops is True
+
+
+# --------------------------------------------------------------------------- #
+# Trailing and guaranteed stops (E-16)
+# --------------------------------------------------------------------------- #
+def _with(**flags):
+    adapter = _Adapter(attaches_stops=True, result={"status": "filled", "sl": 1.08})
+    for name, value in flags.items():
+        setattr(adapter, name, value)
+    return adapter
+
+
+@pytest.mark.parametrize(
+    "field,supports,name",
+    [
+        ("trailing_stop", "trailing_stops", "trailing"),
+        ("guaranteed_stop", "guaranteed_stops", "guaranteed"),
+    ],
+)
+def test_a_kind_of_stop_the_broker_lacks_is_refused_not_downgraded(place, field, supports, name):
+    adapter = _with()
+    with pytest.raises(HTTPException) as exc:
+        place(adapter, stop_loss=1.08, **{field: True})
+    assert exc.value.status_code == 400 and f"no {name} stop" in exc.value.detail
+    assert adapter.placed == []
+
+    # It needs the stop it is a kind of.
+    adapter = _with(**{supports: True})
+    with pytest.raises(HTTPException) as exc:
+        place(adapter, **{field: True})
+    assert "needs stop_loss" in exc.value.detail
+    assert adapter.placed == []
+
+    out = place(adapter, stop_loss=1.08, **{field: True})
+    assert out["status"] == "filled" and getattr(adapter.placed[0], field) is True
+
+
+def test_which_brokers_trail_or_guarantee_a_stop():
+    from capabilities import capabilities
+    from ctrader_adapter import CTraderAdapter
+    from ig_adapter import IGAdapter
+    from mt5_adapter import MT5Adapter
+    from oanda_adapter import OANDAAdapter
+
+    def caps(cls):
+        adapter = cls.__new__(cls)
+        found = capabilities(adapter, adapter)
+        return found["trailing_stops"], found["guaranteed_stops"]
+
+    assert caps(OANDAAdapter) == (True, False)
+    assert caps(CTraderAdapter) == (True, False)
+    assert caps(IGAdapter) == (False, True)
+    assert caps(MT5Adapter) == (False, False)

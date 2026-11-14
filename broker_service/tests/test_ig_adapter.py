@@ -601,3 +601,19 @@ def test_stream_trade_events_fires_on_accepted_deals_only(ig_stream):
     assert sub.mode == "DISTINCT" and sub.snapshot is False
     assert list(sub.items) == ["TRADE:ABC12"]
     assert list(sub.fields) == ["CONFIRMS", "OPU"]
+
+
+def test_a_guaranteed_stop_is_asked_for_only_with_a_stop(ig):
+    FakeClient.handler = _deal_handler(
+        {"dealStatus": "ACCEPTED", "status": "OPEN", "dealId": "D1", "stopLevel": 1.09}
+    )
+    req = _OrderReq(stop_loss=1.09)
+    req.guaranteed_stop = True
+    _adapter(ig).place_order(req)
+    body = _calls("/positions/otc", "POST")[-1][4]
+    assert body["guaranteedStop"] is True and body["stopLevel"] == 1.09
+
+    req = _OrderReq()
+    req.guaranteed_stop = True
+    _adapter(ig).place_order(req)
+    assert _calls("/positions/otc", "POST")[-1][4]["guaranteedStop"] is False

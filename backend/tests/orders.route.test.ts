@@ -408,6 +408,8 @@ describe('GET /api/orders/config: connections and what they support (E-19)', () 
         is_default: true,
         order_types: { MKT: ['FOK'], LMT: ['GTC'] },
         attaches_stops: true,
+        trailing_stops: false,
+        guaranteed_stops: false,
         depth: false,
       },
       {
@@ -418,6 +420,8 @@ describe('GET /api/orders/config: connections and what they support (E-19)', () 
         is_default: false,
         order_types: { MKT: ['FOK'] },
         attaches_stops: false,
+        trailing_stops: false,
+        guaranteed_stops: false,
         depth: false,
       },
     ]);

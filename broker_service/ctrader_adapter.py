@@ -355,6 +355,8 @@ class CTraderAdapter:
     name = "ctrader"
     # Stops ride on the entry order (as distances on a market order).
     attaches_stops = True
+    # The stop can trail the price at cTrader (``trailingStopLoss``).
+    trailing_stops = True
     # What the connection reports it supports (capabilities.py).
     timeframes = tuple(_TIMEFRAME_TO_PERIOD)
     order_tifs = {kind: ("DAY", "GTC", "IOC", "FOK") for kind in _APP_TO_ORDER_TYPE}
@@ -841,6 +843,10 @@ class CTraderAdapter:
                     body["stopLoss"] = round(float(stop_loss), digits)
                 if take_profit is not None:
                     body["takeProfit"] = round(float(take_profit), digits)
+
+            if stop_loss is not None and getattr(request, "trailing_stop", False):
+                # cTrader then moves the stop behind the price itself.
+                body["trailingStopLoss"] = True
 
             filled = _EXECUTION_TYPE["ORDER_FILLED"]
             accepted = _EXECUTION_TYPE["ORDER_ACCEPTED"]

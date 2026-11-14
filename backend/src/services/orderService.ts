@@ -169,6 +169,8 @@ export async function submitCreateOrder(
       stop_price: order.stop_price,
       stop_loss: order.stop_loss,
       take_profit: order.take_profit,
+      trailing_stop: order.trailing_stop === true,
+      guaranteed_stop: order.guaranteed_stop === true,
       account_mode: order.account_mode,
       broker: order.broker,
       account: order.broker_account,

@@ -141,6 +141,10 @@ export interface OrderInput {
    *  from `stop_price`, which is the *trigger* of a STP order. */
   stop_loss?: number | null;
   take_profit?: number | null;
+  /** The broker moves `stop_loss` behind the price (E-16); needs `stop_loss`. */
+  trailing_stop?: boolean;
+  /** The broker guarantees the fill at `stop_loss`, for its premium. */
+  guaranteed_stop?: boolean;
   account_mode: AccountMode;
   broker?: Broker;
   broker_account?: string;
@@ -248,6 +252,8 @@ export interface ValidatedOrder extends Required<
   limit_price: number | null;
   stop_loss: number | null;
   take_profit: number | null;
+  trailing_stop?: boolean;
+  guaranteed_stop?: boolean;
   stop_price: number | null;
   sec_type: string;
   exchange: string;
@@ -357,6 +363,20 @@ export function validateOrder(
   };
   const stopLoss = protective('stop_loss');
   const takeProfit = protective('take_profit');
+  // Kinds of that stop the broker itself runs (E-16). The broker service
+  // refuses one its broker does not have.
+  const flag = (field: 'trailing_stop' | 'guaranteed_stop'): boolean => {
+    const raw = r[field];
+    if (raw === undefined || raw === null || raw === false || raw === '') return false;
+    if (raw !== true) {
+      errors.push(`${field} must be true or false`);
+      return false;
+    }
+    if (stopLoss === null) errors.push(`${field} needs stop_loss, the price the stop starts at`);
+    return true;
+  };
+  const trailingStop = flag('trailing_stop');
+  const guaranteedStop = flag('guaranteed_stop');
 
   if (errors.length) return { ok: false, errors };
 
@@ -375,6 +395,8 @@ export function validateOrder(
       stop_price: stopPrice,
       stop_loss: stopLoss,
       take_profit: takeProfit,
+      ...(trailingStop ? { trailing_stop: true } : {}),
+      ...(guaranteedStop ? { guaranteed_stop: true } : {}),
       sec_type: typeof r.sec_type === 'string' && r.sec_type ? r.sec_type : 'STK',
       exchange: typeof r.exchange === 'string' && r.exchange ? r.exchange : 'SMART',
       currency: typeof r.currency === 'string' && r.currency ? r.currency : 'USD',

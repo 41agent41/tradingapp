@@ -1059,3 +1059,80 @@ def test_positions_survive_a_failed_pricing_call(oanda):
     rows = _adapter(oanda).positions()
     assert rows[0]["position"] == 1.0
     assert rows[0]["market_price"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Trailing stops (E-16)
+# --------------------------------------------------------------------------- #
+def _trailing_handler():
+    def handler(method, url, params, json):
+        if url.endswith("/instruments"):
+            return FakeResponse({"instruments": [{"displayPrecision": 5}]})
+        if url.endswith("/pricing"):
+            return FakeResponse(
+                {"prices": [{"bids": [{"price": "1.10000"}], "asks": [{"price": "1.10020"}]}]}
+            )
+        return FakeResponse(
+            {
+                "orderCreateTransaction": {
+                    "id": "41",
+                    "trailingStopLossOnFill": json["order"].get("trailingStopLossOnFill"),
+                },
+                "orderFillTransaction": {"id": "42"},
+            }
+        )
+
+    return handler
+
+
+def _trailing(**kw):
+    req = _ProtectedReq(**kw)
+    req.trailing_stop = True
+    return req
+
+
+def test_a_trailing_stop_is_sent_as_its_distance_from_the_fill_price(oanda, monkeypatch):
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+    FakeClient.handler = _trailing_handler()
+    out = _adapter(oanda).place_order(_trailing(stop_loss=1.0952))
+    order = [c for c in FakeClient.calls if c[1].endswith("/orders")][-1][4]["order"]
+    # A buy fills at the ask, 1.1002: the stop starts 50 pips below it.
+    assert order["trailingStopLossOnFill"] == {"distance": "0.00500", "timeInForce": "GTC"}
+    assert "stopLossOnFill" not in order
+    # OANDA records a distance, so the stop asked for is what is echoed.
+    assert out["sl"] == 1.0952
+
+    # A sell fills at the bid; a limit order trails from its own price.
+    _adapter(oanda).place_order(_trailing(action="SELL", stop_loss=1.1030))
+    order = [c for c in FakeClient.calls if c[1].endswith("/orders")][-1][4]["order"]
+    assert order["trailingStopLossOnFill"]["distance"] == "0.00300"
+    _adapter(oanda).place_order(
+        _trailing(order_type="LMT", tif="GTC", limit_price=1.09, stop_loss=1.08)
+    )
+    order = [c for c in FakeClient.calls if c[1].endswith("/orders")][-1][4]["order"]
+    assert order["trailingStopLossOnFill"]["distance"] == "0.01000"
+
+
+def test_a_trailing_stop_on_the_wrong_side_of_the_price_is_refused(oanda, monkeypatch):
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+    FakeClient.handler = _trailing_handler()
+    with pytest.raises(HTTPException) as exc:
+        _adapter(oanda).place_order(_trailing(stop_loss=1.2))
+    assert exc.value.status_code == 400 and "wrong side" in exc.value.detail
+    assert not [c for c in FakeClient.calls if c[1].endswith("/orders")]
+
+
+def test_a_trade_with_a_trailing_stop_is_protected_at_its_current_value(oanda):
+    trailing = {**_trade("1", 1000), "trailingStopLossOrder": {"trailingStopValue": "1.0950"}}
+    both = {
+        **_trade("2", 1000, sl=1.0900),
+        "trailingStopLossOrder": {"trailingStopValue": "1.0940"},
+    }
+    FakeClient.handler = _positions_handler(2000, [trailing, both])
+    # Trade 2's trailing stop (1.0940) is nearer than its fixed one; the
+    # position reports the least protective of its trades.
+    assert _adapter(oanda).positions()[0]["stop_loss"] == 1.0940
+
+    short = {**_trade("3", -1000, sl=1.12), "trailingStopLossOrder": {"trailingStopValue": "1.11"}}
+    FakeClient.handler = _positions_handler(-1000, [short])
+    assert _adapter(oanda).positions()[0]["stop_loss"] == 1.11

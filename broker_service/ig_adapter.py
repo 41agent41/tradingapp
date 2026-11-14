@@ -169,6 +169,8 @@ class IGAdapter:
     name = "ig"
     # stopLevel / limitLevel ride on the entry, in the deal itself.
     attaches_stops = True
+    # The stop can be guaranteed (``guaranteedStop``), for IG's premium.
+    guaranteed_stops = True
     # What the connection reports it supports (capabilities.py). IG has no
     # stop-limit order, and a working order rests for the day or until
     # cancelled.
@@ -591,7 +593,10 @@ class IGAdapter:
             "direction": request.action,
             "size": float(request.quantity),
             "currencyCode": self._currency(epic),
-            "guaranteedStop": False,
+            # IG charges a premium if a guaranteed stop is triggered.
+            "guaranteedStop": bool(
+                stop_loss is not None and getattr(request, "guaranteed_stop", False)
+            ),
             # IG accepts a stop or limit level only on a force-open deal; an
             # unprotected order nets, so an exit closes the position.
             "forceOpen": protected,
