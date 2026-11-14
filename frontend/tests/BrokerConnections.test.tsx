@@ -164,6 +164,20 @@ describe('helpers', () => {
     expect(formFromStored(STORED_ALPACA as any).values).toEqual({});
   });
 
+  it('sends an MT5 symbol map as the text typed, and shows the stored one', () => {
+    const form = {
+      ...emptyForm('mt5'),
+      values: { url: 'http://10.0.0.20:9100', symbol_map: 'EURUSD=EURUSD.a\nXAUUSD=GOLD.pro\n' },
+    };
+    expect((requestBody(form).settings as Record<string, string>).symbol_map).toBe(
+      'EURUSD=EURUSD.a\nXAUUSD=GOLD.pro'
+    );
+    const field = PLATFORM_FORM.mt5.find((f) => f.name === 'symbol_map');
+    expect(field?.multiline).toBe(true);
+    const stored = { platform: 'mt5', account: 'demo-a', settings: { symbol_map: 'A=B' } };
+    expect(formFromStored(stored as any).values.symbol_map).toBe('A=B');
+  });
+
   it('maps each firm to a platform the form knows', () => {
     for (const firm of FIRM_PRESETS) {
       expect(PLATFORM_FORM[firm.platform]).toBeDefined();

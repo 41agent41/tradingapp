@@ -1035,9 +1035,10 @@ describes adding another.
 - **`.env` connections (legacy):** a `BROKER_CONNECTIONS` manifest or the old
   single-account variables (`IB_HOST`, `MT5_BRIDGE_URL`, `OANDA_API_TOKEN`,
   `ALPACA_API_KEY` and so on) in `.env` still define connections, and for
-  that broker they win over the app's (shown as overridden). Only a
-  manifest can carry a per-connection `symbol_map` or `account_info_from`
-  today. `./tradingapp.sh install` keeps such lines and reports them. New
+  that broker they win over the app's (shown as overridden). An MT5
+  connection's symbol map is entered on the form
+  ([INSTALL.md § 4.9](INSTALL.md#49-mt5-symbol-map)); only a manifest can carry
+  `account_info_from`. `./tradingapp.sh install` keeps such lines and reports them. New
   installs should not use them.
 
 ### REST & WebSocket API
@@ -1295,10 +1296,6 @@ which model can do each, is
 
 ### Known gaps in what ships
 
-- **Connections form:** an MT5 connection's symbol map and its "account info
-  from" link cannot be entered on Settings > Connections yet. Until they can,
-  they need SQL or a `.env` manifest, each with a catch
-  ([INSTALL.md § 4.9](INSTALL.md#49-not-yet-on-the-form-symbol-maps-and-account-info-from)).
 - **Single points of failure per venue:** IB Gateway and each MT5 terminal
   are one logged-in session on one host with no standby. A logout stops that
   venue until someone logs it back in; the connection checks and alerts make

@@ -161,24 +161,38 @@ function ConnectionForm({
             onChange={(e) => set({ currency: e.target.value })}
           />
         </label>
-        {(PLATFORM_FORM[form.platform] ?? []).map((field) => (
-          <label key={field.name} className="text-sm text-gray-700">
-            {field.label}
-            {field.required ? ' *' : ''}
-            <input
-              className={INPUT}
-              type={field.secret ? 'password' : 'text'}
-              autoComplete="off"
-              value={form.values[field.name] ?? ''}
-              placeholder={
-                field.secret && stored?.secrets_set[field.name]
-                  ? 'Stored; leave blank to keep'
-                  : field.placeholder
-              }
-              onChange={(e) => setValue(field.name, e.target.value)}
-            />
-          </label>
-        ))}
+        {(PLATFORM_FORM[form.platform] ?? []).map((field) =>
+          field.multiline ? (
+            <label key={field.name} className="text-sm text-gray-700 sm:col-span-2">
+              {field.label}
+              <textarea
+                className={`${INPUT} font-mono`}
+                rows={Math.max(2, (form.values[field.name] ?? '').split('\n').length)}
+                value={form.values[field.name] ?? ''}
+                placeholder={field.placeholder}
+                onChange={(e) => setValue(field.name, e.target.value)}
+              />
+              {field.help && <span className="block text-xs text-gray-500">{field.help}</span>}
+            </label>
+          ) : (
+            <label key={field.name} className="text-sm text-gray-700">
+              {field.label}
+              {field.required ? ' *' : ''}
+              <input
+                className={INPUT}
+                type={field.secret ? 'password' : 'text'}
+                autoComplete="off"
+                value={form.values[field.name] ?? ''}
+                placeholder={
+                  field.secret && stored?.secrets_set[field.name]
+                    ? 'Stored; leave blank to keep'
+                    : field.placeholder
+                }
+                onChange={(e) => setValue(field.name, e.target.value)}
+              />
+            </label>
+          )
+        )}
       </div>
       <fieldset className="space-y-2">
         <legend className="text-sm font-medium text-gray-700">Risk limits</legend>

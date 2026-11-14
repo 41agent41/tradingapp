@@ -45,7 +45,7 @@ export const PLATFORM_FIELDS: Record<
   // `tls_fingerprint`: the SHA-256 fingerprint of the sidecar's certificate,
   // so a self-signed one can be trusted (S-07). Not secret.
   mt5: {
-    settings: ['url', 'tls_fingerprint', 'server_timezone'],
+    settings: ['url', 'tls_fingerprint', 'server_timezone', 'symbol_map'],
     required: ['url'],
     secrets: ['secret'],
   },
@@ -183,6 +183,83 @@ CREATE TABLE IF NOT EXISTS broker_connections (
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim();
+}
+
+const SYMBOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._#/-]{0,31}$/;
+const SYMBOL_MAP_MAX = 100;
+
+/**
+ * An MT5 symbol map as the form writes it: one `APP=BROKER` pair per line
+ * (commas and semicolons also separate pairs), such as `EURUSD=EURUSD.a`.
+ * The app's name is upper-cased; the broker's is kept as written, because
+ * MT5 symbol names are case-sensitive. Also accepts the object a map set by
+ * hand in the database holds.
+ */
+export function parseSymbolMap(value: unknown): Record<string, string> {
+  const pairs: Array<[string, string]> = [];
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      pairs.push([k, text(v)]);
+    }
+  } else {
+    for (const part of text(value).split(/[\n,;]+/)) {
+      const line = part.trim();
+      if (!line) continue;
+      const at = line.indexOf('=');
+      if (at < 0) {
+        throw new BrokerConnectionError(
+          `Symbol map: "${line}" is not a pair. Write one per line, like EURUSD=EURUSD.a.`,
+          400
+        );
+      }
+      pairs.push([line.slice(0, at), line.slice(at + 1)]);
+    }
+  }
+  const out: Record<string, string> = {};
+  for (const [rawApp, rawVenue] of pairs) {
+    const app = rawApp.trim().toUpperCase();
+    const venue = rawVenue.trim();
+    if (!SYMBOL_NAME.test(app) || !SYMBOL_NAME.test(venue)) {
+      throw new BrokerConnectionError(
+        `Symbol map: "${rawApp.trim()}=${venue}" is not two symbol names.`,
+        400
+      );
+    }
+    if (out[app] !== undefined && out[app] !== venue) {
+      throw new BrokerConnectionError(`Symbol map: ${app} is mapped twice.`, 400);
+    }
+    out[app] = venue;
+  }
+  if (Object.keys(out).length > SYMBOL_MAP_MAX) {
+    throw new BrokerConnectionError(`Symbol map: at most ${SYMBOL_MAP_MAX} pairs.`, 400);
+  }
+  return out;
+}
+
+/** A symbol map as the text the form shows and the table stores. */
+export function symbolMapText(map: Record<string, string>): string {
+  return Object.entries(map)
+    .map(([app, venue]) => `${app}=${venue}`)
+    .join('\n');
+}
+
+/** Settings as the form reads them: every value text. */
+function shownSettings(settings: Record<string, unknown> | null): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(settings ?? {})) {
+    const shown = name === 'symbol_map' ? storedSymbolMap(value) : text(value);
+    if (shown) out[name] = shown;
+  }
+  return out;
+}
+
+/** A stored map, whatever shape it has, or '' when it cannot be read. */
+function storedSymbolMap(value: unknown): string {
+  try {
+    return symbolMapText(parseSymbolMap(value));
+  } catch {
+    return '';
+  }
 }
 
 function stringMap(value: unknown, what: string): Record<string, string> {
@@ -344,7 +421,7 @@ export class BrokerConnectionStore {
       account_mode: row.account_mode,
       currency: row.currency,
       is_default: row.is_default,
-      settings: row.settings ?? {},
+      settings: shownSettings(row.settings),
       limits: row.limits ?? {},
       prop_rules: row.prop_rules ?? null,
       secrets_set: Object.fromEntries(names.map((n) => [n, Boolean(secrets[n])])),
@@ -419,6 +496,16 @@ export class BrokerConnectionStore {
     const given = stringMap(input.settings, 'settings');
     const settings: Record<string, string> = {};
     for (const name of fields.settings) {
+      if (name === 'symbol_map') {
+        // Kept as the form's text. An edit that leaves settings out keeps
+        // the stored map, including one set by hand in the database.
+        const map =
+          input.settings === undefined
+            ? storedSymbolMap(existing?.row.settings?.[name])
+            : symbolMapText(parseSymbolMap(given[name]));
+        if (map) settings[name] = map;
+        continue;
+      }
       const value =
         given[name] ?? (input.settings === undefined ? existing?.row.settings?.[name] : undefined);
       if (!value) continue;
@@ -521,7 +608,7 @@ export class BrokerConnectionStore {
       ...(v.firm ? [`firm=${v.firm}`] : []),
       `mode=${v.accountMode}`,
       `currency=${v.currency}`,
-      ...Object.entries(v.settings).map(([k, val]) => `${k}=${val}`),
+      ...Object.entries(v.settings).map(([k, val]) => `${k}=${val.replace(/\n/g, ',')}`),
       ...Object.entries(v.limits ?? {}).map(([k, val]) => `${k}=${val}`),
     ];
     if (v.propRules) parts.push(`prop_rules=${JSON.stringify(v.propRules)}`);
@@ -620,7 +707,7 @@ export class BrokerConnectionStore {
         accountMode: row.account_mode,
         currency: row.currency,
         isDefault: row.is_default,
-        settings: row.settings ?? {},
+        settings: shownSettings(row.settings),
         limits: row.limits ?? {},
         propRules: row.prop_rules ?? null,
       }),
@@ -676,6 +763,12 @@ export class BrokerConnectionStore {
         ...settings,
         ...secrets,
       };
+      // The broker service takes the map as an object.
+      if (settings.symbol_map !== undefined) {
+        const map = parseSymbolMap(storedSymbolMap(settings.symbol_map));
+        if (Object.keys(map).length) entry.symbol_map = map;
+        else delete entry.symbol_map;
+      }
       if (row.platform === 'oanda') {
         entry.environment = row.account_mode === 'live' ? 'live' : 'practice';
       }

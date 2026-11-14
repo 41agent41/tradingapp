@@ -1154,7 +1154,7 @@ seconds of `date -u +%s`.
 second prints `401`.
 
 Note the exact symbol names `/symbols` returns (`EURUSD`, `EURUSD.a`,
-`EURUSDm`); you may need them for a symbol map ([4.9](#49-not-yet-on-the-form-symbol-maps-and-account-info-from)).
+`EURUSDm`); you may need them for a symbol map ([4.9](#49-mt5-symbol-map)).
 
 #### Add the connection
 
@@ -1473,67 +1473,55 @@ broker's step and its **If it fails**.
 Connections, the header's health badge agrees, and the Getting started
 checklist shows the broker step done.
 
-### 4.9 Not yet on the form: symbol maps and "account info from"
+### 4.9 MT5 symbol map
 
-Two MT5 options cannot be entered on the Connections form yet:
-
-- **Symbol map.** When a broker lists several tiers of a pair
-  (`EURUSD`, `EURUSD.a`, `EURUSD.pro`), symbol resolution reports it as
-  ambiguous and needs a map such as `{"EURUSD": "EURUSD.a"}`.
-- **Account info from.** An MT5 account at OANDA can read its balance and
-  positions from the matching OANDA connection while orders still go through
-  the sidecar.
+When a broker lists several tiers of a pair (`EURUSD`, `EURUSD.a`,
+`EURUSD.pro`), the app cannot know which one the account trades. Symbol
+resolution then reports the symbol as ambiguous, and the connection needs a
+symbol map that names the one to use.
 
 **Do you need this step?** Only if a chart or order for an MT5 symbol
 reports that the symbol is ambiguous. Otherwise skip it.
 
-Until the form has them there are two workarounds, each with a catch.
+**Where:** browser, the app's **Settings > Connections** page.
 
-**Workaround 1: SQL, on a connection added in the app.**
-
-**Where:** CT 100 console, then the CT 110 console.
-
-**Before:** the MT5 connection exists in the app. You know its **Name**
-(here `demo-a`) and the exact symbol names from
+**Before:** the MT5 connection exists in the app, and you have the exact
+symbol names from
 [Check it from the app server](#check-it-from-the-app-server).
 
-**Do:** in the CT 100 console, with your own map and connection name in
-place of the ones shown:
+**Do:**
 
-```bash
-runuser -u postgres -- psql -d tradingapp <<'SQL'
-UPDATE broker_connections
-   SET settings = settings || '{"symbol_map": {"EURUSD": "EURUSD.a"}}'::jsonb
- WHERE platform = 'mt5' AND account = 'demo-a';
-SQL
-```
+1. Press **Edit** on the MT5 connection.
+2. In **Symbol map**, write one pair per line: the app's symbol, an equals
+   sign, then the broker's exact name. Broker names are case-sensitive.
 
-Then, in the CT 110 console:
+   ```text
+   EURUSD=EURUSD.a
+   XAUUSD=GOLD.pro
+   ```
 
-```bash
-cd /opt/tradingapp && runuser -u tradingapp -- ./tradingapp.sh restart
-```
+3. Press **Save**. No restart is needed.
 
-**Expected:** `UPDATE 1`.
+**Expected:** the connection saves and its list entry is unchanged.
 
-**If it fails:** *`UPDATE 0`:* no MT5 connection has that name. Read the
-names with
-`runuser -u postgres -- psql -d tradingapp -Atc "SELECT account FROM broker_connections WHERE platform='mt5'"`.
+**If it fails:** *"is not a pair"* or *"is not two symbol names":* a line is
+not written as `APP=BROKER`. *"is mapped twice":* the same app symbol is on
+two lines with different broker names; keep one.
 
 **Done when:** a chart of the mapped symbol shows bars.
 
-The catch: saving that connection on the form again rebuilds its settings
-from the form's fields and drops the map, so run the update again after
-every edit.
+A map set earlier with SQL is kept: it shows in the field, and saving the
+form no longer drops it.
 
-**Workaround 2: a `BROKER_CONNECTIONS` manifest in `.env`.** A JSON list of
-connections that may carry `symbol_map` and `account_info_from` (the format
-is at the top of
-[`broker_service/connections.py`](../broker_service/connections.py)). The
-catch: for a broker it names, `.env` replaces every connection added in the
-app (they show as overridden), so all of that broker's accounts must then
-live in the manifest, with their secrets in further `.env` lines. Use
-workaround 1 unless you already keep connections in `.env`.
+**"Account info from" is not on the form.** That option lets an MT5 account
+at OANDA read its balance and positions from OANDA's own API. The form
+allows one connection type per firm, and an OANDA account connects through
+OANDA's API, so the case does not arise for connections added in the app.
+It is still available to a `BROKER_CONNECTIONS` manifest in `.env` (the
+format is at the top of
+[`broker_service/connections.py`](../broker_service/connections.py)), with
+the catch that `.env` replaces every connection of that broker added in the
+app.
 
 ---
 

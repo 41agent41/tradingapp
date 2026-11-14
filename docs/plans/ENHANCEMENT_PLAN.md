@@ -260,7 +260,7 @@ There are 47 items, sorted by priority. P1 means do next, P2 soon after, and P3 
 | S-10 | No API token in the Socket.IO query string (built) | P3 | S | Sonnet 5.5 | Haiku 5.5 | none |
 | S-11 | 100 KB body limit except on the export route (built: the bar upload also keeps 25 MB) | P3 | S | Haiku 5.5 | Sonnet 5.5 | none |
 | S-12 | `helmet` and a Content Security Policy (built: the policy still allows inline scripts and styles, which Next.js and the charts need) | P3 | S | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
-| D-04 | Symbol map and "account info from" on the Connections form; remove the SQL workaround | P3 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
+| D-04 | Symbol map and "account info from" on the Connections form; remove the SQL workaround (built: the MT5 symbol map is a field on the form and the SQL route is gone from the guide; not built: "account info from", because the form allows one connection type per firm, so an OANDA account always uses OANDA's API; it stays a `.env` manifest option) | P3 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | D-05 | Procedures for recording, tick retention, stored-data backtests, replay, storage checks | P3 | M | Sonnet 5.5 | Opus 5.5 | Haiku 5.5 |
 | D-06 | Database disk sizing from the storage estimate | P3 | S | Sonnet 5.5 | Haiku 5.5 | none |
 | D-07 | CI link and command checks, plus an agent dry run of INSTALL on a test container | P3 | M | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |

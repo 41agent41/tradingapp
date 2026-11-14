@@ -495,9 +495,8 @@ its own `spec.size_step`.
 
 **If it fails:** *"ambiguous":* the broker offers several tiers of the pair.
 That is working as intended: the connection needs a symbol map, such as
-`{"EURUSD": "EURUSD.a"}`. The connection form has no symbol map field yet;
-add it as in
-[INSTALL.md § 4.9](INSTALL.md#49-not-yet-on-the-form-symbol-maps-and-account-info-from)
+`EURUSD=EURUSD.a`. Add it on the connection form as in
+[INSTALL.md § 4.9](INSTALL.md#49-mt5-symbol-map)
 and repeat this step. If that is not possible, report it with the `/symbols`
 output from step 5.
 
