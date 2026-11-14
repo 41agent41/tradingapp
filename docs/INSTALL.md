@@ -316,10 +316,29 @@ Advanced Install:
 |---|---|
 | Container ID | `100` |
 | Hostname | `tradingapp-db` |
-| Disk size | `100` GB (market data grows; you can enlarge it later) |
+| Disk size | `100` GB (see the sizing note below) |
 | CPU cores | `4` |
 | RAM | `8192` MiB |
 | IPv4 | `<db-address>`, gateway `<gateway>` |
+
+**Sizing the disk.** These are estimates, to be checked against your own
+database with
+[OPERATIONS.md § Check how fast the database grows](OPERATIONS.md#check-how-fast-the-database-grows):
+
+| What is stored | Disk it takes |
+|---|---|
+| 1-minute bars, one instrument, one year | about 30 to 60 MB (bars are not compressed) |
+| Stored quotes, one busy FX pair, one day | about 15 to 25 MB on the day, less once compressed a day later |
+| 10 FX pairs recorded live, bars only | about 0.6 GB a year |
+| The same 10 pairs with **Store ticks**, kept 30 days | up to about 5 GB, and it stops growing once 30 days are held |
+| Nightly dumps ([step 1.5](#15-nightly-dumps)) | 14 are kept on the same disk, each a compressed copy of the whole database, so allow several times the database's own size |
+
+So `100` GB holds ten recorded pairs with their quotes for 30 days, several
+years of 1-minute bars for a few dozen instruments, and the dumps. Use `50`
+GB if you will store bars only for a handful of instruments. Go larger only if you keep quotes for
+much longer than 30 days or record many more instruments: each extra busy
+pair with quotes kept 30 days adds about 0.5 GB. The disk can be enlarged
+later in Proxmox without a restart.
 
 If the script asks for the container OS, choose **Debian**. When it asks
 for the PostgreSQL version, enter **17**. Answer **No** to Adminer.

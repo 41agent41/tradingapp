@@ -743,6 +743,150 @@ curl -fs -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:4000/api/market-
 
 ---
 
+### Record an instrument live
+
+**Where:** browser, **Settings > Schedulers and data**.
+
+**Before:** the instrument's broker connection shows as connected on
+Settings > Connections, and **Live recorder** (`RECORDER_ENABLED`) is on.
+
+**Do:**
+
+1. In the data collection table, find the instrument's row, or add it with
+   its symbol, connection and the `1min` timeframe.
+2. Tick **Record live** on the row.
+3. To keep each quote as well as the bars, also tick **Store ticks**. Quotes
+   take far more disk than bars; see
+   [Check how fast the database grows](#check-how-fast-the-database-grows).
+
+**Expected:** within a minute the row's Live feed column says streamed or
+polled, with a count of quotes in the last minute. When the market is
+closed it says "no quote yet", which is normal.
+
+**If it fails:** the Live feed column or the recorder's line above the table
+gives the reason. Look it up under [Live recorder](#live-recorder).
+
+**Done when:** after two minutes of an open market, in the app shell,
+
+```bash
+curl -fs http://127.0.0.1:4000/api/market-data/recorder/status | jq '.contracts[] | {symbol, quotes_last_minute}'
+```
+
+lists the instrument with a count above zero.
+
+### Set how long stored quotes are kept
+
+**Where:** browser, **Settings > Schedulers and data**.
+
+**Before:** nothing.
+
+**Do:** set **Stored quotes kept (days)** (`TICK_RETENTION_DAYS`) and save.
+The default is 30. The setting covers every instrument with **Store ticks**
+ticked. It does not touch bars, which follow each row's own retention.
+
+**Expected:** the setting saves. Nothing is deleted at once: quotes older
+than the new figure go at the next daily cleanup (03:30 UTC), a whole day
+at a time.
+
+**If it fails:** *the field is locked:* the value is set in `.env`, which
+wins. Change it there and run `./tradingapp.sh restart`.
+
+**Done when:** the field shows the new figure after reloading the page. To
+apply it now instead of at 03:30, in the app shell with `$API_TOKEN` set as
+at the top of this guide:
+
+```bash
+curl -fs -X POST -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:4000/api/market-data/database/clean | jq
+```
+
+### Run a backtest on stored data
+
+**Where:** browser, the **Backtesting** page.
+
+**Before:** the instrument has bars stored for the range: it is recorded
+live, or it is in the data collection table with **History from** set
+([INSTALL.md step 5](INSTALL.md#5-market-data)).
+
+**Do:**
+
+1. Choose the strategy, symbol, connection, timeframe and date range.
+2. Press **Run Backtest**.
+3. If the page says bars are missing, choose **Fetch missing bars, then
+   run** the first time, or **Run on what is stored** when the missing
+   stretch is older than the broker's own history.
+
+**Expected:** results, with a header that says which bars were used and a
+data hash. Two runs with the same hash used the same data.
+
+**If it fails:** the page gives the reason. The cases are under
+[Backtests and stored bars](#backtests-and-stored-bars).
+
+**Done when:** the results header names the stored bars it ran on.
+
+### Replay stored bars
+
+**Where:** browser, the **Bar Replay** page.
+
+**Before:** the instrument has 1-minute bars stored at the connection you
+will choose (recorded live, or collected at `1min`).
+
+**Do:**
+
+1. Enter the **Symbol**, choose the **Connection** and **Type**, the
+   **Candles** timeframe, and a **Start (UTC)** inside the stored range.
+2. Press **Load**, then play.
+
+**Expected:** the candles before the start are drawn, and each new candle
+forms minute by minute as it did.
+
+**If it fails:** the page says what is missing. The messages are explained
+under [Bar replay](#bar-replay).
+
+**Done when:** the replay advances past the start time.
+
+### Check how fast the database grows
+
+**Where:** the database server's console (CT 100).
+
+**Before:** nothing. Do this monthly, and after ticking **Store ticks** on
+more instruments.
+
+**Do:**
+
+```bash
+runuser -u postgres -- psql -d tradingapp <<'SQL'
+SELECT pg_size_pretty(pg_database_size('tradingapp'))        AS database,
+       pg_size_pretty(hypertable_size('candlestick_data'))   AS bars,
+       pg_size_pretty(hypertable_size('quote_ticks'))        AS quotes;
+SELECT date_trunc('day', ts)::date AS day, count(*) AS quotes
+  FROM quote_ticks
+ WHERE ts > now() - interval '7 days'
+ GROUP BY 1 ORDER BY 1;
+SQL
+df -h /var/lib/postgresql
+```
+
+With the bundled database, run the same SQL in the app shell through
+`docker compose exec -T postgres psql -U tradingapp -d tradingapp` and check
+the disk with `df -h /`.
+
+**Expected:** three sizes, a count of quotes for each of the last seven
+days, and the disk's use. Compare with
+[INSTALL.md § 1.1](INSTALL.md#11-create-the-container): about 30 to 60 MB a
+year for each instrument's 1-minute bars, and up to about 0.5 GB for each
+busy instrument's 30 days of quotes.
+
+**If it fails:** *`relation "quote_ticks" does not exist`:* the app has not
+started against this database since the live recorder was added; start it
+once.
+
+**Done when:** the disk is under 70% full. Above that, lower **Stored
+quotes kept (days)**, untick **Store ticks** on instruments that do not
+need it, or enlarge the container's disk in Proxmox (Resources > Root Disk
+> Volume Action > Resize), which needs no restart.
+
+---
+
 ### Live recorder
 
 What it does and how is in
