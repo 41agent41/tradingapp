@@ -155,3 +155,33 @@ def test_reads_while_offline_are_503(netting):
     for path in ("/positions", "/orders", "/account", "/deals", "/symbols"):
         assert client.get(path).status_code == 503, path
     assert client.get("/quote", params={"symbol": "EURUSDm"}).status_code == 503
+
+
+def test_ticks_come_back_oldest_first_in_utc_and_capped():
+    fake, client = make({"MT5_SERVER_TZ": "Etc/GMT-2"}, server_offset_hours=2)
+    params = {
+        "symbol": "EURUSDm",
+        "start": "2026-01-05T00:00:00Z",
+        "end": "2026-01-05T00:00:10Z",
+    }
+    body = client.get("/ticks", params=params).json()
+    name, date_from, _, flags = fake.tick_calls[-1]
+    # Asked in server time, answered in UTC milliseconds.
+    assert date_from.isoformat() == "2026-01-05T02:00:00+00:00"
+    assert flags == fake.COPY_TICKS_ALL
+    assert body["count"] == 10 and body["complete"] is True
+    first = body["ticks"][0]
+    assert first["time"] == 1767571200250
+    assert (first["bid"], first["ask"], first["last"]) == (1.08, 1.0801, None)
+    assert [t["time"] for t in body["ticks"]] == sorted(t["time"] for t in body["ticks"])
+
+    capped = client.get("/ticks", params={**params, "limit": 3}).json()
+    assert capped["count"] == 3 and capped["complete"] is False
+    # The most recent ones are the ones kept.
+    assert capped["ticks"][-1] == body["ticks"][-1]
+
+
+def test_ticks_for_an_unknown_symbol_fail(netting):
+    _, client = netting
+    r = client.get("/ticks", params={"symbol": "NOPE", "start": "1", "end": "2"})
+    assert r.status_code >= 400

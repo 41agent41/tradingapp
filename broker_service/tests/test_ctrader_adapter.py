@@ -789,3 +789,97 @@ def test_a_trailing_stop_sets_ctraders_flag_on_the_order(ct):
     assert "trailingStopLoss" not in _sent(2106)[-1]
     _adapter(ct).place_order(_OrderReq(stop_loss=1.0952))
     assert "trailingStopLoss" not in _sent(2106)[-1]
+
+
+# --------------------------------------------------------------------------- #
+# Tick history
+# --------------------------------------------------------------------------- #
+def _tick_rows(*ticks):
+    """Ticks ``(ms, price)``, newest first, as cTrader sends them: the first
+    whole, each later one the difference from the one before."""
+    rows, prev = [], (0, 0)
+    for ms, price in ticks:
+        whole = (ms, round(price * 100000))
+        rows.append({"timestamp": whole[0] - prev[0], "tick": whole[1] - prev[1]})
+        prev = whole
+    return rows
+
+
+def _when(ms):
+    from datetime import UTC, datetime
+
+    return datetime.fromtimestamp(ms / 1000, tz=UTC)
+
+
+def test_tick_history_merges_bid_and_ask_ticks_oldest_first(ct):
+    pages = {
+        1: _tick_rows((5000, 1.10003), (3000, 1.10001), (1000, 1.10000)),
+        2: _tick_rows((5000, 1.10013), (2000, 1.10011)),
+    }
+    FakeWS.handler = base_handler(
+        lambda k, p: (
+            [(2146, {"tickData": pages[p["type"]], "hasMore": False})] if k == 2145 else None
+        )
+    )
+    got = _adapter(ct).tick_history("EUR.USD", _when(0), _when(10_000), 100)
+    assert got["broker"] == "ctrader" and got["complete"] is True and got["count"] == 4
+    assert [t["time"] for t in got["ticks"]] == [1000, 2000, 3000, 5000]
+    assert got["ticks"][0] == {"time": 1000, "bid": 1.1, "ask": None, "last": None}
+    # The side that did not change keeps its last price.
+    assert got["ticks"][1]["bid"] == 1.1 and got["ticks"][1]["ask"] == pytest.approx(1.10011)
+    assert got["ticks"][2]["ask"] == pytest.approx(1.10011)
+    # Both sides changed in the same millisecond: one quote.
+    assert got["ticks"][3]["bid"] == pytest.approx(1.10003)
+    assert got["ticks"][3]["ask"] == pytest.approx(1.10013)
+    sent = _sent(2145)
+    assert {p["type"] for p in sent} == {1, 2}
+    assert sent[0]["symbolId"] == 1
+    assert (sent[0]["fromTimestamp"], sent[0]["toTimestamp"]) == (0, 10_000)
+
+
+def test_tick_history_follows_has_more_and_stops_at_the_limit(ct):
+    def ticks(kind, payload):
+        if kind != 2145:
+            return None
+        if payload["type"] == 2:
+            return [(2146, {"tickData": [], "hasMore": False})]
+        to = payload["toTimestamp"]
+        rows = _tick_rows((to - 1000, 1.1), (to - 2000, 1.1))
+        return [(2146, {"tickData": rows, "hasMore": True})]
+
+    FakeWS.handler = base_handler(ticks)
+    got = _adapter(ct).tick_history("EUR.USD", _when(0), _when(100_000), 4)
+    # Two pages of two, each continuing from the oldest tick of the last.
+    bids = [p for p in _sent(2145) if p["type"] == 1]
+    assert [p["toTimestamp"] for p in bids] == [100_000, 98_000]
+    assert [t["time"] for t in got["ticks"]] == [96_000, 97_000, 98_000, 99_000]
+    assert got["complete"] is False
+
+
+def test_tick_history_keeps_only_the_most_recent_when_over_the_limit(ct):
+    rows = _tick_rows((4000, 1.1), (3000, 1.1), (2000, 1.1), (1000, 1.1))
+    FakeWS.handler = base_handler(
+        lambda k, p: (
+            [(2146, {"tickData": rows if p["type"] == 1 else [], "hasMore": False})]
+            if k == 2145
+            else None
+        )
+    )
+    got = _adapter(ct).tick_history("EUR.USD", _when(0), _when(5000), 2)
+    assert [t["time"] for t in got["ticks"]] == [3000, 4000]
+    assert got["complete"] is False
+
+
+def test_tick_history_walks_a_long_window_a_week_at_a_time(ct):
+    FakeWS.handler = base_handler(
+        lambda k, p: [(2146, {"tickData": [], "hasMore": False})] if k == 2145 else None
+    )
+    week = 7 * 86_400_000
+    got = _adapter(ct).tick_history("EUR.USD", _when(0), _when(2 * week + 5), 10)
+    bids = [p for p in _sent(2145) if p["type"] == 1]
+    assert [(p["fromTimestamp"], p["toTimestamp"]) for p in bids] == [
+        (week + 5, 2 * week + 5),
+        (5, week + 5),
+        (0, 5),
+    ]
+    assert got["ticks"] == [] and got["complete"] is True

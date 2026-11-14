@@ -34,6 +34,7 @@ _TIMEFRAMES = {
 }
 
 _MAX_BARS = 100_000
+_MAX_TICKS = 50_000
 # MT5 truncates order comments beyond this.
 _COMMENT_MAX = 31
 # A market order is re-priced and resent this many times on a requote.
@@ -250,6 +251,39 @@ class Terminal:
                 }
             )
         return {"symbol": name, "timeframe": timeframe.upper(), "bars": bars}
+
+    def ticks(self, symbol: str, start: str, end: str, limit: int = 5000) -> Dict[str, Any]:
+        """The terminal's stored ticks between ``start`` and ``end``, oldest
+        first: at most the ``limit`` most recent. ``complete`` is false when
+        earlier ticks in the window were left out."""
+        name = self.resolve(symbol)
+        limit = max(1, min(int(limit), _MAX_TICKS))
+        found = self.mt5.copy_ticks_range(
+            name,
+            self.clock.server_datetime(_parse_time(start)),
+            self.clock.server_datetime(_parse_time(end)),
+            self.mt5.COPY_TICKS_ALL,
+        )
+        if found is None:
+            raise TerminalError(502, f"no ticks for {name}: {self.mt5.last_error()}")
+        total = len(found)
+        ticks = []
+        for r in _rows(found[max(0, total - limit) :]):
+            server_ms = r.get("time_msc") or r["time"] * 1000
+            ticks.append(
+                {
+                    "time": int(round(self.clock.to_utc(server_ms / 1000.0) * 1000)),
+                    "bid": _nz(r.get("bid")),
+                    "ask": _nz(r.get("ask")),
+                    "last": _nz(r.get("last")),
+                }
+            )
+        return {
+            "symbol": name,
+            "ticks": ticks,
+            "count": len(ticks),
+            "complete": total <= limit,
+        }
 
     def tick(self, symbol: str) -> Dict[str, Any]:
         name = self.resolve(symbol)

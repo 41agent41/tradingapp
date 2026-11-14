@@ -144,6 +144,50 @@ async def get_client_sentiment(symbol: str, source: str = "", account: str | Non
     return await run_tws_operation(lambda: adapter.client_sentiment(symbol))
 
 
+TICKS_DEFAULT_LIMIT = 5000
+TICKS_MAX_LIMIT = 50000
+
+
+def _instant(value: str, name: str) -> datetime:
+    try:
+        moment = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(400, f"{name} must be an ISO 8601 time")
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+@router.get("/market-data/ticks")
+async def get_tick_history(
+    symbol: str,
+    start: str,
+    end: str | None = None,
+    limit: int = TICKS_DEFAULT_LIMIT,
+    source: str = "",
+    account: str | None = None,
+):
+    """The broker's own past ticks for ``symbol`` between ``start`` and
+    ``end`` (now when left out), oldest first. At most the ``limit`` most
+    recent come back; ``complete`` is false when earlier ones in the window
+    were left out, and asking again with ``end`` set to the first tick's time
+    reads those. Only where the broker keeps ticks (cTrader, MT5): 501
+    otherwise."""
+    from adapters import get_market_data_adapter, resolve_provider
+
+    adapter = get_market_data_adapter(source, account)
+    if not hasattr(adapter, "tick_history"):
+        raise HTTPException(
+            status.HTTP_501_NOT_IMPLEMENTED,
+            f"Tick history is not available from {resolve_provider(source)}",
+        )
+    if not 1 <= limit <= TICKS_MAX_LIMIT:
+        raise HTTPException(400, f"limit must be between 1 and {TICKS_MAX_LIMIT}")
+    lo = _instant(start, "start")
+    hi = _instant(end, "end") if end else datetime.now(UTC)
+    if lo >= hi:
+        raise HTTPException(400, "start must be before end")
+    return await run_tws_operation(lambda: adapter.tick_history(symbol, lo, hi, limit))
+
+
 @router.get("/market-data/depth")
 async def get_market_depth(
     symbol: str,

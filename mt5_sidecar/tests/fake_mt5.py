@@ -61,6 +61,19 @@ RATE_DTYPE = np.dtype(
     ]
 )
 
+TICK_DTYPE = np.dtype(
+    [
+        ("time", "<i8"),
+        ("bid", "<f8"),
+        ("ask", "<f8"),
+        ("last", "<f8"),
+        ("volume", "<u8"),
+        ("time_msc", "<i8"),
+        ("flags", "<u4"),
+        ("volume_real", "<f8"),
+    ]
+)
+
 
 class FakeMT5:
     # --- constants, as the real package names them ----------------------- #
@@ -142,6 +155,7 @@ class FakeMT5:
         self.deals: List[Dict[str, Any]] = []
         self.requests: List[Dict[str, Any]] = []
         self.rate_calls: List[Any] = []
+        self.tick_calls = []
         self.deal_calls: List[Any] = []
         self.next_ticket = 1000
         self.requotes = 0
@@ -264,6 +278,30 @@ class FakeMT5:
         bid, ask = self.prices[name]
         now = self.server_now()
         return Tick(int(now), bid, ask, 0.0, 0, int(now * 1000), 6, 0.0)
+
+    COPY_TICKS_ALL = -1
+
+    def copy_ticks_range(self, name: str, date_from: datetime, date_to: datetime, flags: int):
+        """One tick a second from ``date_from`` up to ``date_to``, in server
+        time, the bid rising by a point each tick."""
+        self.tick_calls.append((name, date_from, date_to, flags))
+        if name not in self.symbols:
+            return None
+        lo, hi = int(date_from.timestamp()), int(date_to.timestamp())
+        rows = [
+            (
+                t,
+                1.08 + i * 0.00001,
+                1.0801 + i * 0.00001,
+                0.0,
+                0,
+                t * 1000 + 250,
+                6,
+                0.0,
+            )
+            for i, t in enumerate(range(lo, hi))
+        ]
+        return np.array(rows, dtype=TICK_DTYPE)
 
     def _bars(self, times: List[int]) -> np.ndarray:
         rows = [(t, 1.08, 1.081, 1.079, 1.0805, 100, 10, 0) for t in times]

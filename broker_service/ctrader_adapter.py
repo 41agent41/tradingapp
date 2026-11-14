@@ -22,6 +22,7 @@ and closes it; streaming keeps one open with a heartbeat.
 
     2100/2101 ApplicationAuth     2102/2103 AccountAuth
     2114/2115 SymbolsList         2116/2117 SymbolById      2112/2113 AssetList
+    2145/2146 GetTickData (tick history, one side at a time)
     2137/2138 GetTrendbars        2127/2128 SubscribeSpots  2131 SpotEvent
     2135/2165 SubscribeLiveTrendbar (the forming bar then rides on SpotEvent)
     2156/2157 SubscribeDepthQuotes  2155 DepthEvent
@@ -106,6 +107,7 @@ DEAL_LIST_REQ, DEAL_LIST_RES = 2133, 2134
 GET_TRENDBARS_REQ, GET_TRENDBARS_RES = 2137, 2138
 SUBSCRIBE_LIVE_TRENDBAR_REQ, SUBSCRIBE_LIVE_TRENDBAR_RES = 2135, 2165
 OA_ERROR_RES = 2142
+GET_TICKDATA_REQ, GET_TICKDATA_RES = 2145, 2146
 DEPTH_EVENT = 2155
 SUBSCRIBE_DEPTH_REQ, SUBSCRIBE_DEPTH_RES = 2156, 2157
 UNREALIZED_PNL_REQ, UNREALIZED_PNL_RES = 2187, 2188
@@ -165,6 +167,11 @@ _MAX_PERIOD_REQUESTS = 10
 _MAX_RANGE_REQUESTS = 200
 # Historical requests are limited to 5 a second per connection.
 _HISTORY_PAUSE_SECONDS = 0.25
+# Tick history: cTrader answers at most a week per request, one side (bid or
+# ask) at a time, newest first, and says when the window holds more.
+_TICK_WINDOW = timedelta(days=7)
+_TICK_MAX_REQUESTS = 40
+_QUOTE_TYPE = {"bid": 1, "ask": 2}
 
 # Errors that mean the stored credentials, not the request, are the problem.
 _TOKEN_ERRORS = {
@@ -722,6 +729,93 @@ class CTraderAdapter:
                     continue  # a bar update with no price change
                 on_price(by_id[symbol_id], sides[0], sides[1])
 
+    def tick_history(
+        self, symbol: str, start: datetime, end: datetime, limit: int = 5000
+    ) -> Dict[str, Any]:
+        """The quotes between ``start`` and ``end``, oldest first: at most the
+        ``limit`` most recent of them. cTrader keeps bid ticks and ask ticks
+        apart, so both are read and merged: each quote carries the side that
+        changed and the other side's last known price. ``complete`` is false
+        when earlier quotes in the window were left out."""
+        limit = max(1, int(limit))
+        with self._session() as session:
+            symbol_id = _int(self._resolve(session, symbol).get("symbolId"))
+            sides = {
+                side: self._ticks(session, symbol_id, side, start, end, limit)
+                for side in ("bid", "ask")
+            }
+        # Where one side stops short, the merged series can start no earlier.
+        floor = max(
+            (ticks[0][0] for ticks, whole in sides.values() if not whole and ticks),
+            default=0,
+        )
+        events = sorted(
+            (ts, side, price) for side, (ticks, _) in sides.items() for ts, price in ticks
+        )
+        quotes: List[Dict[str, Any]] = []
+        last: Dict[str, Optional[float]] = {"bid": None, "ask": None}
+        for ts, side, price in events:
+            last[side] = price
+            if ts < floor:
+                continue
+            if quotes and quotes[-1]["time"] == ts:
+                quotes[-1][side] = price
+            else:
+                quotes.append({"time": ts, "bid": last["bid"], "ask": last["ask"], "last": None})
+        complete = all(whole for _, whole in sides.values()) and len(quotes) <= limit
+        quotes = quotes[-limit:]
+        return {
+            "symbol": symbol.upper(),
+            "broker": "ctrader",
+            "ticks": quotes,
+            "count": len(quotes),
+            "complete": complete,
+        }
+
+    def _ticks(
+        self,
+        session: _Session,
+        symbol_id: int,
+        side: str,
+        start: datetime,
+        end: datetime,
+        limit: int,
+    ) -> tuple:
+        """One side's ticks as ``(ms, price)``, oldest first, and whether the
+        walk reached ``start``. Walks back from ``end`` and stops once it
+        holds ``limit`` ticks."""
+        lo_ms, cursor = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+        window_ms = int(_TICK_WINDOW.total_seconds() * 1000)
+        ticks: Dict[int, float] = {}
+        for i in range(_TICK_MAX_REQUESTS):
+            if cursor <= lo_ms:
+                return sorted(ticks.items()), True
+            if len(ticks) >= limit:
+                break
+            if i:
+                time.sleep(_HISTORY_PAUSE_SECONDS)
+            page_lo = max(lo_ms, cursor - window_ms)
+            reply = session.request(
+                GET_TICKDATA_REQ,
+                {
+                    "symbolId": symbol_id,
+                    "type": _QUOTE_TYPE[side],
+                    "fromTimestamp": page_lo,
+                    "toTimestamp": cursor,
+                },
+                expect=GET_TICKDATA_RES,
+            )
+            page = _decode_ticks(reply.get("tickData"))
+            for ts, price in page:
+                ticks[ts] = price
+            earliest = min((ts for ts, _ in page), default=None)
+            if reply.get("hasMore") and earliest is not None and earliest < cursor:
+                # More in this window: continue from the oldest tick it sent.
+                cursor = earliest
+            else:
+                cursor = page_lo
+        return sorted(ticks.items()), cursor <= lo_ms
+
     def market_depth(self, symbol: str, levels: int = 10) -> Dict[str, Any]:
         """The order book for ``symbol``: the best ``levels`` prices on each
         side with the size offered at each, in units. cTrader has no book
@@ -1259,6 +1353,21 @@ def _positions(reconcile: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _volume(quantity: float) -> int:
     return int(round(float(quantity) * _VOLUME_SCALE))
+
+
+def _decode_ticks(rows: Any) -> List[tuple]:
+    """``ProtoOATickData`` rows as ``(ms, price)``. The first row is whole;
+    each later one holds the difference from the row before it, in both the
+    time and the price (in 1/100000)."""
+    out: List[tuple] = []
+    ts = price = 0
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        ts += _int(row.get("timestamp"))
+        price += _int(row.get("tick"))
+        out.append((ts, price / 100000.0))
+    return out
 
 
 def _relative(reference: float, level: float, digits: int) -> int:

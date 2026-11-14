@@ -7,6 +7,7 @@ import DataframeViewer from '../components/DataframeViewer';
 import BackToHome from '../components/BackToHome';
 import ExchangeDrivenFilters from '../components/ExchangeDrivenFilters';
 import PeriodDateFilters from '../components/PeriodDateFilters';
+import TickHistoryDownload from '../components/TickHistoryDownload';
 import { apiFetch } from '../lib/api';
 
 interface HistoricalData {
@@ -551,6 +552,7 @@ export default function DownloadPage() {
             </div>
           </div>
         )}
+        <TickHistoryDownload />
       </main>
     </div>
   );

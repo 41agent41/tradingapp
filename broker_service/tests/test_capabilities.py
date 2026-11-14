@@ -20,6 +20,7 @@ def test_a_connection_with_no_adapters_supports_nothing():
         "spread_bars": False,
         "live_bars": False,
         "sentiment": False,
+        "tick_history": False,
         "depth": False,
         "order_types": {},
         "attaches_stops": False,

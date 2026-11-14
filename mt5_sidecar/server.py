@@ -77,6 +77,10 @@ def create_app(terminal: Terminal) -> FastAPI:
     def tick(symbol: str):
         return call(terminal.tick, symbol)
 
+    @app.get("/ticks")
+    def ticks(symbol: str, start: str, end: str, limit: int = 5000):
+        return call(terminal.ticks, symbol, start, end, limit)
+
     @app.get("/symbol")
     def symbol_info(symbol: str):
         return call(terminal.symbol_info, symbol)
