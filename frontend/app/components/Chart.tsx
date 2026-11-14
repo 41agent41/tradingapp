@@ -21,6 +21,7 @@ import {
 } from 'lightweight-charts';
 
 import { formatChartTime, formatTick } from '../lib/chartTime';
+import { chartThemeOptions, useTheme } from '../lib/theme';
 import { useChartResize } from '../lib/useChartResize';
 
 export interface ChartBar {
@@ -302,6 +303,12 @@ export default function Chart({
 
   // Resize observer keeps width in sync with sibling reflows.
   useChartResize(containerRef, chartRef);
+
+  // The page's theme, also given to a chart that was made afresh.
+  const theme = useTheme();
+  useEffect(() => {
+    chartRef.current?.applyOptions(chartThemeOptions(theme));
+  }, [theme, height, showVolume, readOnly]);
 
   // Push data on every change.
   useEffect(() => {
