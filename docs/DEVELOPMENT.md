@@ -94,6 +94,7 @@ features are in [`docs/plans/`](plans/).
 | `mt5_sidecar/` | `server.py`, `terminal.py`, `deploy/` (Task Scheduler and systemd launchers), `tests/` |
 | `e2e/` | End-to-end paper run against simulated MT5 terminals |
 | `ops/` | Prometheus alert rules, Grafana dashboard |
+| `scripts/` | `check_docs.py`: the check of the guides' links and commands, and its tests |
 | `docs/` | These guides; `docs/plans/` holds design records |
 
 ---
@@ -235,6 +236,13 @@ The Docker images do not hot-reload. To try a change in the full stack, run
 | frontend | `npm run lint`, `npm run format:check` | `npm run type-check` | `npx vitest run` |
 | broker_service | `ruff check .`, `black --check .` | | `pytest -q` |
 | mt5_sidecar | `ruff check .`, `black --check .` | | `pytest -q` |
+| the guides | | | `python3 scripts/check_docs.py` (from the repository root) |
+
+The last one checks that every link between the guides points at a file and
+a heading that exist, and that every `./tradingapp.sh` subcommand a guide
+names is one the script takes. Run it after renaming a heading or a
+command. `docs/plans/GAP_ANALYSIS.md` is kept for the record and may name
+files that have moved.
 
 ### Database tests
 
@@ -313,7 +321,7 @@ passed.
 `master` (and `main`): a job per component with lint, format, types, tests
 and build (the backend job adds the database tests against TimescaleDB), the
 end-to-end paper run, a build of the backend and frontend images that checks
-they run as a non-root user, and a dependency audit (`npm audit` on both lockfiles'
+they run as a non-root user, the check of the guides, and a dependency audit (`npm audit` on both lockfiles'
 production dependencies, `pip-audit` on both Python locks) that fails on a
 known high-severity vulnerability.
 

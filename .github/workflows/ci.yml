@@ -47,6 +47,27 @@ jobs:
           pip-audit --no-deps --disable-pip -r mt5_sidecar/requirements.txt
 
   # --------------------------------------------------------------------
+  # The guides: every internal link and heading resolves, and every
+  # ./tradingapp.sh subcommand they name exists.
+  # --------------------------------------------------------------------
+  docs:
+    name: docs (links / commands)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: The checker's own tests
+        run: python3 -m unittest scripts/test_check_docs.py
+
+      - name: Check the guides
+        run: python3 scripts/check_docs.py
+
+  # --------------------------------------------------------------------
   # Backend (Node + TypeScript)
   # --------------------------------------------------------------------
   backend:
