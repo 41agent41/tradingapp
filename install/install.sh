@@ -332,6 +332,24 @@ backend_port() { local p; p=$(env_get BACKEND_PORT); printf '%s' "${p:-4000}"; }
 frontend_port() { local p; p=$(env_get FRONTEND_PORT); printf '%s' "${p:-3000}"; }
 broker_service_port() { local p; p=$(env_get BROKER_SERVICE_PORT); printf '%s' "${p:-8000}"; }
 
+# The backend's own account of why it is not ready, as the last thing on
+# screen when deploy fails.
+deploy_readiness_reason() {
+    local body state detail
+    body=$(curl -s --max-time 5 "http://127.0.0.1:$(backend_port)/api/health/ready" || true)
+    if [[ -z $body ]]; then
+        echo "[install] readiness: the backend did not answer on port $(backend_port); it did not start (see its log lines above)"
+        return 0
+    fi
+    state=$(jq -r '.state // "?"' <<<"$body" 2>/dev/null || echo "?")
+    detail=$(jq -r '.detail // ""' <<<"$body" 2>/dev/null || true)
+    echo "[install] readiness: $state${detail:+: $detail}"
+    if [[ $state == waiting_for_database ]]; then
+        echo "[install] the backend cannot reach its database. PostgreSQL's own error is in the 'database connection test failed' lines above."
+        echo "[install] fix it on the database server (INSTALL.md steps 1.3 and 1.4), then run this installer again; it is safe to re-run."
+    fi
+}
+
 phase_deploy() {
     log "deploy: building and starting the stack (the first build takes several minutes; up to ${HEALTH_TIMEOUT}s)"
     # The same command as a hand install. On a host that already has .env it
@@ -339,8 +357,12 @@ phase_deploy() {
     # is ready, and stores any app settings from the answers in the app.
     tradingapp install || {
         compose ps >&2 || true
-        compose logs --no-color --tail 60 backend >&2 || true
-        fail 1 "deploy failed (output above)"
+        # The health checks log a line every few seconds; leave them out so
+        # the lines that say what went wrong are the ones on screen.
+        compose logs --no-color --tail 400 backend 2>&1 |
+            grep -v '"url":"/api/health' | tail -n 40 >&2 || true
+        deploy_readiness_reason >&2
+        fail 1 "deploy failed (the reason is just above)"
     }
     log "deploy: ok"
 }
