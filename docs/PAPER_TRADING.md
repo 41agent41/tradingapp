@@ -764,7 +764,8 @@ and the dead-man's switch are already set: skip item 1.
 
 **Done when:** all three alerts arrived, both services are running again
 (`./tradingapp.sh test`), and the Getting started checklist on the Settings
-page shows alerts as done.
+page shows alerts as done. (The checklist disappears once all five of its
+items are done, so if it is gone, this item is done.)
 
 ---
 

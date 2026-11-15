@@ -76,6 +76,39 @@ are written out in full each time.
 
 ---
 
+## What has been checked, and what has not
+
+Read this before you rely on a step.
+
+**Checked on every change, by the project's tests:**
+
+- The app builds, starts against an empty database, migrates it and serves
+  (the end-to-end run starts the whole stack with a simulated MT5 account).
+- Every link in this guide points at a file and heading that exist, and every
+  `./tradingapp.sh` command in it is one the script takes.
+
+**Checked against the code, by reading it:**
+
+- Every command, path, port, setting key, button and field name in this
+  guide, and every line quoted under **Expected**.
+
+**Not yet rehearsed from start to finish on a Proxmox test host:**
+
+| Steps | What is unproven |
+|---|---|
+| 1.1, 2.1, 4.2, 4.3, 7.1, 9.1, 9.2 | The community scripts' screens. Their wording and order change between versions; the settings to enter do not. |
+| 1.2 | That Timescale publishes a package for the Debian release the PostgreSQL script installs. The step gives the fallback. |
+| 2.2, 2.3 | `pct pull` and `pct push`, and the installer, inside a real container. |
+| 4.2 | The Wine script against a real broker's terminal, the SSH tunnel for VNC, and the Windows alternative. |
+| 4.1, 4.4, 4.5, 4.6 | Where each broker's own site keeps its API keys. Those sites change. |
+| 4.3, 4.10 | IB Gateway and the Client Portal Gateway with a real paper login and second factor. |
+| 7, 8, 9, 10 | Nginx Proxy Manager, the Proxmox firewall, Prometheus, Grafana, the backup job and the host reboot. |
+
+If a step does not behave as written, that is a fault in this guide. Stop
+and report it, as the rules above say, so the step can be corrected.
+
+---
+
 ## Values sheet
 
 Decide every value here before step 1, and write it down. The steps refer to
@@ -732,9 +765,17 @@ runuser -u tradingapp -- cp -n install/site-values.example.md site-values.md
 runuser -u tradingapp -- nano site-values.md
 ```
 
-Replace each `FILL-IN` in the **Value** column from your sheet, and write
-`not built` for a server you did not build. Save (Ctrl+O, Enter) and exit
-(Ctrl+X). Put no secret in it. Upgrades leave this file alone.
+The file has three parts, and every `FILL-IN` in each must be replaced:
+
+1. The values table: the **Value** column, from your sheet. Write
+   `not built` for a server you did not build.
+2. **Decisions**: your answer to each question in
+   [Decisions to make first](#decisions-to-make-first).
+3. **Changes from the fixed values**: any guest ID, hostname or port you
+   changed, or `none`.
+
+Save (Ctrl+O, Enter) and exit (Ctrl+X). Put no secret in it. Upgrades leave
+this file alone.
 
 **Expected:** no output from `cp`.
 
@@ -766,34 +807,57 @@ includes `"state":"ready"`.
    cd /opt/tradingapp && runuser -u tradingapp -- ./tradingapp.sh setup-code
    ```
 
-2. Open `http://<app-address>:3000`, enter the setup code and choose the
-   login password.
-3. Open **Settings**. The **Getting started** checklist at the top ticks
-   itself off as you work through the rest of this guide.
-4. On **Settings > Security**:
-   - enrol **order MFA**: scan the QR code with an authenticator app and
-     enter a code;
-   - make a **trading token** and keep it (it is shown once).
+2. Open `http://<app-address>:3000`. Type the code into **Setup code**,
+   choose a login password of at least 12 characters, type it again, and
+   press **Set password and sign in**. Store the password in your password
+   manager.
+3. Open **Settings**. The **Getting started** checklist at the top lists
+   five items and ticks each one as you work through steps 3 to 6. It
+   disappears once all five are done.
+4. Open the **Security** tab and scroll to **Order MFA**:
+   1. Press **Set up MFA**.
+   2. Scan the QR code with an authenticator app (Google Authenticator,
+      1Password, Authy).
+   3. Type the six digits the authenticator shows into **Code from the
+      app** and press **Confirm**.
+5. On the same tab, make the trading token. A box now reads "Making a
+   token or changing MFA needs a trading token and a current MFA code":
+   1. Type a current code from the authenticator into **MFA code** in that
+      box.
+   2. Under **Trading tokens**, type a name such as `operator` and press
+      **Make token**.
+   3. The token shows once, with a **Copy** button. Store it in your
+      password manager before you leave the page.
+6. Only if scripts will call the app: type the trading token into
+   **Trading token** and a new code into **MFA code** in the same box,
+   then under **API tokens** type a name and press **Make token**. Store
+   it the same way. Scripts send it as `Authorization: Bearer <token>`,
+   where `<token>` is that API token.
 
-   Placing orders, and any change that loosens a gate or raises a cap,
-   needs both.
-5. For scripts, make an **API token** on the same tab. Scripts send it as
-   `Authorization: Bearer <token>`, where `<token>` is that API token.
+From here on, the app asks for the trading token and a current MFA code
+whenever you place an order, add or change a broker connection, or make a
+change that loosens a gate or raises a cap. Keep both to hand.
 
 **Expected:** `setup-code` prints one code. After item 2 the browser shows
-the app, signed in.
+the app, signed in. After item 4 the page says "MFA is on. Orders and
+protected changes now ask for a code."
 
 **If it fails:**
 - *The page asks for a password, not a setup code:* a login password is
   already set. Sign in with it; if it is lost, see
-  [OPERATIONS.md § Sign-in](OPERATIONS.md#sign-in).
+  [OPERATIONS.md § Locked out](OPERATIONS.md#locked-out).
+- *`setup-code` prints nothing:* the backend's log no longer holds the
+  code. Run `runuser -u tradingapp -- ./tradingapp.sh restart` in
+  `/opt/tradingapp`, wait a minute, and read the code again.
+- *"Use at least 12 characters":* the password is too short.
 - *The page does not load:* `runuser -u tradingapp -- ./tradingapp.sh status`
   in `/opt/tradingapp`; every container must be up.
 - *The MFA code is refused:* the phone's clock is wrong. Set it to
   automatic time and scan again.
 
-**Done when:** the Getting started checklist shows the login password,
-order MFA and trading token steps done.
+**Done when:** on the Settings page, the Getting started checklist shows
+a tick beside **Choose the login password** and **Enrol order MFA and make
+a trading token**.
 
 ---
 
@@ -827,32 +891,46 @@ connection" and give only the fields that differ.
 **Before:** step 3 is done, and you have the broker's details the step
 lists. They come from the operator, never from a guess.
 
-**Do:** press **Add connection**, choose the **Firm** (this sets the
-broker), fill in the form, and press **Save**. Every form has these
-fields:
+**Do:**
 
-| Field | Meaning |
-|---|---|
-| Name | The account's name in the app: lower-case letters, digits, `-` and `_`, such as `oanda-practice`. |
-| Mode | `paper` or `live`. It is binding: a live order to a paper connection is refused. Use **paper** throughout this guide. |
-| Currency | The account currency, such as `USD`. |
-| Default | The connection used for this broker when a request names no account. |
-| Limits, prop rules | Optional per-account risk limits; see [step 6](#6-alerts-and-safety-nets). |
+1. Near the top of the tab, a box reads "Changing brokers needs the same
+   credentials as placing an order". Type the trading token from step 3
+   into **Trading token** and a current authenticator code into **MFA
+   code**. A code lasts 30 seconds, so type it last, just before item 5.
+2. Press **Add connection**.
+3. Choose the **Firm**. This sets **Broker (set by the firm)**, which you
+   cannot change, and shows the broker's own fields.
+4. Fill in the form. Every form has these fields; each broker's step below
+   gives the rest. A field marked `*` is required.
 
-**Firm** is required: the **Save** button stays greyed out until one is
-chosen.
+   | Field | Enter |
+   |---|---|
+   | Name | The account's name in the app: lower-case letters, digits, `-` and `_`, such as `oanda-practice`. It cannot be changed later. |
+   | Mode | **Paper / practice**, throughout this guide. It is binding: a live order to a paper connection is refused. |
+   | Currency | The account's currency as three letters, such as `USD`. |
+   | Risk limits | Leave empty for now. Empty uses the caps on the Risk tab ([step 6](#6-alerts-and-safety-nets)). |
+   | Prop firm rules | Leave empty unless the account is a funded prop-firm account. |
+   | Default account for the broker | Tick it for the first connection of each broker. It is the one used when a request names no account. |
+
+5. Press **Save**. It stays greyed out until a firm is chosen.
 
 **Expected:** the app tests the connection as it saves it and shows the
-result. The connection's row then shows as connected. The app keeps
-checking it on a timer (`BROKER_PROBE_INTERVAL_SECONDS` on Settings >
-Schedulers and data). Secrets are stored encrypted with the key from step
-2.4.
+result in a green message. The connection's row then reads **Connected**,
+with the time the check took. The app checks it again every minute
+(**Broker check interval (seconds)** on Settings > Schedulers and data),
+and the row's **Test** button checks it at once. Secrets are stored
+encrypted with the key from step 2.4.
 
-**If it fails:** the form shows the broker's reason. Each broker's step
-lists what it usually means. If the form refuses the firm and broker
-pairing, see [4.7](#47-which-platform-for-which-firm).
+**If it fails:**
+- *A red message with the broker's reason, or the row reads
+  **Unreachable**:* each broker's step lists what it usually means. Correct
+  the field with the row's **Edit** button and save again.
+- *The save is refused for the trading token or the code:* the code
+  expired. Type a new one and press **Save** again.
+- *The form refuses the firm and broker pairing:* see
+  [4.7](#47-which-platform-for-which-firm).
 
-**Done when:** the row shows as connected, and in the CT 110 console
+**Done when:** the row reads **Connected**, and in the CT 110 console
 `cd /opt/tradingapp && runuser -u tradingapp -- ./tradingapp.sh doctor`
 lists the connection as `(connected)` under `=== Brokers (checked inside the
 app) ===`.
@@ -869,18 +947,27 @@ A cloud API, with no server to build.
 **Before:** you have an OANDA **practice** account.
 
 **Do:**
-1. In OANDA's account portal, generate an API token for your practice
-   account and note its account id.
-2. [Add a connection](#adding-a-connection) with Firm **OANDA**, Mode
-   **paper**, the **Account ID** and the **API token**. Paper connections
-   use OANDA's practice environment.
+1. Sign in to OANDA's account portal with the **practice** login. Open
+   the page for API access (OANDA names it **Manage API Access**), press
+   **Generate**, and copy the token. It is shown once.
+2. On the same portal, note the practice account's id. It has four groups
+   of digits, such as `101-001-1234567-001`.
+3. [Add a connection](#adding-a-connection) with Firm **OANDA**, Mode
+   **Paper / practice**, and:
+   - **Account ID**: the id from item 2
+   - **API token**: the token from item 1
+
+   Paper connections use OANDA's practice environment.
 
 **Expected:** the test passes and the row shows as connected.
 
-**If it fails:** the token or account id is wrong, the token belongs to
-a live account, or the app server has no outbound HTTPS
-(`curl -sI https://api-fxpractice.oanda.com` in the CT 110 console must
-answer).
+**If it fails:**
+- *The credentials are refused:* the token or account id is wrong, or the
+  token was generated under the live login. Generate it again under the
+  practice login.
+- *The broker cannot be reached:* the app server has no outbound HTTPS. In
+  the CT 110 console, `curl -sI https://api-fxpractice.oanda.com | head -1`
+  must print a line that starts with `HTTP`.
 
 **Done when:** as in [Adding a connection](#adding-a-connection).
 
@@ -999,6 +1086,10 @@ a secret.
   (`ssh -L 5900:localhost:5900 <mt5-user>@<mt5-address>`), connect a VNC
   viewer to `localhost:5900`, and do it there. Then run
   `bash /root/mt5-sidecar-wine.sh check --instance demo-a`.
+- *`ssh` answers `Permission denied (publickey)`:* the VM accepts keys
+  only. In the Proxmox UI, open VM 120 > **Cloud-Init** > **SSH public
+  key**, paste your computer's public key, press **Regenerate Image**,
+  restart the VM and open the tunnel again.
 - *Exit 2:* an input is missing or invalid; the message names it.
 - *Exit 1 with "non-demo account":* the login is a real-money account.
   This install is for demo accounts only. Do not work around it.
@@ -1040,18 +1131,42 @@ Windows 11 ISO and the
 [VirtIO driver ISO](https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso),
 2 cores, 4096 MiB, a 64 GB disk. When the Windows installer finds no disk,
 load the VirtIO SCSI driver from the second CD. Give it the address
-`<mt5-address>`. Then:
+`<mt5-address>` as a static address in Windows' network settings, with
+gateway `<gateway>`. Then, on the Windows desktop:
 
-1. Install the MT5 terminal from your broker. For two accounts, install it
-   twice into two folders and set `MT5_PORTABLE=true`.
-2. Install 64-bit Python 3.11 from python.org, and put the repository (or
-   just `mt5_sidecar/`) on the VM at `C:\tradingapp`.
-3. Install the sidecar and try it:
+1. Install the MT5 terminal from your broker into `C:\MT5-A`, start it,
+   and log in to the **demo** account. For a second account, install it
+   again into `C:\MT5-B`.
+2. Install 64-bit Python 3.11 from python.org, ticking **Add python.exe to
+   PATH**. Download the repository from
+   `https://github.com/41agent41/tradingapp` (**Code > Download ZIP**) and
+   unpack it so that `C:\tradingapp\mt5_sidecar\server.py` exists.
+3. Install the sidecar's packages and make its settings file, in
+   PowerShell:
 
    ```powershell
    cd C:\tradingapp\mt5_sidecar
    python -m pip install -r requirements.txt
-   copy sidecar.env.example sidecar.env    # then edit it: the settings below
+   copy sidecar.env.example sidecar.env
+   notepad sidecar.env
+   ```
+
+   In Notepad, set these lines and save. Generate the secret with
+   `openssl rand -hex 32` in the CT 110 console; it is `<mt5-secret>`.
+
+   ```
+   MT5_BRIDGE_SECRET=<mt5-secret>
+   MT5_SIDECAR_HOST=0.0.0.0
+   MT5_SIDECAR_PORT=9100
+   MT5_TERMINAL_PATH=C:\MT5-A\terminal64.exe
+   MT5_PORTABLE=true
+   MT5_SERVER_TZ=<mt5-server-tz>
+   MT5_ALLOW_REAL=false
+   ```
+
+   Then try it. It runs until you press Ctrl+C:
+
+   ```powershell
    python server.py
    ```
 
@@ -1067,8 +1182,16 @@ load the VirtIO SCSI driver from the second CD. Give it the address
    Register-ScheduledTask -TaskName "MT5 sidecar A" -Action $action -Trigger $trigger -Settings $settings
    ```
 
-5. In Windows Firewall, allow the sidecar's port from `<app-address>` only.
-6. In the terminal, turn on **Algo Trading**.
+5. Allow the sidecar's port from the app server only, in PowerShell run
+   as Administrator:
+
+   ```powershell
+   New-NetFirewallRule -DisplayName "MT5 sidecar A" -Direction Inbound -Protocol TCP `
+     -LocalPort 9100 -RemoteAddress <app-address> -Action Allow
+   ```
+
+6. In the terminal, press the **Algo Trading** button on the toolbar so
+   that it shows green.
 7. Turn TLS on. Make a self-signed pair on any machine with OpenSSL (the
    app server has it), copy both files next to `server.py`, and name them
    in `sidecar.env`:
@@ -1083,8 +1206,9 @@ load the VirtIO SCSI driver from the second CD. Give it the address
    MT5_TLS_KEY=C:\tradingapp\mt5_sidecar\sidecar.key
    ```
 
-   Restart the sidecar, and delete the copy of `sidecar.key` left on the
-   machine that made it.
+   Restart the sidecar (sign out of Windows and in again, or end and run
+   the **MT5 sidecar A** task), and delete the copy of `sidecar.key` left
+   on the machine that made it.
 
 **Expected:** the sidecar's log (`sidecar.log`) has a line
 `TLS on. Certificate SHA-256 fingerprint: AB:CD:...`. Write the
@@ -1185,14 +1309,16 @@ passed.
 **Do:** [add a connection](#adding-a-connection) with Firm set to the
 account's firm (**Axi (MT5)**, **Eightcap (MT5)**, **Vantage (MT5)**, or
 **Another MT5 firm (no web API)** for any other, such as a prop firm), Mode
-**paper**:
+**Paper / practice**:
 
 - **Bridge URL**: `https://<mt5-address>:9100` (`http://` without TLS)
 - **Bridge secret**: `<mt5-secret>`
-- **Certificate fingerprint**: `<mt5-fingerprint>`, with or without the
-  colons. Leave it empty without TLS. To read it again, on VM 120:
-  `bash /root/mt5-sidecar-wine.sh check --instance demo-a`
-- **Server timezone** (optional): `<mt5-server-tz>`
+- **Certificate fingerprint (https only)**: `<mt5-fingerprint>`, with or
+  without the colons. Leave it empty without TLS. To read it again, on
+  VM 120: `bash /root/mt5-sidecar-wine.sh check --instance demo-a`
+- **Server timezone**: `<mt5-server-tz>`
+- **Symbol map**: leave empty. [4.9](#49-mt5-symbol-map) says when it is
+  needed.
 
 For a second account, add a second connection with port 9101.
 
@@ -1305,8 +1431,11 @@ docker compose logs -f
 Wait for the login to finish in the log, then press Ctrl+C.
 
 **Expected:** `docker compose ps` shows the `ib-gateway` service `Up`, and
-from the CT 110 console `nc -vz <ib-address> 4002` reports the port open
-(`succeeded` or `open`).
+this line, run in the CT 110 console, prints `open`:
+
+```bash
+timeout 3 bash -c '</dev/tcp/<ib-address>/4002' && echo open || echo closed
+```
 
 **If it fails:**
 - *The log shows a failed login:* the username or password is wrong, or
@@ -1315,12 +1444,11 @@ from the CT 110 console `nc -vz <ib-address> 4002` reports the port open
   password of your choosing to `.env` and `- "127.0.0.1:5900:5900"` under
   `ports`, run `docker compose up -d`, and reach the Gateway's screen
   through an SSH tunnel to CT 130. Never publish VNC to the network.
-- *`nc` cannot connect:* the Gateway has not finished logging in, or a
-  firewall blocks the port.
+- *The line prints `closed`:* the Gateway has not finished logging in
+  (wait a minute and run it again), or a firewall blocks the port.
 
-**Done when:** `nc -vz <ib-address> 4002` from the CT 110 console reports
-the port open, and `stat -c '%a' /opt/ib-gateway/.env` on CT 130 prints
-`600`.
+**Done when:** the line above prints `open` in the CT 110 console, and
+`stat -c '%a' /opt/ib-gateway/.env` on CT 130 prints `600`.
 
 `READ_ONLY_API=no` lets the app place orders (paper ones included). Inside
 the container the API answers on its loopback, which IB Gateway always
@@ -1332,13 +1460,17 @@ its own, so do not skip that step.
 
 **Where:** the app.
 
-**Before:** `nc -vz <ib-address> 4002` from the CT 110 console reports the
-port open.
+**Before:** in the CT 110 console,
+`timeout 3 bash -c '</dev/tcp/<ib-address>/4002' && echo open || echo closed`
+prints `open`.
 
 **Do:** [add a connection](#adding-a-connection) with Firm **Interactive
-Brokers (IB Gateway)**, Mode **paper**: **Gateway host** `<ib-address>`,
-**Port** `4002`, and a **Client ID** that no other program uses on that
-Gateway (`1` if nothing else connects).
+Brokers (IB Gateway)**, Mode **Paper / practice**, and:
+
+- **Gateway host**: `<ib-address>`
+- **Port**: `4002`
+- **Client ID**: `1`. Use another number only if another program already
+  connects to this Gateway with `1`.
 
 **Expected:** the test passes and the row shows as connected.
 
@@ -1361,15 +1493,25 @@ A cloud API, with no server to build.
 **Before:** you have an Alpaca account with paper trading.
 
 **Do:**
-1. In Alpaca's paper dashboard, generate an API key and secret.
+1. Sign in to Alpaca and switch the dashboard to **Paper** (the account
+   switcher at the top left). In the **API Keys** panel on the paper
+   dashboard's home page, generate a key. Copy the key and the secret; the
+   secret is shown once.
 2. [Add a connection](#adding-a-connection) with Firm **Alpaca**, Mode
-   **paper**, the **API key** and the **API secret**. Paper connections
-   use Alpaca's paper endpoint.
+   **Paper / practice**, and:
+   - **API key**: the key from item 1
+   - **API secret**: the secret from item 1
+
+   Paper connections use Alpaca's paper endpoint.
 
 **Expected:** the test passes and the row shows as connected.
 
-**If it fails:** the key is wrong or belongs to a live account, or the
-app server has no outbound HTTPS.
+**If it fails:**
+- *The credentials are refused:* the key or secret is wrong, or it was
+  generated on the live dashboard. Generate it again on the paper one.
+- *The broker cannot be reached:* the app server has no outbound HTTPS. In
+  the CT 110 console, `curl -sI https://paper-api.alpaca.markets | head -1`
+  must print a line that starts with `HTTP`.
 
 **Done when:** as in [Adding a connection](#adding-a-connection).
 
@@ -1386,14 +1528,21 @@ A cloud API, with no server to build.
    Settings > API keys**, create a key. A demo key works only with a demo
    login, and a live key only with a live one.
 2. [Add a connection](#adding-a-connection) with Firm **IG**, Mode
-   **paper**, the **API key**, and the **Username** and **Password** of
-   that login. Leave **Account ID** blank to trade the login's default
-   account, or enter another account's id (such as `Z3ABCD`) from My IG.
+   **Paper / practice**, and:
+   - **API key**: the key from item 1
+   - **Username**: the demo login's username
+   - **Password**: the demo login's password
+   - **Account ID**: leave blank to trade the login's default account, or
+     enter another account's id (such as `Z3ABCD`) from My IG
 
 **Expected:** the test passes and the row shows as connected.
 
-**If it fails:** the key belongs to the other environment (demo vs
-live), the password is wrong, or the app server has no outbound HTTPS.
+**If it fails:**
+- *The credentials are refused:* the key belongs to the other environment
+  (demo or live), or the username or password is wrong.
+- *The broker cannot be reached:* the app server has no outbound HTTPS. In
+  the CT 110 console, `curl -sI https://demo-api.ig.com | head -1` must
+  print a line that starts with `HTTP`.
 
 **Done when:** as in [Adding a connection](#adding-a-connection).
 
@@ -1427,15 +1576,25 @@ applications.
 4. [Add a connection](#adding-a-connection) with Firm set to the account's
    firm (**IC Markets (cTrader)**, **Pepperstone (cTrader)**, **FP Markets
    (cTrader)**, **Fusion Markets (cTrader)**, or **Another cTrader
-   firm**), Mode **paper**, with the client ID, client secret, access
-   token and ctidTraderAccountId.
+   firm**), Mode **Paper / practice**, and:
+   - **Open API client ID**: the client ID from item 2
+   - **Open API client secret**: the client secret from item 2
+   - **Access token**: the token from item 3
+   - **ctidTraderAccountId**: the number from item 3
 
 **Expected:** the test passes and the row shows as connected.
 
-**If it fails:** the access token has expired or was issued for another
-account, the account id is the login instead of the ctidTraderAccountId,
-or the app server cannot reach `demo.ctraderapi.com` on port 5036
-(`nc -vz demo.ctraderapi.com 5036` in the CT 110 console).
+**If it fails:**
+- *The credentials are refused:* the access token has expired or was
+  issued for another account, or the account id is the login instead of
+  the ctidTraderAccountId.
+- *The broker cannot be reached:* the app server cannot reach
+  `demo.ctraderapi.com` on port 5036. In the CT 110 console, this must
+  print `open`:
+
+  ```bash
+  timeout 5 bash -c '</dev/tcp/demo.ctraderapi.com/5036' && echo open || echo closed
+  ```
 
 **Done when:** as in [Adding a connection](#adding-a-connection).
 
@@ -1488,9 +1647,9 @@ the Connections tab, or pin one broker with `DEFAULT_BROKER` on
 **If it fails:** *a connection shows as not connected:* go back to that
 broker's step and its **If it fails**.
 
-**Done when:** each connection shows as connected on Settings >
+**Done when:** each connection reads **Connected** on Settings >
 Connections, the header's health badge agrees, and the Getting started
-checklist shows the broker step done.
+checklist shows a tick beside **Add a broker connection**.
 
 ### 4.9 MT5 symbol map
 
@@ -1641,8 +1800,10 @@ values sheet (it is shown top right in Client Portal, and starts with
 `D`).
 
 **Do:** [add a connection](#adding-a-connection) with Firm **Interactive
-Brokers (Web API)**, Mode **paper**: **Client Portal Gateway URL**
-`https://<ib-address>:5000` and **Account ID** `<paper-account-id>`.
+Brokers (Web API)**, Mode **Paper / practice**, and:
+
+- **Client Portal Gateway URL**: `https://<ib-address>:5000`
+- **Account ID**: `<paper-account-id>`
 
 **Expected:** the test passes and the row shows as connected.
 
@@ -1699,9 +1860,21 @@ account.
 **Before:** at least one broker connection shows as connected (step 4).
 
 **Do:**
-1. In the data collection table, add an entry per instrument and
-   timeframe: the broker, the symbol, the timeframe, how often to collect,
-   and how many days of bars to keep.
+1. Scroll to the data collection table. In the form under it, add one
+   entry per instrument and timeframe, and press **Add** for each:
+
+   | Field | Enter |
+   |---|---|
+   | Broker | The broker that serves the instrument. |
+   | Symbol | The symbol as that broker names it, such as `EUR_USD` on OANDA or `MSFT` on Interactive Brokers. Search for it on the chart page if unsure. |
+   | Timeframe | One timeframe per entry, such as `5min`. Add the instrument again for another. |
+   | Account | Leave empty to use the broker's default connection. |
+   | Every (minutes) | How often to fetch new bars. Leave the value shown. |
+   | Keep (days) | How many days of bars to keep. Leave the value shown. |
+   | History from | Leave empty for now; item 2 says when to set it. |
+   | Type, Exchange / currency | Interactive Brokers only: the contract type (`STK`, `CASH`), exchange and currency. Leave empty for other brokers. |
+
+   A green message reads, for example, "EUR_USD 5min added."
 2. For backtests, set **History from** on an entry, as far back as the
    broker has bars (the form accepts up to 30 years). The scheduler then
    also walks back to that date, 20,000 bars at a time and up to five
@@ -1709,9 +1882,10 @@ account.
    passes. The History column shows how far it has got. Bars from the
    history start on are kept whatever the entry's retention. A year of
    5-minute FX bars is about 75,000 rows, roughly 10 MB, per instrument.
-3. Turn on the backfill scheduler (`BACKFILL_ENABLED`). It is off by
-   default because it calls brokers on a timer. It starts without a
-   restart.
+3. On the same tab, find **Backfill scheduler** (`BACKFILL_ENABLED`), turn
+   it on and press its **Save**. Type the trading token and a current MFA
+   code when the page asks. It is off by default because it calls brokers
+   on a timer, and it starts without a restart.
 4. Optional, for instruments you will replay or backtest on 1-minute bars:
    tick **Record live** on the instrument's row. The app then stores its
    1-minute bars from live prices as they form, with no chart open. Tick
@@ -1731,12 +1905,16 @@ quotes.
 **If it fails:**
 - *The Live feed column reads "not streaming:":* it is followed by the
   broker's reason. Fix that at the broker's step in section 4.
+- *The line above the table reads "Live recorder: off":* turn **Live
+  recorder** (`RECORDER_ENABLED`) on, on the same tab, and save.
 - *No bars arrive:* the connection is not connected, the symbol is not one
   the broker knows (search for it on the chart page), or
-  `BACKFILL_ENABLED` is still off.
+  **Backfill scheduler** is still off. The scheduler runs every 15
+  minutes, so wait that long before deciding.
 
-**Done when:** the Getting started checklist shows the market data step
-done, and a chart of a collected instrument shows bars.
+**Done when:** the Getting started checklist shows a tick beside **Choose
+the market data to collect**, and a chart of a collected instrument shows
+bars.
 
 Backtests run on these stored bars. An instrument that is not collected can
 still be backtested: the Backtest page says which bars are missing and offers
@@ -1754,22 +1932,41 @@ the Telegram token and the monitor's URLs.
 **Before:** step 3 is done. You have a Telegram account, and an account
 with a monitor **off this Proxmox host**, such as healthchecks.io.
 
-**Do:**
-1. **Telegram** (Settings > Alerts and safety): create a bot with
-   @BotFather, send it a message, read the chat id from
-   `https://api.telegram.org/bot<TOKEN>/getUpdates` (where `<TOKEN>` is
-   the bot's token), and set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
-2. **Dead-man's switch** (same tab): create a check on the monitor with a
-   1-minute period and 5-minute grace. Set `HEARTBEAT_URL` to the check's
-   URL, and `HEARTBEAT_FAIL_URL` to the check's `/fail` URL. The backend
-   pings it every minute, and the fail URL when the broker service is
-   unreachable. If the whole host goes down, this is what tells you.
-3. **Kill switch**: leave `KILL_SWITCH_ACTION` at `notify` until the paper
-   runbook has shown what its alerts look like.
-4. **Risk limits** (Settings > Risk): set `TRADING_DAY_TIMEZONE` to your
-   broker's (or prop firm's) server zone, and the fleet-wide caps you
-   want. Per-account limits and prop-firm rules go on each connection's
-   form; a connection's own value wins over the fleet-wide one.
+**Do:** each setting below has its own **Save** button. Press it after
+each change, and type the trading token and a current MFA code when the
+page asks.
+
+1. **Telegram.**
+   1. In Telegram, open a chat with `@BotFather`, send `/newbot`, and
+      answer its two questions. It replies with the bot's token.
+   2. Open a chat with your new bot and send it any message.
+   3. On your computer, open
+      `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser, where
+      `<TOKEN>` is the bot's token. Find `"chat":{"id":` in the reply. The
+      number after it is the chat id.
+   4. On **Settings > Alerts and safety**, set **Telegram bot token**
+      (`TELEGRAM_BOT_TOKEN`) and **Telegram chat id** (`TELEGRAM_CHAT_ID`),
+      saving each.
+2. **Dead-man's switch.**
+   1. On the monitor (healthchecks.io is used here), create a check with a
+      period of 1 minute and a grace time of 5 minutes, and copy its ping
+      URL. It looks like `https://hc-ping.com/<uuid>`.
+   2. On the same Settings tab, set **Heartbeat URL** (`HEARTBEAT_URL`) to
+      that URL and **Heartbeat failure URL** (`HEARTBEAT_FAIL_URL`) to the
+      same URL with `/fail` on the end, saving each.
+
+   The backend pings the first every minute, and the second when the
+   broker service is unreachable. If the whole host goes down, the monitor
+   is what tells you.
+3. **Kill switch.** Check that **Kill switch action**
+   (`KILL_SWITCH_ACTION`) reads `notify`, and leave it there until the
+   paper runbook has shown what its alerts look like.
+4. **Risk limits.** On **Settings > Risk**, set **Trading day timezone**
+   (`TRADING_DAY_TIMEZONE`) to your broker's (or prop firm's) server zone,
+   such as `Europe/Athens`, and save. Set the fleet-wide caps on that tab
+   if you want them now; the paper runbook sets them otherwise.
+   Per-account limits and prop-firm rules go on each connection's form,
+   and a connection's own value wins over the fleet-wide one.
 
 **Expected:** within two minutes, in the CT 110 console,
 
@@ -1786,8 +1983,9 @@ shows `"last_result": "ok"`, and the monitor's check turns green.
 - *No Telegram message arrives:* the chat id is wrong, or you have not
   sent the bot a message first.
 
-**Done when:** the monitor's check is green and the Getting started
-checklist is complete.
+**Done when:** the monitor's check is green, and the Getting started
+checklist is gone from the Settings page. It hides once all five items are
+done. If it still shows, the item without a tick names what is missing.
 
 ---
 
@@ -1873,7 +2071,7 @@ only for a proxy that does not send it.
 **If it fails:** *saving anything in the app fails with "Origin ... is
 not allowed":* the proxy passes the browser's host in neither header. Set
 **Allowed browser origins** to `https://<domain>`. If the Settings page
-itself cannot save, see
+itself cannot save, see the "Origin ... is not allowed" row of
 [OPERATIONS.md § Sign-in](OPERATIONS.md#sign-in).
 
 **Done when:** `https://<domain>` loads and signs in, and a chart on it
@@ -2012,7 +2210,10 @@ and reachable from the app server, and prints one line per port, such as
 nc -z -w 3 <ib-address> 4002 && echo OPEN || echo closed
 ```
 
-Run each printed line on your computer. Each must say `closed`. IB
+Run each printed line on your computer. Each must say `closed`. (Windows
+PowerShell has no `nc`: run `Test-NetConnection <ib-address> -Port 4002`
+with the address and port from the printed line; it must report
+`TcpTestSucceeded : False`.) IB
 Gateway's API has no TLS, so this rule is the only thing that keeps other
 machines off port `4002`.
 
@@ -2079,6 +2280,35 @@ systemctl restart prometheus
 
 **Done when:** `http://<prometheus-address>:9090/targets` shows
 `tradingapp-backend` as **UP**.
+
+The firewall rule in step 8.3 is what keeps other machines off the metrics.
+To also require a token, which is optional:
+
+1. In the CT 110 console, add one line to the app's `.env` and restart.
+   The token is not shown on screen:
+
+   ```bash
+   cd /opt/tradingapp
+   runuser -u tradingapp -- bash -c 'echo "METRICS_TOKEN=$(openssl rand -hex 24)" >> .env'
+   runuser -u tradingapp -- ./tradingapp.sh restart
+   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4000/metrics
+   ```
+
+   The last line prints `401`.
+2. A person reads the token (`grep METRICS_TOKEN /opt/tradingapp/.env` in
+   the CT 110 console) and, in the CT 150 console, adds two lines under
+   the `tradingapp-backend` job in `/etc/prometheus/prometheus.yml`, at
+   the same indentation as `metrics_path`:
+
+   ```yaml
+       authorization:
+         credentials: <the token>
+   ```
+
+3. Run `chmod 640 /etc/prometheus/prometheus.yml`, then
+   `promtool check config /etc/prometheus/prometheus.yml` and
+   `systemctl restart prometheus`. The target shows **UP** again within a
+   minute.
 
 ### 9.2 Grafana (CT 160)
 
@@ -2245,10 +2475,12 @@ lines in `.env`. `verify` ends with `result: PASS`.
 **Done when:** every box below is ticked:
 
 - [ ] `doctor` shows `state: ready`, and `.env` holds only the seven
-      database and key lines
+      database and key lines (plus `METRICS_TOKEN` if you set one in step
+      9.1). `doctor` lists any other key under "Also in .env".
 - [ ] Encryption key stored off the host
 - [ ] `/opt/tradingapp/site-values.md` is filled in, with no secret in it
-- [ ] Getting started checklist complete on the Settings page
+- [ ] The Getting started checklist no longer shows on the Settings page
+      (it hides once all five items are done)
 - [ ] Each broker connection is paper and connected
 - [ ] A chart renders with data for a collected instrument
 - [ ] The heartbeat check is green on its monitor
