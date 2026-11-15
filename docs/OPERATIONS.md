@@ -82,7 +82,7 @@ the stack without its database. Per-service commands such as
 | Where | What |
 |---|---|
 | `.env` (7 keys, mode 600) | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_SSL`, `SETTINGS_ENCRYPTION_KEY`. Written by `install`. |
-| `.env` (optional) | `FRONTEND_PORT`, `BACKEND_PORT`, `BROKER_SERVICE_PORT`; `APP_PASSWORD` or `ORDER_MFA_SECRET` as the way back in; any Settings-page key pinned. |
+| `.env` (optional) | `FRONTEND_PORT`, `BACKEND_PORT`, `BROKER_SERVICE_PORT`; `FRONTEND_BIND`, `BACKEND_BIND`, `METRICS_TOKEN`; `APP_PASSWORD` or `ORDER_MFA_SECRET` as the way back in; any Settings-page key pinned. |
 | `internal_secrets` volume | The broker service token and Redis password, generated on first start, mounted read-only at `/run/tradingapp`. |
 | `tradingapp_pgdata` volume | The bundled database's data (Docker names it `tradingapp_tradingapp_pgdata`). |
 | Settings > Connections | Broker accounts, their priority, credentials (encrypted), per-account limits and prop-firm rules. |
@@ -1198,7 +1198,7 @@ API route answer 503 with the state, and the page shows it.
 
 | State | Meaning | What to do |
 |---|---|---|
-| `waiting_for_database` | The backend cannot reach PostgreSQL. It retries every 1 to 30 seconds with no deadline, so it recovers once the database is up. | Bundled: `./tradingapp.sh status` and `logs`. External: check `POSTGRES_*` in `.env` (host, port, password, `POSTGRES_SSL`), and from the app host `nc -vz <db-address> 5432`; then `listen_addresses`, `pg_hba.conf` and the firewall. |
+| `waiting_for_database` | The backend cannot reach PostgreSQL. It retries every 1 to 30 seconds with no deadline, so it recovers once the database is up. | Bundled: `./tradingapp.sh status` and `logs`. External: check `POSTGRES_*` in `.env` (host, port, password, `POSTGRES_SSL`), and from the app host `timeout 3 bash -c '</dev/tcp/<db-address>/5432' && echo open || echo closed` (it must print `open`); then `listen_addresses`, `pg_hba.conf` and the firewall. |
 | `migrating` | The schema is being created or updated. | Wait. A first install or a large migration can take minutes. |
 | `migration_failed` | A migration failed; the detail carries the database error. It does not retry by itself. | Usually permissions: the role must own the database, and the `timescaledb` extension must exist. Fix it, then `./tradingapp.sh migrate`, which applies what is pending and restarts the backend if it had stopped on the failure. |
 | `key_mismatch` | `SETTINGS_ENCRYPTION_KEY` in `.env` does not open this database's secrets. | Put the saved key back in `.env` and `./tradingapp.sh restart`. If it is lost: [Lost encryption key](#lost-encryption-key). |
@@ -1261,7 +1261,7 @@ database and the internal secrets. `./tradingapp.sh clean` keeps them.
 | Snapshots fail | The storage cannot snapshot (plain directory storage). Move the disk to LVM-thin or ZFS, or rely on the backup job. |
 | Host storage full, containers stuck | Usually old snapshots or backups on local storage. Delete them, then restart the containers. |
 | Routes to part of the LAN vanish on CT 110 only | That part of the LAN overlaps the app's Docker network, `172.20.0.0/16` ([INSTALL.md § Plan the addresses](INSTALL.md#plan-the-addresses)). |
-| `waiting_for_database` on CT 110 | From CT 110: `nc -vz <db-address> 5432`; then the database's `pg_hba.conf` line, the password in `.env`, and CT 100's firewall rule ([INSTALL.md step 1](INSTALL.md#1-database-server-ct-100)). |
+| `waiting_for_database` on CT 110 | From CT 110: `timeout 3 bash -c '</dev/tcp/<db-address>/5432' && echo open || echo closed` (it must print `open`); then the database's `pg_hba.conf` line, the password in `.env`, and CT 100's firewall rule ([INSTALL.md step 1](INSTALL.md#1-database-server-ct-100)). |
 | IB Gateway connection down | In CT 130: `docker compose logs` in `/opt/ib-gateway`. A login IB refuses, or a second factor it asks for, shows there. |
 
 ### Sign-in
@@ -1269,7 +1269,7 @@ database and the internal secrets. `./tradingapp.sh clean` keeps them.
 | Symptom | Fix |
 |---|---|
 | The login page asks for a setup code | No password is set yet. `./tradingapp.sh setup-code`. |
-| Forgot the password or lost the authenticator | [Sign-in and API tokens](#sign-in-and-api-tokens). |
+| Forgot the password or lost the authenticator | [Locked out](#locked-out). |
 | Scripts get 401 | Missing or wrong API token. If `NEXT_PUBLIC_API_TOKEN` is still in `.env`, remove it and rotate any token that held that value: it was readable in the page. |
 | "Origin ... is not allowed" | A page on another site called the API: list its exact origin in `CORS_ORIGINS` (Settings > Network). If it is the app's own page behind a reverse proxy, the proxy passes the browser's host in neither `Host` nor `X-Forwarded-Host`: fix the proxy, or add the public origin (for example `CORS_ORIGINS=https://trading.example.com` in `.env`, then `./tradingapp.sh restart`), since the Settings page cannot save while this fails. |
 | Logs show the proxy's address, not the visitor's | Set `TRUST_PROXY` (Settings > Network) to the proxy's address ([INSTALL.md § 7.3](INSTALL.md#73-tell-the-app-about-the-proxy)); for a proxy on the app server itself, `172.20.0.1`. |
@@ -1292,14 +1292,16 @@ app re-checks every `BROKER_PROBE_INTERVAL_SECONDS`.
 | Symbol resolution says "ambiguous" | The broker lists several tiers of the pair; the connection needs a symbol map ([INSTALL.md § 4.9](INSTALL.md#49-mt5-symbol-map)). |
 | Log line `connection breaker open` | That connection is not answering. Others keep running; it is retried after the cooldown. |
 
-IB Gateway, checked from the app host with `nc -vz <ib-address> 4002`:
+IB Gateway, checked from the app host with
+`timeout 3 bash -c '</dev/tcp/<ib-address>/4002' && echo open || echo closed`
+(it must print `open`):
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Connection refused | Gateway not running, or wrong port | Start it; match the port on the connection to its socket port. |
 | Timeout or host unreachable | A firewall between the hosts | Open the port to the app host and check routing. |
 | Connects, then disconnects | Client id already in use | Give the connection an unused client id. |
-| Connects but no data, or empty searches | Not logged in, no market-data subscription, or the app host missing from Trusted IPs | Log in; subscribe in IB Account Management; fix Trusted IPs and restart the Gateway. |
+| Connects but no data, or empty searches | Not logged in, no market-data subscription, or, for a Gateway run outside the Docker image, the app host missing from Trusted IPs | Log in; subscribe in IB Account Management; for a Gateway outside the Docker image, add the app host to Trusted IPs and restart the Gateway (the Docker image from [INSTALL.md 4.3](INSTALL.md#43-interactive-brokers-ct-130) needs no Trusted IPs). |
 | Bars shifted by hours | The Gateway is not in UTC | Run it in UTC, or set `IB_TIMEZONE`. |
 
 ### Charts and streaming
