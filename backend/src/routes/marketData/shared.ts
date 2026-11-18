@@ -10,6 +10,7 @@
  *   depth.ts      — GET  /depth
  *   indicators.ts — GET  /indicators, GET /indicators/available
  *   database.ts   — GET  /database/stats, POST /upload, POST /database/clean
+ *   symbols.ts    — GET  /symbols, POST /symbols/refresh (the broker's symbol list)
  *
  * `routes/marketData.ts` re-assembles them into the single router mounted at
  * `/api/market-data`, so the public surface is unchanged.

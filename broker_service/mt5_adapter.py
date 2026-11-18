@@ -87,6 +87,7 @@ import httpx
 import pandas as pd
 from fastapi import HTTPException
 
+import symbol_catalogue
 from client_ids import audit_id_from, client_order_id
 from indicators import calculator as indicator_calculator
 from models import CandlestickBar, HistoricalDataResponse, RealTimeQuote
@@ -107,6 +108,10 @@ _TIMEFRAME_TO_MT5 = {
     "8hour": "H8",
     "1day": "D1",
 }
+
+# The most symbols one catalogue fetch asks the sidecar for; a server lists
+# a few thousand at most.
+_CATALOGUE_LIMIT = 50000
 
 # Rough bar budget per app period, so the sidecar can bound its pull.
 _PERIOD_TO_COUNT = {
@@ -268,6 +273,33 @@ class MT5Adapter:
                 }
             )
         return {"results": norm, "count": len(norm), "broker": "mt5"}
+
+    def list_instruments(self) -> List[Dict[str, Any]]:
+        """Every symbol the terminal's server offers, for the symbol catalogue.
+
+        The broker files each symbol in a folder (``Forex\\Majors\\EURUSD``,
+        ``Indices\\AUS200``), and the folder names give the market.
+        """
+        payload = self._get("/symbols", {"query": "", "limit": _CATALOGUE_LIMIT})
+        results = payload.get("results", []) if isinstance(payload, dict) else []
+        rows: List[Dict[str, Any]] = []
+        for r in results if isinstance(results, list) else []:
+            sym = str(r.get("symbol") or r.get("name") or "") if isinstance(r, dict) else ""
+            if not sym:
+                continue
+            folders = str(r.get("path") or "").replace("/", "\\").split("\\")[:-1]
+            rows.append(
+                symbol_catalogue.entry(
+                    symbol=sym,
+                    name=str(r.get("description") or sym),
+                    market=symbol_catalogue.classify(sym, words=folders, sec_type="CFD"),
+                    sec_type=str(r.get("secType") or "CFD"),
+                    currency=str(r.get("currency") or ""),
+                    exchange=str(r.get("exchange") or "MT5"),
+                    venue_id=sym,
+                )
+            )
+        return rows
 
     def historical_bars(
         self,

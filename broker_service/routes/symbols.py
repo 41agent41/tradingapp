@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 
+import symbol_catalogue
 from ib_client import get_ib_connection, verify_connection_health
 from ib_helpers import (
     cache_symbols,
@@ -309,3 +312,55 @@ async def clear_cache():
     removed = _clear_symbol_cache()
     logger.info("symbol_cache_cleared", removed=removed)
     return {"message": f"Cache cleared. Removed {removed} entries."}
+
+
+@router.get("/symbols/catalogue")
+def symbol_catalogue_for(
+    source: Optional[str] = Query(None, description="Platform; default the priority broker"),
+    account: Optional[str] = Query(None, description="Account on it; default its default"),
+    q: str = Query("", max_length=64, description="Search-only brokers: what to look for"),
+    market: str = Query("", description="Search-only brokers: the market to look in"),
+    account_mode: str = Query("paper"),
+):
+    """What a connection can trade, each entry with its market.
+
+    A listable broker answers with its whole list (``complete: true``) and
+    ignores ``q``. A search-only broker (IB, IG) answers with what a search
+    for ``q`` finds (``complete: false``), and with nothing when ``q`` is
+    empty: there is no list of everything to give.
+    """
+    from adapters import get_market_data_adapter, resolve_provider
+
+    platform = resolve_provider(source)
+    adapter = get_market_data_adapter(platform, account)
+    lister = getattr(adapter, "list_instruments", None)
+    if callable(lister):
+        rows = lister()
+        return {
+            "platform": platform,
+            "complete": True,
+            "instruments": rows,
+            "count": len(rows),
+        }
+
+    pattern = q.strip()
+    rows = []
+    if pattern:
+        sec_type = symbol_catalogue.MARKET_SEC_TYPE.get(market.upper(), "STK")
+        found = venue_search(
+            platform, pattern, secType=sec_type, currency="", account_mode=account_mode
+        )
+        if found is None:  # IB Gateway: its contract search talks to the gateway
+            found = adapter.search_contracts(
+                SimpleNamespace(
+                    symbol=pattern,
+                    secType=sec_type,
+                    exchange="SMART",
+                    currency="",
+                    name=False,
+                    account_mode=account_mode,
+                    source=platform,
+                )
+            )
+        rows = symbol_catalogue.from_search_results(list((found or {}).get("results") or []))
+    return {"platform": platform, "complete": False, "instruments": rows, "count": len(rows)}

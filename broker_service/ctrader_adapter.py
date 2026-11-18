@@ -22,6 +22,7 @@ and closes it; streaming keeps one open with a heartbeat.
 
     2100/2101 ApplicationAuth     2102/2103 AccountAuth
     2114/2115 SymbolsList         2116/2117 SymbolById      2112/2113 AssetList
+    2153/2154 AssetClassList      2160/2161 SymbolCategoryList
     2145/2146 GetTickData (tick history, one side at a time)
     2137/2138 GetTrendbars        2127/2128 SubscribeSpots  2131 SpotEvent
     2135/2165 SubscribeLiveTrendbar (the forming bar then rides on SpotEvent)
@@ -63,6 +64,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 import pandas as pd
 from fastapi import HTTPException
 
+import symbol_catalogue
 from client_ids import client_order_id
 from indicators import calculator as indicator_calculator
 from models import CandlestickBar, HistoricalDataResponse, RealTimeQuote
@@ -97,6 +99,8 @@ AMEND_POSITION_SLTP_REQ = 2110
 ASSET_LIST_REQ, ASSET_LIST_RES = 2112, 2113
 SYMBOLS_LIST_REQ, SYMBOLS_LIST_RES = 2114, 2115
 SYMBOL_BY_ID_REQ, SYMBOL_BY_ID_RES = 2116, 2117
+ASSET_CLASS_LIST_REQ, ASSET_CLASS_LIST_RES = 2153, 2154
+SYMBOL_CATEGORY_REQ, SYMBOL_CATEGORY_RES = 2160, 2161
 TRADER_REQ, TRADER_RES = 2121, 2122
 RECONCILE_REQ, RECONCILE_RES = 2124, 2125
 EXECUTION_EVENT = 2126
@@ -506,6 +510,63 @@ class CTraderAdapter:
             if len(results) >= limit:
                 break
         return {"results": results, "count": len(results), "broker": "ctrader"}
+
+    def list_instruments(self) -> List[Dict[str, Any]]:
+        """Every enabled symbol on the account, for the symbol catalogue.
+
+        A cTrader symbol names its category, and the category its asset class
+        ("Forex", "Indices", "Metals" and so on, as the broker set them up).
+        Those names give the market; where a broker's server does not answer
+        the category calls, the symbol's name does.
+        """
+        with self._session() as session:
+            symbols = self._symbol_list(session)
+            assets = self._asset_names(session)
+            categories = self._categories(session)
+        rows: List[Dict[str, Any]] = []
+        for s in symbols.values():
+            name = str(s.get("symbolName"))
+            description = str(s.get("description") or "")
+            category, asset_class = categories.get(_int(s.get("symbolCategoryId")), ("", ""))
+            fx = bool(_FX_NAME_RE.match(name))
+            market = symbol_catalogue.classify(
+                name, words=(asset_class, category), sec_type="CASH" if fx else "CFD"
+            )
+            rows.append(
+                symbol_catalogue.entry(
+                    symbol=_from_name(name),
+                    name=description or name,
+                    market=market,
+                    sec_type="CASH" if market == "FX" and fx else "CFD",
+                    currency=assets.get(_int(s.get("quoteAssetId")), ""),
+                    exchange="CTRADER",
+                    venue_id=str(s.get("symbolId")),
+                )
+            )
+        return rows
+
+    def _categories(self, session: _Session) -> Dict[int, tuple[str, str]]:
+        """Category id -> (category name, asset class name). Empty when the
+        server does not answer, so the catalogue still lists every symbol."""
+        try:
+            classes_reply = session.request(ASSET_CLASS_LIST_REQ, {}, expect=ASSET_CLASS_LIST_RES)
+            categories_reply = session.request(SYMBOL_CATEGORY_REQ, {}, expect=SYMBOL_CATEGORY_RES)
+        except Exception as exc:  # noqa: BLE001 - names only refine the grouping
+            logger.warning("ctrader_symbol_categories_unavailable", error=str(exc))
+            return {}
+        classes = {
+            _int(c.get("id")): str(c.get("name") or "")
+            for c in classes_reply.get("assetClass") or []
+            if isinstance(c, dict)
+        }
+        return {
+            _int(c.get("id")): (
+                str(c.get("name") or ""),
+                classes.get(_int(c.get("assetClassId")), ""),
+            )
+            for c in categories_reply.get("symbolCategory") or []
+            if isinstance(c, dict)
+        }
 
     def historical_bars(
         self,

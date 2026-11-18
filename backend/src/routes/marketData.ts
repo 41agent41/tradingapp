@@ -17,6 +17,7 @@ import replayRoutes from './marketData/replay.js';
 import depthRoutes from './marketData/depth.js';
 import sentimentRoutes from './marketData/sentiment.js';
 import tickRoutes from './marketData/ticks.js';
+import symbolRoutes from './marketData/symbols.js';
 
 const router = express.Router();
 
@@ -32,5 +33,6 @@ router.use(replayRoutes);
 router.use(depthRoutes);
 router.use(sentimentRoutes);
 router.use(tickRoutes);
+router.use(symbolRoutes);
 
 export default router;

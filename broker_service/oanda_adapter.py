@@ -65,6 +65,7 @@ import httpx
 import pandas as pd
 from fastapi import HTTPException
 
+import symbol_catalogue
 from client_ids import audit_id_from, client_order_id
 from indicators import calculator as indicator_calculator
 from models import CandlestickBar, HistoricalDataResponse, RealTimeQuote
@@ -282,6 +283,45 @@ class OANDAAdapter:
                 }
             )
         return {"results": results, "count": len(results), "broker": "oanda"}
+
+    def list_instruments(self) -> List[Dict[str, Any]]:
+        """Every instrument the account can trade, for the symbol catalogue.
+
+        OANDA types an instrument CURRENCY, METAL or CFD. A CFD's asset class
+        (index, commodity, bond) is in its ``tags`` where OANDA sends them,
+        and otherwise read from its name (``AU200_AUD`` is an index).
+        """
+        payload = self._get(self._account_path("/instruments"))
+        instruments = payload.get("instruments", []) if isinstance(payload, dict) else []
+        rows: List[Dict[str, Any]] = []
+        for i in instruments if isinstance(instruments, list) else []:
+            instrument = str(i.get("name") or "") if isinstance(i, dict) else ""
+            if not instrument:
+                continue
+            kind = str(i.get("type") or "")
+            tags = [
+                str(t.get("name") or "")
+                for t in i.get("tags") or []
+                if isinstance(t, dict) and "ASSET_CLASS" in str(t.get("type") or "").upper()
+            ]
+            if kind == "CURRENCY":
+                market = "FX"
+            elif kind == "METAL":
+                market = "METAL"
+            else:
+                market = symbol_catalogue.classify(instrument, words=tags, sec_type="CFD")
+            rows.append(
+                symbol_catalogue.entry(
+                    symbol=_from_instrument(instrument),
+                    name=str(i.get("displayName") or instrument),
+                    market=market,
+                    sec_type="CASH" if kind == "CURRENCY" else "CFD",
+                    currency=instrument.split("_")[-1] if "_" in instrument else "",
+                    exchange="OANDA",
+                    venue_id=instrument,
+                )
+            )
+        return rows
 
     def historical_bars(
         self,

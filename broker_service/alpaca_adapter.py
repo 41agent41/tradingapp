@@ -76,6 +76,7 @@ import httpx
 import pandas as pd
 from fastapi import HTTPException
 
+import symbol_catalogue
 from indicators import calculator as indicator_calculator
 from models import CandlestickBar, HistoricalDataResponse, RealTimeQuote
 from observability import get_logger
@@ -279,6 +280,35 @@ class AlpacaAdapter:
                 }
             )
         return {"results": results, "count": len(results), "broker": "alpaca"}
+
+    def list_instruments(self) -> List[Dict[str, Any]]:
+        """Every active, tradable US equity and crypto pair, for the symbol
+        catalogue. Option contracts are not listed: there are millions, and
+        the advanced search finds them by underlying."""
+        rows: List[Dict[str, Any]] = []
+        for asset_class, market, sec_type in (
+            ("us_equity", "STOCK", "STK"),
+            ("crypto", "CRYPTO", "CRYPTO"),
+        ):
+            payload = self._trading_get(
+                "/v2/assets", {"status": "active", "asset_class": asset_class}
+            )
+            for a in payload if isinstance(payload, list) else []:
+                sym = str(a.get("symbol") or "") if isinstance(a, dict) else ""
+                if not sym or a.get("tradable") is False:
+                    continue
+                rows.append(
+                    symbol_catalogue.entry(
+                        symbol=sym,
+                        name=str(a.get("name") or sym),
+                        market=market,
+                        sec_type=sec_type,
+                        currency=sym.partition("/")[2] or "USD",
+                        exchange=str(a.get("exchange") or ""),
+                        venue_id=str(a.get("id") or sym),
+                    )
+                )
+        return rows
 
     def _search_options(self, request: Any, underlying: str, limit: int) -> Dict[str, Any]:
         """The option contracts on ``underlying``, nearest expiry first. The
