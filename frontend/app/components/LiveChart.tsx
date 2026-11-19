@@ -30,11 +30,18 @@ export interface LiveInstrument {
 
 interface RealtimeData {
   symbol: string;
-  bid: number;
-  ask: number;
-  last: number;
-  volume: number;
+  // Any of these can be null: OANDA, IG and cTrader quotes carry no
+  // volume, and a closed market can leave bid, ask or last empty.
+  bid: number | null;
+  ask: number | null;
+  last: number | null;
+  volume: number | null;
   timestamp: string;
+}
+
+/** A finite number from a quote field, or null for null, missing or junk. */
+function quoteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 interface CandlestickData {
@@ -99,7 +106,8 @@ const INDICATOR_CONFIGS: Record<string, { color: string; label: string; priceSca
 };
 
 /** Enough decimals for FX (1.08345) without padding stock prices. */
-function formatPrice(value: number): string {
+function formatPrice(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—';
   const abs = Math.abs(value);
   return value.toFixed(abs === 0 || abs >= 100 ? 2 : abs >= 10 ? 3 : 5);
 }
@@ -510,8 +518,16 @@ export default function LiveChart({
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
-      const data: RealtimeData = await response.json();
-      if (data.last && data.last > 0) {
+      const raw = await response.json();
+      const data: RealtimeData = {
+        symbol: typeof raw?.symbol === 'string' ? raw.symbol : symbol,
+        bid: quoteNumber(raw?.bid),
+        ask: quoteNumber(raw?.ask),
+        last: quoteNumber(raw?.last),
+        volume: quoteNumber(raw?.volume),
+        timestamp: typeof raw?.timestamp === 'string' ? raw.timestamp : new Date().toISOString(),
+      };
+      if (data.last !== null && data.last > 0) {
         setCurrentData(data);
         setLastUpdate(new Date());
         setError(null);
@@ -588,10 +604,10 @@ export default function LiveChart({
     setCurrentData((prev) => {
       const merged: RealtimeData = {
         symbol: tick.symbol,
-        bid: prev?.bid ?? 0,
-        ask: prev?.ask ?? 0,
-        last: prev?.last ?? 0,
-        volume: prev?.volume ?? 0,
+        bid: prev?.bid ?? null,
+        ask: prev?.ask ?? null,
+        last: prev?.last ?? null,
+        volume: prev?.volume ?? null,
         timestamp: new Date(tick.timestamp * 1000).toISOString(),
       };
       const value = typeof tick.value === 'number' ? tick.value : null;
@@ -674,7 +690,7 @@ export default function LiveChart({
   };
 
   const getPriceChange = () => {
-    if (!currentData || chartData.length === 0) return null;
+    if (!currentData || currentData.last == null || chartData.length === 0) return null;
     const previousClose = chartData[chartData.length - 1]?.close;
     if (!previousClose) return null;
 
@@ -898,7 +914,7 @@ export default function LiveChart({
             <div className="bg-gray-50 p-2 sm:p-3 rounded">
               <p className="text-xs sm:text-sm text-gray-600">Volume</p>
               <p className="text-base sm:text-lg font-semibold text-gray-900">
-                {currentData.volume.toLocaleString()}
+                {currentData.volume != null ? currentData.volume.toLocaleString() : '—'}
               </p>
             </div>
           </div>
