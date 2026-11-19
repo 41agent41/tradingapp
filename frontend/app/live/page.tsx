@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 import BackToHome from '../components/BackToHome';
 import LiveChart, { type LiveInstrument } from '../components/LiveChart';
+import SymbolPicker from '../components/SymbolPicker';
 import { instrumentFromParams, paramsFromInstrument } from '../lib/liveInstrument';
 import { apiFetch } from '../lib/api';
 import {
@@ -21,6 +22,13 @@ const SEC_TYPES = [
   { value: 'FUT', label: 'Future' },
   { value: 'CRYPTO', label: 'Crypto' },
 ];
+
+/** The types to offer, with the one a listed symbol set even if it is not among them. */
+function withCurrent(secType?: string) {
+  return !secType || SEC_TYPES.some((t) => t.value === secType)
+    ? SEC_TYPES
+    : [...SEC_TYPES, { value: secType, label: secType }];
+}
 
 const INPUT = 'w-full px-2 py-1 text-sm border border-gray-300 rounded-md';
 
@@ -71,17 +79,8 @@ function LivePage() {
         <form
           aria-label="Choose the instrument"
           onSubmit={show}
-          className="bg-white rounded-lg shadow-sm border p-3 grid grid-cols-2 sm:grid-cols-6 gap-3 items-end"
+          className="bg-white rounded-lg shadow-sm border p-3 grid grid-cols-2 sm:grid-cols-7 gap-3 items-start"
         >
-          <label className="text-sm text-gray-700 col-span-2 sm:col-span-1">
-            Symbol
-            <input
-              className={INPUT}
-              value={draft.symbol}
-              onChange={(e) => setDraft({ ...draft, symbol: e.target.value })}
-              placeholder="EURUSD"
-            />
-          </label>
           <label className="text-sm text-gray-700 col-span-2">
             Connection
             <select
@@ -101,6 +100,25 @@ function LivePage() {
               ))}
             </select>
           </label>
+          <SymbolPicker
+            source={draft.source}
+            account={draft.account}
+            accountMode={
+              findConnection(connections, draft.source, draft.account)?.account_mode === 'live'
+                ? 'live'
+                : 'paper'
+            }
+            symbol={draft.symbol}
+            onChange={(choice) =>
+              setDraft((d) => ({
+                ...d,
+                symbol: choice.symbol,
+                ...(choice.secType ? { secType: choice.secType } : {}),
+                ...(choice.secType ? { currency: choice.currency ?? '' } : {}),
+              }))
+            }
+            inputClassName={INPUT}
+          />
           <label className="text-sm text-gray-700">
             Type
             <select
@@ -108,7 +126,7 @@ function LivePage() {
               value={draft.secType}
               onChange={(e) => setDraft({ ...draft, secType: e.target.value })}
             >
-              {SEC_TYPES.map((t) => (
+              {withCurrent(draft.secType).map((t) => (
                 <option key={t.value} value={t.value}>
                   {t.label}
                 </option>
@@ -126,7 +144,7 @@ function LivePage() {
           </label>
           <button
             type="submit"
-            className="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700"
+            className="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 sm:mt-5"
           >
             Show
           </button>
