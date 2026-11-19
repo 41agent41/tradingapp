@@ -34,6 +34,41 @@ export interface StartupStatus {
 /** Routes that work before the database is ready. */
 const OPEN_BEFORE_READY = ['/api/health', '/api/database/health'];
 
+/**
+ * What to check for the usual reasons a new install cannot reach its
+ * database, keyed on the error PostgreSQL or the network gives.
+ */
+export function connectionHint(error: string): string | null {
+  const e = error.toLowerCase();
+  if (e.includes('no pg_hba.conf entry')) {
+    return 'the database refuses this host: its pg_hba.conf has no line for the address in the error (INSTALL.md step 1.4)';
+  }
+  if (e.includes('password authentication failed')) {
+    return 'POSTGRES_PASSWORD in .env is not the password of the database role (INSTALL.md step 1.3)';
+  }
+  if (/database "[^"]*" does not exist/.test(e) || /role "[^"]*" does not exist/.test(e)) {
+    return 'the database or its role has not been created (INSTALL.md step 1.3)';
+  }
+  if (e.includes('econnrefused')) {
+    return 'nothing listens on that address and port: PostgreSQL is stopped, listens on localhost only, or POSTGRES_HOST/POSTGRES_PORT are wrong';
+  }
+  if (
+    e.includes('timeout') ||
+    e.includes('etimedout') ||
+    e.includes('ehostunreach') ||
+    e.includes('enetunreach')
+  ) {
+    return "no answer from that address: a firewall drops it, the address is wrong, or the LAN overlaps the app's Docker network 172.20.0.0/16";
+  }
+  if (e.includes('enotfound') || e.includes('eai_again')) {
+    return 'POSTGRES_HOST is a name this host cannot resolve; use the address';
+  }
+  if (e.includes('ssl')) {
+    return 'POSTGRES_SSL does not match what the database expects';
+  }
+  return null;
+}
+
 function target(env: Record<string, string | undefined> = process.env): string {
   return `${env.POSTGRES_HOST || 'localhost'}:${env.POSTGRES_PORT || '5432'}/${env.POSTGRES_DB || 'tradingapp'}`;
 }
@@ -51,7 +86,8 @@ export class StartupGate {
   private readyListeners: (() => void)[] = [];
 
   constructor(
-    private readonly db: Pick<DatabaseService, 'testConnection' | 'getClient' | 'query'>,
+    private readonly db: Pick<DatabaseService, 'testConnection' | 'getClient' | 'query'> &
+      Partial<Pick<DatabaseService, 'lastConnectionError'>>,
     private readonly opts: {
       initialDelayMs?: number;
       maxDelayMs?: number;
@@ -93,9 +129,16 @@ export class StartupGate {
     for (;;) {
       this.status.attempts += 1;
       if (await this.db.testConnection().catch(() => false)) break;
+      // Say why, so /api/health/ready and the installer can show it.
+      const error = this.db.lastConnectionError?.() ?? null;
+      const hint = error ? connectionHint(error) : null;
+      this.status.detail =
+        `waiting for the database at ${this.status.database}` +
+        (error ? `: ${error}` : '') +
+        (hint ? ` (${hint})` : '');
       if (this.status.attempts === 1 || this.status.attempts % 10 === 0) {
         logger.warn(
-          { database: this.status.database, attempts: this.status.attempts },
+          { database: this.status.database, attempts: this.status.attempts, err: error, hint },
           'waiting for the database; the app starts once it is reachable'
         );
       }

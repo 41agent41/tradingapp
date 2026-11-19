@@ -32,6 +32,7 @@ pool.on('error', (err: Error, _client: PoolClient) => {
 // Database service class
 export class DatabaseService {
   private pool: Pool;
+  private lastError: string | null = null;
 
   constructor() {
     this.pool = pool;
@@ -44,11 +45,18 @@ export class DatabaseService {
       const result = await client.query('SELECT NOW()');
       client.release();
       logger.debug({ now: result.rows[0]?.now }, 'database connection test successful');
+      this.lastError = null;
       return true;
     } catch (error) {
+      this.lastError = String((error as Error)?.message ?? error);
       logger.error({ err: String(error) }, 'database connection test failed');
       return false;
     }
+  }
+
+  /** Why the last connection test failed (PostgreSQL's or the network's words), or null. */
+  lastConnectionError(): string | null {
+    return this.lastError;
   }
 
   // Get a client from the pool

@@ -14,7 +14,7 @@ jest.mock('../src/services/keyCheck.js', () => ({
 
 import express from 'express';
 import request from 'supertest';
-import { StartupGate } from '../src/services/startupGate.js';
+import { StartupGate, connectionHint } from '../src/services/startupGate.js';
 
 const migrations = jest.requireMock('../src/services/migrations.js') as {
   runMigrations: jest.Mock;
@@ -60,6 +60,27 @@ describe('StartupGate.run', () => {
     expect(migrations.runMigrations).toHaveBeenCalledTimes(1);
     expect(db.release).toHaveBeenCalled();
     expect(ready).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports why the database cannot be reached while it waits', async () => {
+    const error =
+      'no pg_hba.conf entry for host "192.168.1.110", user "tradingapp", database "tradingapp", no encryption';
+    let seen: string | null = null;
+    const db = {
+      ...fakeDb(1),
+      lastConnectionError: jest.fn(() => error),
+    };
+    const gate: StartupGate = new StartupGate(db, {
+      sleep: async () => {
+        seen = gate.current().detail;
+      },
+    });
+
+    await gate.run();
+
+    expect(seen).toContain(error);
+    expect(seen).toContain('pg_hba.conf has no line');
+    expect(gate.current().state).toBe('ready');
   });
 
   it('stays not ready, with the reason, when a migration fails', async () => {
@@ -122,5 +143,21 @@ describe('StartupGate.middleware', () => {
     const gate = new StartupGate(fakeDb(), { sleep: async () => undefined });
     await gate.run();
     expect((await request(appWith(gate)).get('/api/settings')).status).toBe(200);
+  });
+});
+
+describe('connectionHint', () => {
+  it.each([
+    ['password authentication failed for user "tradingapp"', /POSTGRES_PASSWORD/],
+    ['connect ECONNREFUSED 192.168.1.100:5432', /nothing listens/],
+    ['timeout expired', /172\.20\.0\.0\/16/],
+    ['database "tradingapp" does not exist', /step 1\.3/],
+    ['getaddrinfo ENOTFOUND db', /cannot resolve/],
+  ])('%s', (error, hint) => {
+    expect(connectionHint(error)).toMatch(hint);
+  });
+
+  it('gives nothing for an error it does not know', () => {
+    expect(connectionHint('something else')).toBeNull();
   });
 });

@@ -497,6 +497,9 @@ wait_for_backend_ready() {
         sleep 3
     done
     print_error "The backend was not ready after ${timeout}s (last state: ${last:-no answer})."
+    if [[ -n ${detail// /} ]]; then
+        print_info "Last reason: $detail"
+    fi
     if [[ $last == waiting_for_database ]]; then
         print_info "Check the database is running and POSTGRES_* in .env point at it."
     fi

@@ -708,8 +708,14 @@ answers, where `<you>` is your GitHub account.
 **If it fails:** the message names the phase and the cause. Fix it with
 the table in [A.1](#a1-phases), then run the same command again (it is safe
 to re-run). The most common:
-- *`waiting_for_database` until the timeout:* step 1. Check the address,
-  the `pg_hba.conf` line (1.4), the password (1.3), and the extension.
+- *`readiness: waiting_for_database` until the timeout:* the backend
+  cannot log in to CT 100. That line ends with PostgreSQL's own error and
+  what to check: `no pg_hba.conf entry for host "X"` means the line from
+  step 1.4 must name `X`; `password authentication failed` means step 1.3's
+  `ALTER ROLE` fix; `ECONNREFUSED` or a timeout means PostgreSQL is not
+  listening on the network or a firewall drops the connection. Fix it on
+  CT 100; the backend connects by itself within 30 seconds, then run the
+  same command again.
 - *`result: FAIL (n)`:* each failing check is a `CHECK ... FAIL` line;
   [A.3](#a3-checks) says what to do for each.
 - *Anything else:* stop and report
