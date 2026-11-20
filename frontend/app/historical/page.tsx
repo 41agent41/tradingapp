@@ -6,7 +6,11 @@ import DataSwitch from '../components/DataSwitch';
 import HistoricalChart from '../components/HistoricalChart';
 import ChartSkeleton from '../components/ChartSkeleton';
 import BackToHome from '../components/BackToHome';
-import ExchangeDrivenFilters from '../components/ExchangeDrivenFilters';
+import InstrumentFilters, {
+  DEFAULT_INSTRUMENT,
+  instrumentParams,
+  type Instrument,
+} from '../components/InstrumentFilters';
 import PeriodDateFilters from '../components/PeriodDateFilters';
 import TechnicalIndicatorsFilter from '../components/TechnicalIndicatorsFilter';
 import { apiFetch } from '../lib/api';
@@ -34,15 +38,8 @@ interface ProcessedBar {
 export default function HistoricalChartPage() {
   const { isLiveTrading, accountMode, dataType } = useTradingAccount();
 
-  // Enhanced filter state
-  const [exchangeFilters, setExchangeFilters] = useState({
-    region: 'US' as 'US' | 'AU',
-    exchange: 'SMART',
-    secType: 'STK',
-    symbol: 'MSFT',
-    currency: 'USD',
-    searchTerm: '',
-  });
+  // The connection and the symbol on it, picked from that broker's own list.
+  const [instrument, setInstrument] = useState<Instrument>(DEFAULT_INSTRUMENT);
 
   const [periodFilters, setPeriodFilters] = useState<{
     period: string;
@@ -79,7 +76,7 @@ export default function HistoricalChartPage() {
     try {
       const savedSymbol = window.localStorage.getItem(STORAGE_KEYS.lastSymbol);
       if (savedSymbol) {
-        setExchangeFilters((prev) =>
+        setInstrument((prev) =>
           prev.symbol === savedSymbol ? prev : { ...prev, symbol: savedSymbol }
         );
       }
@@ -93,13 +90,13 @@ export default function HistoricalChartPage() {
 
   // Persist last-used symbol/timeframe whenever they change.
   useEffect(() => {
-    if (typeof window === 'undefined' || !exchangeFilters.symbol) return;
+    if (typeof window === 'undefined' || !instrument.symbol) return;
     try {
-      window.localStorage.setItem(STORAGE_KEYS.lastSymbol, exchangeFilters.symbol);
+      window.localStorage.setItem(STORAGE_KEYS.lastSymbol, instrument.symbol);
     } catch {
       /* storage disabled */
     }
-  }, [exchangeFilters.symbol]);
+  }, [instrument.symbol]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
@@ -253,13 +250,10 @@ export default function HistoricalChartPage() {
     try {
       // Build query parameters
       const params = new URLSearchParams({
-        symbol: exchangeFilters.symbol,
+        ...instrumentParams(instrument),
         timeframe: timeframe,
         period: periodFilters.useDateRange ? 'CUSTOM' : periodFilters.period,
         account_mode: accountMode,
-        secType: exchangeFilters.secType,
-        exchange: exchangeFilters.exchange,
-        currency: exchangeFilters.currency,
       });
 
       // Add date range if using custom dates
@@ -347,7 +341,7 @@ export default function HistoricalChartPage() {
       return;
     }
 
-    if (!exchangeFilters.symbol.trim()) {
+    if (!instrument.symbol.trim()) {
       setError('Please select a valid symbol');
       return;
     }
@@ -407,11 +401,12 @@ export default function HistoricalChartPage() {
         {/* Enhanced Filters */}
         <div className="mb-6 sm:mb-8 bg-white rounded-lg shadow-sm border p-4 sm:p-6">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Exchange-Driven Filters */}
+            {/* Connection & Symbol */}
             <div>
               <h3 className="text-sm font-medium text-gray-900 mb-4">Market & Symbol</h3>
-              <ExchangeDrivenFilters
-                onFiltersChange={setExchangeFilters}
+              <InstrumentFilters
+                value={instrument}
+                onChange={setInstrument}
                 disabled={!dataQueryEnabled}
               />
             </div>
@@ -487,10 +482,10 @@ export default function HistoricalChartPage() {
         <div className="bg-white rounded-lg shadow-sm border p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-medium text-gray-900">
-              Historical Chart: {exchangeFilters.symbol}
+              Historical Chart: {instrument.symbol}
             </h2>
             <div className="text-sm text-gray-500">
-              {exchangeFilters.exchange} - {exchangeFilters.secType} | Timeframe:{' '}
+              {[instrument.exchange, instrument.secType].filter(Boolean).join(' - ')} | Timeframe:{' '}
               {timeframes.find((tf) => tf.value === timeframe)?.label}
               {lastUpdate && <span className="ml-4">Last update: {formatTime(lastUpdate)}</span>}
             </div>
@@ -498,7 +493,7 @@ export default function HistoricalChartPage() {
 
           {/* Chart Display */}
           {isLoading ? (
-            <ChartSkeleton height={384} label={`Loading ${exchangeFilters.symbol}…`} />
+            <ChartSkeleton height={384} label={`Loading ${instrument.symbol}…`} />
           ) : chartData && processedBars.length > 0 ? (
             <div>
               {/* Data Summary */}
