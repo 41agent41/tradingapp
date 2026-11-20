@@ -386,7 +386,11 @@ separate Jesse install, database or exchange driver.
 The `/download` page pulls historical OHLCV bars from a broker, shows them,
 and stores them in the database on request.
 
-1. Choose the region, exchange, security type, symbol and currency.
+1. Choose the broker connection (or leave it to the broker priority), then a
+   symbol from that connection's own list, by market: the same picker as the
+   live chart. Picking a listed symbol fills in its security type, currency
+   and exchange, which can still be changed for a symbol the list lacks.
+   `/historical` has the same picker.
 2. Choose a period (`1D`, `1W`, `1M`, `3M`, `6M`, `1Y`) or a custom date
    range, and a timeframe (tick to 1 day).
 3. **Download** fetches the bars (`GET /api/market-data/history`) and shows
@@ -1379,7 +1383,8 @@ on `master` have **shipped** (see
 ### Workflow: persist 1 year of bars
 
 1. Open `/download`.
-2. Choose symbol, security type, exchange and timeframe.
+2. Choose the connection, pick the symbol from its list (security type,
+   currency and exchange fill in), and choose the timeframe.
 3. Pick the `1Y` period (or a custom date range).
 4. Click **Download from IB API**, review the DataFrame preview.
 5. Click **Load to PostgreSQL**; the backend upserts the bars and reports

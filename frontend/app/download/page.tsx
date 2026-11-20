@@ -5,7 +5,11 @@ import { useTradingAccount } from '../contexts/TradingAccountContext';
 import DataSwitch from '../components/DataSwitch';
 import DataframeViewer from '../components/DataframeViewer';
 import BackToHome from '../components/BackToHome';
-import ExchangeDrivenFilters from '../components/ExchangeDrivenFilters';
+import InstrumentFilters, {
+  DEFAULT_INSTRUMENT,
+  instrumentParams,
+  type Instrument,
+} from '../components/InstrumentFilters';
 import PeriodDateFilters from '../components/PeriodDateFilters';
 import TickHistoryDownload from '../components/TickHistoryDownload';
 import { apiFetch } from '../lib/api';
@@ -35,15 +39,8 @@ interface DownloadStatus {
 export default function DownloadPage() {
   const { isLiveTrading, accountMode, dataType } = useTradingAccount();
 
-  // Enhanced filter state
-  const [exchangeFilters, setExchangeFilters] = useState({
-    region: 'US' as 'US' | 'AU',
-    exchange: 'SMART',
-    secType: 'STK',
-    symbol: 'MSFT',
-    currency: 'USD',
-    searchTerm: '',
-  });
+  // The connection and the symbol on it, picked from that broker's own list.
+  const [instrument, setInstrument] = useState<Instrument>(DEFAULT_INSTRUMENT);
 
   const [periodFilters, setPeriodFilters] = useState<{
     period: string;
@@ -119,13 +116,10 @@ export default function DownloadPage() {
     try {
       // Build query parameters
       const params = new URLSearchParams({
-        symbol: exchangeFilters.symbol,
+        ...instrumentParams(instrument),
         timeframe: timeframe,
         period: periodFilters.useDateRange ? 'CUSTOM' : periodFilters.period,
         account_mode: accountMode,
-        secType: exchangeFilters.secType,
-        exchange: exchangeFilters.exchange,
-        currency: exchangeFilters.currency,
       });
 
       // Add date range if using custom dates
@@ -239,9 +233,9 @@ export default function DownloadPage() {
           timeframe: chartData.timeframe,
           bars: chartData.bars,
           account_mode: chartData.account_mode,
-          secType: exchangeFilters.secType,
-          exchange: exchangeFilters.exchange,
-          currency: exchangeFilters.currency,
+          secType: instrument.secType,
+          exchange: instrument.exchange,
+          currency: instrument.currency,
         }),
       });
 
@@ -283,7 +277,7 @@ export default function DownloadPage() {
       return;
     }
 
-    if (!exchangeFilters.symbol.trim()) {
+    if (!instrument.symbol.trim()) {
       setError('Please select a valid symbol');
       return;
     }
@@ -353,11 +347,12 @@ export default function DownloadPage() {
         {/* Enhanced Filters */}
         <div className="mb-6 sm:mb-8 bg-white rounded-lg shadow-sm border p-4 sm:p-6">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Exchange-Driven Filters */}
+            {/* Connection & Symbol */}
             <div>
               <h3 className="text-sm font-medium text-gray-900 mb-4">Market & Symbol</h3>
-              <ExchangeDrivenFilters
-                onFiltersChange={setExchangeFilters}
+              <InstrumentFilters
+                value={instrument}
+                onChange={setInstrument}
                 disabled={!dataQueryEnabled}
               />
             </div>
@@ -485,8 +480,8 @@ export default function DownloadPage() {
                   Downloaded Data: {chartData.symbol}
                 </h2>
                 <div className="text-sm text-gray-500">
-                  {exchangeFilters.exchange} - {exchangeFilters.secType} | Timeframe:{' '}
-                  {timeframes.find((tf) => tf.value === timeframe)?.label}
+                  {[instrument.exchange, instrument.secType].filter(Boolean).join(' - ')} |
+                  Timeframe: {timeframes.find((tf) => tf.value === timeframe)?.label}
                   {chartData.last_updated && (
                     <span className="ml-4">
                       Last update: {formatTime(new Date(chartData.last_updated))}
