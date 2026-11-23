@@ -1021,8 +1021,8 @@ describes adding another.
   account.
 - **One connection type per firm:** every connection names its firm
   (OANDA, IG, IC Markets, Pepperstone, FP Markets, Fusion, another cTrader
-  firm, Interactive Brokers, Alpaca, Axi, Eightcap, Vantage, another MT5
-  firm), and the firm sets the platform: its web API when it has one, the
+  firm, Interactive Brokers, Alpaca, Axi, CMC Markets, Eightcap, Vantage,
+  another MT5 firm), and the firm sets the platform: its web API when it has one, the
   MT5 sidecar when it does not. Interactive Brokers alone has two entries,
   its Web API and the older IB Gateway. The
   backend refuses any other pairing (`backend/src/services/firms.ts`). Axi

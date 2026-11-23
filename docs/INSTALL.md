@@ -199,7 +199,7 @@ one way only. Find the firm, then do that step and no other for it.
 | IC Markets, Pepperstone, FP Markets, Fusion Markets or another cTrader firm | [4.6](#46-ctrader-ic-markets-pepperstone-fp-markets-fusion-and-others), with a cTrader account at the firm | none |
 | Alpaca | [4.4](#44-alpaca) | none |
 | Interactive Brokers | See question 3 | CT 130 |
-| Axi, Eightcap, Vantage, a prop firm, or any firm with no web API | [4.2](#42-metatrader-5-vm-120) | VM 120 |
+| Axi, CMC Markets, Eightcap, Vantage, a prop firm, or any firm with no web API | [4.2](#42-metatrader-5-vm-120) | VM 120 |
 | A firm above, but your account there is an MT5 account | It cannot be added. Open the account type the row above names. | |
 
 **3. Interactive Brokers: Web API or IB Gateway?**
@@ -879,7 +879,7 @@ The app asks brokers in this order of priority. Add only the ones you use
 | 3 | cTrader (IC Markets, Pepperstone, FP Markets, Fusion and other cTrader brokers) | none, a cloud API | A demo cTrader account, a cTrader Open API application and an access token |
 | 4 | Interactive Brokers, Web API (stocks, ETFs, FX, futures, options on most exchanges, ASX included) | CT 130 | A paper account id (`DU…`) and its login |
 | 5 | Alpaca (US stocks, options) | none, a cloud API | A paper API key and secret |
-| 6 | MetaTrader 5 (Axi, Eightcap, Vantage and other firms with no web API) | VM 120 | A demo account: login, password, server, and the server's time zone |
+| 6 | MetaTrader 5 (Axi, CMC Markets, Eightcap, Vantage and other firms with no web API) | VM 120 | A demo account: login, password, server, and the server's time zone |
 | 7 | Interactive Brokers, IB Gateway (US stocks) | CT 130 | A paper account: username and password |
 
 Each firm connects one way only: through its web API when it has one, through
@@ -1313,7 +1313,7 @@ Note the exact symbol names `/symbols` returns (`EURUSD`, `EURUSD.a`,
 passed.
 
 **Do:** [add a connection](#adding-a-connection) with Firm set to the
-account's firm (**Axi (MT5)**, **Eightcap (MT5)**, **Vantage (MT5)**, or
+account's firm (**Axi (MT5)**, **CMC Markets (MT5)**, **Eightcap (MT5)**, **Vantage (MT5)**, or
 **Another MT5 firm (no web API)** for any other, such as a prop firm), Mode
 **Paper / practice**:
 
@@ -1628,6 +1628,7 @@ pairing, and also refuses a connection named after a firm of another type
 | Interactive Brokers (Web API), Australia included | IBKR Web API | The Web API ([4.10](#410-interactive-brokers-web-api-client-portal-gateway)) reaches every market the account trades and allows several accounts. Prefer it for a new connection. IBKR's MCP server ([4.11](#411-ibkrs-mcp-server-for-claude)) connects an account to Claude, not to the app. |
 | Alpaca | Alpaca | Native REST API. |
 | Axi (MT5) | MT5 | Axi has no public trading API. Its MCP server (`mcp.axi.com`, in alpha) connects an Axi MT5 account to Claude only, not to other applications, so the app reaches Axi through the MT5 sidecar. |
+| CMC Markets (MT5) | MT5 | CMC Markets offers its API to institutional clients only, so the app reaches a CMC account through the MT5 sidecar. Open a CMC MetaTrader 5 account (offered in Australia, New Zealand, Canada and Germany among others); a CMC web platform or MT4 account cannot be connected. |
 | Eightcap (MT5), Vantage (MT5) | MT5 | Through the MT5 sidecar. |
 | Another MT5 firm (no web API) | MT5 | Any firm with no web API, prop firms included. Not for a firm listed above. |
 | Interactive Brokers (IB Gateway) | IB | The older TWS socket route ([4.3](#43-interactive-brokers-ct-130)): US stocks on one account. Interactive Brokers is the one firm with two entries on the form. |
