@@ -98,7 +98,7 @@ symbol resolution and differing lot steps.
 **Before:** nothing.
 
 **Do:** open a demo account at two firms the app reaches through MT5: Axi,
-Eightcap, Vantage, or any firm with no web API, such as a prop firm's free
+CMC Markets, Eightcap, Vantage, or any firm with no web API, such as a prop firm's free
 trial ([INSTALL.md § 4.7](INSTALL.md#47-which-platform-for-which-firm)). Not
 OANDA, IC Markets, Pepperstone, FP Markets or Fusion Markets: their MT5
 accounts cannot be added to the app. Both accounts must be in **the same

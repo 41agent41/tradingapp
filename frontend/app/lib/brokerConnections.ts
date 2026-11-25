@@ -282,6 +282,12 @@ export const FIRM_PRESETS: FirmPreset[] = [
     note: "Axi has no public trading API: run the MT5 bridge next to an MT5 terminal logged in to your Axi account. Axi's MCP server (mcp.axi.com) works only inside Claude.",
   },
   {
+    id: 'cmc',
+    name: 'CMC Markets (MT5)',
+    platform: 'mt5',
+    note: 'CMC Markets offers its API to institutional clients only: open a CMC MetaTrader 5 account (not a CMC web platform or MT4 account) and run the MT5 bridge next to an MT5 terminal logged in to it.',
+  },
+  {
     id: 'eightcap',
     name: 'Eightcap (MT5)',
     platform: 'mt5',

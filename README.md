@@ -3,7 +3,7 @@
 A self-hosted trading platform: charts, a market-data store, backtesting and
 systematic strategies, with paper and live trading through OANDA, IG,
 cTrader brokers (IC Markets, Pepperstone, FP Markets, Fusion), MetaTrader 5
-brokers (Axi, Eightcap, Vantage), Interactive Brokers (Web API or IB
+brokers (Axi, CMC Markets, Eightcap, Vantage), Interactive Brokers (Web API or IB
 Gateway) and Alpaca. It runs as
 a Docker stack on one Linux host.
 

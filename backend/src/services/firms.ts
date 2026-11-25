@@ -29,6 +29,7 @@ export const FIRMS: readonly Firm[] = [
   { id: 'ibkr', name: 'Interactive Brokers (Web API)', platform: 'ibweb' },
   { id: 'alpaca', name: 'Alpaca', platform: 'alpaca' },
   { id: 'axi', name: 'Axi (MT5)', platform: 'mt5' },
+  { id: 'cmc', name: 'CMC Markets (MT5)', platform: 'mt5' },
   { id: 'eightcap', name: 'Eightcap (MT5)', platform: 'mt5' },
   { id: 'vantage', name: 'Vantage (MT5)', platform: 'mt5' },
   { id: 'other_mt5', name: 'Another MT5 firm (no web API)', platform: 'mt5' },

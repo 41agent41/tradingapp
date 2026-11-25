@@ -323,7 +323,7 @@ describe('BrokerConnections', () => {
       .getAllByRole('option')
       .map((o) => (o as HTMLOptionElement).value)
       .filter(Boolean);
-    expect(options).toEqual(['axi', 'eightcap', 'vantage', 'other_mt5']);
+    expect(options).toEqual(['axi', 'cmc', 'eightcap', 'vantage', 'other_mt5']);
     expect(within(form).getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 

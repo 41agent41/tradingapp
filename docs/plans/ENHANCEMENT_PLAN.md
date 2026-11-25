@@ -10,7 +10,7 @@ This review covers the repository at `master` after PR #102 (IG and cTrader adap
 
 **Scope decisions from Sean (9 Nov 2026)**
 
-- Brokers in scope: OANDA, IG, cTrader (IC Markets, Pepperstone, FP Markets, Fusion), MT5 (Axi, Eightcap, Vantage), Interactive Brokers and Alpaca. Paper accounts first.
+- Brokers in scope: OANDA, IG, cTrader (IC Markets, Pepperstone, FP Markets, Fusion), MT5 (Axi, CMC Markets, Eightcap, Vantage), Interactive Brokers and Alpaca. Paper accounts first.
 - Connection order: web API first, then MT5, then IB Gateway. MCP servers and MT4 are on hold (see the last section).
 - Each broker firm gets exactly one connection type. For example, IC Markets connects only through cTrader, never through MT5.
 - Stored data: 1-minute bars built from the live stream, 5-second bars where the broker offers them, and raw ticks kept for a limited number of days.
@@ -59,7 +59,7 @@ The default priority is set in `broker_service/connections.py` line 85 and mirro
 | IG | Web API (REST and Lightstreamer) | Full trading and streaming API | None for the type; add streaming (E-11) |
 | IC Markets, Pepperstone, FP Markets, Fusion | Web API (cTrader Open API) | Full trading and streaming API | Block these firms on the MT5 form |
 | Alpaca | Web API (Trading, Market Data, WebSocket streams) | Full trading and streaming API | Move it to fifth in priority, ahead of MT5 |
-| Axi, Eightcap, Vantage | MT5 through the sidecar | No public trading web API | None |
+| Axi, CMC Markets, Eightcap, Vantage | MT5 through the sidecar | No public trading web API (CMC's API is institutional only) | None |
 | Interactive Brokers | IB Gateway (TWS API) | See note below | Keep, and revisit after E-36 |
 
 **Proposed default priority:** `oanda, ig, ctrader, alpaca, mt5, ib`.
