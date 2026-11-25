@@ -77,6 +77,8 @@ interface Props {
   symbol: string;
   onChange: (choice: SymbolChoice) => void;
   inputClassName?: string;
+  /** Greys out the market, symbol and refresh controls. */
+  disabled?: boolean;
 }
 
 function age(iso: string | null): string {
@@ -95,6 +97,7 @@ export default function SymbolPicker({
   symbol,
   onChange,
   inputClassName = 'w-full px-2 py-1 text-sm border border-gray-300 rounded-md',
+  disabled = false,
 }: Props) {
   const listId = useId();
   // The market chosen, kept with the connection it was chosen on: a new
@@ -243,6 +246,7 @@ export default function SymbolPicker({
         <select
           className={inputClassName}
           value={market}
+          disabled={disabled}
           onChange={(e) => setMarket(e.target.value)}
         >
           <option value="">{catalogue?.complete ? `All (${total})` : 'Any'}</option>
@@ -260,6 +264,7 @@ export default function SymbolPicker({
           value={symbol}
           list={listId}
           autoComplete="off"
+          disabled={disabled}
           onChange={(e) => choose(e.target.value)}
           placeholder={catalogue?.complete ? 'Type or pick' : 'EURUSD'}
         />
@@ -282,7 +287,7 @@ export default function SymbolPicker({
           <button
             type="button"
             onClick={refresh}
-            disabled={refreshing}
+            disabled={refreshing || disabled}
             className="underline text-blue-700 disabled:text-gray-400"
           >
             {refreshing ? 'Refreshing…' : 'Refresh list'}
